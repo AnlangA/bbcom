@@ -8,6 +8,8 @@
     "core:window:default",
     "core:window:allow-start-dragging",
     "dialog:default",
-    "serialplugin:default"
+    "serialplugin:default",
+    "store:default",
+    "fs:default"
   ]
 }

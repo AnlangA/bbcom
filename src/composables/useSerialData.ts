@@ -1,4 +1,5 @@
 import { ref, onUnmounted } from 'vue';
+import { listen } from '@tauri-apps/api/event';
 import { useSerialPort } from './useSerialPort';
 import { useSessionStore } from '../stores/sessions';
 import type { PortConfig } from '../types';
@@ -8,9 +9,21 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
   const sessionStore = useSessionStore();
   const isConnected = ref(false);
 
-  let dataQueue: number[] = [];
+  let dataQueue: Uint8Array[] = [];
   let rafId: number | null = null;
-  let unlisten: (() => void) | null = null;
+  let unlistenData: (() => void) | null = null;
+  let unlistenDisconnect: (() => void) | null = null;
+
+  function concatUint8Arrays(chunks: Uint8Array[]): number[] {
+    const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+    const merged = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return Array.from(merged);
+  }
 
   async function start() {
     const success = await serial.connect(portName, config);
@@ -19,25 +32,25 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
     isConnected.value = true;
     sessionStore.setConnected(sessionId, true);
 
-    unlisten = await serial.listen((data) => {
-      // isDecode=false 时 data 为 Uint8Array
+    unlistenData = await serial.listen((data) => {
       const bytes = data instanceof Uint8Array ? data : typeof data === 'string'
         ? new TextEncoder().encode(data)
         : new Uint8Array(data as number[]);
 
-      for (let i = 0; i < bytes.length; i++) {
-        dataQueue.push(bytes[i]!);
-      }
+      dataQueue.push(bytes);
 
       if (!rafId) {
         rafId = requestAnimationFrame(flushQueue);
       }
     });
 
-    serial.port.value?.disconnected(() => {
-      isConnected.value = false;
-      sessionStore.setConnected(sessionId, false);
-    });
+    unlistenDisconnect = await listen(
+      `plugin-serialplugin-disconnected-${portName}`,
+      () => {
+        isConnected.value = false;
+        sessionStore.setConnected(sessionId, false);
+      },
+    );
 
     return true;
   }
@@ -47,13 +60,13 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
       rafId = null;
       return;
     }
-    const bytes = dataQueue;
+    const chunks = dataQueue;
     dataQueue = [];
     rafId = null;
 
     sessionStore.addFrame(sessionId, {
       direction: 'RX',
-      data: bytes,
+      data: concatUint8Arrays(chunks),
     });
   }
 
@@ -88,9 +101,13 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
       rafId = null;
     }
     dataQueue = [];
-    if (unlisten) {
-      unlisten();
-      unlisten = null;
+    if (unlistenData) {
+      unlistenData();
+      unlistenData = null;
+    }
+    if (unlistenDisconnect) {
+      unlistenDisconnect();
+      unlistenDisconnect = null;
     }
     await serial.disconnect();
     isConnected.value = false;

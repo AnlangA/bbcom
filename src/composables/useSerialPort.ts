@@ -91,7 +91,7 @@ export function useSerialPort() {
     try {
       await port.value.stopListening();
       await port.value.close();
-    } catch (e) {
+    } catch {
       // ignore
     }
     port.value = null;
@@ -106,7 +106,7 @@ export function useSerialPort() {
         await port.value.write(data);
       }
       return true;
-    } catch (e) {
+    } catch {
       return false;
     }
   }

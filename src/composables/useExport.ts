@@ -34,8 +34,7 @@ export function useExport() {
         },
       });
       return true;
-    } catch (e) {
-      console.error('Export failed:', e);
+    } catch {
       return false;
     } finally {
       isExporting.value = false;

@@ -110,8 +110,10 @@ const gridStyle = computed(() => ({
 
 const textDecoder = new TextDecoder();
 const formatCache = new Map<string, string>();
+const CACHE_MAX = 5000;
+const CACHE_EVICT = 1000;
 
-function formatData(frame: DataFrame): string {
+function getFormattedData(frame: DataFrame): string {
   const key = `${frame.id}:${appStore.displayMode}`;
   const cached = formatCache.get(key);
   if (cached !== undefined) return cached;
@@ -119,12 +121,21 @@ function formatData(frame: DataFrame): string {
     ? formatHex(frame.data)
     : textDecoder.decode(new Uint8Array(frame.data));
   formatCache.set(key, result);
-  if (formatCache.size > 12000) {
+  if (formatCache.size > CACHE_MAX) {
     const keys = [...formatCache.keys()];
-    for (let i = 0; i < 2000; i++) formatCache.delete(keys[i]!);
+    for (let i = 0; i < CACHE_EVICT; i++) formatCache.delete(keys[i]!);
   }
   return result;
 }
+
+function formatData(frame: DataFrame): string {
+  return getFormattedData(frame);
+}
+
+// Clear cache when frames are trimmed
+watch(() => props.frames.length, (newLen, oldLen) => {
+  if (newLen < oldLen) formatCache.clear();
+});
 
 const filteredFrames = computed(() => {
   let result = props.frames;
@@ -134,9 +145,8 @@ const filteredFrames = computed(() => {
   if (searchQuery.value.trim()) {
     const q = searchQuery.value.trim().toLowerCase();
     result = result.filter((f) => {
-      const hex = formatHex(f.data).toLowerCase();
-      const ascii = textDecoder.decode(new Uint8Array(f.data)).toLowerCase();
-      return hex.includes(q) || ascii.includes(q);
+      const formatted = getFormattedData(f).toLowerCase();
+      return formatted.includes(q);
     });
   }
   return result;
@@ -200,7 +210,7 @@ async function handleCtxSelect(key: string) {
       text = textDecoder.decode(new Uint8Array(ctxFrame.data));
       break;
     case 'row':
-      text = `[${ctxFrame.timestamp}] ${ctxFrame.direction} | ${formatHex(ctxFrame.data)}`;
+      text = `[${ctxFrame.timestamp}] ${ctxFrame.direction} | ${getFormattedData(ctxFrame)}`;
       break;
   }
   try {

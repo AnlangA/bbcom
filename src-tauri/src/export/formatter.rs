@@ -1,16 +1,15 @@
 use crate::models::data_frame::{DataFrame, Direction};
 use crate::models::errors::AppError;
 use crate::utils::hex;
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use tokio::fs::File;
+use tokio::io::{AsyncWriteExt, BufWriter};
 
-pub fn export(frames: &[DataFrame], format: &str, path: &str) -> Result<(), AppError> {
+pub async fn export(frames: &[DataFrame], format: &str, path: &str) -> Result<(), AppError> {
     match format {
-        "txt" => export_text(frames, path, false),
-        "txt-hex" => export_text(frames, path, false),
-        "txt-ascii" => export_text(frames, path, true),
-        "csv" => export_csv(frames, path),
-        "bin" => export_bin(frames, path),
+        "txt" | "txt-hex" => export_text(frames, path, false).await,
+        "txt-ascii" => export_text(frames, path, true).await,
+        "csv" => export_csv(frames, path).await,
+        "bin" => export_bin(frames, path).await,
         _ => Err(AppError::ExportError(format!(
             "unsupported format: {}",
             format
@@ -33,30 +32,38 @@ fn data_to_string(data: &[u8], ascii: bool) -> String {
     }
 }
 
-fn export_text(frames: &[DataFrame], path: &str, ascii: bool) -> Result<(), AppError> {
-    let mut w = BufWriter::new(File::create(path)?);
+async fn export_text(frames: &[DataFrame], path: &str, ascii: bool) -> Result<(), AppError> {
+    let file = File::create(path).await.map_err(AppError::from)?;
+    let mut w = BufWriter::new(file);
     for frame in frames {
         let data_str = data_to_string(&frame.data, ascii);
-        writeln!(&mut w, "[{}] {} | {}", frame.timestamp, dir_label(&frame.direction), data_str)?;
+        let line = format!("[{}] {} | {}\n", frame.timestamp, dir_label(&frame.direction), data_str);
+        w.write_all(line.as_bytes()).await.map_err(AppError::from)?;
     }
+    w.flush().await.map_err(AppError::from)?;
     Ok(())
 }
 
-fn export_csv(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
-    let mut w = BufWriter::new(File::create(path)?);
-    writeln!(&mut w, "timestamp,direction,data")?;
+async fn export_csv(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
+    let file = File::create(path).await.map_err(AppError::from)?;
+    let mut w = BufWriter::new(file);
+    w.write_all(b"timestamp,direction,data\n").await.map_err(AppError::from)?;
     for frame in frames {
         let data_str = hex::format_hex(&frame.data);
         let escaped = data_str.replace('"', "\"\"");
-        writeln!(&mut w, "{},{},\"{}\"", frame.timestamp, dir_label(&frame.direction), escaped)?;
+        let line = format!("{},{},\"{}\"\n", frame.timestamp, dir_label(&frame.direction), escaped);
+        w.write_all(line.as_bytes()).await.map_err(AppError::from)?;
     }
+    w.flush().await.map_err(AppError::from)?;
     Ok(())
 }
 
-fn export_bin(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
-    let mut w = BufWriter::new(File::create(path)?);
+async fn export_bin(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
+    let file = File::create(path).await.map_err(AppError::from)?;
+    let mut w = BufWriter::new(file);
     for frame in frames {
-        w.write_all(&frame.data)?;
+        w.write_all(&frame.data).await.map_err(AppError::from)?;
     }
+    w.flush().await.map_err(AppError::from)?;
     Ok(())
 }

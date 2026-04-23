@@ -12,5 +12,5 @@ pub struct ExportRequest {
 
 #[tauri::command]
 pub async fn export_data(request: ExportRequest) -> Result<(), AppError> {
-    formatter::export(&request.frames, &request.format, &request.path)
+    formatter::export(&request.frames, &request.format, &request.path).await
 }
