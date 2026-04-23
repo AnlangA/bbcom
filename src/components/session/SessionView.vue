@@ -156,13 +156,15 @@ async function handleExport(format: string) {
 }
 
 .session-toolbar {
-  padding: 6px 12px;
+  padding: 6px 10px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #3c3c3c;
-  background: #2a2a2a;
-  min-height: 40px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-tertiary);
+  min-height: 38px;
+  flex-shrink: 0;
+  gap: 8px;
 }
 
 .toolbar-left,
@@ -173,20 +175,25 @@ async function handleExport(format: string) {
 }
 
 .error-hint {
-  color: #ef5350;
+  color: var(--accent-red);
   font-size: 11px;
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 1px 6px;
+  background: var(--accent-red-subtle);
+  border-radius: var(--radius-sm);
 }
 
 .display-area {
   flex: 1;
   overflow: hidden;
+  min-height: 0;
 }
 
 .send-area {
-  border-top: 1px solid #3c3c3c;
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
 }
 </style>

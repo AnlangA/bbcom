@@ -129,16 +129,17 @@ function formatBytes(bytes: number): string {
 
 <style scoped>
 .status-bar {
-  height: 28px;
+  height: 26px;
   padding: 0 12px;
   display: flex;
   align-items: center;
-  gap: 6px;
-  background: #252526;
-  color: #cccccc;
-  font-size: 12px;
-  font-family: 'Menlo', 'Consolas', monospace;
-  border-top: 1px solid #3c3c3c;
+  gap: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
 }
 
 .stat {
@@ -148,8 +149,11 @@ function formatBytes(bytes: number): string {
 }
 
 .stat-label {
-  color: #888;
-  font-size: 11px;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
 }
 
 .stat-value {
@@ -157,50 +161,57 @@ function formatBytes(bytes: number): string {
 }
 
 .stat-value.port-name {
-  color: #e0e0e0;
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
 .stat-value.tx {
-  color: #4caf50;
+  color: var(--accent-green);
 }
 
 .stat-value.rx {
-  color: #42a5f5;
+  color: var(--accent-blue);
 }
 
 .stat-value.rate {
-  color: #e0e0e0;
+  color: var(--accent-amber);
   font-size: 11px;
 }
 
 .stat-detail {
-  color: #666;
-  font-size: 11px;
+  color: var(--text-dim);
+  font-size: 10px;
 }
 
 .divider {
-  color: #444;
-  margin: 0 2px;
+  color: var(--border-color);
+  margin: 0 1px;
+  user-select: none;
 }
 
 .no-session {
-  color: #666;
+  color: var(--text-dim);
   font-style: italic;
+  font-family: var(--font-sans);
+}
+
+.status-indicator {
+  margin-left: auto;
 }
 
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  transition: background 0.3s;
+  transition: background var(--transition-normal), box-shadow var(--transition-normal);
 }
 
 .status-dot.connected {
-  background: #4caf50;
-  box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
+  background: var(--accent-green);
+  box-shadow: 0 0 6px rgba(76, 175, 80, 0.6);
 }
 
 .status-dot.disconnected {
-  background: #555;
+  background: var(--text-dim);
 }
 </style>

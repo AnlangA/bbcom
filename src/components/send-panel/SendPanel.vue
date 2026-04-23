@@ -158,11 +158,11 @@ function truncate(s: string, max: number): string {
 
 <style scoped>
 .send-panel {
-  padding: 8px 12px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  background: #252526;
+  gap: 8px;
+  background: var(--bg-secondary);
 }
 
 .send-actions {
@@ -173,7 +173,7 @@ function truncate(s: string, max: number): string {
 
 .send-left {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
 }
 
@@ -185,47 +185,54 @@ function truncate(s: string, max: number): string {
 
 .byte-count {
   font-size: 11px;
-  color: #888;
+  color: var(--text-muted);
   font-family: var(--font-mono);
+  padding: 2px 6px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
 }
 
 .send-history {
-  border-top: 1px solid #3c3c3c;
-  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
 }
 
 .history-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .history-title {
   font-size: 10px;
-  color: #666;
+  color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  font-weight: 600;
 }
 
 .history-clear {
   background: none;
   border: none;
-  color: #666;
+  color: var(--text-dim);
   font-size: 10px;
   cursor: pointer;
-  padding: 0 2px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  transition: color var(--transition-fast), background var(--transition-fast);
 }
 
 .history-clear:hover {
-  color: #ccc;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
 }
 
 .history-list {
   display: flex;
   gap: 4px;
   overflow-x: auto;
-  max-height: 56px;
+  max-height: 60px;
   flex-wrap: wrap;
 }
 
@@ -236,31 +243,33 @@ function truncate(s: string, max: number): string {
 .history-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid #3c3c3c;
-  border-radius: 3px;
+  gap: 5px;
+  padding: 3px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: 11px;
-  color: #ccc;
+  color: var(--text-secondary);
   white-space: nowrap;
-  max-width: 180px;
-  transition: border-color 0.15s;
+  max-width: 200px;
+  transition: border-color var(--transition-normal), background var(--transition-normal);
 }
 
 .history-item:hover {
-  border-color: #4caf50;
-  background: rgba(76, 175, 80, 0.06);
+  border-color: var(--accent-green);
+  background: var(--accent-green-subtle);
 }
 
 .history-tag {
   font-size: 9px;
-  color: #888;
-  background: rgba(255, 255, 255, 0.06);
-  padding: 0 3px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 0 4px;
   border-radius: 2px;
+  letter-spacing: 0.3px;
 }
 
 .history-text {

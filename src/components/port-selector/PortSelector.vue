@@ -206,29 +206,31 @@ async function calcChecksum() {
 
 .section {
   padding: 12px 14px;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .section-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: #888;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.8px;
-  margin-bottom: 8px;
+  letter-spacing: 1px;
+  margin-bottom: 10px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   user-select: none;
+  transition: color var(--transition-normal);
 }
 
 .section-title:hover {
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .toggle-icon {
   font-size: 10px;
-  color: #666;
+  color: var(--text-dim);
+  transition: transform var(--transition-normal);
 }
 
 .port-row {
@@ -242,13 +244,14 @@ async function calcChecksum() {
 }
 
 .empty-hint {
-  margin-top: 6px;
+  margin-top: 8px;
   font-size: 11px;
-  color: #666;
+  color: var(--text-dim);
   text-align: center;
-  padding: 8px;
-  background: rgba(255, 255, 255, 0.02);
-  border-radius: 4px;
+  padding: 10px 8px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--border-color);
 }
 
 .config-grid {
@@ -260,15 +263,16 @@ async function calcChecksum() {
 .config-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .config-item label {
-  font-size: 12px;
-  color: #aaa;
+  font-size: 11px;
+  color: var(--text-secondary);
   width: 48px;
   flex-shrink: 0;
   text-align: right;
+  font-weight: 500;
 }
 
 .config-item .n-select {
@@ -278,28 +282,28 @@ async function calcChecksum() {
 .checksum-grid {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .checksum-result {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  background: rgba(76, 175, 80, 0.08);
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--accent-green-subtle);
   border: 1px solid rgba(76, 175, 80, 0.2);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 13px;
 }
 
 .checksum-label {
-  color: #888;
+  color: var(--text-muted);
   font-size: 11px;
 }
 
 .checksum-value {
-  color: #4caf50;
-  font-weight: 600;
+  color: var(--accent-green);
+  font-weight: 700;
 }
 </style>

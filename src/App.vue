@@ -100,7 +100,59 @@ const themeOverrides = {
     primaryColor: '#4caf50',
     primaryColorHover: '#66bb6a',
     primaryColorPressed: '#388e3c',
+    primaryColorSuppl: '#4caf50',
     borderRadius: '4px',
+    borderRadiusSmall: '3px',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    fontFamilyMono: '"Menlo", "Consolas", "Courier New", monospace',
+    fontSize: '13px',
+    fontSizeMini: '11px',
+    fontSizeTiny: '11px',
+    fontSizeSmall: '12px',
+    fontSizeMedium: '13px',
+    heightSmall: '28px',
+    heightMedium: '32px',
+    dividerColor: '#2e2e2e',
+    borderColor: '#3c3c3c',
+    inputColor: '#1a1a1a',
+    inputColorDisabled: '#252526',
+    actionColor: '#252526',
+    modalColor: '#2a2a2a',
+    cardColor: '#252526',
+    tableColor: '#1e1e1e',
+    popoverColor: '#2a2a2a',
+  },
+  Button: {
+    textColorPrimary: '#fff',
+    textColorHoverPrimary: '#fff',
+    textColorPressedPrimary: '#fff',
+  },
+  Input: {
+    color: '#1a1a1a',
+    colorFocus: '#1a1a1a',
+    border: '1px solid #3c3c3c',
+    borderHover: '#505050',
+    borderFocus: '#4caf50',
+    boxShadowFocus: '0 0 0 2px rgba(76, 175, 80, 0.15)',
+  },
+  Select: {
+    peers: {
+      InternalSelection: {
+        color: '#1a1a1a',
+        border: '1px solid #3c3c3c',
+        borderHover: '#505050',
+        borderFocus: '#4caf50',
+        boxShadowFocus: '0 0 0 2px rgba(76, 175, 80, 0.15)',
+      },
+    },
+  },
+  Tag: {
+    border: '1px solid #3c3c3c',
+    borderRadiusSmall: '3px',
+  },
+  Modal: {
+    color: '#2a2a2a',
+    borderColor: '#3c3c3c',
   },
 };
 
@@ -140,42 +192,48 @@ onUnmounted(() => {
   width: 100vw;
   height: 100vh;
   display: flex;
+  background: var(--bg-primary);
 }
 
 .sidebar {
-  width: 300px;
-  border-right: 1px solid #3c3c3c;
-  background: #252526;
+  width: 280px;
+  min-width: 280px;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .sidebar-header {
-  padding: 12px 16px;
-  border-bottom: 1px solid #3c3c3c;
-  background: #2a2a2a;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
 }
 
 .app-brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .brand-icon {
-  font-size: 18px;
+  font-size: 20px;
+  line-height: 1;
 }
 
 .brand-title {
   font-size: 14px;
-  font-weight: 600;
-  color: #e0e0e0;
+  font-weight: 700;
+  color: var(--text-primary);
   letter-spacing: 0.5px;
 }
 
 .sidebar-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .main {
@@ -183,7 +241,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #1e1e1e;
+  background: var(--bg-primary);
+  min-width: 0;
 }
 
 .session-viewport {
@@ -200,41 +259,46 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  color: #666;
+  gap: 16px;
+  color: var(--text-muted);
+  user-select: none;
 }
 
 .empty-icon {
-  font-size: 48px;
-  opacity: 0.4;
+  font-size: 56px;
+  opacity: 0.3;
+  filter: grayscale(0.5);
 }
 
 .empty-title {
-  font-size: 16px;
-  color: #888;
-  font-weight: 500;
+  font-size: 18px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  letter-spacing: 0.3px;
 }
 
 .empty-text {
   font-size: 13px;
+  color: var(--text-muted);
 }
 
 .empty-shortcuts {
-  margin-top: 12px;
+  margin-top: 16px;
   display: flex;
-  gap: 16px;
+  gap: 20px;
   font-size: 11px;
-  color: #555;
+  color: var(--text-dim);
 }
 
 .shortcut kbd {
   display: inline-block;
-  padding: 1px 5px;
-  background: #333;
-  border: 1px solid #444;
-  border-radius: 3px;
+  padding: 2px 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 10px;
-  color: #aaa;
+  color: var(--text-secondary);
+  line-height: 1.4;
 }
 </style>

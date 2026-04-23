@@ -58,18 +58,19 @@ const emit = defineEmits<{
 .tabs-header {
   display: flex;
   align-items: center;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
-  padding: 0 4px;
-  height: 36px;
-  min-height: 36px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0 6px;
+  height: 34px;
+  min-height: 34px;
 }
 
 .tabs-list {
   display: flex;
-  gap: 2px;
+  gap: 1px;
   overflow-x: auto;
   flex: 1;
+  padding-top: 2px;
 }
 
 .tabs-list::-webkit-scrollbar {
@@ -79,83 +80,94 @@ const emit = defineEmits<{
 .tab-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
+  gap: 5px;
+  padding: 4px 12px;
   cursor: pointer;
-  border-radius: 4px 4px 0 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   font-size: 12px;
-  color: #999;
+  color: var(--text-muted);
   background: transparent;
   white-space: nowrap;
-  transition: all 0.15s;
+  transition: background var(--transition-normal), color var(--transition-normal), border-color var(--transition-normal);
   user-select: none;
+  border-bottom: 2px solid transparent;
+  position: relative;
 }
 
 .tab-item:hover {
-  background: #2d2d2d;
-  color: #ccc;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
 }
 
 .tab-item.active {
   background: var(--bg-primary);
-  color: #e0e0e0;
-  border-bottom: 2px solid var(--accent-green);
-  margin-bottom: -1px;
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-green);
 }
 
 .tab-port {
   font-family: var(--font-mono);
   font-weight: 500;
+  font-size: 11px;
 }
 
 .tab-status {
-  font-size: 8px;
+  font-size: 7px;
+  line-height: 1;
 }
 
 .tab-status.connected {
   color: var(--accent-green);
+  text-shadow: 0 0 4px rgba(76, 175, 80, 0.5);
 }
 
 .tab-status.disconnected {
-  color: #666;
+  color: var(--text-dim);
 }
 
 .tab-close {
   background: none;
   border: none;
-  color: #666;
+  color: transparent;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1;
-  padding: 0 2px;
+  padding: 0 1px;
   border-radius: 2px;
   margin-left: 2px;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.tab-item:hover .tab-close {
+  color: var(--text-muted);
 }
 
 .tab-close:hover {
-  color: #e0e0e0;
+  color: var(--text-primary) !important;
   background: rgba(255, 255, 255, 0.1);
 }
 
 .tab-add {
   background: none;
-  border: 1px dashed #555;
-  color: #888;
+  border: 1px dashed var(--border-color);
+  color: var(--text-dim);
   cursor: pointer;
-  font-size: 16px;
-  width: 28px;
-  height: 28px;
-  border-radius: 4px;
+  font-size: 15px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: all 0.15s;
+  transition: all var(--transition-normal);
+  margin-left: 4px;
 }
 
 .tab-add:hover {
   border-color: var(--accent-green);
+  border-style: solid;
   color: var(--accent-green);
-  background: rgba(76, 175, 80, 0.1);
+  background: var(--accent-green-subtle);
 }
 </style>
