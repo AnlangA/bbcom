@@ -14,3 +14,7 @@ src-tauri/gen
 .vscode
 *.swp
 *.swo
+
+# AI
+.claude
+.factory
