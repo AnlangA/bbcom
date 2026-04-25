@@ -12,6 +12,8 @@
 
 [English](./README.md) · [中文](./README.zh-CN.md)
 
+[⬇️ 下载](https://github.com/AnlangA/bbcom/releases)
+
 </div>
 
 ---
