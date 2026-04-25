@@ -6,7 +6,7 @@
 
 ### 串口通信
 
-![串口调试助手主界面](screenshots/main-interface.png)
+![串口调试助手主界面](images/主窗口.png)
 
 - 实时串口数据收发，支持 HEX / ASCII / UTF-8 / ANSI 四种显示模式
 - 完整的串口参数配置：波特率（9600 ~ 921600）、数据位、停止位、奇偶校验、流控
@@ -28,7 +28,7 @@
 
 ### AI 终端助手
 
-![AI 终端助手](screenshots/ai-assistant.png)
+![AI 终端助手](images/ai助手窗口.png)
 
 - 独立悬浮窗口，始终置顶，可拖拽、可调整大小
 - 自然语言描述意图，AI 自动生成 Linux/BusyBox 终端命令
