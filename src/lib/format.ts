@@ -5,13 +5,22 @@
 // Singleton decoders for better performance
 const utf8Decoder = new TextDecoder('utf-8', { fatal: false });
 const asciiDecoder = new TextDecoder('ascii', { fatal: false });
+const textEncoder = new TextEncoder();
+const HEX_TABLE = Array.from({ length: 256 }, (_, i) =>
+  i.toString(16).toUpperCase().padStart(2, '0')
+);
 
 /**
  * Format byte array as HEX string with spaces
  */
 export function formatHex(data: number[] | Uint8Array): string {
-  const arr = Array.isArray(data) ? data : Array.from(data);
-  return arr.map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+  if (data.length === 0) return '';
+
+  let result = HEX_TABLE[data[0] & 0xff];
+  for (let i = 1; i < data.length; i += 1) {
+    result += ` ${HEX_TABLE[data[i] & 0xff]}`;
+  }
+  return result;
 }
 
 /**
@@ -120,4 +129,8 @@ export function formatUtf8(data: number[] | Uint8Array): string {
 export function formatAscii(data: number[] | Uint8Array): string {
   const arr = Array.isArray(data) ? new Uint8Array(data) : data;
   return asciiDecoder.decode(arr);
+}
+
+export function encodeUtf8(data: string): Uint8Array {
+  return textEncoder.encode(data);
 }

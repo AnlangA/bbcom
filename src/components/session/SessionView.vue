@@ -43,6 +43,9 @@
           <n-button size="small" quaternary @click="toggleAutoScroll" :type="appStore.autoScroll ? 'primary' : 'default'" title="自动滚动">
             自动滚动
           </n-button>
+          <n-button size="small" quaternary @click="appStore.toggleAnsiColor" :type="appStore.ansiColorEnabled ? 'primary' : 'default'" title="ANSI颜色渲染">
+            颜色
+          </n-button>
           <n-button size="small" quaternary @click="toggleTimestamp" :type="appStore.showTimestamp ? 'primary' : 'default'" title="显示时间">
             时间
           </n-button>
@@ -63,9 +66,11 @@
     <div class="send-area">
       <SendPanel
         :on-send="handleSend"
+        :model-value="session.sendDraft"
         :disabled="!session.isConnected"
         :history="session.sendHistory"
         :quick-commands="session.quickCommands"
+        @update:model-value="updateSendDraft"
         @clear-history="clearHistory"
         @add-quick-command="addQuickCommand"
         @remove-quick-command="removeQuickCommand"
@@ -83,6 +88,7 @@ import { useSerialData } from '../../composables/useSerialData';
 import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
 import { useExport } from '../../composables/useExport';
+import { useSessionActions } from '../../composables/useSessionActions';
 import { useMessage } from 'naive-ui';
 import type { DisplayMode, SerialSession } from '../../types';
 
@@ -92,6 +98,7 @@ const props = defineProps<{
 
 const sessionStore = useSessionStore();
 const appStore = useAppStore();
+const { requestClearFrames } = useSessionActions();
 const { exportData } = useExport();
 const message = useMessage();
 const serialState = useSerialData(
@@ -131,18 +138,20 @@ async function disconnect() {
 }
 
 function clear() {
-  if (props.session.frames.length === 0) return;
-  if (confirm('确定要清空所有数据吗？此操作不可恢复。')) {
-    sessionStore.clearFrames(props.session.id);
-  }
+  requestClearFrames(props.session.id);
 }
 
 async function handleSend(data: string, isHex: boolean) {
   const ok = await serialState.send(data, isHex);
   if (ok) {
     sessionStore.addSendHistory(props.session.id, { data, isHex });
+    sessionStore.setSendDraft(props.session.id, '');
   }
   return ok;
+}
+
+function updateSendDraft(value: string) {
+  sessionStore.setSendDraft(props.session.id, value);
 }
 
 function clearHistory() {

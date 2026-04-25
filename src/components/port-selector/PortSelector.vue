@@ -109,11 +109,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
+import { useSessionActions } from '../../composables/useSessionActions';
 import { formatHex, isValidHex, parseHex } from '../../lib/format';
 import { BAUD_RATES, DATA_BITS_OPTIONS, STOP_BITS_OPTIONS, PARITY_OPTIONS, FLOW_CONTROL_OPTIONS } from '../../lib/constants';
 
 const serialStore = useSerialStore();
 const sessionStore = useSessionStore();
+const { createSession } = useSessionActions();
 const { ports, refresh } = usePortWatcher();
 const isRefreshing = ref(false);
 const missingActivePorts = computed(() =>
@@ -166,7 +168,7 @@ async function refreshPorts() {
 
 function newSession() {
   if (!selectedPort.value) return;
-  sessionStore.createSession(selectedPort.value, { ...serialStore.portConfig });
+  createSession(selectedPort.value, { ...serialStore.portConfig });
 }
 
 const baudRateOptions = BAUD_RATES;

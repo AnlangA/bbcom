@@ -49,6 +49,7 @@ export interface SerialSession {
   rxFrames: number;
   startTime: number | null;
   sendHistory: SendHistoryEntry[];
+  sendDraft: string;
   quickCommands: QuickCommand[];
   autoLogEnabled: boolean;
 }

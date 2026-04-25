@@ -4,6 +4,8 @@ import type { SerialSession, DataFrame, SendHistoryEntry } from '../types';
 import { MAX_FRAMES, MAX_HISTORY } from '../types';
 import { nowMillis } from '../lib/time';
 
+const FRAME_TRIM_THRESHOLD = 500;
+
 export const useSessionStore = defineStore('sessions', () => {
   const sessions = ref<SerialSession[]>([]);
   const activeSessionId = ref<string | null>(null);
@@ -27,6 +29,7 @@ export const useSessionStore = defineStore('sessions', () => {
       rxFrames: 0,
       startTime: null,
       sendHistory: [],
+      sendDraft: '',
       quickCommands: [],
       autoLogEnabled: false,
     });
@@ -66,7 +69,7 @@ export const useSessionStore = defineStore('sessions', () => {
 
     session.frames.push(fullFrame);
 
-    if (session.frames.length > MAX_FRAMES) {
+    if (session.frames.length > MAX_FRAMES + FRAME_TRIM_THRESHOLD) {
       const trimmed = session.frames.slice(-MAX_FRAMES);
       session.frames = trimmed;
     }
@@ -117,6 +120,12 @@ export const useSessionStore = defineStore('sessions', () => {
     session.sendHistory = [];
   }
 
+  function setSendDraft(sessionId: string, draft: string) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.sendDraft = draft;
+  }
+
   function addQuickCommand(sessionId: string, command: Omit<SerialSession['quickCommands'][number], 'id'>) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
@@ -148,6 +157,7 @@ export const useSessionStore = defineStore('sessions', () => {
     clearFrames,
     addSendHistory,
     clearSendHistory,
+    setSendDraft,
     addQuickCommand,
     removeQuickCommand,
     setAutoLogEnabled,

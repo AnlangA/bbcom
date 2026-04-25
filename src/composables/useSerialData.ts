@@ -2,7 +2,7 @@ import { ref, onUnmounted } from 'vue';
 import { listen } from '@tauri-apps/api/event';
 import { useSerialPort } from './useSerialPort';
 import { useSessionStore } from '../stores/sessions';
-import { parseHex } from '../lib/format';
+import { encodeUtf8, parseHex } from '../lib/format';
 import { MAX_INPUT_SIZE } from '../types';
 import type { PortConfig } from '../types';
 
@@ -39,7 +39,7 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
 
     unlistenData = await serial.listen((data) => {
       const bytes = data instanceof Uint8Array ? data : typeof data === 'string'
-        ? new TextEncoder().encode(data)
+        ? encodeUtf8(data)
         : new Uint8Array(data as number[]);
 
       dataQueue.push(bytes);
@@ -85,25 +85,20 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
       try {
         payload = parseHex(data);
       } catch {
-        console.error('Invalid hex string: odd number of digits');
         return false;
       }
       if (payload.length === 0) {
-        console.error('Empty hex string');
         return false;
       }
     } else {
       if (data.length === 0) {
-        console.error('Empty text string');
         return false;
       }
-      const encoded = new TextEncoder().encode(data);
+      const encoded = encodeUtf8(data);
       payload = Array.from(encoded);
     }
 
-    // Check size limit
     if (payload.length > MAX_INPUT_SIZE) {
-      console.error('Data too large: maximum 1MB');
       return false;
     }
 

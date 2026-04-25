@@ -3,6 +3,7 @@ import { ref, watch } from 'vue';
 import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
 
 const STORAGE_KEY = 'bbcom-app-settings';
+const AI_API_KEY_STORAGE_KEY = `${STORAGE_KEY}:ai-api-key`;
 
 export const useAppStore = defineStore('app', () => {
   const displayMode = ref<DisplayMode>('HEX');
@@ -13,11 +14,13 @@ export const useAppStore = defineStore('app', () => {
   const lineEnding = ref<LineEnding>('none');
   const sendAsHex = ref(false);
   const loopIntervalMs = ref(1000);
+  const ansiColorEnabled = ref(true);
   const aiApiKey = ref('');
-  const aiModel = ref('glm-4.5-flash');
+  const aiModel = ref('glm-4.5-air');
   const aiEnableCodingPlan = ref(false);
   const aiCommandDraft = ref('');
   const aiCommandSeq = ref(0);
+  const pendingAiCommand = ref('');
   let loaded = false;
 
   async function load() {
@@ -33,9 +36,13 @@ export const useAppStore = defineStore('app', () => {
         if (s.lineEnding) lineEnding.value = s.lineEnding;
         if (typeof s.sendAsHex === 'boolean') sendAsHex.value = s.sendAsHex;
         if (typeof s.loopIntervalMs === 'number') loopIntervalMs.value = s.loopIntervalMs;
-        if (typeof s.aiApiKey === 'string') aiApiKey.value = s.aiApiKey;
+        if (typeof s.ansiColorEnabled === 'boolean') ansiColorEnabled.value = s.ansiColorEnabled;
         if (typeof s.aiModel === 'string') aiModel.value = s.aiModel;
         if (typeof s.aiEnableCodingPlan === 'boolean') aiEnableCodingPlan.value = s.aiEnableCodingPlan;
+      }
+      const savedApiKey = localStorage.getItem(AI_API_KEY_STORAGE_KEY);
+      if (savedApiKey) {
+        aiApiKey.value = savedApiKey;
       }
     } catch {
       // ignore
@@ -55,7 +62,7 @@ export const useAppStore = defineStore('app', () => {
         lineEnding: lineEnding.value,
         sendAsHex: sendAsHex.value,
         loopIntervalMs: loopIntervalMs.value,
-        aiApiKey: aiApiKey.value,
+        ansiColorEnabled: ansiColorEnabled.value,
         aiModel: aiModel.value,
         aiEnableCodingPlan: aiEnableCodingPlan.value,
       }));
@@ -64,7 +71,7 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  watch([displayMode, autoScroll, showTimestamp, searchMode, packetViewMode, lineEnding, sendAsHex, loopIntervalMs, aiApiKey, aiModel, aiEnableCodingPlan], save);
+  watch([displayMode, autoScroll, showTimestamp, searchMode, packetViewMode, lineEnding, sendAsHex, loopIntervalMs, ansiColorEnabled, aiModel, aiEnableCodingPlan], save);
 
   function setDisplayMode(mode: DisplayMode) {
     displayMode.value = mode;
@@ -90,6 +97,10 @@ export const useAppStore = defineStore('app', () => {
     lineEnding.value = value;
   }
 
+  function toggleAnsiColor() {
+    ansiColorEnabled.value = !ansiColorEnabled.value;
+  }
+
   function setSendAsHex(value: boolean) {
     sendAsHex.value = value;
   }
@@ -100,6 +111,15 @@ export const useAppStore = defineStore('app', () => {
 
   function setAiApiKey(value: string) {
     aiApiKey.value = value;
+    try {
+      if (value) {
+        localStorage.setItem(AI_API_KEY_STORAGE_KEY, value);
+      } else {
+        localStorage.removeItem(AI_API_KEY_STORAGE_KEY);
+      }
+    } catch {
+      // ignore
+    }
   }
 
   function setAiModel(value: string) {
@@ -115,6 +135,16 @@ export const useAppStore = defineStore('app', () => {
     aiCommandSeq.value += 1;
   }
 
+  function setPendingAiCommand(command: string) {
+    pendingAiCommand.value = command;
+  }
+
+  function consumePendingAiCommand(): string {
+    const command = pendingAiCommand.value;
+    pendingAiCommand.value = '';
+    return command;
+  }
+
   load();
 
   return {
@@ -126,22 +156,27 @@ export const useAppStore = defineStore('app', () => {
     lineEnding,
     sendAsHex,
     loopIntervalMs,
+    ansiColorEnabled,
     aiApiKey,
     aiModel,
     aiEnableCodingPlan,
     aiCommandDraft,
     aiCommandSeq,
+    pendingAiCommand,
     setDisplayMode,
     toggleAutoScroll,
     toggleShowTimestamp,
     setSearchMode,
     setPacketViewMode,
     setLineEnding,
+    toggleAnsiColor,
     setSendAsHex,
     setLoopIntervalMs,
     setAiApiKey,
     setAiModel,
     setAiEnableCodingPlan,
     applyAiCommand,
+    setPendingAiCommand,
+    consumePendingAiCommand,
   };
 });

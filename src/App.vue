@@ -34,10 +34,9 @@
               </div>
             </div>
             <SessionView
-              v-for="s in sessions"
-              :key="s.id"
-              :session="s"
-              :style="{ display: s.id === activeSessionId ? 'flex' : 'none' }"
+              v-if="activeSession"
+              :key="activeSession.id"
+              :session="activeSession"
             />
           </div>
           <StatusBar :session="activeSession" />
@@ -92,14 +91,15 @@ import SessionView from './components/session/SessionView.vue';
 import StatusBar from './components/status-bar/StatusBar.vue';
 import { useSessionStore } from './stores/sessions';
 import { useSerialStore } from './stores/serial';
+import { useSessionActions } from './composables/useSessionActions';
 import { BAUD_RATES, DATA_BITS_OPTIONS, FLOW_CONTROL_OPTIONS, PARITY_OPTIONS, STOP_BITS_OPTIONS } from './lib/constants';
 import type { PortConfig } from './types';
 
 const sessionStore = useSessionStore();
 const serialStore = useSerialStore();
+const { createSession: createSessionFromConfig, requestCloseSession } = useSessionActions();
 
 const sessions = computed(() => sessionStore.sessions);
-const activeSessionId = computed(() => sessionStore.activeSessionId);
 const activeSession = computed(() => sessionStore.activeSession);
 const showCreateDialog = ref(false);
 const newPortName = ref('');
@@ -200,7 +200,7 @@ function createSession() {
     flowControl: newFlowControl.value,
   };
   serialStore.setPortConfig(config);
-  sessionStore.createSession(newPortName.value, config);
+  createSessionFromConfig(newPortName.value, config);
   newPortName.value = '';
   return true;
 }
@@ -214,14 +214,7 @@ function handleKeydown(e: KeyboardEvent) {
       e.preventDefault();
       const id = sessionStore.activeSessionId;
       if (id) {
-        const session = sessionStore.sessions.find(s => s.id === id);
-        if (session?.isConnected) {
-          if (confirm('会话正在连接中，确定要关闭吗？')) {
-            sessionStore.removeSession(id);
-          }
-        } else {
-          sessionStore.removeSession(id);
-        }
+        requestCloseSession(id);
       }
     }
   }

@@ -2,12 +2,13 @@
   <div class="send-panel">
     <div class="send-input-row">
       <n-input
-        v-model:value="input"
+        :value="modelValue"
         type="textarea"
         :placeholder="isHex ? '输入 HEX (如: AA BB CC DD)' : '输入文本内容'"
         :autosize="{ minRows: 2, maxRows: 4 }"
         :disabled="disabled"
-        :status="isHex && input && !isValidHex ? 'error' : undefined"
+        :status="isHex && modelValue && !isValidHex ? 'error' : undefined"
+        @update:value="updateInput"
         @blur="formatHexInput"
         @keydown.ctrl.enter="handleSend"
       />
@@ -42,7 +43,7 @@
         </n-input-number>
       </div>
       <div class="send-right">
-        <span v-if="input" class="byte-count">{{ byteCount }} 字节</span>
+        <span v-if="modelValue" class="byte-count">{{ byteCount }} 字节</span>
         <n-button size="small" @click="toggleLoop" :disabled="!canSend && !looping" :type="looping ? 'warning' : 'default'">
           {{ looping ? '停止循环' : '循环发送' }}
         </n-button>
@@ -59,7 +60,7 @@
     <div class="quick-row">
       <div class="quick-form">
         <n-input v-model:value="quickName" size="tiny" placeholder="快捷名称" style="width: 110px" />
-        <n-button size="tiny" @click="addQuickCommand" :disabled="!input.trim()">保存快捷</n-button>
+        <n-button size="tiny" @click="addQuickCommand" :disabled="!modelValue.trim()">保存快捷</n-button>
       </div>
       <div v-if="quickCommands.length > 0" class="quick-list">
         <div
@@ -100,10 +101,10 @@
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { isValidHex as checkValidHex, normalizeHex, parseHex } from '../../lib/format';
+import { encodeUtf8, isValidHex as checkValidHex, normalizeHex, parseHex } from '../../lib/format';
 import { MAX_INPUT_SIZE } from '../../types';
 import { useAppStore } from '../../stores/app';
+import { useSessionStore } from '../../stores/sessions';
 import type { LineEnding, QuickCommand } from '../../types';
 
 export interface HistoryEntry {
@@ -113,20 +114,22 @@ export interface HistoryEntry {
 
 const props = defineProps<{
   onSend: (data: string, isHex: boolean) => Promise<boolean>;
+  modelValue: string;
   disabled?: boolean;
   history: HistoryEntry[];
   quickCommands: QuickCommand[];
 }>();
 
 const emit = defineEmits<{
+  (e: 'update:modelValue', value: string): void;
   (e: 'clearHistory'): void;
   (e: 'addQuickCommand', command: { name: string; data: string; isHex: boolean }): void;
   (e: 'removeQuickCommand', id: string): void;
 }>();
 
 const appStore = useAppStore();
+const sessionStore = useSessionStore();
 const message = useMessage();
-const input = ref('');
 const isHex = computed({
   get: () => appStore.sendAsHex,
   set: (value) => appStore.setSendAsHex(value),
@@ -143,7 +146,6 @@ const appendChecksum = ref<'none' | 'CHECKSUM' | 'CRC8' | 'CRC16' | 'CRC32'>('no
 const looping = ref(false);
 const quickName = ref('');
 let loopTimer: ReturnType<typeof setInterval> | null = null;
-let unlistenAiCommand: (() => void) | null = null;
 
 const lineEndingOptions = [
   { label: '无结尾', value: 'none' },
@@ -161,21 +163,21 @@ const checksumOptions = [
 ];
 
 const isValidHex = computed(() => {
-  if (!isHex.value || !input.value.trim()) return true;
-  return checkValidHex(input.value);
+  if (!isHex.value || !props.modelValue.trim()) return true;
+  return checkValidHex(props.modelValue);
 });
 
 const byteCount = computed(() => {
-  if (!input.value.trim()) return 0;
+  if (!props.modelValue.trim()) return 0;
   if (isHex.value) {
-    const cleaned = input.value.replace(/[^0-9a-fA-F]/g, '');
+    const cleaned = props.modelValue.replace(/[^0-9a-fA-F]/g, '');
     return Math.floor(cleaned.length / 2);
   }
-  return new TextEncoder().encode(withLineEnding(input.value)).length;
+  return encodeUtf8(withLineEnding(props.modelValue)).length;
 });
 
 const canSend = computed(() => {
-  if (props.disabled || !input.value.trim()) return false;
+  if (props.disabled || !props.modelValue.trim()) return false;
   if (isHex.value && !isValidHex.value) return false;
   return true;
 });
@@ -186,21 +188,15 @@ watch(() => props.disabled, (disabled) => {
 
 watch(() => appStore.aiCommandSeq, () => {
   if (!appStore.aiCommandDraft) return;
+  if (!sessionStore.activeSession) {
+    appStore.setPendingAiCommand(appStore.aiCommandDraft);
+    return;
+  }
   applyAiCommand(appStore.aiCommandDraft);
-});
-
-listen<string>('ai-command-generated', (event) => {
-  applyAiCommand(event.payload);
-}).then((unlisten) => {
-  unlistenAiCommand = unlisten;
 });
 
 onUnmounted(() => {
   stopLoop();
-  if (unlistenAiCommand) {
-    unlistenAiCommand();
-    unlistenAiCommand = null;
-  }
 });
 
 function withLineEnding(data: string): string {
@@ -215,7 +211,7 @@ function withLineEnding(data: string): string {
 }
 
 async function buildData(): Promise<string | null> {
-  let data = input.value;
+  let data = props.modelValue;
 
   if (data.length > MAX_INPUT_SIZE) {
     message.error('输入数据过大，最大支持 1MB');
@@ -245,7 +241,7 @@ async function handleSend() {
   if (data == null) return;
   const ok = await props.onSend(data, isHex.value);
   if (ok) {
-    if (!looping.value) input.value = '';
+    if (!looping.value) updateInput('');
   } else {
     message.error('发送失败，请检查连接状态');
   }
@@ -284,8 +280,8 @@ function resend(item: HistoryEntry) {
 }
 
 function addQuickCommand() {
-  const name = quickName.value.trim() || truncate(input.value, 12);
-  emit('addQuickCommand', { name, data: input.value, isHex: isHex.value });
+  const name = quickName.value.trim() || truncate(props.modelValue, 12);
+  emit('addQuickCommand', { name, data: props.modelValue, isHex: isHex.value });
   quickName.value = '';
 }
 
@@ -298,12 +294,16 @@ function sendQuick(command: QuickCommand) {
 
 function applyAiCommand(command: string) {
   isHex.value = false;
-  input.value = command;
+  updateInput(command);
+}
+
+function updateInput(value: string) {
+  emit('update:modelValue', value);
 }
 
 function formatHexInput() {
-  if (isHex.value && input.value.trim() && isValidHex.value) {
-    input.value = normalizeHex(input.value);
+  if (isHex.value && props.modelValue.trim() && isValidHex.value) {
+    updateInput(normalizeHex(props.modelValue));
   }
 }
 

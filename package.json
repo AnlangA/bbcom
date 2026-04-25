@@ -16,7 +16,7 @@
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-fs": "^2.0.0",
     "@tauri-apps/plugin-store": "^2.0.0",
-    "ansi-to-html": "^0.7.2",
+    "ansi_up": "^6.0.6",
     "naive-ui": "^2.40.0",
     "pinia": "^2.2.0",
     "tauri-plugin-serialplugin-api": "^2.0.0",

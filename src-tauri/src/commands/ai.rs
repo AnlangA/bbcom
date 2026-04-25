@@ -100,7 +100,7 @@ pub fn resize_ai_window(
             message: "AI 窗口不存在".to_string(),
         })?;
     let width = request.width.clamp(420.0, 920.0);
-    let height = request.height.clamp(112.0, 360.0);
+    let height = request.height.clamp(112.0, 560.0);
     window
         .set_size(LogicalSize::new(width, height))
         .map_err(|e| AppError::AiError {
@@ -141,22 +141,14 @@ pub async fn terminal_ai_assist(
         "System prompt:\n{TERMINAL_SYSTEM_PROMPT}\n\nTarget shell: {shell}\nRecent serial console context:\n{context}\n\nUser request: {prompt}"
     );
 
-    let model = request.model.as_deref().unwrap_or("glm-4.5-flash");
+    let model = request.model.as_deref().unwrap_or("glm-4.5-air");
     let use_coding_plan = request.enable_coding_plan.unwrap_or(false);
     let key = api_key.to_string();
     let body = match model {
         "glm-5.1" => send_chat(GLM5_1 {}, user_prompt, key, use_coding_plan).await,
         "glm-5-turbo" => send_chat(GLM5_turbo {}, user_prompt, key, use_coding_plan).await,
-        "glm-5" => send_chat(GLM5 {}, user_prompt, key, use_coding_plan).await,
         "glm-4.7" => send_chat(GLM4_7 {}, user_prompt, key, use_coding_plan).await,
-        "glm-4.7-flash" => send_chat(GLM4_7_flash {}, user_prompt, key, use_coding_plan).await,
-        "glm-4.7-flashx" => send_chat(GLM4_7_flashx {}, user_prompt, key, use_coding_plan).await,
-        "glm-4.6" => send_chat(GLM4_6 {}, user_prompt, key, use_coding_plan).await,
-        "glm-4.5" => send_chat(GLM4_5 {}, user_prompt, key, use_coding_plan).await,
-        "glm-4.5-X" => send_chat(GLM4_5_x {}, user_prompt, key, use_coding_plan).await,
-        "glm-4.5-flash" => send_chat(GLM4_5_flash {}, user_prompt, key, use_coding_plan).await,
         "glm-4.5-air" => send_chat(GLM4_5_air {}, user_prompt, key, use_coding_plan).await,
-        "glm-4.5-airx" => send_chat(GLM4_5_airx {}, user_prompt, key, use_coding_plan).await,
         _ => {
             return Err(AppError::ValidationError {
                 message: "不支持的 Chat 模型".to_string(),
@@ -191,7 +183,7 @@ where
     let client = ChatCompletion::new(model, TextMessage::user(user_prompt), api_key)
         .with_temperature(0.1)
         .with_top_p(0.8)
-        .with_thinking(ThinkingType::disabled());
+        .with_thinking(ThinkingType::enabled());
 
     let response = if use_coding_plan {
         client.with_coding_plan().send().await

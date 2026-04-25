@@ -58,7 +58,7 @@
           <span class="col-dir direction">{{ visibleFrames[row.index].direction }}</span>
           <span v-if="appStore.showTimestamp" class="col-time timestamp">{{ visibleFrames[row.index].timestamp }}</span>
           <span
-            v-if="appStore.displayMode === 'ANSI'"
+            v-if="appStore.displayMode !== 'HEX' && appStore.ansiColorEnabled"
             class="col-data data ansi-data"
             v-html="formatData(visibleFrames[row.index])"
           ></span>
@@ -87,7 +87,7 @@ import { useAppStore } from '../../stores/app';
 import { formatHex, formatUtf8, formatAscii } from '../../lib/format';
 import { LRUCache } from '../../lib/lru-cache';
 import { CACHE_SIZE } from '../../types';
-import AnsiToHtml from 'ansi-to-html';
+import { AnsiUp } from 'ansi_up';
 import type { DataFrame, DirectionFilter } from '../../types';
 
 const props = defineProps<{
@@ -143,16 +143,12 @@ const gridStyle = computed(() => ({
 }));
 
 const formatCache = new LRUCache<string, string>(CACHE_SIZE);
-const ansiConverter = new AnsiToHtml({
-  fg: '#e5e5e5',
-  bg: '#1a1a1a',
-  newline: false,
-  escapeXML: true,
-  stream: false,
-});
+const hexSearchCache = new LRUCache<string, string>(CACHE_SIZE);
+const ansiUp = new AnsiUp();
+ansiUp.use_classes = false;
 
 function getFormattedData(frame: DataFrame): string {
-  const key = `${frame.id}:${appStore.displayMode}`;
+  const key = `${frame.id}:${appStore.displayMode}:${appStore.ansiColorEnabled}`;
   const cached = formatCache.get(key);
   if (cached !== undefined) return cached;
 
@@ -162,18 +158,30 @@ function getFormattedData(frame: DataFrame): string {
       result = formatHex(frame.data);
       break;
     case 'ANSI':
-      result = ansiConverter.toHtml(formatAscii(frame.data));
+    case 'ASCII': {
+      const text = formatAscii(frame.data);
+      result = appStore.ansiColorEnabled ? ansiUp.ansi_to_html(text) : text;
       break;
-    case 'UTF8':
-      result = formatUtf8(frame.data);
+    }
+    case 'UTF8': {
+      const text = formatUtf8(frame.data);
+      result = appStore.ansiColorEnabled ? ansiUp.ansi_to_html(text) : text;
       break;
-    case 'ASCII':
+    }
     default:
       result = formatAscii(frame.data);
       break;
   }
 
   formatCache.set(key, result);
+  return result;
+}
+
+function getHexSearchData(frame: DataFrame): string {
+  const cached = hexSearchCache.get(frame.id);
+  if (cached !== undefined) return cached;
+  const result = formatHex(frame.data).replace(/\s/g, '').toLowerCase();
+  hexSearchCache.set(frame.id, result);
   return result;
 }
 
@@ -189,7 +197,13 @@ function formatData(frame: DataFrame): string {
 watch(() => props.frames.length, (newLen, oldLen) => {
   if (newLen < oldLen) {
     formatCache.clear();
+    hexSearchCache.clear();
   }
+});
+
+// Clear cache when color toggle changes
+watch(() => appStore.ansiColorEnabled, () => {
+  formatCache.clear();
 });
 
 const filteredFrames = computed(() => {
@@ -202,7 +216,7 @@ const filteredFrames = computed(() => {
     result = result.filter((f) => {
       if (appStore.searchMode === 'HEX') {
         const needle = q.replace(/[^0-9a-f]/g, '');
-        return formatHex(f.data).replace(/\s/g, '').toLowerCase().includes(needle);
+        return getHexSearchData(f).includes(needle);
       }
       let formatted = getFormattedData(f);
       if (appStore.displayMode === 'ANSI') {
@@ -223,7 +237,7 @@ const visibleFrames = computed<DataFrame[]>(() => {
       current = { ...frame, id: `merged-${frame.id}`, data: [...frame.data] };
       merged.push(current);
     } else {
-      current.data = current.data.concat(frame.data);
+      current.data.push(...frame.data);
     }
   }
   return merged;

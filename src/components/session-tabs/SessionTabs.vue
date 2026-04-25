@@ -24,15 +24,17 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useSessionStore } from '../../stores/sessions';
+import { useSessionActions } from '../../composables/useSessionActions';
 import type { SerialSession } from '../../types';
 
 const sessionStore = useSessionStore();
+const { requestCloseSession } = useSessionActions();
 
 const activeId = computed(() => sessionStore.activeSessionId ?? '');
 const sessions = computed(() => sessionStore.sessions);
 
 function closeSession(id: string) {
-  sessionStore.removeSession(id);
+  requestCloseSession(id);
 }
 function switchSession(id: string) {
   sessionStore.setActiveSession(id);

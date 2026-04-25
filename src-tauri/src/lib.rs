@@ -38,6 +38,17 @@ pub fn run() {
                     }
                 });
             }
+            if let Some(window) = app.get_webview_window("main") {
+                let app_handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { .. } = event {
+                        if let Some(ai_window) = app_handle.get_webview_window("ai-assistant") {
+                            let _ = ai_window.close();
+                        }
+                        app_handle.exit(0);
+                    }
+                });
+            }
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
