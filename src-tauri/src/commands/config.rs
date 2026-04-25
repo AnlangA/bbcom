@@ -21,10 +21,10 @@ async fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, AppError> {
     let dir = app
         .path()
         .app_config_dir()
-        .map_err(|e| AppError::ConfigError(e.to_string()))?;
+        .map_err(|e| AppError::ConfigError { message: e.to_string() })?;
     tokio::fs::create_dir_all(&dir)
         .await
-        .map_err(|e| AppError::ConfigError(e.to_string()))?;
+        .map_err(|e| AppError::ConfigError { message: e.to_string() })?;
     Ok(dir.join("config.json"))
 }
 
@@ -36,8 +36,8 @@ pub async fn load_config(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
     }
     let content = tokio::fs::read_to_string(&path)
         .await
-        .map_err(|e| AppError::ConfigError(e.to_string()))?;
-    let config = serde_json::from_str(&content).map_err(|e| AppError::ConfigError(e.to_string()))?;
+        .map_err(|e| AppError::ConfigError { message: e.to_string() })?;
+    let config = serde_json::from_str(&content).map_err(|e| AppError::ConfigError { message: e.to_string() })?;
     Ok(config)
 }
 
@@ -45,9 +45,9 @@ pub async fn load_config(app: tauri::AppHandle) -> Result<AppConfig, AppError> {
 pub async fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), AppError> {
     let path = config_path(&app).await?;
     let content =
-        serde_json::to_string_pretty(&config).map_err(|e| AppError::ConfigError(e.to_string()))?;
+        serde_json::to_string_pretty(&config).map_err(|e| AppError::ConfigError { message: e.to_string() })?;
     tokio::fs::write(&path, content)
         .await
-        .map_err(|e| AppError::ConfigError(e.to_string()))?;
+        .map_err(|e| AppError::ConfigError { message: e.to_string() })?;
     Ok(())
 }

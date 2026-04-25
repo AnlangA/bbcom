@@ -10,13 +10,16 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
   const isConnected = ref(false);
 
   let dataQueue: Uint8Array[] = [];
+  let totalQueueSize = 0;
   let rafId: number | null = null;
   let unlistenData: (() => void) | null = null;
   let unlistenDisconnect: (() => void) | null = null;
 
   function concatUint8Arrays(chunks: Uint8Array[]): number[] {
-    const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
-    const merged = new Uint8Array(totalLen);
+    if (chunks.length === 0) return [];
+    if (chunks.length === 1) return Array.from(chunks[0]);
+
+    const merged = new Uint8Array(totalQueueSize);
     let offset = 0;
     for (const chunk of chunks) {
       merged.set(chunk, offset);
@@ -38,6 +41,7 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
         : new Uint8Array(data as number[]);
 
       dataQueue.push(bytes);
+      totalQueueSize += bytes.length;
 
       if (!rafId) {
         rafId = requestAnimationFrame(flushQueue);
@@ -62,6 +66,7 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
     }
     const chunks = dataQueue;
     dataQueue = [];
+    totalQueueSize = 0;
     rafId = null;
 
     sessionStore.addFrame(sessionId, {
@@ -72,17 +77,35 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
 
   async function send(data: string, isHex: boolean) {
     if (!serial.port.value) return false;
+
     let payload: number[];
     if (isHex) {
       const cleaned = data.replace(/[^0-9a-fA-F]/g, '');
-      if (cleaned.length % 2 !== 0) return false;
+      if (cleaned.length % 2 !== 0) {
+        console.error('Invalid hex string: odd number of digits');
+        return false;
+      }
+      if (cleaned.length === 0) {
+        console.error('Empty hex string');
+        return false;
+      }
       payload = [];
       for (let i = 0; i < cleaned.length; i += 2) {
         payload.push(parseInt(cleaned.substring(i, i + 2), 16));
       }
     } else {
+      if (data.length === 0) {
+        console.error('Empty text string');
+        return false;
+      }
       const encoded = new TextEncoder().encode(data);
       payload = Array.from(encoded);
+    }
+
+    // Check size limit
+    if (payload.length > 1024 * 1024) {
+      console.error('Data too large: maximum 1MB');
+      return false;
     }
 
     const ok = await serial.write(payload);
@@ -101,6 +124,7 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
       rafId = null;
     }
     dataQueue = [];
+    totalQueueSize = 0;
     if (unlistenData) {
       unlistenData();
       unlistenData = null;

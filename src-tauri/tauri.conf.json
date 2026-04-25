@@ -4,8 +4,6 @@
   "version": "0.1.0",
   "identifier": "com.bbcom.app",
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
   },

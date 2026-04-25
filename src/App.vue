@@ -173,7 +173,16 @@ function handleKeydown(e: KeyboardEvent) {
     } else if (e.key === 'w') {
       e.preventDefault();
       const id = sessionStore.activeSessionId;
-      if (id) sessionStore.removeSession(id);
+      if (id) {
+        const session = sessionStore.sessions.find(s => s.id === id);
+        if (session?.isConnected) {
+          if (confirm('会话正在连接中，确定要关闭吗？')) {
+            sessionStore.removeSession(id);
+          }
+        } else {
+          sessionStore.removeSession(id);
+        }
+      }
     }
   }
 }

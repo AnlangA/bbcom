@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
+import type { DisplayMode } from '../types';
 
 const STORAGE_KEY = 'bbcom-app-settings';
 
 export const useAppStore = defineStore('app', () => {
-  const displayMode = ref<'HEX' | 'ASCII'>('HEX');
+  const displayMode = ref<DisplayMode>('HEX');
   const autoScroll = ref(true);
   const showTimestamp = ref(true);
   let loaded = false;
@@ -39,7 +40,7 @@ export const useAppStore = defineStore('app', () => {
 
   watch([displayMode, autoScroll, showTimestamp], save);
 
-  function setDisplayMode(mode: 'HEX' | 'ASCII') {
+  function setDisplayMode(mode: DisplayMode) {
     displayMode.value = mode;
   }
 

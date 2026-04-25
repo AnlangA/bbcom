@@ -45,7 +45,12 @@
         >
           <span class="col-dir direction">{{ filteredFrames[row.index].direction }}</span>
           <span v-if="appStore.showTimestamp" class="col-time timestamp">{{ filteredFrames[row.index].timestamp }}</span>
-          <span class="col-data data">{{ formatData(filteredFrames[row.index]) }}</span>
+          <span
+            v-if="appStore.displayMode === 'ANSI'"
+            class="col-data data ansi-data"
+            v-html="formatData(filteredFrames[row.index])"
+          ></span>
+          <span v-else class="col-data data">{{ formatData(filteredFrames[row.index]) }}</span>
           <span class="col-mode mode">{{ displayLabel() }}</span>
         </div>
       </div>
@@ -67,8 +72,11 @@ import { ref, watch, computed, nextTick } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { NButtonGroup, NButton, NInput, NDropdown, useMessage } from 'naive-ui';
 import { useAppStore } from '../../stores/app';
-import { formatHex } from '../../lib/hex';
-import type { DataFrame } from '../../types';
+import { formatHex, formatUtf8, formatAscii } from '../../lib/format';
+import { LRUCache } from '../../lib/lru-cache';
+import { CACHE_SIZE } from '../../types';
+import AnsiToHtml from 'ansi-to-html';
+import type { DataFrame, DirectionFilter } from '../../types';
 
 const props = defineProps<{
   frames: DataFrame[];
@@ -92,6 +100,8 @@ let ctxFrame: DataFrame | null = null;
 const ctxOptions = [
   { label: '复制 HEX', key: 'hex' },
   { label: '复制 ASCII', key: 'ascii' },
+  { label: '复制 UTF-8', key: 'utf8' },
+  { label: '复制纯文本 (无 ANSI)', key: 'plain' },
   { label: '复制完整行', key: 'row' },
 ];
 
@@ -102,30 +112,49 @@ watch(searchInput, (val) => {
   }, 150);
 });
 
-const dirFilter = ref<'ALL' | 'TX' | 'RX'>('ALL');
+const dirFilter = ref<DirectionFilter>('ALL');
 
 const gridStyle = computed(() => ({
   gridTemplateColumns: appStore.showTimestamp ? '50px 160px 1fr 50px' : '50px 1fr 50px',
 }));
 
-const textDecoder = new TextDecoder();
-const formatCache = new Map<string, string>();
-const CACHE_MAX = 5000;
-const CACHE_EVICT = 1000;
+const formatCache = new LRUCache<string, string>(CACHE_SIZE);
+const ansiConverter = new AnsiToHtml({
+  fg: '#e5e5e5',
+  bg: '#1a1a1a',
+  newline: false,
+  escapeXML: true,
+  stream: false,
+});
 
 function getFormattedData(frame: DataFrame): string {
   const key = `${frame.id}:${appStore.displayMode}`;
   const cached = formatCache.get(key);
   if (cached !== undefined) return cached;
-  const result = appStore.displayMode === 'HEX'
-    ? formatHex(frame.data)
-    : textDecoder.decode(new Uint8Array(frame.data));
-  formatCache.set(key, result);
-  if (formatCache.size > CACHE_MAX) {
-    const keys = [...formatCache.keys()];
-    for (let i = 0; i < CACHE_EVICT; i++) formatCache.delete(keys[i]!);
+
+  let result: string;
+  switch (appStore.displayMode) {
+    case 'HEX':
+      result = formatHex(frame.data);
+      break;
+    case 'ANSI':
+      result = ansiConverter.toHtml(formatAscii(frame.data));
+      break;
+    case 'UTF8':
+      result = formatUtf8(frame.data);
+      break;
+    case 'ASCII':
+    default:
+      result = formatAscii(frame.data);
+      break;
   }
+
+  formatCache.set(key, result);
   return result;
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
 function formatData(frame: DataFrame): string {
@@ -134,7 +163,9 @@ function formatData(frame: DataFrame): string {
 
 // Clear cache when frames are trimmed
 watch(() => props.frames.length, (newLen, oldLen) => {
-  if (newLen < oldLen) formatCache.clear();
+  if (newLen < oldLen) {
+    formatCache.clear();
+  }
 });
 
 const filteredFrames = computed(() => {
@@ -145,8 +176,11 @@ const filteredFrames = computed(() => {
   if (searchQuery.value.trim()) {
     const q = searchQuery.value.trim().toLowerCase();
     result = result.filter((f) => {
-      const formatted = getFormattedData(f).toLowerCase();
-      return formatted.includes(q);
+      let formatted = getFormattedData(f);
+      if (appStore.displayMode === 'ANSI') {
+        formatted = stripAnsi(formatted);
+      }
+      return formatted.toLowerCase().includes(q);
     });
   }
   return result;
@@ -201,23 +235,31 @@ function showContextMenu(e: MouseEvent, frame: DataFrame) {
 async function handleCtxSelect(key: string) {
   ctxShow.value = false;
   if (!ctxFrame) return;
+
   let text = '';
   switch (key) {
     case 'hex':
       text = formatHex(ctxFrame.data);
       break;
     case 'ascii':
-      text = textDecoder.decode(new Uint8Array(ctxFrame.data));
+      text = formatAscii(ctxFrame.data);
+      break;
+    case 'utf8':
+      text = formatUtf8(ctxFrame.data);
+      break;
+    case 'plain':
+      text = stripAnsi(formatAscii(ctxFrame.data));
       break;
     case 'row':
       text = `[${ctxFrame.timestamp}] ${ctxFrame.direction} | ${getFormattedData(ctxFrame)}`;
       break;
   }
+
   try {
     await navigator.clipboard.writeText(text);
     message.success('已复制');
-  } catch {
-    // clipboard not available
+  } catch (err) {
+    message.error('复制失败');
   }
 }
 </script>
@@ -334,6 +376,11 @@ async function handleCtxSelect(key: string) {
   text-overflow: ellipsis;
   white-space: nowrap;
   letter-spacing: 0.3px;
+}
+
+.ansi-data {
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .col-mode {

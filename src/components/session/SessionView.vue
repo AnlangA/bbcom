@@ -42,6 +42,18 @@
           >
             ASCII
           </n-button>
+          <n-button
+            :type="appStore.displayMode === 'ANSI' ? 'primary' : 'default'"
+            @click="appStore.setDisplayMode('ANSI')"
+          >
+            ANSI
+          </n-button>
+          <n-button
+            :type="appStore.displayMode === 'UTF8' ? 'primary' : 'default'"
+            @click="appStore.setDisplayMode('UTF8')"
+          >
+            UTF-8
+          </n-button>
         </n-button-group>
         <n-button size="small" quaternary @click="toggleAutoScroll" :type="appStore.autoScroll ? 'primary' : 'default'" title="自动滚动">
           ↓
@@ -114,7 +126,10 @@ async function disconnect() {
 }
 
 function clear() {
-  sessionStore.clearFrames(props.session.id);
+  if (props.session.frames.length === 0) return;
+  if (confirm('确定要清空所有数据吗？此操作不可恢复。')) {
+    sessionStore.clearFrames(props.session.id);
+  }
 }
 
 async function handleSend(data: string, isHex: boolean) {

@@ -99,7 +99,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
-import { isValidHex } from '../../lib/hex';
+import { isValidHex } from '../../lib/format';
 import { BAUD_RATES, DATA_BITS_OPTIONS, STOP_BITS_OPTIONS, PARITY_OPTIONS, FLOW_CONTROL_OPTIONS } from '../../lib/constants';
 
 const serialStore = useSerialStore();

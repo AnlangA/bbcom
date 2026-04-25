@@ -1,10 +1,8 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import type { SerialSession, DataFrame, SendHistoryEntry } from '../types';
+import { MAX_FRAMES, MAX_HISTORY } from '../types';
 import { nowMillis } from '../lib/time';
-
-const MAX_FRAMES = 10000;
-const MAX_HISTORY = 20;
 
 export const useSessionStore = defineStore('sessions', () => {
   const sessions = ref<SerialSession[]>([]);

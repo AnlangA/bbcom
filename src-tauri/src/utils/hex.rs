@@ -19,9 +19,15 @@ pub fn parse_hex(input: &str) -> Result<Vec<u8>, AppError> {
         return Ok(Vec::new());
     }
     if cleaned.len() % 2 != 0 {
-        return Err(AppError::InvalidHex("odd number of hex digits".to_string()));
+        return Err(AppError::InvalidHex {
+            message: "odd number of hex digits".to_string(),
+            position: None,
+        });
     }
-    hex::decode(&cleaned).map_err(|e| AppError::InvalidHex(e.to_string()))
+    hex::decode(&cleaned).map_err(|e| AppError::InvalidHex {
+        message: e.to_string(),
+        position: None,
+    })
 }
 
 #[cfg(test)]

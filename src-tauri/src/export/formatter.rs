@@ -10,10 +10,11 @@ pub async fn export(frames: &[DataFrame], format: &str, path: &str) -> Result<()
         "txt-ascii" => export_text(frames, path, true).await,
         "csv" => export_csv(frames, path).await,
         "bin" => export_bin(frames, path).await,
-        _ => Err(AppError::ExportError(format!(
-            "unsupported format: {}",
-            format
-        ))),
+        _ => Err(AppError::ExportError {
+            message: format!("unsupported format: {}", format),
+            format: format.to_string(),
+            path: path.to_string(),
+        }),
     }
 }
 

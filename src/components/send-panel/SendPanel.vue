@@ -62,7 +62,7 @@
 import { ref, computed } from 'vue';
 import { NInput, NButton, NCheckbox, NSelect, useMessage } from 'naive-ui';
 import { invoke } from '@tauri-apps/api/core';
-import { isValidHex as checkValidHex } from '../../lib/hex';
+import { isValidHex as checkValidHex } from '../../lib/format';
 
 export interface HistoryEntry {
   data: string;
@@ -115,6 +115,12 @@ async function handleSend() {
 
   let data = input.value;
 
+  // Check input size limit
+  if (data.length > 1024 * 1024) {
+    message.error('输入数据过大，最大支持 1MB');
+    return;
+  }
+
   if (isHex.value && appendChecksum.value !== 'none') {
     const cleaned = data.replace(/[^0-9a-fA-F]/g, '');
     const payload: number[] = [];
@@ -126,8 +132,8 @@ async function handleSend() {
         request: { data: payload, algorithm: appendChecksum.value },
       });
       data = data + ' ' + res.result;
-    } catch {
-      // proceed without checksum
+    } catch (err) {
+      message.warning('校验和计算失败，将发送原始数据');
     }
   } else if (!isHex.value && appendNewline.value) {
     data += '\r\n';
@@ -137,7 +143,7 @@ async function handleSend() {
   if (ok) {
     input.value = '';
   } else {
-    message.error('发送失败');
+    message.error('发送失败，请检查连接状态');
   }
 }
 
@@ -145,7 +151,7 @@ function resend(item: HistoryEntry) {
   if (props.disabled) return;
   props.onSend(item.data, item.isHex).then((ok) => {
     if (!ok) {
-      message.error('重发失败');
+      message.error('重发失败，请检查连接状态');
     }
   });
 }

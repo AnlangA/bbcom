@@ -83,20 +83,50 @@ tauri_dev() {
 
 dev_all() {
   echo "[dev] Starting development environment"
+
+  # Clean up any existing process on port 5173
+  echo "[dev] Checking for existing processes on port 5173"
+  if lsof -ti:5173 >/dev/null 2>&1; then
+    echo "[dev] Killing existing process on port 5173"
+    lsof -ti:5173 | xargs kill -9 2>/dev/null
+    sleep 1
+  fi
+
   # Strategy:
-  # 1) Start frontend dev in a separate terminal (or background)
-  # 2) Start tauri dev in this terminal (so logs are visible)
-  #
-  # If you prefer both in one terminal, run them manually with your multitool.
-  echo "[dev] Opening frontend dev in a new terminal"
-  open_in_new_terminal "$PM run dev"
+  # 1) Start frontend dev in background
+  # 2) Wait for it to be ready
+  # 3) Start Tauri dev
 
-  # Wait a bit for frontend to start up (adjust if necessary)
-  echo "[dev] Waiting for frontend to warm up..."
-  sleep 2
+  echo "[dev] Starting frontend dev server in background"
+  case "$PM" in
+    pnpm) $PM dev &;;
+    yarn) $PM dev &;;
+    npm) $PM run dev &;;
+    *) echo "Unsupported package manager: $PM"; exit 1 ;;
+  esac
 
-  echo "[dev] Launching Tauri dev (this will attach to this terminal)"
+  FRONTEND_PID=$!
+
+  # Wait for frontend to be ready
+  echo "[dev] Waiting for frontend to be ready on http://localhost:5173"
+  for i in {1..30}; do
+    if curl -s http://localhost:5173 > /dev/null 2>&1; then
+      echo "[dev] Frontend is ready!"
+      break
+    fi
+    if [ $i -eq 30 ]; then
+      echo "[dev] Frontend failed to start in time"
+      kill $FRONTEND_PID 2>/dev/null
+      exit 1
+    fi
+    sleep 1
+  done
+
+  echo "[dev] Launching Tauri dev"
   tauri_dev
+
+  # Cleanup frontend on exit
+  kill $FRONTEND_PID 2>/dev/null
 }
 
 build_all() {
