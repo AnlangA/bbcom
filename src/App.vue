@@ -45,6 +45,18 @@
           <n-form-item label="波特率">
             <n-select v-model:value="newBaudRate" :options="baudRateOptions" />
           </n-form-item>
+          <n-form-item label="数据位">
+            <n-select v-model:value="newDataBits" :options="dataBitsOptions" />
+          </n-form-item>
+          <n-form-item label="停止位">
+            <n-select v-model:value="newStopBits" :options="stopBitsOptions" />
+          </n-form-item>
+          <n-form-item label="校验位">
+            <n-select v-model:value="newParity" :options="parityOptions" />
+          </n-form-item>
+          <n-form-item label="流控">
+            <n-select v-model:value="newFlowControl" :options="flowControlOptions" />
+          </n-form-item>
         </n-form>
       </n-modal>
     </n-message-provider>
@@ -68,7 +80,7 @@ import SessionView from './components/session/SessionView.vue';
 import StatusBar from './components/status-bar/StatusBar.vue';
 import { useSessionStore } from './stores/sessions';
 import { useSerialStore } from './stores/serial';
-import { BAUD_RATES } from './lib/constants';
+import { BAUD_RATES, DATA_BITS_OPTIONS, FLOW_CONTROL_OPTIONS, PARITY_OPTIONS, STOP_BITS_OPTIONS } from './lib/constants';
 import type { PortConfig } from './types';
 
 const sessionStore = useSessionStore();
@@ -80,6 +92,10 @@ const activeSession = computed(() => sessionStore.activeSession);
 const showCreateDialog = ref(false);
 const newPortName = ref('');
 const newBaudRate = ref(115200);
+const newDataBits = ref<PortConfig['dataBits']>(8);
+const newStopBits = ref<PortConfig['stopBits']>(1);
+const newParity = ref<PortConfig['parity']>('none');
+const newFlowControl = ref<PortConfig['flowControl']>('none');
 
 const usedPorts = computed(() =>
   new Set(sessionStore.sessions.filter((s) => s.isConnected).map((s) => s.portName))
@@ -94,6 +110,10 @@ const portOptions = computed(() =>
 );
 
 const baudRateOptions = BAUD_RATES;
+const dataBitsOptions = DATA_BITS_OPTIONS;
+const stopBitsOptions = STOP_BITS_OPTIONS;
+const parityOptions = PARITY_OPTIONS;
+const flowControlOptions = FLOW_CONTROL_OPTIONS;
 
 const themeOverrides = {
   common: {
@@ -158,10 +178,16 @@ const themeOverrides = {
 
 function createSession() {
   if (!newPortName.value) return false;
-  const config: PortConfig = { ...serialStore.portConfig, baudRate: newBaudRate.value };
+  const config: PortConfig = {
+    baudRate: newBaudRate.value,
+    dataBits: newDataBits.value,
+    stopBits: newStopBits.value,
+    parity: newParity.value,
+    flowControl: newFlowControl.value,
+  };
+  serialStore.setPortConfig(config);
   sessionStore.createSession(newPortName.value, config);
   newPortName.value = '';
-  newBaudRate.value = 115200;
   return true;
 }
 
@@ -188,6 +214,11 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 onMounted(() => {
+  newBaudRate.value = serialStore.portConfig.baudRate;
+  newDataBits.value = serialStore.portConfig.dataBits;
+  newStopBits.value = serialStore.portConfig.stopBits;
+  newParity.value = serialStore.portConfig.parity;
+  newFlowControl.value = serialStore.portConfig.flowControl;
   window.addEventListener('keydown', handleKeydown);
 });
 

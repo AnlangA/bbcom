@@ -27,6 +27,8 @@ export const useSessionStore = defineStore('sessions', () => {
       rxFrames: 0,
       startTime: null,
       sendHistory: [],
+      quickCommands: [],
+      autoLogEnabled: false,
     });
     activeSessionId.value = id;
     return id;
@@ -115,6 +117,24 @@ export const useSessionStore = defineStore('sessions', () => {
     session.sendHistory = [];
   }
 
+  function addQuickCommand(sessionId: string, command: Omit<SerialSession['quickCommands'][number], 'id'>) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.quickCommands.push({ ...command, id: crypto.randomUUID() });
+  }
+
+  function removeQuickCommand(sessionId: string, commandId: string) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.quickCommands = session.quickCommands.filter((c) => c.id !== commandId);
+  }
+
+  function setAutoLogEnabled(sessionId: string, enabled: boolean) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.autoLogEnabled = enabled;
+  }
+
   return {
     sessions,
     activeSessionId,
@@ -128,5 +148,8 @@ export const useSessionStore = defineStore('sessions', () => {
     clearFrames,
     addSendHistory,
     clearSendHistory,
+    addQuickCommand,
+    removeQuickCommand,
+    setAutoLogEnabled,
   };
 });

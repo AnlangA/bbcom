@@ -15,6 +15,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
+            commands::ai::terminal_ai_assist,
             commands::checksum::calculate_checksum,
             commands::export::export_data,
             commands::config::load_config,

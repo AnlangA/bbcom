@@ -29,38 +29,27 @@
         <span v-if="serialState.error.value" class="error-hint">{{ serialState.error.value }}</span>
       </div>
       <div class="toolbar-right">
-        <n-button-group size="small">
-          <n-button
-            :type="appStore.displayMode === 'HEX' ? 'primary' : 'default'"
-            @click="appStore.setDisplayMode('HEX')"
-          >
-            HEX
+        <div class="toolbar-field">
+          <span class="field-label">格式</span>
+          <n-select
+            :value="appStore.displayMode"
+            :options="displayModeOptions"
+            size="small"
+            style="width: 112px"
+            @update:value="appStore.setDisplayMode"
+          />
+        </div>
+        <div class="toolbar-toggles">
+          <n-button size="small" quaternary @click="toggleAutoScroll" :type="appStore.autoScroll ? 'primary' : 'default'" title="自动滚动">
+            自动滚动
           </n-button>
-          <n-button
-            :type="appStore.displayMode === 'ASCII' ? 'primary' : 'default'"
-            @click="appStore.setDisplayMode('ASCII')"
-          >
-            ASCII
+          <n-button size="small" quaternary @click="toggleTimestamp" :type="appStore.showTimestamp ? 'primary' : 'default'" title="显示时间">
+            时间
           </n-button>
-          <n-button
-            :type="appStore.displayMode === 'ANSI' ? 'primary' : 'default'"
-            @click="appStore.setDisplayMode('ANSI')"
-          >
-            ANSI
+          <n-button size="small" quaternary @click="toggleAutoLog" :type="session.autoLogEnabled ? 'primary' : 'default'" title="接收自动记录">
+            LOG
           </n-button>
-          <n-button
-            :type="appStore.displayMode === 'UTF8' ? 'primary' : 'default'"
-            @click="appStore.setDisplayMode('UTF8')"
-          >
-            UTF-8
-          </n-button>
-        </n-button-group>
-        <n-button size="small" quaternary @click="toggleAutoScroll" :type="appStore.autoScroll ? 'primary' : 'default'" title="自动滚动">
-          ↓
-        </n-button>
-        <n-button size="small" quaternary @click="toggleTimestamp" :type="appStore.showTimestamp ? 'primary' : 'default'" title="显示时间">
-          ⏱
-        </n-button>
+        </div>
         <n-dropdown :options="exportOptions" @select="handleExport" :disabled="session.frames.length === 0">
           <n-button size="small" quaternary :disabled="session.frames.length === 0" title="导出数据">
             导出
@@ -72,14 +61,22 @@
       <DataPacketList :frames="session.frames" />
     </div>
     <div class="send-area">
-      <SendPanel :on-send="handleSend" :disabled="!session.isConnected" :history="session.sendHistory" @clear-history="clearHistory" />
+      <SendPanel
+        :on-send="handleSend"
+        :disabled="!session.isConnected"
+        :history="session.sendHistory"
+        :quick-commands="session.quickCommands"
+        @clear-history="clearHistory"
+        @add-quick-command="addQuickCommand"
+        @remove-quick-command="removeQuickCommand"
+      />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted } from 'vue';
-import { NButton, NTag, NButtonGroup, NDropdown } from 'naive-ui';
+import { NButton, NTag, NDropdown, NSelect } from 'naive-ui';
 import DataPacketList from '../terminal/DataPacketList.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
 import { useSerialData } from '../../composables/useSerialData';
@@ -87,7 +84,7 @@ import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
 import { useExport } from '../../composables/useExport';
 import { useMessage } from 'naive-ui';
-import type { SerialSession } from '../../types';
+import type { DisplayMode, SerialSession } from '../../types';
 
 const props = defineProps<{
   session: SerialSession;
@@ -103,10 +100,18 @@ const serialState = useSerialData(
   props.session.portConfig,
 );
 
+const displayModeOptions: { label: string; value: DisplayMode }[] = [
+  { label: 'HEX', value: 'HEX' },
+  { label: 'ASCII', value: 'ASCII' },
+  { label: 'ANSI', value: 'ANSI' },
+  { label: 'UTF-8', value: 'UTF8' },
+];
+
 const exportOptions = [
   { label: '导出为 TXT (HEX)', key: 'txt-hex' },
   { label: '导出为 TXT (ASCII)', key: 'txt-ascii' },
   { label: '导出为 CSV', key: 'csv' },
+  { label: '导出为 JSON Lines', key: 'jsonl' },
   { label: '导出为 BIN', key: 'bin' },
 ];
 
@@ -144,6 +149,14 @@ function clearHistory() {
   sessionStore.clearSendHistory(props.session.id);
 }
 
+function addQuickCommand(command: { name: string; data: string; isHex: boolean }) {
+  sessionStore.addQuickCommand(props.session.id, command);
+}
+
+function removeQuickCommand(id: string) {
+  sessionStore.removeQuickCommand(props.session.id, id);
+}
+
 function toggleAutoScroll() {
   appStore.toggleAutoScroll();
 }
@@ -152,8 +165,13 @@ function toggleTimestamp() {
   appStore.toggleShowTimestamp();
 }
 
+function toggleAutoLog() {
+  sessionStore.setAutoLogEnabled(props.session.id, !props.session.autoLogEnabled);
+  message.info(props.session.autoLogEnabled ? '已关闭自动记录标记' : '已开启自动记录标记，可通过导出保存数据');
+}
+
 async function handleExport(format: string) {
-  const ok = await exportData(props.session.frames, format as 'txt-hex' | 'txt-ascii' | 'csv' | 'bin');
+  const ok = await exportData(props.session.frames, format as 'txt-hex' | 'txt-ascii' | 'csv' | 'jsonl' | 'bin');
   if (ok) {
     message.success('导出成功');
   } else if (props.session.frames.length > 0) {
@@ -171,13 +189,13 @@ async function handleExport(format: string) {
 }
 
 .session-toolbar {
-  padding: 6px 10px;
+  padding: 8px 12px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-tertiary);
-  min-height: 38px;
+  min-height: 44px;
   flex-shrink: 0;
   gap: 8px;
 }
@@ -187,6 +205,36 @@ async function handleExport(format: string) {
   display: flex;
   gap: 6px;
   align-items: center;
+}
+
+.toolbar-left {
+  min-width: 0;
+}
+
+.toolbar-right {
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.toolbar-field,
+.toolbar-toggles {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toolbar-field {
+  padding: 2px 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.field-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .error-hint {

@@ -13,6 +13,7 @@ export function useExport() {
         'txt-hex': { name: 'TXT', ext: 'txt' },
         'txt-ascii': { name: 'TXT', ext: 'txt' },
         csv: { name: 'CSV', ext: 'csv' },
+        jsonl: { name: 'JSONL', ext: 'jsonl' },
         bin: { name: 'BIN', ext: 'bin' },
       };
       const filter = extMap[format] ?? { name: format.toUpperCase(), ext: format };

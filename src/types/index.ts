@@ -2,6 +2,9 @@
 export type DisplayMode = 'HEX' | 'ASCII' | 'ANSI' | 'UTF8';
 export type DirectionFilter = 'ALL' | 'TX' | 'RX';
 export type Direction = 'TX' | 'RX';
+export type SearchMode = 'TEXT' | 'HEX';
+export type PacketViewMode = 'FRAME' | 'MERGED';
+export type LineEnding = 'none' | 'CR' | 'LF' | 'CRLF';
 
 // Data frame
 export interface DataFrame {
@@ -26,6 +29,13 @@ export interface SendHistoryEntry {
   isHex: boolean;
 }
 
+export interface QuickCommand {
+  id: string;
+  name: string;
+  data: string;
+  isHex: boolean;
+}
+
 // Session
 export interface SerialSession {
   id: string;
@@ -39,6 +49,8 @@ export interface SerialSession {
   rxFrames: number;
   startTime: number | null;
   sendHistory: SendHistoryEntry[];
+  quickCommands: QuickCommand[];
+  autoLogEnabled: boolean;
 }
 
 // Checksum

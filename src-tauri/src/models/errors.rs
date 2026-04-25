@@ -30,6 +30,9 @@ pub enum AppError {
 
     #[error("validation error: {message}")]
     ValidationError { message: String, field: String },
+
+    #[error("ai error: {message}")]
+    AiError { message: String },
 }
 
 impl From<std::io::Error> for AppError {

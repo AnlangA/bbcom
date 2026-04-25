@@ -9,6 +9,7 @@ pub async fn export(frames: &[DataFrame], format: &str, path: &str) -> Result<()
         "txt" | "txt-hex" => export_text(frames, path, false).await,
         "txt-ascii" => export_text(frames, path, true).await,
         "csv" => export_csv(frames, path).await,
+        "jsonl" => export_jsonl(frames, path).await,
         "bin" => export_bin(frames, path).await,
         _ => Err(AppError::ExportError {
             message: format!("unsupported format: {}", format),
@@ -16,6 +17,22 @@ pub async fn export(frames: &[DataFrame], format: &str, path: &str) -> Result<()
             path: path.to_string(),
         }),
     }
+}
+
+async fn export_jsonl(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
+    let file = File::create(path).await.map_err(AppError::from)?;
+    let mut w = BufWriter::new(file);
+    for frame in frames {
+        let line = serde_json::to_string(frame).map_err(|e| AppError::ExportError {
+            message: e.to_string(),
+            format: "jsonl".to_string(),
+            path: path.to_string(),
+        })?;
+        w.write_all(line.as_bytes()).await.map_err(AppError::from)?;
+        w.write_all(b"\n").await.map_err(AppError::from)?;
+    }
+    w.flush().await.map_err(AppError::from)?;
+    Ok(())
 }
 
 fn dir_label(d: &Direction) -> &'static str {

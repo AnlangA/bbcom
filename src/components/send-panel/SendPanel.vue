@@ -1,5 +1,6 @@
 <template>
   <div class="send-panel">
+    <AiTerminalAssistant @apply-command="applyAiCommand" />
     <div class="send-input-row">
       <n-input
         v-model:value="input"
@@ -8,25 +9,44 @@
         :autosize="{ minRows: 2, maxRows: 4 }"
         :disabled="disabled"
         :status="isHex && input && !isValidHex ? 'error' : undefined"
+        @blur="formatHexInput"
         @keydown.ctrl.enter="handleSend"
       />
     </div>
     <div class="send-actions">
       <div class="send-left">
-        <n-checkbox v-model:checked="isHex" size="small">HEX</n-checkbox>
-        <n-checkbox v-model:checked="appendNewline" size="small" :disabled="isHex">
-          追加换行
-        </n-checkbox>
+        <n-checkbox v-model:checked="isHex" size="small" :disabled="looping">HEX</n-checkbox>
+        <n-select
+          v-model:value="lineEnding"
+          :options="lineEndingOptions"
+          size="tiny"
+          style="width: 96px"
+          :disabled="isHex || looping"
+        />
         <n-select
           v-model:value="appendChecksum"
           :options="checksumOptions"
           size="tiny"
           style="width: 100px"
-          :disabled="!isHex"
+          :disabled="!isHex || looping"
         />
+        <n-input-number
+          v-model:value="loopInterval"
+          size="tiny"
+          :min="50"
+          :max="3600000"
+          :step="100"
+          style="width: 112px"
+          :disabled="looping"
+        >
+          <template #suffix>ms</template>
+        </n-input-number>
       </div>
       <div class="send-right">
-        <span v-if="isHex && input" class="byte-count">{{ byteCount }} 字节</span>
+        <span v-if="input" class="byte-count">{{ byteCount }} 字节</span>
+        <n-button size="small" @click="toggleLoop" :disabled="!canSend && !looping" :type="looping ? 'warning' : 'default'">
+          {{ looping ? '停止循环' : '循环发送' }}
+        </n-button>
         <n-button
           type="primary"
           size="small"
@@ -35,6 +55,25 @@
         >
           发送
         </n-button>
+      </div>
+    </div>
+    <div class="quick-row">
+      <div class="quick-form">
+        <n-input v-model:value="quickName" size="tiny" placeholder="快捷名称" style="width: 110px" />
+        <n-button size="tiny" @click="addQuickCommand" :disabled="!input.trim()">保存快捷</n-button>
+      </div>
+      <div v-if="quickCommands.length > 0" class="quick-list">
+        <div
+          v-for="cmd in quickCommands"
+          :key="cmd.id"
+          class="quick-item"
+          :title="cmd.data"
+          @click="sendQuick(cmd)"
+        >
+          <span class="history-tag">{{ cmd.isHex ? 'HEX' : 'TXT' }}</span>
+          <span>{{ cmd.name }}</span>
+          <button class="quick-remove" @click.stop="emit('removeQuickCommand', cmd.id)">×</button>
+        </div>
       </div>
     </div>
     <div v-if="history.length > 0" class="send-history">
@@ -59,10 +98,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
-import { NInput, NButton, NCheckbox, NSelect, useMessage } from 'naive-ui';
+import { ref, computed, watch, onUnmounted } from 'vue';
+import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
 import { invoke } from '@tauri-apps/api/core';
-import { isValidHex as checkValidHex } from '../../lib/format';
+import AiTerminalAssistant from './AiTerminalAssistant.vue';
+import { isValidHex as checkValidHex, normalizeHex, parseHex } from '../../lib/format';
+import { MAX_INPUT_SIZE } from '../../types';
+import { useAppStore } from '../../stores/app';
+import type { LineEnding, QuickCommand } from '../../types';
 
 export interface HistoryEntry {
   data: string;
@@ -73,17 +116,41 @@ const props = defineProps<{
   onSend: (data: string, isHex: boolean) => Promise<boolean>;
   disabled?: boolean;
   history: HistoryEntry[];
+  quickCommands: QuickCommand[];
 }>();
 
 const emit = defineEmits<{
   (e: 'clearHistory'): void;
+  (e: 'addQuickCommand', command: { name: string; data: string; isHex: boolean }): void;
+  (e: 'removeQuickCommand', id: string): void;
 }>();
 
+const appStore = useAppStore();
 const message = useMessage();
 const input = ref('');
-const isHex = ref(false);
-const appendNewline = ref(false);
+const isHex = computed({
+  get: () => appStore.sendAsHex,
+  set: (value) => appStore.setSendAsHex(value),
+});
+const lineEnding = computed({
+  get: () => appStore.lineEnding,
+  set: (value: LineEnding) => appStore.setLineEnding(value),
+});
+const loopInterval = computed({
+  get: () => appStore.loopIntervalMs,
+  set: (value) => appStore.setLoopIntervalMs(value ?? 1000),
+});
 const appendChecksum = ref<'none' | 'CHECKSUM' | 'CRC8' | 'CRC16' | 'CRC32'>('none');
+const looping = ref(false);
+const quickName = ref('');
+let loopTimer: ReturnType<typeof setInterval> | null = null;
+
+const lineEndingOptions = [
+  { label: '无结尾', value: 'none' },
+  { label: 'CR', value: 'CR' },
+  { label: 'LF', value: 'LF' },
+  { label: 'CRLF', value: 'CRLF' },
+];
 
 const checksumOptions = [
   { label: '无校验', value: 'none' },
@@ -99,9 +166,12 @@ const isValidHex = computed(() => {
 });
 
 const byteCount = computed(() => {
-  if (!isHex.value || !input.value.trim()) return 0;
-  const cleaned = input.value.replace(/[^0-9a-fA-F]/g, '');
-  return Math.floor(cleaned.length / 2);
+  if (!input.value.trim()) return 0;
+  if (isHex.value) {
+    const cleaned = input.value.replace(/[^0-9a-fA-F]/g, '');
+    return Math.floor(cleaned.length / 2);
+  }
+  return new TextEncoder().encode(withLineEnding(input.value)).length;
 });
 
 const canSend = computed(() => {
@@ -110,41 +180,81 @@ const canSend = computed(() => {
   return true;
 });
 
-async function handleSend() {
-  if (!canSend.value) return;
+watch(() => props.disabled, (disabled) => {
+  if (disabled && looping.value) stopLoop();
+});
 
+onUnmounted(stopLoop);
+
+function withLineEnding(data: string): string {
+  if (isHex.value) return data;
+  const endings: Record<LineEnding, string> = {
+    none: '',
+    CR: '\r',
+    LF: '\n',
+    CRLF: '\r\n',
+  };
+  return data + endings[lineEnding.value];
+}
+
+async function buildData(): Promise<string | null> {
   let data = input.value;
 
-  // Check input size limit
-  if (data.length > 1024 * 1024) {
+  if (data.length > MAX_INPUT_SIZE) {
     message.error('输入数据过大，最大支持 1MB');
-    return;
+    return null;
   }
 
   if (isHex.value && appendChecksum.value !== 'none') {
-    const cleaned = data.replace(/[^0-9a-fA-F]/g, '');
-    const payload: number[] = [];
-    for (let i = 0; i < cleaned.length; i += 2) {
-      payload.push(parseInt(cleaned.substring(i, i + 2), 16));
-    }
+    const payload = parseHex(data);
     try {
       const res = await invoke<{ result: string }>('calculate_checksum', {
         request: { data: payload, algorithm: appendChecksum.value },
       });
       data = data + ' ' + res.result;
-    } catch (err) {
+    } catch {
       message.warning('校验和计算失败，将发送原始数据');
     }
-  } else if (!isHex.value && appendNewline.value) {
-    data += '\r\n';
+  } else if (!isHex.value) {
+    data = withLineEnding(data);
   }
+  return data;
+}
 
+async function handleSend() {
+  if (!canSend.value) return;
+
+  const data = await buildData();
+  if (data == null) return;
   const ok = await props.onSend(data, isHex.value);
   if (ok) {
-    input.value = '';
+    if (!looping.value) input.value = '';
   } else {
     message.error('发送失败，请检查连接状态');
   }
+}
+
+function toggleLoop() {
+  if (looping.value) {
+    stopLoop();
+  } else {
+    startLoop();
+  }
+}
+
+function startLoop() {
+  if (!canSend.value || loopTimer) return;
+  looping.value = true;
+  handleSend();
+  loopTimer = setInterval(handleSend, loopInterval.value);
+}
+
+function stopLoop() {
+  if (loopTimer) {
+    clearInterval(loopTimer);
+    loopTimer = null;
+  }
+  looping.value = false;
 }
 
 function resend(item: HistoryEntry) {
@@ -154,6 +264,30 @@ function resend(item: HistoryEntry) {
       message.error('重发失败，请检查连接状态');
     }
   });
+}
+
+function addQuickCommand() {
+  const name = quickName.value.trim() || truncate(input.value, 12);
+  emit('addQuickCommand', { name, data: input.value, isHex: isHex.value });
+  quickName.value = '';
+}
+
+function sendQuick(command: QuickCommand) {
+  if (props.disabled) return;
+  props.onSend(command.data, command.isHex).then((ok) => {
+    if (!ok) message.error('快捷发送失败，请检查连接状态');
+  });
+}
+
+function applyAiCommand(command: string) {
+  isHex.value = false;
+  input.value = command;
+}
+
+function formatHexInput() {
+  if (isHex.value && input.value.trim() && isValidHex.value) {
+    input.value = normalizeHex(input.value);
+  }
 }
 
 function truncate(s: string, max: number): string {
@@ -175,18 +309,61 @@ function truncate(s: string, max: number): string {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 10px;
 }
 
 .send-left {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .send-right {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.quick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.quick-form,
+.quick-list,
+.quick-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.quick-list {
+  flex-wrap: wrap;
+}
+
+.quick-item {
+  padding: 3px 7px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.quick-item:hover {
+  border-color: var(--accent-green);
+}
+
+.quick-remove {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 2px;
 }
 
 .byte-count {

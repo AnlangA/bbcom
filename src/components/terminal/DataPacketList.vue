@@ -2,20 +2,32 @@
   <div class="packet-list">
     <div class="packet-toolbar">
       <div class="filter-left">
-        <n-button-group size="tiny">
-          <n-button :type="dirFilter === 'ALL' ? 'primary' : 'default'" @click="dirFilter = 'ALL'">全部</n-button>
-          <n-button :type="dirFilter === 'TX' ? 'primary' : 'default'" @click="dirFilter = 'TX'">TX</n-button>
-          <n-button :type="dirFilter === 'RX' ? 'primary' : 'default'" @click="dirFilter = 'RX'">RX</n-button>
-        </n-button-group>
+        <n-select
+          v-model:value="dirFilter"
+          :options="directionOptions"
+          size="tiny"
+          style="width: 86px"
+        />
         <n-input
           v-model:value="searchInput"
-          placeholder="搜索数据..."
+          :placeholder="appStore.searchMode === 'HEX' ? '搜索 HEX...' : '搜索文本...'"
           size="tiny"
           clearable
           style="width: 160px"
         />
+        <n-button-group size="tiny">
+          <n-button :type="appStore.searchMode === 'TEXT' ? 'primary' : 'default'" @click="appStore.setSearchMode('TEXT')">文本</n-button>
+          <n-button :type="appStore.searchMode === 'HEX' ? 'primary' : 'default'" @click="appStore.setSearchMode('HEX')">HEX</n-button>
+        </n-button-group>
+        <n-button-group size="tiny">
+          <n-button :type="appStore.packetViewMode === 'FRAME' ? 'primary' : 'default'" @click="appStore.setPacketViewMode('FRAME')">按帧</n-button>
+          <n-button :type="appStore.packetViewMode === 'MERGED' ? 'primary' : 'default'" @click="appStore.setPacketViewMode('MERGED')">合并</n-button>
+        </n-button-group>
       </div>
       <div class="filter-right">
+        <n-dropdown :options="copyOptions" @select="handleCopySelect" :disabled="filteredFrames.length === 0">
+          <n-button size="tiny" quaternary :disabled="filteredFrames.length === 0">复制</n-button>
+        </n-dropdown>
         <span class="frame-count">{{ filteredFrames.length }} / {{ frames.length }}</span>
       </div>
     </div>
@@ -29,7 +41,7 @@
       <div :style="{ height: `${totalSize}px`, width: '100%', position: 'relative' }">
         <div
           v-for="row in virtualItems"
-          :key="filteredFrames[row.index].id"
+          :key="visibleFrames[row.index].id"
           :style="{
             position: 'absolute',
             top: 0,
@@ -40,17 +52,17 @@
             ...gridStyle,
           }"
           class="packet-row packet-item"
-          :class="{ tx: filteredFrames[row.index].direction === 'TX', rx: filteredFrames[row.index].direction === 'RX' }"
-          @contextmenu.prevent="(e: MouseEvent) => showContextMenu(e, filteredFrames[row.index])"
+          :class="{ tx: visibleFrames[row.index].direction === 'TX', rx: visibleFrames[row.index].direction === 'RX' }"
+          @contextmenu.prevent="(e: MouseEvent) => showContextMenu(e, visibleFrames[row.index])"
         >
-          <span class="col-dir direction">{{ filteredFrames[row.index].direction }}</span>
-          <span v-if="appStore.showTimestamp" class="col-time timestamp">{{ filteredFrames[row.index].timestamp }}</span>
+          <span class="col-dir direction">{{ visibleFrames[row.index].direction }}</span>
+          <span v-if="appStore.showTimestamp" class="col-time timestamp">{{ visibleFrames[row.index].timestamp }}</span>
           <span
             v-if="appStore.displayMode === 'ANSI'"
             class="col-data data ansi-data"
-            v-html="formatData(filteredFrames[row.index])"
+            v-html="formatData(visibleFrames[row.index])"
           ></span>
-          <span v-else class="col-data data">{{ formatData(filteredFrames[row.index]) }}</span>
+          <span v-else class="col-data data">{{ formatData(visibleFrames[row.index]) }}</span>
           <span class="col-mode mode">{{ displayLabel() }}</span>
         </div>
       </div>
@@ -70,7 +82,7 @@
 <script setup lang="ts">
 import { ref, watch, computed, nextTick } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
-import { NButtonGroup, NButton, NInput, NDropdown, useMessage } from 'naive-ui';
+import { NButtonGroup, NButton, NInput, NDropdown, NSelect, useMessage } from 'naive-ui';
 import { useAppStore } from '../../stores/app';
 import { formatHex, formatUtf8, formatAscii } from '../../lib/format';
 import { LRUCache } from '../../lib/lru-cache';
@@ -105,6 +117,13 @@ const ctxOptions = [
   { label: '复制完整行', key: 'row' },
 ];
 
+const copyOptions = [
+  { label: '复制当前筛选 HEX', key: 'filtered-hex' },
+  { label: '复制当前筛选文本', key: 'filtered-text' },
+  { label: '复制全部 HEX', key: 'all-hex' },
+  { label: '复制全部文本', key: 'all-text' },
+];
+
 watch(searchInput, (val) => {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
@@ -113,6 +132,11 @@ watch(searchInput, (val) => {
 });
 
 const dirFilter = ref<DirectionFilter>('ALL');
+const directionOptions: { label: string; value: DirectionFilter }[] = [
+  { label: '全部', value: 'ALL' },
+  { label: 'TX', value: 'TX' },
+  { label: 'RX', value: 'RX' },
+];
 
 const gridStyle = computed(() => ({
   gridTemplateColumns: appStore.showTimestamp ? '50px 160px 1fr 50px' : '50px 1fr 50px',
@@ -154,7 +178,7 @@ function getFormattedData(frame: DataFrame): string {
 }
 
 function stripAnsi(text: string): string {
-  return text.replace(/\x1b\[[0-9;]*m/g, '');
+  return text.replace(new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g'), '');
 }
 
 function formatData(frame: DataFrame): string {
@@ -176,6 +200,10 @@ const filteredFrames = computed(() => {
   if (searchQuery.value.trim()) {
     const q = searchQuery.value.trim().toLowerCase();
     result = result.filter((f) => {
+      if (appStore.searchMode === 'HEX') {
+        const needle = q.replace(/[^0-9a-f]/g, '');
+        return formatHex(f.data).replace(/\s/g, '').toLowerCase().includes(needle);
+      }
       let formatted = getFormattedData(f);
       if (appStore.displayMode === 'ANSI') {
         formatted = stripAnsi(formatted);
@@ -186,9 +214,24 @@ const filteredFrames = computed(() => {
   return result;
 });
 
+const visibleFrames = computed<DataFrame[]>(() => {
+  if (appStore.packetViewMode === 'FRAME') return filteredFrames.value;
+  const merged: DataFrame[] = [];
+  let current: DataFrame | null = null;
+  for (const frame of filteredFrames.value) {
+    if (!current || current.direction !== frame.direction) {
+      current = { ...frame, id: `merged-${frame.id}`, data: [...frame.data] };
+      merged.push(current);
+    } else {
+      current.data = current.data.concat(frame.data);
+    }
+  }
+  return merged;
+});
+
 const virtualizer = useVirtualizer(
   computed(() => ({
-    count: filteredFrames.value.length,
+    count: visibleFrames.value.length,
     getScrollElement: () => scrollRef.value,
     estimateSize: () => ROW_HEIGHT,
     overscan: 20,
@@ -222,7 +265,7 @@ watch(
 );
 
 function displayLabel(): string {
-  return appStore.displayMode;
+  return appStore.packetViewMode === 'MERGED' ? `${appStore.displayMode}*` : appStore.displayMode;
 }
 
 function showContextMenu(e: MouseEvent, frame: DataFrame) {
@@ -258,7 +301,22 @@ async function handleCtxSelect(key: string) {
   try {
     await navigator.clipboard.writeText(text);
     message.success('已复制');
-  } catch (err) {
+  } catch {
+    message.error('复制失败');
+  }
+}
+
+async function handleCopySelect(key: string) {
+  const frames = key.startsWith('all') ? props.frames : filteredFrames.value;
+  const asHex = key.endsWith('hex');
+  const text = frames.map((frame) => {
+    const data = asHex ? formatHex(frame.data) : formatUtf8(frame.data);
+    return `[${frame.timestamp}] ${frame.direction} | ${data}`;
+  }).join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    message.success('已复制');
+  } catch {
     message.error('复制失败');
   }
 }
@@ -276,7 +334,7 @@ async function handleCtxSelect(key: string) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 5px 10px;
+  padding: 7px 10px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
@@ -286,12 +344,17 @@ async function handleCtxSelect(key: string) {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .filter-right {
   font-size: 11px;
   color: var(--text-muted);
   font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .frame-count {

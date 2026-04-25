@@ -93,6 +93,11 @@ export function parseHex(input: string): number[] {
   return result;
 }
 
+export function normalizeHex(input: string): string {
+  const cleaned = input.replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+  return cleaned.match(/.{1,2}/g)?.join(' ') ?? '';
+}
+
 /**
  * Validate HEX string
  */
