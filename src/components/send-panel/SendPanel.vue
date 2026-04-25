@@ -1,6 +1,5 @@
 <template>
   <div class="send-panel">
-    <AiTerminalAssistant @apply-command="applyAiCommand" />
     <div class="send-input-row">
       <n-input
         v-model:value="input"
@@ -101,7 +100,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
 import { invoke } from '@tauri-apps/api/core';
-import AiTerminalAssistant from './AiTerminalAssistant.vue';
+import { listen } from '@tauri-apps/api/event';
 import { isValidHex as checkValidHex, normalizeHex, parseHex } from '../../lib/format';
 import { MAX_INPUT_SIZE } from '../../types';
 import { useAppStore } from '../../stores/app';
@@ -144,6 +143,7 @@ const appendChecksum = ref<'none' | 'CHECKSUM' | 'CRC8' | 'CRC16' | 'CRC32'>('no
 const looping = ref(false);
 const quickName = ref('');
 let loopTimer: ReturnType<typeof setInterval> | null = null;
+let unlistenAiCommand: (() => void) | null = null;
 
 const lineEndingOptions = [
   { label: '无结尾', value: 'none' },
@@ -184,7 +184,24 @@ watch(() => props.disabled, (disabled) => {
   if (disabled && looping.value) stopLoop();
 });
 
-onUnmounted(stopLoop);
+watch(() => appStore.aiCommandSeq, () => {
+  if (!appStore.aiCommandDraft) return;
+  applyAiCommand(appStore.aiCommandDraft);
+});
+
+listen<string>('ai-command-generated', (event) => {
+  applyAiCommand(event.payload);
+}).then((unlisten) => {
+  unlistenAiCommand = unlisten;
+});
+
+onUnmounted(() => {
+  stopLoop();
+  if (unlistenAiCommand) {
+    unlistenAiCommand();
+    unlistenAiCommand = null;
+  }
+});
 
 function withLineEnding(data: string): string {
   if (isHex.value) return data;

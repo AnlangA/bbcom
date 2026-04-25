@@ -1,14 +1,60 @@
 <template>
   <div class="ai-assistant">
-    <div class="ai-header">
-      <div>
-        <div class="ai-title">AI 终端助手</div>
-        <div class="ai-subtitle">把自然语言转换为 Linux 串口控制台命令</div>
+    <div class="drag-handle" @pointerdown="startDrag">
+      <span class="drag-title">AI 终端助手</span>
+      <div class="window-actions">
+        <n-button size="tiny" quaternary @click.stop="toggleAlwaysOnTop">
+          {{ alwaysOnTop ? '取消置顶' : '置顶' }}
+        </n-button>
+        <span class="drag-dots">⋮⋮</span>
       </div>
-      <n-tag size="small" round type="info">GLM</n-tag>
+    </div>
+    <div class="compact-row">
+      <button class="ai-pill" type="button" @click="expanded = !expanded">
+        <span class="spark">✦</span>
+        <span>AI</span>
+      </button>
+      <n-input
+        v-model:value="prompt"
+        size="small"
+        placeholder="自然语言生成命令，如：查看当前路径"
+        :disabled="loading || !hasApiKey"
+        @keydown.enter.prevent="generateCommand"
+      />
+      <n-button
+        size="small"
+        type="primary"
+        :loading="loading"
+        :disabled="!canGenerate"
+        @click="generateCommand"
+      >
+        生成
+      </n-button>
+      <n-button size="small" quaternary @click="expanded = !expanded">
+        {{ expanded ? '收起' : '设置' }}
+      </n-button>
     </div>
 
-    <div v-if="!hasApiKey" class="api-key-row">
+    <div v-if="expanded" class="settings-row">
+      <n-select
+        size="small"
+        :value="appStore.aiModel"
+        :options="modelOptions"
+        @update:value="appStore.setAiModel"
+      />
+      <div class="header-actions">
+        <n-switch
+          size="small"
+          :value="appStore.aiEnableCodingPlan"
+          @update:value="appStore.setAiEnableCodingPlan"
+        />
+        <n-tag size="small" round :type="appStore.aiEnableCodingPlan ? 'success' : 'info'">
+          Coding Plan
+        </n-tag>
+      </div>
+    </div>
+
+    <div v-if="expanded && !hasApiKey" class="api-key-row">
       <n-input
         v-model:value="apiKeyDraft"
         type="password"
@@ -21,31 +67,10 @@
       </n-button>
     </div>
 
-    <div class="prompt-row">
-      <n-input
-        v-model:value="prompt"
-        size="small"
-        placeholder="例如：查看当前路径、列出文件、查看 IP"
-        :disabled="loading || !hasApiKey"
-        @keydown.enter.prevent="generateCommand"
-      />
-      <n-button
-        size="small"
-        type="primary"
-        :loading="loading"
-        :disabled="!canGenerate"
-        @click="generateCommand"
-      >
-        生成命令
-      </n-button>
-    </div>
-
-    <div v-if="result" class="result-card" :class="`risk-${result.risk}`">
-      <div class="result-top">
-        <code class="command">{{ result.command || '需要更多信息' }}</code>
-        <n-tag size="small" round :type="riskTagType">{{ riskLabel }}</n-tag>
-      </div>
-      <div class="explanation">{{ result.explanation }}</div>
+    <div v-if="result" class="result-row" :class="`risk-${result.risk}`">
+      <code class="command">{{ result.command || '需要更多信息' }}</code>
+      <n-tag size="small" round :type="riskTagType">{{ riskLabel }}</n-tag>
+      <span class="explanation">{{ result.explanation }}</span>
       <div class="result-actions">
         <n-button size="tiny" secondary @click="copyCommand" :disabled="!result.command">
           复制
@@ -59,9 +84,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import { NButton, NInput, NTag, useMessage } from 'naive-ui';
+import { computed, onMounted, ref } from 'vue';
+import { NButton, NInput, NSelect, NSwitch, NTag, useMessage } from 'naive-ui';
 import { invoke } from '@tauri-apps/api/core';
+import { emit as emitEvent } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAppStore } from '../../stores/app';
 
 type Risk = 'safe' | 'caution' | 'dangerous';
@@ -72,7 +99,7 @@ interface TerminalAiResponse {
   risk: Risk;
 }
 
-const emit = defineEmits<{
+const emitVue = defineEmits<{
   (e: 'applyCommand', command: string): void;
 }>();
 
@@ -81,7 +108,24 @@ const message = useMessage();
 const prompt = ref('');
 const apiKeyDraft = ref(appStore.aiApiKey);
 const loading = ref(false);
+const expanded = ref(false);
+const alwaysOnTop = ref(true);
 const result = ref<TerminalAiResponse | null>(null);
+
+const modelOptions = [
+  { label: 'GLM-5.1', value: 'glm-5.1' },
+  { label: 'GLM-5 Turbo', value: 'glm-5-turbo' },
+  { label: 'GLM-5', value: 'glm-5' },
+  { label: 'GLM-4.7', value: 'glm-4.7' },
+  { label: 'GLM-4.7 Flash', value: 'glm-4.7-flash' },
+  { label: 'GLM-4.7 FlashX', value: 'glm-4.7-flashx' },
+  { label: 'GLM-4.6', value: 'glm-4.6' },
+  { label: 'GLM-4.5', value: 'glm-4.5' },
+  { label: 'GLM-4.5 X', value: 'glm-4.5-X' },
+  { label: 'GLM-4.5 Flash', value: 'glm-4.5-flash' },
+  { label: 'GLM-4.5 Air', value: 'glm-4.5-air' },
+  { label: 'GLM-4.5 AirX', value: 'glm-4.5-airx' },
+];
 
 const hasApiKey = computed(() => Boolean(appStore.aiApiKey.trim()));
 const canGenerate = computed(() => hasApiKey.value && prompt.value.trim().length > 0 && !loading.value);
@@ -92,6 +136,14 @@ const riskLabel = computed(() => {
 const riskTagType = computed(() => {
   if (!result.value) return 'default';
   return result.value.risk === 'safe' ? 'success' : result.value.risk === 'caution' ? 'warning' : 'error';
+});
+
+onMounted(async () => {
+  try {
+    alwaysOnTop.value = await getCurrentWindow().isAlwaysOnTop();
+  } catch {
+    // ignore
+  }
 });
 
 function saveApiKey() {
@@ -108,12 +160,14 @@ async function generateCommand() {
       request: {
         prompt: prompt.value.trim(),
         apiKey: appStore.aiApiKey,
+        model: appStore.aiModel,
+        enableCodingPlan: appStore.aiEnableCodingPlan,
         shell: 'linux/busybox',
       },
     });
     result.value = response;
     if (response.command && response.risk !== 'dangerous') {
-      emit('applyCommand', response.command);
+      applyCommandToApp(response.command);
     }
   } catch (e) {
     message.error(typeof e === 'string' ? e : 'AI 命令生成失败');
@@ -130,85 +184,162 @@ async function copyCommand() {
 
 function applyCommand() {
   if (!result.value?.command) return;
-  emit('applyCommand', result.value.command);
+  applyCommandToApp(result.value.command);
 }
+
+function applyCommandToApp(command: string) {
+  appStore.applyAiCommand(command);
+  emitEvent('ai-command-generated', command);
+  emitVue('applyCommand', command);
+}
+
+async function startDrag() {
+  try {
+    await invoke('start_ai_window_drag');
+  } catch {
+    // ignore
+  }
+}
+
+async function toggleAlwaysOnTop() {
+  try {
+    const next = !alwaysOnTop.value;
+    await getCurrentWindow().setAlwaysOnTop(next);
+    alwaysOnTop.value = next;
+  } catch {
+    message.error('置顶切换失败');
+  }
+}
+
 </script>
 
 <style scoped>
 .ai-assistant {
-  padding: 12px;
-  border: 1px solid rgba(99, 255, 177, 0.22);
-  border-radius: 14px;
+  padding: 6px 8px;
+  border: 1px solid rgba(99, 255, 177, 0.16);
+  border-radius: 0;
   background:
-    radial-gradient(circle at 0 0, rgba(99, 255, 177, 0.14), transparent 32%),
-    linear-gradient(135deg, rgba(18, 26, 32, 0.94), rgba(12, 16, 21, 0.92));
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    radial-gradient(circle at 0 0, rgba(99, 255, 177, 0.1), transparent 28%),
+    linear-gradient(135deg, rgba(18, 26, 32, 0.82), rgba(12, 16, 21, 0.72));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
+  backdrop-filter: blur(16px);
 }
 
-.ai-header,
-.prompt-row,
+.drag-handle {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.window-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.drag-title {
+  letter-spacing: 0.3px;
+}
+
+.drag-dots {
+  color: var(--text-dim);
+  letter-spacing: -2px;
+}
+
+.compact-row,
+.settings-row,
+.header-actions,
 .api-key-row,
-.result-top,
+.result-row,
 .result-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
-.ai-header,
-.result-top {
-  justify-content: space-between;
+.compact-row .n-input,
+.api-key-row .n-input,
+.settings-row .n-select {
+  flex: 1;
+  min-width: 0;
 }
 
-.ai-title {
-  color: var(--text-primary);
-  font-size: 13px;
+.ai-pill {
+  height: 28px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(99, 255, 177, 0.36);
+  border-radius: 999px;
+  background: rgba(99, 255, 177, 0.1);
+  color: var(--accent-green);
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.2px;
+  cursor: pointer;
+  flex-shrink: 0;
 }
 
-.ai-subtitle {
-  margin-top: 2px;
-  color: var(--text-muted);
+.spark {
   font-size: 11px;
 }
 
-.prompt-row .n-input,
-.api-key-row .n-input {
-  flex: 1;
+.settings-row {
+  padding-left: 44px;
 }
 
-.result-card {
-  padding: 10px;
-  border-radius: 12px;
+.header-actions {
+  flex-shrink: 0;
+}
+
+.result-row {
+  min-height: 30px;
+  padding: 4px 6px;
+  border-radius: 8px;
   border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.035);
+  background: rgba(255, 255, 255, 0.028);
 }
 
 .command {
   color: var(--accent-green);
   font-family: var(--font-mono);
-  font-size: 13px;
-  padding: 4px 8px;
-  border-radius: 8px;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 6px;
   background: rgba(0, 0, 0, 0.26);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+  flex-shrink: 0;
 }
 
 .explanation {
-  margin-top: 8px;
   color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
 }
 
 .result-actions {
-  justify-content: flex-end;
-  margin-top: 10px;
+  flex-shrink: 0;
 }
 
 .risk-dangerous {

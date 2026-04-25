@@ -14,6 +14,10 @@ export const useAppStore = defineStore('app', () => {
   const sendAsHex = ref(false);
   const loopIntervalMs = ref(1000);
   const aiApiKey = ref('');
+  const aiModel = ref('glm-4.5-flash');
+  const aiEnableCodingPlan = ref(false);
+  const aiCommandDraft = ref('');
+  const aiCommandSeq = ref(0);
   let loaded = false;
 
   async function load() {
@@ -30,6 +34,8 @@ export const useAppStore = defineStore('app', () => {
         if (typeof s.sendAsHex === 'boolean') sendAsHex.value = s.sendAsHex;
         if (typeof s.loopIntervalMs === 'number') loopIntervalMs.value = s.loopIntervalMs;
         if (typeof s.aiApiKey === 'string') aiApiKey.value = s.aiApiKey;
+        if (typeof s.aiModel === 'string') aiModel.value = s.aiModel;
+        if (typeof s.aiEnableCodingPlan === 'boolean') aiEnableCodingPlan.value = s.aiEnableCodingPlan;
       }
     } catch {
       // ignore
@@ -50,13 +56,15 @@ export const useAppStore = defineStore('app', () => {
         sendAsHex: sendAsHex.value,
         loopIntervalMs: loopIntervalMs.value,
         aiApiKey: aiApiKey.value,
+        aiModel: aiModel.value,
+        aiEnableCodingPlan: aiEnableCodingPlan.value,
       }));
     } catch {
       // ignore
     }
   }
 
-  watch([displayMode, autoScroll, showTimestamp, searchMode, packetViewMode, lineEnding, sendAsHex, loopIntervalMs, aiApiKey], save);
+  watch([displayMode, autoScroll, showTimestamp, searchMode, packetViewMode, lineEnding, sendAsHex, loopIntervalMs, aiApiKey, aiModel, aiEnableCodingPlan], save);
 
   function setDisplayMode(mode: DisplayMode) {
     displayMode.value = mode;
@@ -94,6 +102,19 @@ export const useAppStore = defineStore('app', () => {
     aiApiKey.value = value;
   }
 
+  function setAiModel(value: string) {
+    aiModel.value = value;
+  }
+
+  function setAiEnableCodingPlan(value: boolean) {
+    aiEnableCodingPlan.value = value;
+  }
+
+  function applyAiCommand(command: string) {
+    aiCommandDraft.value = command;
+    aiCommandSeq.value += 1;
+  }
+
   load();
 
   return {
@@ -106,6 +127,10 @@ export const useAppStore = defineStore('app', () => {
     sendAsHex,
     loopIntervalMs,
     aiApiKey,
+    aiModel,
+    aiEnableCodingPlan,
+    aiCommandDraft,
+    aiCommandSeq,
     setDisplayMode,
     toggleAutoScroll,
     toggleShowTimestamp,
@@ -115,5 +140,8 @@ export const useAppStore = defineStore('app', () => {
     setSendAsHex,
     setLoopIntervalMs,
     setAiApiKey,
+    setAiModel,
+    setAiEnableCodingPlan,
+    applyAiCommand,
   };
 });

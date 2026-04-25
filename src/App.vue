@@ -8,6 +8,14 @@
               <span class="brand-icon">⚡</span>
               <span class="brand-title">串口调试助手</span>
             </div>
+            <n-button
+              size="tiny"
+              :type="aiWindowVisible ? 'primary' : 'default'"
+              secondary
+              @click="toggleAiWindow"
+            >
+              {{ aiWindowVisible ? '关闭 AI' : '开启 AI' }}
+            </n-button>
           </div>
           <div class="sidebar-content">
             <PortSelector />
@@ -59,6 +67,7 @@
           </n-form-item>
         </n-form>
       </n-modal>
+
     </n-message-provider>
   </n-config-provider>
 </template>
@@ -72,8 +81,11 @@ import {
   NModal,
   NForm,
   NFormItem,
+  NButton,
   NSelect,
 } from 'naive-ui';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import PortSelector from './components/port-selector/PortSelector.vue';
 import SessionTabs from './components/session-tabs/SessionTabs.vue';
 import SessionView from './components/session/SessionView.vue';
@@ -96,6 +108,8 @@ const newDataBits = ref<PortConfig['dataBits']>(8);
 const newStopBits = ref<PortConfig['stopBits']>(1);
 const newParity = ref<PortConfig['parity']>('none');
 const newFlowControl = ref<PortConfig['flowControl']>('none');
+const aiWindowVisible = ref(false);
+let unlistenAiWindowState: (() => void) | null = null;
 
 const usedPorts = computed(() =>
   new Set(sessionStore.sessions.filter((s) => s.isConnected).map((s) => s.portName))
@@ -213,6 +227,29 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+async function refreshAiWindowState() {
+  try {
+    const state = await invoke<{ visible: boolean }>('get_ai_window_state');
+    aiWindowVisible.value = state.visible;
+  } catch {
+    aiWindowVisible.value = false;
+  }
+}
+
+async function toggleAiWindow() {
+  try {
+    if (aiWindowVisible.value) {
+      await invoke('hide_ai_window');
+      aiWindowVisible.value = false;
+    } else {
+      await invoke('show_ai_window');
+      aiWindowVisible.value = true;
+    }
+  } catch {
+    // ignore
+  }
+}
+
 onMounted(() => {
   newBaudRate.value = serialStore.portConfig.baudRate;
   newDataBits.value = serialStore.portConfig.dataBits;
@@ -220,10 +257,20 @@ onMounted(() => {
   newParity.value = serialStore.portConfig.parity;
   newFlowControl.value = serialStore.portConfig.flowControl;
   window.addEventListener('keydown', handleKeydown);
+  refreshAiWindowState();
+  listen<{ visible: boolean }>('ai-window-state', (event) => {
+    aiWindowVisible.value = event.payload.visible;
+  }).then((unlisten) => {
+    unlistenAiWindowState = unlisten;
+  });
 });
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown);
+  if (unlistenAiWindowState) {
+    unlistenAiWindowState();
+    unlistenAiWindowState = null;
+  }
 });
 </script>
 
@@ -250,6 +297,10 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-tertiary);
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .app-brand {
@@ -341,4 +392,5 @@ onUnmounted(() => {
   color: var(--text-secondary);
   line-height: 1.4;
 }
+
 </style>
