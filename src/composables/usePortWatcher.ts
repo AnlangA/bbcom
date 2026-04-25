@@ -1,9 +1,14 @@
-import { ref, onMounted, onUnmounted } from 'vue';
-import { SerialPort } from 'tauri-plugin-serialplugin-api';
-import { useSerialStore } from '../stores/serial';
+import { ref, onMounted, onUnmounted } from "vue";
+import { SerialPort } from "tauri-plugin-serialplugin-api";
+import { useSerialStore } from "../stores/serial";
 
 // macOS 上常见的非串口设备关键词，用于过滤蓝牙等无关端口
-const BLOCKED_KEYWORDS = ['Bluetooth', 'Bluetooth-Incoming-Port', 'AirPods', 'Watch'];
+const BLOCKED_KEYWORDS = [
+  "Bluetooth",
+  "Bluetooth-Incoming-Port",
+  "AirPods",
+  "Watch",
+];
 
 function isRealSerialPort(path: string): boolean {
   return !BLOCKED_KEYWORDS.some((kw) => path.includes(kw));
@@ -35,6 +40,15 @@ export function usePortWatcher(interval = 1500) {
         if (!existingSet.has(p)) {
           newPorts.push(p);
         }
+      }
+
+      // 只有当列表真正变化时才更新，避免因引用变化触发不必要的响应式更新
+      // 导致 n-select 下拉列表滚动位置被重置
+      if (
+        newPorts.length === ports.value.length &&
+        newPorts.every((p, i) => p === ports.value[i])
+      ) {
+        return;
       }
 
       ports.value = newPorts;
