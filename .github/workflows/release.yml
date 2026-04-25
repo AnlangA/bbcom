@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Windows x64
+            os: windows-latest
+            artifact_name: bbcom-windows-x64
+            binary_name: bbcom.exe
+            binary_path: target/release/bbcom.exe
+            rust_target: ""
+          - name: Linux x64
+            os: ubuntu-latest
+            artifact_name: bbcom-linux-x64
+            binary_name: bbcom
+            binary_path: target/release/bbcom
+            rust_target: ""
+          - name: macOS Apple Silicon
+            os: macos-14
+            artifact_name: bbcom-macos-arm64
+            binary_name: bbcom
+            binary_path: target/aarch64-apple-darwin/release/bbcom
+            rust_target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libudev-dev
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust
+        if: matrix.platform.rust_target == ''
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust with target
+        if: matrix.platform.rust_target != ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.rust_target }}
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build application
+        if: matrix.platform.rust_target == ''
+        run: pnpm tauri:build --no-bundle
+
+      - name: Build application for target
+        if: matrix.platform.rust_target != ''
+        run: pnpm tauri:build --no-bundle --target ${{ matrix.platform.rust_target }}
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p "release/${{ matrix.platform.artifact_name }}"
+          cp "${{ matrix.platform.binary_path }}" "release/${{ matrix.platform.artifact_name }}/${{ matrix.platform.binary_name }}"
+          cd release
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a "${{ matrix.platform.artifact_name }}.zip" "${{ matrix.platform.artifact_name }}"
+          else
+            chmod +x "${{ matrix.platform.artifact_name }}/${{ matrix.platform.binary_name }}"
+            tar -czf "${{ matrix.platform.artifact_name }}.tar.gz" "${{ matrix.platform.artifact_name }}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: |
+            release/${{ matrix.platform.artifact_name }}.zip
+            release/${{ matrix.platform.artifact_name }}.tar.gz
+          if-no-files-found: ignore
+
+  release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
