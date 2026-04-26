@@ -140,12 +140,15 @@ function formatBytes(bytes: number): string {
   font-family: var(--font-mono);
   border-top: 1px solid var(--border-subtle);
   flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .stat {
   display: flex;
   align-items: center;
   gap: 4px;
+  white-space: nowrap;
 }
 
 .stat-label {
@@ -197,6 +200,10 @@ function formatBytes(bytes: number): string {
 
 .status-indicator {
   margin-left: auto;
+  position: sticky;
+  right: 0;
+  padding-left: var(--space-sm);
+  background: var(--bg-tertiary);
 }
 
 .status-dot {

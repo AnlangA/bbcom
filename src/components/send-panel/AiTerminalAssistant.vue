@@ -108,6 +108,10 @@ interface TerminalAiResponse {
   risk: Risk;
 }
 
+interface CommandErrorDetails {
+  message?: string;
+}
+
 const emitVue = defineEmits<{
   (e: 'applyCommand', command: string): void;
 }>();
@@ -180,11 +184,21 @@ async function generateCommand() {
       applyCommandToApp(response.command);
     }
   } catch (e: unknown) {
-    const errMsg = typeof e === 'string' ? e : (e as any)?.details?.message || (e as any)?.message || 'AI 命令生成失败';
+    const errMsg = getErrorMessage(e);
     message.error(errMsg);
   } finally {
     loading.value = false;
   }
+}
+
+function getErrorMessage(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (!error || typeof error !== 'object') return 'AI 命令生成失败';
+  const record = error as Record<string, unknown>;
+  const details = record.details as CommandErrorDetails | undefined;
+  if (details?.message) return details.message;
+  if (typeof record.message === 'string') return record.message;
+  return 'AI 命令生成失败';
 }
 
 async function copyCommand() {

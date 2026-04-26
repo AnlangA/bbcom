@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
+import { loadJson, loadString, saveJson, saveString } from '../lib/storage';
 
 const STORAGE_KEY = 'bbcom-app-settings';
 const AI_API_KEY_STORAGE_KEY = `${STORAGE_KEY}:ai-api-key`;
@@ -24,51 +25,49 @@ export const useAppStore = defineStore('app', () => {
   let loaded = false;
 
   async function load() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const s = JSON.parse(raw);
-        if (s.displayMode) displayMode.value = s.displayMode;
-        if (typeof s.autoScroll === 'boolean') autoScroll.value = s.autoScroll;
-        if (typeof s.showTimestamp === 'boolean') showTimestamp.value = s.showTimestamp;
-        if (s.searchMode) searchMode.value = s.searchMode;
-        if (s.packetViewMode) packetViewMode.value = s.packetViewMode;
-        if (s.lineEnding) lineEnding.value = s.lineEnding;
-        if (typeof s.sendAsHex === 'boolean') sendAsHex.value = s.sendAsHex;
-        if (typeof s.loopIntervalMs === 'number') loopIntervalMs.value = s.loopIntervalMs;
-        if (typeof s.ansiColorEnabled === 'boolean') ansiColorEnabled.value = s.ansiColorEnabled;
-        if (typeof s.aiModel === 'string') aiModel.value = s.aiModel;
-        if (typeof s.aiEnableCodingPlan === 'boolean') aiEnableCodingPlan.value = s.aiEnableCodingPlan;
-      }
-      const savedApiKey = localStorage.getItem(AI_API_KEY_STORAGE_KEY);
-      if (savedApiKey) {
-        aiApiKey.value = savedApiKey;
-      }
-    } catch {
-      // ignore
-    }
+    const saved = loadJson(STORAGE_KEY, {
+      displayMode: displayMode.value,
+      autoScroll: autoScroll.value,
+      showTimestamp: showTimestamp.value,
+      searchMode: searchMode.value,
+      packetViewMode: packetViewMode.value,
+      lineEnding: lineEnding.value,
+      sendAsHex: sendAsHex.value,
+      loopIntervalMs: loopIntervalMs.value,
+      ansiColorEnabled: ansiColorEnabled.value,
+      aiModel: aiModel.value,
+      aiEnableCodingPlan: aiEnableCodingPlan.value,
+    });
+    if (saved.displayMode) displayMode.value = saved.displayMode;
+    if (typeof saved.autoScroll === 'boolean') autoScroll.value = saved.autoScroll;
+    if (typeof saved.showTimestamp === 'boolean') showTimestamp.value = saved.showTimestamp;
+    if (saved.searchMode) searchMode.value = saved.searchMode;
+    if (saved.packetViewMode) packetViewMode.value = saved.packetViewMode;
+    if (saved.lineEnding) lineEnding.value = saved.lineEnding;
+    if (typeof saved.sendAsHex === 'boolean') sendAsHex.value = saved.sendAsHex;
+    if (typeof saved.loopIntervalMs === 'number') loopIntervalMs.value = saved.loopIntervalMs;
+    if (typeof saved.ansiColorEnabled === 'boolean') ansiColorEnabled.value = saved.ansiColorEnabled;
+    if (typeof saved.aiModel === 'string') aiModel.value = saved.aiModel;
+    if (typeof saved.aiEnableCodingPlan === 'boolean') aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
+    aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
   }
 
   function save() {
     if (!loaded) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        displayMode: displayMode.value,
-        autoScroll: autoScroll.value,
-        showTimestamp: showTimestamp.value,
-        searchMode: searchMode.value,
-        packetViewMode: packetViewMode.value,
-        lineEnding: lineEnding.value,
-        sendAsHex: sendAsHex.value,
-        loopIntervalMs: loopIntervalMs.value,
-        ansiColorEnabled: ansiColorEnabled.value,
-        aiModel: aiModel.value,
-        aiEnableCodingPlan: aiEnableCodingPlan.value,
-      }));
-    } catch {
-      // ignore
-    }
+    saveJson(STORAGE_KEY, {
+      displayMode: displayMode.value,
+      autoScroll: autoScroll.value,
+      showTimestamp: showTimestamp.value,
+      searchMode: searchMode.value,
+      packetViewMode: packetViewMode.value,
+      lineEnding: lineEnding.value,
+      sendAsHex: sendAsHex.value,
+      loopIntervalMs: loopIntervalMs.value,
+      ansiColorEnabled: ansiColorEnabled.value,
+      aiModel: aiModel.value,
+      aiEnableCodingPlan: aiEnableCodingPlan.value,
+    });
   }
 
   watch([displayMode, autoScroll, showTimestamp, searchMode, packetViewMode, lineEnding, sendAsHex, loopIntervalMs, ansiColorEnabled, aiModel, aiEnableCodingPlan], save);
@@ -111,15 +110,7 @@ export const useAppStore = defineStore('app', () => {
 
   function setAiApiKey(value: string) {
     aiApiKey.value = value;
-    try {
-      if (value) {
-        localStorage.setItem(AI_API_KEY_STORAGE_KEY, value);
-      } else {
-        localStorage.removeItem(AI_API_KEY_STORAGE_KEY);
-      }
-    } catch {
-      // ignore
-    }
+    saveString(AI_API_KEY_STORAGE_KEY, value);
   }
 
   function setAiModel(value: string) {

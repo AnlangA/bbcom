@@ -15,12 +15,11 @@ const HEX_TABLE = Array.from({ length: 256 }, (_, i) =>
  */
 export function formatHex(data: number[] | Uint8Array): string {
   if (data.length === 0) return '';
-
-  let result = HEX_TABLE[data[0] & 0xff];
-  for (let i = 1; i < data.length; i += 1) {
-    result += ` ${HEX_TABLE[data[i] & 0xff]}`;
+  const parts = new Array<string>(data.length);
+  for (let i = 0; i < data.length; i += 1) {
+    parts[i] = HEX_TABLE[data[i] & 0xff];
   }
-  return result;
+  return parts.join(' ');
 }
 
 /**

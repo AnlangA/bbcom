@@ -53,8 +53,8 @@
             LOG
           </n-button>
         </div>
-        <n-dropdown :options="exportOptions" @select="handleExport" :disabled="session.frames.length === 0">
-          <n-button size="small" quaternary :disabled="session.frames.length === 0" title="导出数据">
+        <n-dropdown :options="exportOptions" @select="handleExport" :disabled="session.frames.length === 0 || isExporting">
+          <n-button size="small" quaternary :disabled="session.frames.length === 0" :loading="isExporting" title="导出数据">
             导出
           </n-button>
         </n-dropdown>
@@ -99,7 +99,7 @@ const props = defineProps<{
 const sessionStore = useSessionStore();
 const appStore = useAppStore();
 const { requestClearFrames } = useSessionActions();
-const { exportData } = useExport();
+const { isExporting, exportData } = useExport();
 const message = useMessage();
 const serialState = useSerialData(
   props.session.id,
@@ -224,6 +224,7 @@ async function handleExport(format: string) {
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  min-width: 0;
 }
 
 .toolbar-field,
@@ -267,5 +268,16 @@ async function handleExport(format: string) {
 .send-area {
   border-top: 1px solid var(--border-subtle);
   flex-shrink: 0;
+}
+
+@media (max-width: 900px) {
+  .session-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .toolbar-right {
+    justify-content: flex-start;
+  }
 }
 </style>

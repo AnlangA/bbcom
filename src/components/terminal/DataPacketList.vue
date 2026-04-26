@@ -3,7 +3,7 @@
     <div class="packet-toolbar">
       <div class="filter-left">
         <n-select
-          v-model:value="dirFilter"
+          v-model:value="directionFilter"
           :options="directionOptions"
           size="tiny"
           style="width: 86px"
@@ -38,6 +38,9 @@
       <span class="col-mode">模式</span>
     </div>
     <div ref="scrollRef" class="packet-items" @scroll="onScroll">
+      <div v-if="visibleFrames.length === 0" class="packet-empty">
+        {{ frames.length === 0 ? '暂无串口数据' : '没有匹配的数据帧' }}
+      </div>
       <div :style="{ height: `${totalSize}px`, width: '100%', position: 'relative' }">
         <div
           v-for="row in virtualItems"
@@ -80,14 +83,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed, nextTick } from 'vue';
-import { useVirtualizer } from '@tanstack/vue-virtual';
+import { computed, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, NSelect, useMessage } from 'naive-ui';
 import { useAppStore } from '../../stores/app';
 import { formatHex, formatUtf8, formatAscii } from '../../lib/format';
-import { LRUCache } from '../../lib/lru-cache';
-import { CACHE_SIZE } from '../../types';
-import { AnsiUp } from 'ansi_up';
+import { usePacketFilter } from '../../composables/usePacketFilter';
+import { usePacketFormatter } from '../../composables/usePacketFormatter';
+import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
 import type { DataFrame, DirectionFilter } from '../../types';
 
 const props = defineProps<{
@@ -96,13 +98,7 @@ const props = defineProps<{
 
 const appStore = useAppStore();
 const message = useMessage();
-const scrollRef = ref<HTMLDivElement | null>(null);
-
-const ROW_HEIGHT = 28;
-const shouldAutoScroll = ref(true);
-const searchInput = ref('');
-const searchQuery = ref('');
-let searchTimer: ReturnType<typeof setTimeout> | null = null;
+const framesRef = toRef(props, 'frames');
 
 const ctxShow = ref(false);
 const ctxX = ref(0);
@@ -124,14 +120,6 @@ const copyOptions = [
   { label: '复制全部文本', key: 'all-text' },
 ];
 
-watch(searchInput, (val) => {
-  if (searchTimer) clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    searchQuery.value = val;
-  }, 150);
-});
-
-const dirFilter = ref<DirectionFilter>('ALL');
 const directionOptions: { label: string; value: DirectionFilter }[] = [
   { label: '全部', value: 'ALL' },
   { label: 'TX', value: 'TX' },
@@ -142,141 +130,50 @@ const gridStyle = computed(() => ({
   gridTemplateColumns: appStore.showTimestamp ? '50px 160px 1fr 50px' : '50px 1fr 50px',
 }));
 
-const formatCache = new LRUCache<string, string>(CACHE_SIZE);
-const hexSearchCache = new LRUCache<string, string>(CACHE_SIZE);
-const ansiUp = new AnsiUp();
-ansiUp.use_classes = false;
-
-function getFormattedData(frame: DataFrame): string {
-  const key = `${frame.id}:${appStore.displayMode}:${appStore.ansiColorEnabled}`;
-  const cached = formatCache.get(key);
-  if (cached !== undefined) return cached;
-
-  let result: string;
-  switch (appStore.displayMode) {
-    case 'HEX':
-      result = formatHex(frame.data);
-      break;
-    case 'ANSI':
-    case 'ASCII': {
-      const text = formatAscii(frame.data);
-      result = appStore.ansiColorEnabled ? ansiUp.ansi_to_html(text) : text;
-      break;
-    }
-    case 'UTF8': {
-      const text = formatUtf8(frame.data);
-      result = appStore.ansiColorEnabled ? ansiUp.ansi_to_html(text) : text;
-      break;
-    }
-    default:
-      result = formatAscii(frame.data);
-      break;
-  }
-
-  formatCache.set(key, result);
-  return result;
-}
-
-function getHexSearchData(frame: DataFrame): string {
-  const cached = hexSearchCache.get(frame.id);
-  if (cached !== undefined) return cached;
-  const result = formatHex(frame.data).replace(/\s/g, '').toLowerCase();
-  hexSearchCache.set(frame.id, result);
-  return result;
-}
-
-function stripAnsi(text: string): string {
-  return text.replace(new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g'), '');
-}
+const {
+  formatFrame,
+  getHexSearchData,
+  getTextSearchData,
+  stripAnsi,
+  clearCaches,
+} = usePacketFormatter({
+  displayMode: computed(() => appStore.displayMode),
+  ansiColorEnabled: computed(() => appStore.ansiColorEnabled),
+});
 
 function formatData(frame: DataFrame): string {
-  return getFormattedData(frame);
+  return formatFrame(frame);
 }
 
-// Clear cache when frames are trimmed
 watch(() => props.frames.length, (newLen, oldLen) => {
   if (newLen < oldLen) {
-    formatCache.clear();
-    hexSearchCache.clear();
+    clearCaches();
   }
 });
 
-// Clear cache when color toggle changes
-watch(() => appStore.ansiColorEnabled, () => {
-  formatCache.clear();
+const {
+  directionFilter,
+  searchInput,
+  filteredFrames,
+  visibleFrames,
+} = usePacketFilter({
+  frames: framesRef,
+  searchMode: computed(() => appStore.searchMode),
+  packetViewMode: computed(() => appStore.packetViewMode),
+  getHexSearchData,
+  getTextSearchData,
 });
 
-const filteredFrames = computed(() => {
-  let result = props.frames;
-  if (dirFilter.value !== 'ALL') {
-    result = result.filter((f) => f.direction === dirFilter.value);
-  }
-  if (searchQuery.value.trim()) {
-    const q = searchQuery.value.trim().toLowerCase();
-    result = result.filter((f) => {
-      if (appStore.searchMode === 'HEX') {
-        const needle = q.replace(/[^0-9a-f]/g, '');
-        return getHexSearchData(f).includes(needle);
-      }
-      let formatted = getFormattedData(f);
-      if (appStore.displayMode === 'ANSI') {
-        formatted = stripAnsi(formatted);
-      }
-      return formatted.toLowerCase().includes(q);
-    });
-  }
-  return result;
+const {
+  scrollRef,
+  virtualItems,
+  totalSize,
+  onScroll,
+} = usePacketVirtualScroll({
+  visibleFrames,
+  frameCount: computed(() => props.frames.length),
+  autoScroll: computed(() => appStore.autoScroll),
 });
-
-const visibleFrames = computed<DataFrame[]>(() => {
-  if (appStore.packetViewMode === 'FRAME') return filteredFrames.value;
-  const merged: DataFrame[] = [];
-  let current: DataFrame | null = null;
-  for (const frame of filteredFrames.value) {
-    if (!current || current.direction !== frame.direction) {
-      current = { ...frame, id: `merged-${frame.id}`, data: [...frame.data] };
-      merged.push(current);
-    } else {
-      current.data.push(...frame.data);
-    }
-  }
-  return merged;
-});
-
-const virtualizer = useVirtualizer(
-  computed(() => ({
-    count: visibleFrames.value.length,
-    getScrollElement: () => scrollRef.value,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 20,
-  })),
-);
-
-const virtualItems = computed(() => virtualizer.value.getVirtualItems());
-const totalSize = computed(() => virtualizer.value.getTotalSize());
-
-function onScroll() {
-  if (!scrollRef.value) return;
-  const { scrollTop, scrollHeight, clientHeight } = scrollRef.value;
-  shouldAutoScroll.value = scrollHeight - scrollTop - clientHeight < ROW_HEIGHT * 2;
-  virtualizer.value.measure();
-}
-
-watch(
-  () => props.frames.length,
-  () => {
-    virtualizer.value.measure();
-    if (shouldAutoScroll.value && appStore.autoScroll) {
-      nextTick(() => {
-        requestAnimationFrame(() => {
-          if (scrollRef.value) {
-            scrollRef.value.scrollTop = scrollRef.value.scrollHeight;
-          }
-        });
-      });
-    }
-  },
-);
 
 function displayLabel(): string {
   return appStore.packetViewMode === 'MERGED' ? `${appStore.displayMode}*` : appStore.displayMode;
@@ -308,7 +205,7 @@ async function handleCtxSelect(key: string) {
       text = stripAnsi(formatAscii(ctxFrame.data));
       break;
     case 'row':
-      text = `[${ctxFrame.timestamp}] ${ctxFrame.direction} | ${getFormattedData(ctxFrame)}`;
+      text = `[${ctxFrame.timestamp}] ${ctxFrame.direction} | ${formatFrame(ctxFrame)}`;
       break;
   }
 
@@ -352,6 +249,8 @@ async function handleCopySelect(key: string) {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
 }
 
 .filter-left {
@@ -373,6 +272,10 @@ async function handleCopySelect(key: string) {
 
 .frame-count {
   color: var(--text-muted);
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
 }
 
 .packet-row {
@@ -404,6 +307,18 @@ async function handleCopySelect(key: string) {
   overflow-y: auto;
   flex: 1;
   background: var(--bg-primary);
+  position: relative;
+}
+
+.packet-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 12px;
+  pointer-events: none;
 }
 
 .packet-item {
@@ -429,11 +344,13 @@ async function handleCopySelect(key: string) {
 .packet-item.tx {
   border-left: 2px solid var(--accent-green);
   padding-left: 8px;
+  background-image: linear-gradient(90deg, rgba(76, 175, 80, 0.06), transparent 120px);
 }
 
 .packet-item.rx {
   border-left: 2px solid var(--accent-blue);
   padding-left: 8px;
+  background-image: linear-gradient(90deg, rgba(33, 150, 243, 0.06), transparent 120px);
 }
 
 .col-dir {

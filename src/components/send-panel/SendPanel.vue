@@ -72,14 +72,14 @@
         >
           <span class="history-tag">{{ cmd.isHex ? 'HEX' : 'TXT' }}</span>
           <span>{{ cmd.name }}</span>
-          <button class="quick-remove" @click.stop="emit('removeQuickCommand', cmd.id)">×</button>
+          <button class="quick-remove" type="button" @click.stop="emit('removeQuickCommand', cmd.id)">×</button>
         </div>
       </div>
     </div>
     <div v-if="history.length > 0" class="send-history">
       <div class="history-header">
         <span class="history-title">历史记录</span>
-        <button class="history-clear" @click="emit('clearHistory')">清除</button>
+        <button class="history-clear" type="button" @click="emit('clearHistory')">清除</button>
       </div>
       <div class="history-list">
         <div
@@ -327,6 +327,7 @@ function truncate(s: string, max: number): string {
   justify-content: space-between;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .send-left {
@@ -340,6 +341,7 @@ function truncate(s: string, max: number): string {
   display: flex;
   gap: 8px;
   align-items: center;
+  margin-left: auto;
 }
 
 .quick-row {
@@ -347,6 +349,7 @@ function truncate(s: string, max: number): string {
   align-items: center;
   gap: 8px;
   min-height: 24px;
+  flex-wrap: wrap;
 }
 
 .quick-form,
@@ -475,5 +478,17 @@ function truncate(s: string, max: number): string {
 .history-text {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (max-width: 760px) {
+  .send-left,
+  .send-right {
+    width: 100%;
+  }
+
+  .send-right {
+    justify-content: flex-end;
+    margin-left: 0;
+  }
 }
 </style>

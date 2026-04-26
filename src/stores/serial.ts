@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import type { PortConfig } from '../types';
+import { loadJson, saveJson } from '../lib/storage';
 
 const STORAGE_KEY = 'bbcom-serial-settings';
 
@@ -17,29 +18,21 @@ export const useSerialStore = defineStore('serial', () => {
   let loaded = false;
 
   function load() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw);
-        if (saved.selectedPort) selectedPort.value = saved.selectedPort;
-        if (saved.portConfig) portConfig.value = { ...portConfig.value, ...saved.portConfig };
-      }
-    } catch {
-      // ignore
-    }
+    const saved = loadJson(STORAGE_KEY, {
+      selectedPort: '',
+      portConfig: portConfig.value,
+    });
+    if (saved.selectedPort) selectedPort.value = saved.selectedPort;
+    if (saved.portConfig) portConfig.value = { ...portConfig.value, ...saved.portConfig };
     loaded = true;
   }
 
   function save() {
     if (!loaded) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        selectedPort: selectedPort.value,
-        portConfig: portConfig.value,
-      }));
-    } catch {
-      // ignore
-    }
+    saveJson(STORAGE_KEY, {
+      selectedPort: selectedPort.value,
+      portConfig: portConfig.value,
+    });
   }
 
   watch([selectedPort, portConfig], save, { deep: true });

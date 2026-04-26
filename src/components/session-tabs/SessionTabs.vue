@@ -13,10 +13,10 @@
           <span class="tab-port">{{ session.portName }}</span>
           <span v-if="session.isConnected" class="tab-status connected">●</span>
           <span v-else class="tab-status disconnected">○</span>
-          <button class="tab-close" @click.stop="closeSession(session.id)" title="关闭会话">×</button>
+          <button class="tab-close" type="button" @click.stop="closeSession(session.id)" title="关闭会话">×</button>
         </div>
       </div>
-      <button class="tab-add" @click="emit('create')" title="新建会话 (Ctrl+N)">+</button>
+      <button class="tab-add" type="button" @click="emit('create')" title="新建会话 (Ctrl+N)">+</button>
     </div>
   </div>
 </template>
