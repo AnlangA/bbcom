@@ -36,7 +36,11 @@ impl<'de> Deserialize<'de> for DataBits {
             5 => Self::Five,
             6 => Self::Six,
             7 => Self::Seven,
-            _ => Self::Eight,
+            8 => Self::Eight,
+            other => {
+                tracing::warn!("invalid DataBits value {other}, falling back to Eight");
+                Self::Eight
+            }
         })
     }
 }
@@ -60,8 +64,12 @@ impl<'de> Deserialize<'de> for StopBits {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let n = u8::deserialize(deserializer)?;
         Ok(match n {
+            1 => Self::One,
             2 => Self::Two,
-            _ => Self::One,
+            other => {
+                tracing::warn!("invalid StopBits value {other}, falling back to One");
+                Self::One
+            }
         })
     }
 }

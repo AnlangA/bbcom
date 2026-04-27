@@ -43,9 +43,26 @@ export function useAiSessionBridge() {
     unlisteners.length = 0;
   });
 
-  watch(session, () => {
-    void sendSnapshot();
-  }, { deep: true });
+  watch(
+    () => session.value?.id,
+    () => {
+      void sendSnapshot();
+    },
+  );
+
+  watch(
+    () => session.value?.isConnected,
+    () => {
+      void sendSnapshot();
+    },
+  );
+
+  watch(
+    () => session.value?.frames.length,
+    () => {
+      void sendSnapshot();
+    },
+  );
 
   function applyUpdate(event: AiSessionUpdateEvent) {
     switch (event.action) {

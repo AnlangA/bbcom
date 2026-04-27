@@ -111,6 +111,7 @@ import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { formatHex, isValidHex, parseHex } from '../../lib/format';
+import { checksumOptions } from '../../lib/checksum-constants';
 import { BAUD_RATES, DATA_BITS_OPTIONS, STOP_BITS_OPTIONS, PARITY_OPTIONS, FLOW_CONTROL_OPTIONS } from '../../lib/constants';
 
 const serialStore = useSerialStore();
@@ -186,12 +187,7 @@ const checksumAlgo = ref<'CHECKSUM' | 'CRC8' | 'CRC16' | 'CRC32'>('CHECKSUM');
 const checksumResult = ref('');
 let checksumTimer: ReturnType<typeof setTimeout> | null = null;
 
-const checksumAlgoOptions = [
-  { label: 'Checksum', value: 'CHECKSUM' },
-  { label: 'CRC-8', value: 'CRC8' },
-  { label: 'CRC-16', value: 'CRC16' },
-  { label: 'CRC-32', value: 'CRC32' },
-];
+const checksumAlgoOptions = checksumOptions;
 
 const isValidHexInput = computed(() => {
   if (!checksumInput.value.trim()) return true;
@@ -238,7 +234,7 @@ async function copyChecksum() {
   try {
     await navigator.clipboard.writeText(checksumResult.value);
   } catch {
-    // ignore
+    // ignore — clipboard may not be available in some environments
   }
 }
 </script>

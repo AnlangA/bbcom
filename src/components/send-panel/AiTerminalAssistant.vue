@@ -55,6 +55,7 @@ import { computed, ref } from 'vue';
 import { NButton, NInput, NSelect, NTag, useMessage } from 'naive-ui';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/app';
+import { getAiErrorMessage } from '../../lib/ai-error';
 import type { AiModel, SerialSession } from '../../types';
 import type { useAiWindowSession } from '../../composables/useAiWindowSession';
 import { aiModelMenuProps, aiModelOptions } from '../ai/ai-options';
@@ -65,10 +66,6 @@ interface TerminalAiResponse {
   command: string;
   explanation: string;
   risk: Risk;
-}
-
-interface CommandErrorDetails {
-  message?: string;
 }
 
 const props = defineProps<{
@@ -125,21 +122,10 @@ async function generateCommand() {
       applyCommandToApp(response.command);
     }
   } catch (e: unknown) {
-    const errMsg = getErrorMessage(e);
-    message.error(errMsg);
+    message.error(getAiErrorMessage(e, 'AI 命令生成失败'));
   } finally {
     loading.value = false;
   }
-}
-
-function getErrorMessage(error: unknown): string {
-  if (typeof error === 'string') return error;
-  if (!error || typeof error !== 'object') return 'AI 命令生成失败';
-  const record = error as Record<string, unknown>;
-  const details = record.details as CommandErrorDetails | undefined;
-  if (details?.message) return details.message;
-  if (typeof record.message === 'string') return record.message;
-  return 'AI 命令生成失败';
 }
 
 async function copyCommand() {
@@ -231,19 +217,19 @@ function setTerminalModel(model: AiModel) {
   padding: 5px 7px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.26);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  width: fit-content;
-  max-width: 100%;
+  word-break: break-all;
+  white-space: pre-wrap;
+  max-height: 120px;
+  overflow-y: auto;
 }
 
 .explanation {
   color: var(--text-secondary);
   font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 80px;
+  overflow-y: auto;
   min-width: 0;
   flex: 1;
 }

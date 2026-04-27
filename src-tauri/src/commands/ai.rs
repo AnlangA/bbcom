@@ -92,8 +92,12 @@ pub fn show_ai_window(app: tauri::AppHandle) -> Result<(), AppError> {
     window.show().map_err(|e| AppError::AiError {
         message: e.to_string(),
     })?;
-    window.set_focus().ok();
-    app.emit("ai-window-state", AiWindowState { visible: true }).ok();
+    if let Err(e) = window.set_focus() {
+        tracing::warn!("failed to focus AI window: {e}");
+    }
+    if let Err(e) = app.emit("ai-window-state", AiWindowState { visible: true }) {
+        tracing::warn!("failed to emit ai-window-state: {e}");
+    }
     Ok(())
 }
 
@@ -107,7 +111,9 @@ pub fn hide_ai_window(app: tauri::AppHandle) -> Result<(), AppError> {
     window.hide().map_err(|e| AppError::AiError {
         message: e.to_string(),
     })?;
-    app.emit("ai-window-state", AiWindowState { visible: false }).ok();
+    if let Err(e) = app.emit("ai-window-state", AiWindowState { visible: false }) {
+        tracing::warn!("failed to emit ai-window-state: {e}");
+    }
     Ok(())
 }
 
@@ -174,16 +180,7 @@ pub async fn terminal_ai_assist(
 
     let model = request.model.as_deref().unwrap_or("glm-4.5-air");
     let use_coding_plan = request.enable_coding_plan.unwrap_or(false);
-    let body = send_chat_by_name(model, user_prompt, api_key.to_string(), use_coding_plan).await?;
-
-    let content = body
-        .choices()
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.message().content())
-        .and_then(extract_text_from_content)
-        .ok_or_else(|| AppError::AiError {
-            message: "AI 没有返回可用命令".to_string(),
-        })?;
+    let content = run_ai_chat(model, user_prompt, api_key, use_coding_plan, "AI 没有返回可用命令").await?;
 
     parse_terminal_ai_response(&content)
 }
@@ -222,18 +219,26 @@ pub async fn log_ai_assist(request: LogAiRequest) -> Result<LogAiResponse, AppEr
 
     let model = request.model.as_deref().unwrap_or("glm-4.5-air");
     let use_coding_plan = request.enable_coding_plan.unwrap_or(false);
-    let body = send_chat_by_name(model, user_prompt, api_key.to_string(), use_coding_plan).await?;
+    let content = run_ai_chat(model, user_prompt, api_key, use_coding_plan, "AI 没有返回可用日志分析").await?;
 
-    let content = body
-        .choices()
+    parse_log_ai_response(&content, context_truncated)
+}
+
+async fn run_ai_chat(
+    model: &str,
+    user_prompt: String,
+    api_key: &str,
+    use_coding_plan: bool,
+    empty_error: &str,
+) -> Result<String, AppError> {
+    let body = send_chat_by_name(model, user_prompt, api_key.to_string(), use_coding_plan).await?;
+    body.choices()
         .and_then(|choices| choices.first())
         .and_then(|choice| choice.message().content())
         .and_then(extract_text_from_content)
         .ok_or_else(|| AppError::AiError {
-            message: "AI 没有返回可用日志分析".to_string(),
-        })?;
-
-    parse_log_ai_response(&content, context_truncated)
+            message: empty_error.to_string(),
+        })
 }
 
 async fn send_chat_by_name(

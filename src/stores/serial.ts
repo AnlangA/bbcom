@@ -16,6 +16,7 @@ export const useSerialStore = defineStore('serial', () => {
     flowControl: 'none',
   });
   let loaded = false;
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   function load() {
     const saved = loadJson(STORAGE_KEY, {
@@ -29,10 +30,13 @@ export const useSerialStore = defineStore('serial', () => {
 
   function save() {
     if (!loaded) return;
-    saveJson(STORAGE_KEY, {
-      selectedPort: selectedPort.value,
-      portConfig: portConfig.value,
-    });
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveJson(STORAGE_KEY, {
+        selectedPort: selectedPort.value,
+        portConfig: portConfig.value,
+      });
+    }, 300);
   }
 
   watch([selectedPort, portConfig], save, { deep: true });

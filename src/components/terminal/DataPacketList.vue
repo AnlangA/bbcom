@@ -66,7 +66,7 @@
             v-html="formatData(visibleFrames[row.index])"
           ></span>
           <span v-else class="col-data data">{{ formatData(visibleFrames[row.index]) }}</span>
-          <span class="col-mode mode">{{ displayLabel() }}</span>
+          <span class="col-mode mode">{{ displayLabel }}</span>
         </div>
       </div>
     </div>
@@ -175,9 +175,9 @@ const {
   autoScroll: computed(() => appStore.autoScroll),
 });
 
-function displayLabel(): string {
-  return appStore.packetViewMode === 'MERGED' ? `${appStore.displayMode}*` : appStore.displayMode;
-}
+const displayLabel = computed(() =>
+  appStore.packetViewMode === 'MERGED' ? `${appStore.displayMode}*` : appStore.displayMode,
+);
 
 function showContextMenu(e: MouseEvent, frame: DataFrame) {
   ctxFrame = frame;

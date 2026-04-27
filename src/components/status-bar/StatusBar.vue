@@ -43,6 +43,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
 import type { SerialSession } from '../../types';
+import { formatBytes } from '../../lib/format';
 
 const props = defineProps<{
   session: SerialSession | null;
@@ -120,11 +121,6 @@ const duration = computed(() => {
   return `${h.toString().padStart(2, '0')}:${(m % 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 });
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 </script>
 
 <style scoped>

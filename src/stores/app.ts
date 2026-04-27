@@ -23,7 +23,7 @@ export const useAppStore = defineStore('app', () => {
   const pendingAiCommand = ref('');
   let loaded = false;
 
-  async function load() {
+  function load() {
     const saved = loadJson(STORAGE_KEY, {
       displayMode: displayMode.value,
       autoScroll: autoScroll.value,
@@ -50,20 +50,25 @@ export const useAppStore = defineStore('app', () => {
     loaded = true;
   }
 
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
   function save() {
     if (!loaded) return;
-    saveJson(STORAGE_KEY, {
-      displayMode: displayMode.value,
-      autoScroll: autoScroll.value,
-      showTimestamp: showTimestamp.value,
-      searchMode: searchMode.value,
-      packetViewMode: packetViewMode.value,
-      lineEnding: lineEnding.value,
-      sendAsHex: sendAsHex.value,
-      loopIntervalMs: loopIntervalMs.value,
-      ansiColorEnabled: ansiColorEnabled.value,
-      aiEnableCodingPlan: aiEnableCodingPlan.value,
-    });
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveJson(STORAGE_KEY, {
+        displayMode: displayMode.value,
+        autoScroll: autoScroll.value,
+        showTimestamp: showTimestamp.value,
+        searchMode: searchMode.value,
+        packetViewMode: packetViewMode.value,
+        lineEnding: lineEnding.value,
+        sendAsHex: sendAsHex.value,
+        loopIntervalMs: loopIntervalMs.value,
+        ansiColorEnabled: ansiColorEnabled.value,
+        aiEnableCodingPlan: aiEnableCodingPlan.value,
+      });
+    }, 300);
   }
 
   watch([displayMode, autoScroll, showTimestamp, searchMode, packetViewMode, lineEnding, sendAsHex, loopIntervalMs, ansiColorEnabled, aiEnableCodingPlan], save);

@@ -90,6 +90,7 @@ import { useAppStore } from '../../stores/app';
 import type { AiModel, LogAiContextMode, SerialSession } from '../../types';
 import type { useAiWindowSession } from '../../composables/useAiWindowSession';
 import { buildLogAiContext } from '../../lib/ai-log-context';
+import { getAiErrorMessage } from '../../lib/ai-error';
 import { aiModelMenuProps, aiModelOptions, logContextModeOptions } from './ai-options';
 
 interface LogAiResponse {
@@ -97,10 +98,6 @@ interface LogAiResponse {
   evidence: string[];
   suggestions: string[];
   truncated: boolean;
-}
-
-interface CommandErrorDetails {
-  message?: string;
 }
 
 const props = defineProps<{
@@ -115,12 +112,16 @@ const loading = ref(false);
 const result = ref<LogAiResponse | null>(null);
 
 const hasApiKey = computed(() => Boolean(appStore.aiApiKey.trim()));
-const canAsk = computed(() => prompt.value.trim().length > 0 && !loading.value && props.session.frames.length > 0);
+const canAsk = computed(() => prompt.value.trim().length > 0 && !loading.value);
 
 async function ask() {
   if (!canAsk.value) return;
   if (!hasApiKey.value) {
     message.warning('请先保存 API Key');
+    return;
+  }
+  if (props.session.frames.length === 0) {
+    message.warning('当前会话没有串口数据，请先连接串口并接收数据');
     return;
   }
   const context = buildLogAiContext(props.session);
@@ -144,7 +145,7 @@ async function ask() {
     await props.bridge.addLogAiMessage({ role: 'assistant', content: response.answer });
     prompt.value = '';
   } catch (e: unknown) {
-    message.error(getErrorMessage(e));
+    message.error(getAiErrorMessage(e, 'AI 日志分析失败'));
   } finally {
     loading.value = false;
   }
@@ -165,16 +166,6 @@ function setFrameLimit(value: number | null) {
 function clearMessages() {
   void props.bridge.clearLogAiMessages();
   result.value = null;
-}
-
-function getErrorMessage(error: unknown): string {
-  if (typeof error === 'string') return error;
-  if (!error || typeof error !== 'object') return 'AI 日志分析失败';
-  const record = error as Record<string, unknown>;
-  const details = record.details as CommandErrorDetails | undefined;
-  if (details?.message) return details.message;
-  if (typeof record.message === 'string') return record.message;
-  return 'AI 日志分析失败';
 }
 </script>
 
@@ -234,23 +225,23 @@ function getErrorMessage(error: unknown): string {
   background: rgba(255, 255, 255, 0.035);
 }
 
+.message-item .content {
+  min-width: 0;
+  word-break: break-word;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
 .message-item.user {
   background: rgba(99, 255, 177, 0.07);
 }
 
-.content,
+.message-item .content,
 .answer,
 .result-section li {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.5;
-}
-
-.content {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .result-card {
@@ -261,6 +252,8 @@ function getErrorMessage(error: unknown): string {
   border: 1px solid var(--border-subtle);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.028);
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .result-section ul {

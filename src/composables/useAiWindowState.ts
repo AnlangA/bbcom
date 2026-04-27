@@ -29,7 +29,7 @@ export function useAiWindowState() {
         visible.value = true;
       }
     } catch {
-      // ignore
+      visible.value = false;
     }
   }
 

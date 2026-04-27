@@ -101,7 +101,8 @@
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
 import { invoke } from '@tauri-apps/api/core';
-import { encodeUtf8, isValidHex as checkValidHex, normalizeHex, parseHex } from '../../lib/format';
+import { encodeUtf8, isValidHex as checkValidHex, normalizeHex, parseHex, truncate } from '../../lib/format';
+import { checksumAlgoOptionsWithNone } from '../../lib/checksum-constants';
 import { MAX_INPUT_SIZE } from '../../types';
 import { useAppStore } from '../../stores/app';
 import { useSessionStore } from '../../stores/sessions';
@@ -154,13 +155,7 @@ const lineEndingOptions = [
   { label: 'CRLF', value: 'CRLF' },
 ];
 
-const checksumOptions = [
-  { label: '无校验', value: 'none' },
-  { label: 'Checksum', value: 'CHECKSUM' },
-  { label: 'CRC-8', value: 'CRC8' },
-  { label: 'CRC-16', value: 'CRC16' },
-  { label: 'CRC-32', value: 'CRC32' },
-];
+const checksumOptions = checksumAlgoOptionsWithNone;
 
 const isValidHex = computed(() => {
   if (!isHex.value || !props.modelValue.trim()) return true;
@@ -307,10 +302,6 @@ function formatHexInput() {
   }
 }
 
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max) + '...';
-}
 </script>
 
 <style scoped>

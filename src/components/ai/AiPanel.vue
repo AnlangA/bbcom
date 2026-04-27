@@ -16,10 +16,10 @@
     </div>
 
     <n-tabs v-if="session" v-model:value="activeTab" size="small" animated>
-      <n-tab-pane name="terminal" tab="命令助手">
+      <n-tab-pane name="terminal" tab="命令助手" display-directive="show">
         <AiTerminalAssistant :session="session" :bridge="bridge" />
       </n-tab-pane>
-      <n-tab-pane name="log" tab="日志助手">
+      <n-tab-pane name="log" tab="日志助手" display-directive="show">
         <AiLogAssistant :session="session" :bridge="bridge" />
       </n-tab-pane>
     </n-tabs>
@@ -46,7 +46,7 @@ onMounted(async () => {
   try {
     alwaysOnTop.value = await getCurrentWindow().isAlwaysOnTop();
   } catch {
-    // ignore
+    // ignore — window state query can fail during early lifecycle
   }
 });
 
@@ -54,7 +54,7 @@ async function startDrag() {
   try {
     await invoke('start_ai_window_drag');
   } catch {
-    // ignore
+    // ignore — drag may fail if window is being resized
   }
 }
 
