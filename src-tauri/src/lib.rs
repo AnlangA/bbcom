@@ -61,6 +61,7 @@ pub fn run() {
             commands::ai::resize_ai_window,
             commands::ai::show_ai_window,
             commands::ai::start_ai_window_drag,
+            commands::ai::log_ai_assist,
             commands::ai::terminal_ai_assist,
             commands::checksum::calculate_checksum,
             commands::export::export_data,

@@ -17,7 +17,6 @@ export const useAppStore = defineStore('app', () => {
   const loopIntervalMs = ref(1000);
   const ansiColorEnabled = ref(true);
   const aiApiKey = ref('');
-  const aiModel = ref('glm-4.5-air');
   const aiEnableCodingPlan = ref(false);
   const aiCommandDraft = ref('');
   const aiCommandSeq = ref(0);
@@ -35,7 +34,6 @@ export const useAppStore = defineStore('app', () => {
       sendAsHex: sendAsHex.value,
       loopIntervalMs: loopIntervalMs.value,
       ansiColorEnabled: ansiColorEnabled.value,
-      aiModel: aiModel.value,
       aiEnableCodingPlan: aiEnableCodingPlan.value,
     });
     if (saved.displayMode) displayMode.value = saved.displayMode;
@@ -47,7 +45,6 @@ export const useAppStore = defineStore('app', () => {
     if (typeof saved.sendAsHex === 'boolean') sendAsHex.value = saved.sendAsHex;
     if (typeof saved.loopIntervalMs === 'number') loopIntervalMs.value = saved.loopIntervalMs;
     if (typeof saved.ansiColorEnabled === 'boolean') ansiColorEnabled.value = saved.ansiColorEnabled;
-    if (typeof saved.aiModel === 'string') aiModel.value = saved.aiModel;
     if (typeof saved.aiEnableCodingPlan === 'boolean') aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
     aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
@@ -65,12 +62,11 @@ export const useAppStore = defineStore('app', () => {
       sendAsHex: sendAsHex.value,
       loopIntervalMs: loopIntervalMs.value,
       ansiColorEnabled: ansiColorEnabled.value,
-      aiModel: aiModel.value,
       aiEnableCodingPlan: aiEnableCodingPlan.value,
     });
   }
 
-  watch([displayMode, autoScroll, showTimestamp, searchMode, packetViewMode, lineEnding, sendAsHex, loopIntervalMs, ansiColorEnabled, aiModel, aiEnableCodingPlan], save);
+  watch([displayMode, autoScroll, showTimestamp, searchMode, packetViewMode, lineEnding, sendAsHex, loopIntervalMs, ansiColorEnabled, aiEnableCodingPlan], save);
 
   function setDisplayMode(mode: DisplayMode) {
     displayMode.value = mode;
@@ -113,10 +109,6 @@ export const useAppStore = defineStore('app', () => {
     saveString(AI_API_KEY_STORAGE_KEY, value);
   }
 
-  function setAiModel(value: string) {
-    aiModel.value = value;
-  }
-
   function setAiEnableCodingPlan(value: boolean) {
     aiEnableCodingPlan.value = value;
   }
@@ -149,7 +141,6 @@ export const useAppStore = defineStore('app', () => {
     loopIntervalMs,
     ansiColorEnabled,
     aiApiKey,
-    aiModel,
     aiEnableCodingPlan,
     aiCommandDraft,
     aiCommandSeq,
@@ -164,7 +155,6 @@ export const useAppStore = defineStore('app', () => {
     setSendAsHex,
     setLoopIntervalMs,
     setAiApiKey,
-    setAiModel,
     setAiEnableCodingPlan,
     applyAiCommand,
     setPendingAiCommand,

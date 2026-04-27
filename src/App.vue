@@ -9,6 +9,9 @@
 <script setup lang="ts">
 import { darkTheme, NConfigProvider, NMessageProvider } from 'naive-ui';
 import AppShell from './components/app-shell/AppShell.vue';
+import { useAiSessionBridge } from './composables/useAiSessionBridge';
+
+useAiSessionBridge();
 
 const themeOverrides = {
   common: {

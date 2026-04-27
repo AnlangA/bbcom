@@ -10,7 +10,7 @@
   "app": {
     "windows": [
       {
-        "title": "串口调试助手",
+        "title": "bbcom",
         "width": 1280,
         "height": 800,
         "resizable": true

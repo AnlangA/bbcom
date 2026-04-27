@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { SerialSession, DataFrame, SendHistoryEntry } from '../types';
+import type { AiChatMessage, AiModel, LogAiContextMode, SerialSession, DataFrame, SendHistoryEntry } from '../types';
 import { MAX_FRAMES, MAX_HISTORY } from '../types';
 import { nowMillis } from '../lib/time';
 
@@ -32,6 +32,11 @@ export const useSessionStore = defineStore('sessions', () => {
       sendDraft: '',
       quickCommands: [],
       autoLogEnabled: false,
+      terminalAiModel: 'glm-4.5-air',
+      logAiModel: 'glm-4.5-air',
+      logAiContextMode: 'latest-10k',
+      logAiFrameLimit: 200,
+      logAiMessages: [],
     });
     activeSessionId.value = id;
     return id;
@@ -144,6 +149,46 @@ export const useSessionStore = defineStore('sessions', () => {
     session.autoLogEnabled = enabled;
   }
 
+  function setTerminalAiModel(sessionId: string, model: AiModel) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.terminalAiModel = model;
+  }
+
+  function setLogAiModel(sessionId: string, model: AiModel) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.logAiModel = model;
+  }
+
+  function setLogAiContextMode(sessionId: string, mode: LogAiContextMode) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.logAiContextMode = mode;
+  }
+
+  function setLogAiFrameLimit(sessionId: string, limit: number) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.logAiFrameLimit = Math.max(20, Math.min(2000, Math.floor(limit || 200)));
+  }
+
+  function addLogAiMessage(sessionId: string, message: Omit<AiChatMessage, 'id' | 'timestamp'>) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.logAiMessages.push({
+      ...message,
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+    });
+  }
+
+  function clearLogAiMessages(sessionId: string) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.logAiMessages = [];
+  }
+
   return {
     sessions,
     activeSessionId,
@@ -161,5 +206,11 @@ export const useSessionStore = defineStore('sessions', () => {
     addQuickCommand,
     removeQuickCommand,
     setAutoLogEnabled,
+    setTerminalAiModel,
+    setLogAiModel,
+    setLogAiContextMode,
+    setLogAiFrameLimit,
+    addLogAiMessage,
+    clearLogAiMessages,
   };
 });

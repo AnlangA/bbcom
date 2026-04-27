@@ -19,6 +19,15 @@ Rules:
 - If more information is required, return an empty command and explain what is missing.
 - For simple navigation/inspection tasks, return only the direct command, e.g. "查看当前路径" -> "pwd"."#;
 
+const LOG_SYSTEM_PROMPT: &str = r#"You are an expert embedded serial log analysis assistant.
+Answer the user's question using only the provided serial log context.
+Rules:
+- Output JSON only: {"answer":"...","evidence":["..."],"suggestions":["..."],"truncated":false}.
+- Do not wrap the response in Markdown.
+- If the log context is insufficient, say so clearly and list what evidence is missing.
+- Cite concrete timestamps, directions, error codes, or log fragments in evidence when available.
+- Keep suggestions practical and safe for serial debugging."#;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalAiRequest {
@@ -36,6 +45,28 @@ pub struct TerminalAiResponse {
     pub command: String,
     pub explanation: String,
     pub risk: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogAiRequest {
+    pub prompt: String,
+    pub api_key: String,
+    pub model: Option<String>,
+    pub enable_coding_plan: Option<bool>,
+    pub context: String,
+    pub context_mode: Option<String>,
+    pub context_truncated: Option<bool>,
+    pub session_meta: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogAiResponse {
+    pub answer: String,
+    pub evidence: Vec<String>,
+    pub suggestions: Vec<String>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -143,19 +174,7 @@ pub async fn terminal_ai_assist(
 
     let model = request.model.as_deref().unwrap_or("glm-4.5-air");
     let use_coding_plan = request.enable_coding_plan.unwrap_or(false);
-    let key = api_key.to_string();
-    let body = match model {
-        "glm-5.1" => send_chat(GLM5_1 {}, user_prompt, key, use_coding_plan).await,
-        "glm-5-turbo" => send_chat(GLM5_turbo {}, user_prompt, key, use_coding_plan).await,
-        "glm-4.7" => send_chat(GLM4_7 {}, user_prompt, key, use_coding_plan).await,
-        "glm-4.5-air" => send_chat(GLM4_5_air {}, user_prompt, key, use_coding_plan).await,
-        _ => {
-            return Err(AppError::ValidationError {
-                message: "不支持的 Chat 模型".to_string(),
-                field: "model".to_string(),
-            });
-        }
-    }?;
+    let body = send_chat_by_name(model, user_prompt, api_key.to_string(), use_coding_plan).await?;
 
     let content = body
         .choices()
@@ -167,6 +186,72 @@ pub async fn terminal_ai_assist(
         })?;
 
     parse_terminal_ai_response(&content)
+}
+
+#[tauri::command]
+pub async fn log_ai_assist(request: LogAiRequest) -> Result<LogAiResponse, AppError> {
+    let prompt = request.prompt.trim();
+    let api_key = request.api_key.trim();
+
+    if prompt.is_empty() {
+        return Err(AppError::ValidationError {
+            message: "请输入日志分析问题".to_string(),
+            field: "prompt".to_string(),
+        });
+    }
+    if api_key.is_empty() {
+        return Err(AppError::ValidationError {
+            message: "请先配置 Z.ai API Key".to_string(),
+            field: "apiKey".to_string(),
+        });
+    }
+    if request.context.trim().is_empty() {
+        return Err(AppError::ValidationError {
+            message: "当前串口会话没有可分析的日志".to_string(),
+            field: "context".to_string(),
+        });
+    }
+
+    let context_mode = request.context_mode.unwrap_or_else(|| "latest-10k".to_string());
+    let context_truncated = request.context_truncated.unwrap_or(false);
+    let session_meta = request.session_meta.unwrap_or_default();
+    let user_prompt = format!(
+        "System prompt:\n{LOG_SYSTEM_PROMPT}\n\nSession:\n{session_meta}\n\nContext mode: {context_mode}\nContext truncated: {context_truncated}\nSerial log context:\n{}\n\nUser question: {prompt}",
+        request.context
+    );
+
+    let model = request.model.as_deref().unwrap_or("glm-4.5-air");
+    let use_coding_plan = request.enable_coding_plan.unwrap_or(false);
+    let body = send_chat_by_name(model, user_prompt, api_key.to_string(), use_coding_plan).await?;
+
+    let content = body
+        .choices()
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.message().content())
+        .and_then(extract_text_from_content)
+        .ok_or_else(|| AppError::AiError {
+            message: "AI 没有返回可用日志分析".to_string(),
+        })?;
+
+    parse_log_ai_response(&content, context_truncated)
+}
+
+async fn send_chat_by_name(
+    model: &str,
+    user_prompt: String,
+    api_key: String,
+    use_coding_plan: bool,
+) -> Result<ChatCompletionResponse, AppError> {
+    match model {
+        "glm-5.1" => send_chat(GLM5_1 {}, user_prompt, api_key, use_coding_plan).await,
+        "glm-5-turbo" => send_chat(GLM5_turbo {}, user_prompt, api_key, use_coding_plan).await,
+        "glm-4.7" => send_chat(GLM4_7 {}, user_prompt, api_key, use_coding_plan).await,
+        "glm-4.5-air" => send_chat(GLM4_5_air {}, user_prompt, api_key, use_coding_plan).await,
+        _ => Err(AppError::ValidationError {
+            message: "不支持的 Chat 模型".to_string(),
+            field: "model".to_string(),
+        }),
+    }
 }
 
 async fn send_chat<N>(
@@ -225,6 +310,37 @@ fn parse_terminal_ai_response(content: &str) -> Result<TerminalAiResponse, AppEr
         "safe" | "caution" | "dangerous" => response.risk,
         _ => "caution".to_string(),
     };
+
+    Ok(response)
+}
+
+fn parse_log_ai_response(content: &str, fallback_truncated: bool) -> Result<LogAiResponse, AppError> {
+    let cleaned = content
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    let mut response: LogAiResponse =
+        serde_json::from_str(cleaned).map_err(|e| AppError::AiError {
+            message: format!("AI 返回格式无效: {e}"),
+        })?;
+
+    response.answer = response.answer.trim().to_string();
+    response.evidence = response
+        .evidence
+        .into_iter()
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect();
+    response.suggestions = response
+        .suggestions
+        .into_iter()
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect();
+    response.truncated = response.truncated || fallback_truncated;
 
     Ok(response)
 }

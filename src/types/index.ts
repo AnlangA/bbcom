@@ -5,6 +5,9 @@ export type Direction = 'TX' | 'RX';
 export type SearchMode = 'TEXT' | 'HEX';
 export type PacketViewMode = 'FRAME' | 'MERGED';
 export type LineEnding = 'none' | 'CR' | 'LF' | 'CRLF';
+export type AiModel = 'glm-5.1' | 'glm-5-turbo' | 'glm-4.7' | 'glm-4.5-air';
+export type AiRole = 'user' | 'assistant';
+export type LogAiContextMode = 'latest-10k' | 'latest-n-frames' | 'full-capped';
 
 // Data frame
 export interface DataFrame {
@@ -36,6 +39,13 @@ export interface QuickCommand {
   isHex: boolean;
 }
 
+export interface AiChatMessage {
+  id: string;
+  role: AiRole;
+  content: string;
+  timestamp: number;
+}
+
 // Session
 export interface SerialSession {
   id: string;
@@ -52,6 +62,11 @@ export interface SerialSession {
   sendDraft: string;
   quickCommands: QuickCommand[];
   autoLogEnabled: boolean;
+  terminalAiModel: AiModel;
+  logAiModel: AiModel;
+  logAiContextMode: LogAiContextMode;
+  logAiFrameLimit: number;
+  logAiMessages: AiChatMessage[];
 }
 
 // Checksum
