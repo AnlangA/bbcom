@@ -103,7 +103,7 @@ const framesRef = toRef(props, 'frames');
 const ctxShow = ref(false);
 const ctxX = ref(0);
 const ctxY = ref(0);
-let ctxFrame: DataFrame | null = null;
+const ctxFrame = ref<DataFrame | null>(null);
 
 const ctxOptions = [
   { label: '复制 HEX', key: 'hex' },
@@ -180,7 +180,7 @@ const displayLabel = computed(() =>
 );
 
 function showContextMenu(e: MouseEvent, frame: DataFrame) {
-  ctxFrame = frame;
+  ctxFrame.value = frame;
   ctxX.value = e.clientX;
   ctxY.value = e.clientY;
   ctxShow.value = true;
@@ -188,25 +188,28 @@ function showContextMenu(e: MouseEvent, frame: DataFrame) {
 
 async function handleCtxSelect(key: string) {
   ctxShow.value = false;
-  if (!ctxFrame) return;
+  if (!ctxFrame.value) return;
 
   let text = '';
   switch (key) {
     case 'hex':
-      text = formatHex(ctxFrame.data);
+      text = formatHex(ctxFrame.value.data);
       break;
     case 'ascii':
-      text = formatAscii(ctxFrame.data);
+      text = formatAscii(ctxFrame.value.data);
       break;
     case 'utf8':
-      text = formatUtf8(ctxFrame.data);
+      text = formatUtf8(ctxFrame.value.data);
       break;
     case 'plain':
-      text = stripAnsi(formatAscii(ctxFrame.data));
+      text = stripAnsi(formatAscii(ctxFrame.value.data));
       break;
     case 'row':
-      text = `[${ctxFrame.timestamp}] ${ctxFrame.direction} | ${formatFrame(ctxFrame)}`;
+      text = `[${ctxFrame.value.timestamp}] ${ctxFrame.value.direction} | ${formatFrame(ctxFrame.value)}`;
       break;
+    default:
+      console.debug('unknown context menu key:', key);
+      return;
   }
 
   try {
@@ -218,12 +221,20 @@ async function handleCtxSelect(key: string) {
 }
 
 async function handleCopySelect(key: string) {
-  const frames = key.startsWith('all') ? props.frames : filteredFrames.value;
+  const source = key.startsWith('all') ? props.frames : filteredFrames.value;
   const asHex = key.endsWith('hex');
-  const text = frames.map((frame) => {
+  const MAX_COPY_FRAMES = 5000;
+  const frames = source.length > MAX_COPY_FRAMES ? source.slice(-MAX_COPY_FRAMES) : source;
+  if (source.length > MAX_COPY_FRAMES) {
+    message.warning(`数据过多，仅复制最近 ${MAX_COPY_FRAMES} 帧`);
+  }
+  const parts: string[] = new Array(frames.length);
+  for (let i = 0; i < frames.length; i++) {
+    const frame = frames[i];
     const data = asHex ? formatHex(frame.data) : formatUtf8(frame.data);
-    return `[${frame.timestamp}] ${frame.direction} | ${data}`;
-  }).join('\n');
+    parts[i] = `[${frame.timestamp}] ${frame.direction} | ${data}`;
+  }
+  const text = parts.join('\n');
   try {
     await navigator.clipboard.writeText(text);
     message.success('已复制');

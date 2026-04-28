@@ -43,3 +43,16 @@ impl From<std::io::Error> for AppError {
         }
     }
 }
+
+impl From<serde_json::Error> for AppError {
+    fn from(e: serde_json::Error) -> Self {
+        AppError::AiError {
+            message: format!(
+                "JSON parse error at line {} col {}: {}",
+                e.line(),
+                e.column(),
+                e
+            ),
+        }
+    }
+}

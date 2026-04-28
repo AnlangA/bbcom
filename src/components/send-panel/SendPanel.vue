@@ -253,16 +253,23 @@ function toggleLoop() {
 function startLoop() {
   if (!canSend.value || loopTimer) return;
   looping.value = true;
-  handleSend();
-  loopTimer = setInterval(handleSend, loopInterval.value);
+
+  async function tick() {
+    if (!looping.value) return;
+    await handleSend();
+    if (looping.value) {
+      loopTimer = setTimeout(tick, loopInterval.value) as unknown as ReturnType<typeof setInterval>;
+    }
+  }
+  void tick();
 }
 
 function stopLoop() {
+  looping.value = false;
   if (loopTimer) {
-    clearInterval(loopTimer);
+    clearTimeout(loopTimer as unknown as ReturnType<typeof setTimeout>);
     loopTimer = null;
   }
-  looping.value = false;
 }
 
 function resend(item: HistoryEntry) {

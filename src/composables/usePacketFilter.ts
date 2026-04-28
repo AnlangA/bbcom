@@ -51,10 +51,16 @@ export function usePacketFilter({
     let current: DataFrame | null = null;
     for (const frame of filteredFrames.value) {
       if (!current || current.direction !== frame.direction) {
-        current = { ...frame, id: `merged-${frame.id}`, data: [...frame.data] };
+        // Shallow-copy the frame; data array is extended in-place below
+        current = { ...frame, id: `merged-${frame.id}`, data: frame.data.slice() };
         merged.push(current);
       } else {
-        current.data.push(...frame.data);
+        const prev = current.data as number[];
+        const next = frame.data as number[];
+        const combined = new Array<number>(prev.length + next.length);
+        for (let i = 0; i < prev.length; i++) combined[i] = prev[i];
+        for (let i = 0; i < next.length; i++) combined[prev.length + i] = next[i];
+        current.data = combined;
       }
     }
     return merged;

@@ -3,6 +3,7 @@ pub mod export;
 pub mod models;
 pub mod utils;
 
+use commands::ai::AI_WINDOW_LABEL;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -16,27 +17,32 @@ pub fn run() {
 
     let result = tauri::Builder::default()
         .setup(|app| {
-            WebviewWindowBuilder::new(app, "ai-assistant", WebviewUrl::App("index.html?window=ai".into()))
-                .title("AI 终端助手")
-                .inner_size(760.0, 170.0)
-                .min_inner_size(420.0, 120.0)
-                .resizable(false)
-                .maximizable(false)
-                .minimizable(false)
-                .decorations(true)
-                .always_on_top(true)
-                .visible(false)
-                .build()?;
-            if let Some(window) = app.get_webview_window("ai-assistant") {
+            WebviewWindowBuilder::new(
+                app,
+                AI_WINDOW_LABEL,
+                WebviewUrl::App("index.html?window=ai".into()),
+            )
+            .title("AI 终端助手")
+            .inner_size(760.0, 170.0)
+            .min_inner_size(420.0, 120.0)
+            .resizable(false)
+            .maximizable(false)
+            .minimizable(false)
+            .decorations(true)
+            .always_on_top(true)
+            .visible(false)
+            .build()?;
+
+            if let Some(window) = app.get_webview_window(AI_WINDOW_LABEL) {
                 let app_handle = app.handle().clone();
                 let window_for_event = window.clone();
                 window.on_window_event(move |event| {
-                        if let WindowEvent::CloseRequested { api, .. } = event {
-                            api.prevent_close();
-                            if let Err(e) = window_for_event.hide() {
-                                tracing::warn!("failed to hide AI window: {e}");
-                            }
-                            let _ = app_handle.emit(
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        if let Err(e) = window_for_event.hide() {
+                            tracing::warn!("failed to hide AI window: {e}");
+                        }
+                        let _ = app_handle.emit(
                             "ai-window-state",
                             commands::ai::AiWindowState { visible: false },
                         );
@@ -45,9 +51,10 @@ pub fn run() {
             }
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
+                let app_handle2 = app.handle().clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { .. } = event {
-                        if let Some(ai_window) = app_handle.get_webview_window("ai-assistant") {
+                        if let Some(ai_window) = app_handle2.get_webview_window(AI_WINDOW_LABEL) {
                             if let Err(e) = ai_window.close() {
                                 tracing::warn!("failed to close AI window on exit: {e}");
                             }

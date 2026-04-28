@@ -55,7 +55,12 @@ async fn export_text(frames: &[DataFrame], path: &str, ascii: bool) -> Result<()
     let mut w = BufWriter::new(file);
     for frame in frames {
         let data_str = data_to_string(&frame.data, ascii);
-        let line = format!("[{}] {} | {}\n", frame.timestamp, dir_label(&frame.direction), data_str);
+        let line = format!(
+            "[{}] {} | {}\n",
+            frame.timestamp,
+            dir_label(&frame.direction),
+            data_str
+        );
         w.write_all(line.as_bytes()).await.map_err(AppError::from)?;
     }
     w.flush().await.map_err(AppError::from)?;
@@ -65,11 +70,18 @@ async fn export_text(frames: &[DataFrame], path: &str, ascii: bool) -> Result<()
 async fn export_csv(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
     let file = File::create(path).await.map_err(AppError::from)?;
     let mut w = BufWriter::new(file);
-    w.write_all(b"timestamp,direction,data\n").await.map_err(AppError::from)?;
+    w.write_all(b"timestamp,direction,data\n")
+        .await
+        .map_err(AppError::from)?;
     for frame in frames {
         let data_str = hex::format_hex(&frame.data);
         let escaped = data_str.replace('"', "\"\"");
-        let line = format!("{},{},\"{}\"\n", frame.timestamp, dir_label(&frame.direction), escaped);
+        let line = format!(
+            "{},{},\"{}\"\n",
+            frame.timestamp,
+            dir_label(&frame.direction),
+            escaped
+        );
         w.write_all(line.as_bytes()).await.map_err(AppError::from)?;
     }
     w.flush().await.map_err(AppError::from)?;

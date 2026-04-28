@@ -33,7 +33,8 @@
         <span class="stat-value">{{ session.portConfig.baudRate }}</span>
       </div>
       <div class="stat status-indicator">
-        <span class="status-dot" :class="session.isConnected ? 'connected' : 'disconnected'"></span>
+        <span class="status-dot" :class="session.isConnected ? 'connected' : 'disconnected'" :aria-label="session.isConnected ? '已连接' : '未连接'"></span>
+        <span class="status-text">{{ session.isConnected ? '已连接' : '未连接' }}</span>
       </div>
     </template>
     <span v-else class="no-session">无活动会话</span>
@@ -41,7 +42,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import type { SerialSession } from '../../types';
 import { formatBytes } from '../../lib/format';
 
@@ -57,45 +58,69 @@ let lastSampleTime = 0;
 const txRate = ref(0);
 const rxRate = ref(0);
 
-watch(() => props.session?.isConnected, (connected) => {
+function sampleNow() {
+  now.value = Date.now();
+  if (props.session) {
+    const elapsed = (now.value - lastSampleTime) / 1000;
+    if (elapsed > 0) {
+      txRate.value = Math.round((props.session.txBytes - prevTxBytes) / elapsed);
+      rxRate.value = Math.round((props.session.rxBytes - prevRxBytes) / elapsed);
+    }
+    prevTxBytes = props.session.txBytes;
+    prevRxBytes = props.session.rxBytes;
+    lastSampleTime = now.value;
+  }
+}
+
+function startTimer() {
+  if (timer) clearInterval(timer);
+  prevTxBytes = props.session?.txBytes ?? 0;
+  prevRxBytes = props.session?.rxBytes ?? 0;
+  lastSampleTime = Date.now();
+  timer = setInterval(sampleNow, 1000);
+}
+
+function stopTimer() {
   if (timer) {
     clearInterval(timer);
     timer = null;
   }
+  txRate.value = 0;
+  rxRate.value = 0;
+}
+
+watch(() => props.session?.isConnected, (connected) => {
   if (connected) {
-    prevTxBytes = props.session?.txBytes ?? 0;
-    prevRxBytes = props.session?.rxBytes ?? 0;
-    lastSampleTime = Date.now();
-    timer = setInterval(() => {
-      now.value = Date.now();
-      if (props.session) {
-        const elapsed = (now.value - lastSampleTime) / 1000;
-        if (elapsed > 0) {
-          txRate.value = Math.round((props.session.txBytes - prevTxBytes) / elapsed);
-          rxRate.value = Math.round((props.session.rxBytes - prevRxBytes) / elapsed);
-        }
-        prevTxBytes = props.session.txBytes;
-        prevRxBytes = props.session.rxBytes;
-        lastSampleTime = now.value;
-      }
-    }, 1000);
+    if (document.visibilityState === 'visible') {
+      startTimer();
+    }
   } else {
-    txRate.value = 0;
-    rxRate.value = 0;
+    stopTimer();
   }
 }, { immediate: true });
 
 watch(() => props.session?.id, () => {
+  stopTimer();
   now.value = Date.now();
-  prevTxBytes = props.session?.txBytes ?? 0;
-  prevRxBytes = props.session?.rxBytes ?? 0;
-  lastSampleTime = Date.now();
-  txRate.value = 0;
-  rxRate.value = 0;
+});
+
+function handleVisibilityChange() {
+  if (props.session?.isConnected) {
+    if (document.hidden) {
+      stopTimer();
+    } else {
+      startTimer();
+    }
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('visibilitychange', handleVisibilityChange);
 });
 
 onUnmounted(() => {
-  if (timer) clearInterval(timer);
+  stopTimer();
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
 });
 
 const dataRate = computed(() => {
@@ -216,5 +241,11 @@ const duration = computed(() => {
 
 .status-dot.disconnected {
   background: var(--text-dim);
+}
+
+.status-text {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-left: 4px;
 }
 </style>

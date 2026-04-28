@@ -47,38 +47,6 @@ export function formatBytes(count: number): string {
 }
 
 /**
- * Format duration in milliseconds to human-readable string
- */
-export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-
-  if (hours > 0) {
-    return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${seconds % 60}s`;
-  }
-  return `${seconds}s`;
-}
-
-/**
- * Format baud rate with K/M suffix
- */
-export function formatBaudRate(rate: number): string {
-  if (rate >= 1000000) {
-    return `${(rate / 1000000).toFixed(1)}M`;
-  }
-  if (rate >= 1000) {
-    return `${(rate / 1000).toFixed(0)}K`;
-  }
-  return `${rate}`;
-}
-
-/**
  * Truncate string with ellipsis
  */
 export function truncate(str: string, maxLength: number): string {

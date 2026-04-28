@@ -14,14 +14,43 @@ interface AiSessionUpdateEvent {
   value: unknown;
 }
 
+const SNAPSHOT_DEBOUNCE_MS = 200;
+
 export function useAiSessionBridge() {
   const sessionStore = useSessionStore();
   const appStore = useAppStore();
   const session = computed(() => sessionStore.activeSession);
   const unlisteners: Array<() => void> = [];
+  let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastSnapshotKey = '';
+
+  function snapshotKey(): string {
+    const s = session.value;
+    if (!s) return '';
+    return `${s.id}:${s.isConnected}:${s.frames.length}:${s.logAiMessages.length}:${s.terminalAiModel}:${s.logAiModel}:${s.logAiContextMode}:${s.logAiFrameLimit}`;
+  }
+
+  function sendSnapshotDeferred() {
+    if (snapshotTimer) return;
+    snapshotTimer = setTimeout(() => {
+      snapshotTimer = null;
+      const key = snapshotKey();
+      if (key === lastSnapshotKey) return;
+      lastSnapshotKey = key;
+      emit('ai-session-snapshot', { session: session.value }).catch((err) => {
+        console.debug('failed to emit ai-session-snapshot:', err);
+      });
+    }, SNAPSHOT_DEBOUNCE_MS);
+  }
 
   async function sendSnapshot() {
-    await emit('ai-session-snapshot', { session: session.value });
+    const key = snapshotKey();
+    lastSnapshotKey = key;
+    try {
+      await emit('ai-session-snapshot', { session: session.value });
+    } catch (err) {
+      console.debug('failed to emit ai-session-snapshot:', err);
+    }
   }
 
   onMounted(async () => {
@@ -39,6 +68,10 @@ export function useAiSessionBridge() {
   });
 
   onUnmounted(() => {
+    if (snapshotTimer) {
+      clearTimeout(snapshotTimer);
+      snapshotTimer = null;
+    }
     unlisteners.forEach((unlisten) => unlisten());
     unlisteners.length = 0;
   });
@@ -60,7 +93,7 @@ export function useAiSessionBridge() {
   watch(
     () => session.value?.frames.length,
     () => {
-      void sendSnapshot();
+      sendSnapshotDeferred();
     },
   );
 
@@ -85,6 +118,7 @@ export function useAiSessionBridge() {
         sessionStore.clearLogAiMessages(event.sessionId);
         break;
       default:
+        console.debug('unknown ai-session-update action:', event.action);
         break;
     }
   }

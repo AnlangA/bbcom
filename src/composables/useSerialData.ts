@@ -6,6 +6,8 @@ import { encodeUtf8, parseHex } from '../lib/format';
 import { MAX_INPUT_SIZE } from '../types';
 import type { PortConfig } from '../types';
 
+const MAX_QUEUE_BATCH_SIZE = 10_240;
+
 export function useSerialData(sessionId: string, portName: string, config: PortConfig) {
   const serial = useSerialPort();
   const sessionStore = useSessionStore();
@@ -19,15 +21,18 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
 
   function concatUint8Arrays(chunks: Uint8Array[]): number[] {
     if (chunks.length === 0) return [];
-    if (chunks.length === 1) return Array.from(chunks[0]);
-
-    const merged = new Uint8Array(totalQueueSize);
+    if (chunks.length === 1) {
+      const c = chunks[0];
+      const out = new Array<number>(c.length);
+      for (let i = 0; i < c.length; i++) out[i] = c[i];
+      return out;
+    }
+    const out = new Array<number>(totalQueueSize);
     let offset = 0;
     for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.length;
+      for (let i = 0; i < chunk.length; i++) out[offset++] = chunk[i];
     }
-    return Array.from(merged);
+    return out;
   }
 
   async function start() {
@@ -44,6 +49,14 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
 
       dataQueue.push(bytes);
       totalQueueSize += bytes.length;
+
+      if (totalQueueSize >= MAX_QUEUE_BATCH_SIZE) {
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+        }
+        flushQueue();
+        return;
+      }
 
       if (!rafId) {
         rafId = requestAnimationFrame(flushQueue);

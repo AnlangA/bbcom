@@ -13,6 +13,8 @@ body {
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  scrollbar-width: thin;
+  scrollbar-color: #424242 transparent;
 }
 
 ::-webkit-scrollbar {

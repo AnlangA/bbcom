@@ -30,6 +30,7 @@ export function buildLogAiContext(session: SerialSession): LogAiContextResult {
 
 function selectFrames(frames: DataFrame[], mode: LogAiContextMode, frameLimit: number): DataFrame[] {
   if (mode === 'latest-n-frames') {
+    if (frameLimit <= 0) return [];
     return frames.slice(-frameLimit);
   }
   return frames;
@@ -48,6 +49,7 @@ function sanitizeText(text: string): string {
 
 function isReadable(text: string): boolean {
   if (!text.trim()) return false;
+  if (text.length === 0) return false;
   const printable = [...text].filter((ch) => {
     const code = ch.charCodeAt(0);
     return code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127);

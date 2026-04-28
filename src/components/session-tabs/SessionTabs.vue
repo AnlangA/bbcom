@@ -11,12 +11,12 @@
           :title="tabTooltip(session)"
         >
           <span class="tab-port">{{ session.portName }}</span>
-          <span v-if="session.isConnected" class="tab-status connected">●</span>
-          <span v-else class="tab-status disconnected">○</span>
-          <button class="tab-close" type="button" @click.stop="closeSession(session.id)" title="关闭会话">×</button>
+          <span v-if="session.isConnected" class="tab-status connected" aria-label="已连接">●</span>
+          <span v-else class="tab-status disconnected" aria-label="未连接">○</span>
+          <button class="tab-close" type="button" @click.stop="closeSession(session.id)" aria-label="关闭会话" title="关闭会话">×</button>
         </div>
       </div>
-      <button class="tab-add" type="button" @click="emit('create')" title="新建会话 (Ctrl+N)">+</button>
+      <button class="tab-add" type="button" @click="emit('create')" aria-label="新建会话" title="新建会话 (Ctrl+N)">+</button>
     </div>
   </div>
 </template>

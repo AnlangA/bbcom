@@ -48,11 +48,24 @@
       </div>
     </div>
   </div>
+
+  <n-modal
+    :show="showCautionConfirm"
+    preset="dialog"
+    title="确认执行 (谨慎操作)"
+    positive-text="执行"
+    negative-text="取消"
+    @positive-click="confirmCautionCommand"
+    @negative-click="showCautionConfirm = false"
+  >
+    <p>该命令风险等级为"谨慎"，请确认执行：</p>
+    <code>{{ cautionPendingCommand }}</code>
+  </n-modal>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { NButton, NInput, NSelect, NTag, useMessage } from 'naive-ui';
+import { NButton, NInput, NSelect, NTag, NModal, useMessage } from 'naive-ui';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/app';
 import { getAiErrorMessage } from '../../lib/ai-error';
@@ -68,12 +81,14 @@ interface TerminalAiResponse {
   risk: Risk;
 }
 
+const INVOKE_TIMEOUT_MS = 30_000;
+
 const props = defineProps<{
   session: SerialSession;
   bridge: ReturnType<typeof useAiWindowSession>;
 }>();
 
-const emitVue = defineEmits<{
+const emit = defineEmits<{
   (e: 'applyCommand', command: string): void;
 }>();
 
@@ -82,6 +97,8 @@ const message = useMessage();
 const prompt = ref('');
 const loading = ref(false);
 const result = ref<TerminalAiResponse | null>(null);
+const showCautionConfirm = ref(false);
+const cautionPendingCommand = ref('');
 
 const activeSession = computed(() => props.session);
 const hasApiKey = computed(() => Boolean(appStore.aiApiKey.trim()));
@@ -94,6 +111,16 @@ const riskTagType = computed(() => {
   if (!result.value) return 'default';
   return result.value.risk === 'safe' ? 'success' : result.value.risk === 'caution' ? 'warning' : 'error';
 });
+
+async function invokeAi<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
+  const result = await Promise.race([
+    invoke<T>(cmd, args),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`AI 请求超时 (${INVOKE_TIMEOUT_MS / 1000}s)`)), INVOKE_TIMEOUT_MS),
+    ),
+  ]);
+  return result;
+}
 
 async function generateCommand() {
   if (!canGenerate.value) return;
@@ -108,7 +135,7 @@ async function generateCommand() {
   loading.value = true;
   result.value = null;
   try {
-    const response = await invoke<TerminalAiResponse>('terminal_ai_assist', {
+    const response = await invokeAi<TerminalAiResponse>('terminal_ai_assist', {
       request: {
         prompt: prompt.value.trim(),
         apiKey: appStore.aiApiKey,
@@ -118,8 +145,13 @@ async function generateCommand() {
       },
     });
     result.value = response;
-    if (response.command && response.risk !== 'dangerous') {
-      applyCommandToApp(response.command);
+    if (response.command) {
+      if (response.risk === 'caution') {
+        cautionPendingCommand.value = response.command;
+        showCautionConfirm.value = true;
+      } else if (response.risk === 'safe') {
+        applyCommandToApp(response.command);
+      }
     }
   } catch (e: unknown) {
     message.error(getAiErrorMessage(e, 'AI 命令生成失败'));
@@ -128,20 +160,35 @@ async function generateCommand() {
   }
 }
 
+function confirmCautionCommand() {
+  showCautionConfirm.value = false;
+  applyCommandToApp(cautionPendingCommand.value);
+}
+
 async function copyCommand() {
   if (!result.value?.command) return;
-  await navigator.clipboard.writeText(result.value.command);
-  message.success('命令已复制');
+  try {
+    await navigator.clipboard.writeText(result.value.command);
+    message.success('命令已复制');
+  } catch (err) {
+    console.debug('clipboard copy failed:', err);
+    message.error('复制失败');
+  }
 }
 
 function applyCommand() {
   if (!result.value?.command) return;
+  if (result.value.risk === 'caution') {
+    cautionPendingCommand.value = result.value.command;
+    showCautionConfirm.value = true;
+    return;
+  }
   applyCommandToApp(result.value.command);
 }
 
 function applyCommandToApp(command: string) {
   void props.bridge.applyCommand(command);
-  emitVue('applyCommand', command);
+  emit('applyCommand', command);
 }
 
 function setTerminalModel(model: AiModel) {
@@ -247,8 +294,8 @@ function setTerminalModel(model: AiModel) {
   border-color: rgba(255, 194, 87, 0.45);
 }
 
-:global(.ai-model-menu) {
-  max-height: 72px !important;
-  overflow-y: auto !important;
+:deep(.ai-model-menu) {
+  max-height: 72px;
+  overflow-y: auto;
 }
 </style>

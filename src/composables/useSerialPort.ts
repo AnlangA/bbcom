@@ -74,12 +74,13 @@ export function useSerialPort() {
         flowControl: mapFlowControl(config.flowControl),
       });
       await p.open();
-      // 必须调用 startListening 才能让后端开始读取串口数据并发射事件
       await p.startListening();
       port.value = p;
       return true;
     } catch (e) {
-      error.value = String(e);
+      const msg = e instanceof Error ? e.message : String(e);
+      error.value = msg;
+      console.debug('serial connect failed:', msg);
       return false;
     } finally {
       isConnecting.value = false;
@@ -91,8 +92,8 @@ export function useSerialPort() {
     try {
       await port.value.stopListening();
       await port.value.close();
-    } catch {
-      // ignore
+    } catch (err) {
+      console.debug('serial disconnect cleanup error:', err);
     }
     port.value = null;
   }
@@ -106,21 +107,21 @@ export function useSerialPort() {
         await port.value.write(data);
       }
       return true;
-    } catch {
+    } catch (err) {
+      console.debug('serial write error:', err);
       return false;
     }
   }
 
   async function listen(callback: (data: string | number[]) => void) {
     if (!port.value) return null;
-    // 使用 isDecode=false 获取原始字节数据，保证数据完整性
     return await port.value.listen(callback, false);
   }
 
   onUnmounted(() => {
     if (port.value) {
-      port.value.stopListening().catch(() => {});
-      port.value.close().catch(() => {});
+      port.value.stopListening().catch((err) => console.debug('serial unmount stopListening error:', err));
+      port.value.close().catch((err) => console.debug('serial unmount close error:', err));
       port.value = null;
     }
   });

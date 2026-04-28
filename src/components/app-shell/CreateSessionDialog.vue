@@ -93,7 +93,7 @@ watch(
     parity.value = config.parity;
     flowControl.value = config.flowControl;
   },
-  { immediate: true, deep: true },
+  { immediate: true },
 );
 
 function createSession() {
