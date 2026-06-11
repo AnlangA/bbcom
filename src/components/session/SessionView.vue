@@ -84,12 +84,13 @@ import { onMounted } from 'vue';
 import { NButton, NTag, NDropdown, NSelect } from 'naive-ui';
 import DataPacketList from '../terminal/DataPacketList.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
-import { useSerialData } from '../../composables/useSerialData';
+import { useSerialConnection } from '../../composables/useSerialConnection';
 import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
 import { useExport } from '../../composables/useExport';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { useMessage } from 'naive-ui';
+import { EXPORT_OPTIONS, type ExportFormat } from '../../lib/constants';
 import type { DisplayMode, SerialSession } from '../../types';
 
 const props = defineProps<{
@@ -101,10 +102,15 @@ const appStore = useAppStore();
 const { requestClearFrames } = useSessionActions();
 const { isExporting, exportData } = useExport();
 const message = useMessage();
-const serialState = useSerialData(
+const serialState = useSerialConnection(
   props.session.id,
   props.session.portName,
   props.session.portConfig,
+  {
+    onDisconnect: () => {
+      message.warning('串口已断开');
+    },
+  },
 );
 
 const displayModeOptions: { label: string; value: DisplayMode }[] = [
@@ -114,13 +120,7 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   { label: 'UTF-8', value: 'UTF8' },
 ];
 
-const exportOptions = [
-  { label: '导出为 TXT (HEX)', key: 'txt-hex' },
-  { label: '导出为 TXT (ASCII)', key: 'txt-ascii' },
-  { label: '导出为 CSV', key: 'csv' },
-  { label: '导出为 JSON Lines', key: 'jsonl' },
-  { label: '导出为 BIN', key: 'bin' },
-];
+const exportOptions = EXPORT_OPTIONS;
 
 onMounted(() => {
   sessionStore.registerCleanup(props.session.id, serialState.stop);
@@ -180,7 +180,7 @@ function toggleAutoLog() {
 }
 
 async function handleExport(format: string) {
-  const ok = await exportData(props.session.frames, format as 'txt-hex' | 'txt-ascii' | 'csv' | 'jsonl' | 'bin');
+  const ok = await exportData(props.session.frames, format as ExportFormat);
   if (ok) {
     message.success('导出成功');
   } else if (props.session.frames.length > 0) {

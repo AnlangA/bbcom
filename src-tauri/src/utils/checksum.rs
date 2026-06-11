@@ -1,4 +1,4 @@
-use crc::{Crc, CRC_8_SMBUS, CRC_16_IBM_SDLC, CRC_32_ISO_HDLC};
+use crc::{CRC_8_SMBUS, CRC_16_IBM_SDLC, CRC_32_ISO_HDLC, Crc};
 
 pub fn calculate_checksum(data: &[u8]) -> String {
     let sum: u32 = data.iter().map(|&b| b as u32).sum();

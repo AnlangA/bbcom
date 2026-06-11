@@ -17,14 +17,14 @@ export function usePacketVirtualScroll({
 }: PacketVirtualScrollOptions) {
   const scrollRef = ref<HTMLDivElement | null>(null);
   const shouldAutoScroll = ref(true);
-  let measureTimer: ReturnType<typeof setTimeout> | null = null;
+  let measureTimer: number | null = null;
 
   const virtualizer = useVirtualizer(
     computed(() => ({
       count: visibleFrames.value.length,
       getScrollElement: () => scrollRef.value,
       estimateSize: () => ROW_HEIGHT,
-      overscan: 20,
+      overscan: 15,
     })),
   );
 
@@ -33,10 +33,10 @@ export function usePacketVirtualScroll({
 
   function scheduleMeasure() {
     if (measureTimer) return;
-    measureTimer = setTimeout(() => {
+    measureTimer = requestAnimationFrame(() => {
       measureTimer = null;
       virtualizer.value.measure();
-    }, 80);
+    });
   }
 
   function onScroll() {

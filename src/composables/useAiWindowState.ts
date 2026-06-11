@@ -1,10 +1,6 @@
 import { ref, onMounted, onUnmounted } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-
-interface AiWindowState {
-  visible: boolean;
-}
+import { getAiWindowState, hideAiWindow, showAiWindow, type AiWindowState } from '../lib/ipc';
 
 export function useAiWindowState() {
   const visible = ref(false);
@@ -12,7 +8,7 @@ export function useAiWindowState() {
 
   async function refresh() {
     try {
-      const state = await invoke<AiWindowState>('get_ai_window_state');
+      const state = await getAiWindowState();
       visible.value = state.visible;
     } catch {
       visible.value = false;
@@ -22,10 +18,10 @@ export function useAiWindowState() {
   async function toggle() {
     try {
       if (visible.value) {
-        await invoke('hide_ai_window');
+        await hideAiWindow();
         visible.value = false;
       } else {
-        await invoke('show_ai_window');
+        await showAiWindow();
         visible.value = true;
       }
     } catch {

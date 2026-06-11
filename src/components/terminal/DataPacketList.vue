@@ -125,6 +125,8 @@ const directionOptions: { label: string; value: DirectionFilter }[] = [
   { label: 'TX', value: 'TX' },
   { label: 'RX', value: 'RX' },
 ];
+const MAX_COPY_BYTES = 2 * 1024 * 1024;
+const MAX_COPY_FRAMES = 5000;
 
 const gridStyle = computed(() => ({
   gridTemplateColumns: appStore.showTimestamp ? '50px 160px 1fr 50px' : '50px 1fr 50px',
@@ -219,6 +221,11 @@ async function handleCtxSelect(key: string) {
 
 async function handleCopySelect(key: string) {
   const frames = key.startsWith('all') ? props.frames : filteredFrames.value;
+  const totalBytes = frames.reduce((sum, frame) => sum + frame.data.length, 0);
+  if (frames.length > MAX_COPY_FRAMES || totalBytes > MAX_COPY_BYTES) {
+    message.warning('复制内容过大，请先筛选或使用导出');
+    return;
+  }
   const asHex = key.endsWith('hex');
   const text = frames.map((frame) => {
     const data = asHex ? formatHex(frame.data) : formatUtf8(frame.data);

@@ -100,23 +100,19 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
-import { invoke } from '@tauri-apps/api/core';
 import { encodeUtf8, isValidHex as checkValidHex, normalizeHex, parseHex } from '../../lib/format';
 import { MAX_INPUT_SIZE } from '../../types';
 import { useAppStore } from '../../stores/app';
 import { useSessionStore } from '../../stores/sessions';
-import type { LineEnding, QuickCommand } from '../../types';
-
-export interface HistoryEntry {
-  data: string;
-  isHex: boolean;
-}
+import { calculateChecksum } from '../../lib/ipc';
+import { CHECKSUM_OPTIONS, type ChecksumAlgorithm } from '../../lib/constants';
+import type { LineEnding, QuickCommand, SendHistoryEntry } from '../../types';
 
 const props = defineProps<{
   onSend: (data: string, isHex: boolean) => Promise<boolean>;
   modelValue: string;
   disabled?: boolean;
-  history: HistoryEntry[];
+  history: SendHistoryEntry[];
   quickCommands: QuickCommand[];
 }>();
 
@@ -142,7 +138,7 @@ const loopInterval = computed({
   get: () => appStore.loopIntervalMs,
   set: (value) => appStore.setLoopIntervalMs(value ?? 1000),
 });
-const appendChecksum = ref<'none' | 'CHECKSUM' | 'CRC8' | 'CRC16' | 'CRC32'>('none');
+const appendChecksum = ref<'none' | ChecksumAlgorithm>('none');
 const looping = ref(false);
 const quickName = ref('');
 let loopTimer: ReturnType<typeof setInterval> | null = null;
@@ -154,13 +150,7 @@ const lineEndingOptions = [
   { label: 'CRLF', value: 'CRLF' },
 ];
 
-const checksumOptions = [
-  { label: '无校验', value: 'none' },
-  { label: 'Checksum', value: 'CHECKSUM' },
-  { label: 'CRC-8', value: 'CRC8' },
-  { label: 'CRC-16', value: 'CRC16' },
-  { label: 'CRC-32', value: 'CRC32' },
-];
+const checksumOptions = [{ label: '无校验', value: 'none' }, ...CHECKSUM_OPTIONS];
 
 const isValidHex = computed(() => {
   if (!isHex.value || !props.modelValue.trim()) return true;
@@ -221,9 +211,7 @@ async function buildData(): Promise<string | null> {
   if (isHex.value && appendChecksum.value !== 'none') {
     const payload = parseHex(data);
     try {
-      const res = await invoke<{ result: string }>('calculate_checksum', {
-        request: { data: payload, algorithm: appendChecksum.value },
-      });
+      const res = await calculateChecksum(payload, appendChecksum.value);
       data = data + ' ' + res.result;
     } catch {
       message.warning('校验和计算失败，将发送原始数据');
@@ -270,7 +258,7 @@ function stopLoop() {
   looping.value = false;
 }
 
-function resend(item: HistoryEntry) {
+function resend(item: SendHistoryEntry) {
   if (props.disabled) return;
   props.onSend(item.data, item.isHex).then((ok) => {
     if (!ok) {

@@ -105,13 +105,13 @@
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue';
 import { NSelect, NButton, NInput } from 'naive-ui';
-import { invoke } from '@tauri-apps/api/core';
 import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { formatHex, isValidHex, parseHex } from '../../lib/format';
-import { BAUD_RATES, DATA_BITS_OPTIONS, STOP_BITS_OPTIONS, PARITY_OPTIONS, FLOW_CONTROL_OPTIONS } from '../../lib/constants';
+import { calculateChecksum } from '../../lib/ipc';
+import { BAUD_RATES, DATA_BITS_OPTIONS, STOP_BITS_OPTIONS, PARITY_OPTIONS, FLOW_CONTROL_OPTIONS, CHECKSUM_OPTIONS, type ChecksumAlgorithm } from '../../lib/constants';
 
 const serialStore = useSerialStore();
 const sessionStore = useSessionStore();
@@ -182,16 +182,11 @@ const parityOptions = PARITY_OPTIONS;
 const flowControlOptions = FLOW_CONTROL_OPTIONS;
 
 const checksumInput = ref('');
-const checksumAlgo = ref<'CHECKSUM' | 'CRC8' | 'CRC16' | 'CRC32'>('CHECKSUM');
+const checksumAlgo = ref<ChecksumAlgorithm>('CHECKSUM');
 const checksumResult = ref('');
 let checksumTimer: ReturnType<typeof setTimeout> | null = null;
 
-const checksumAlgoOptions = [
-  { label: 'Checksum', value: 'CHECKSUM' },
-  { label: 'CRC-8', value: 'CRC8' },
-  { label: 'CRC-16', value: 'CRC16' },
-  { label: 'CRC-32', value: 'CRC32' },
-];
+const checksumAlgoOptions = CHECKSUM_OPTIONS;
 
 const isValidHexInput = computed(() => {
   if (!checksumInput.value.trim()) return true;
@@ -218,9 +213,7 @@ async function calcChecksum() {
   if (!checksumInput.value || !isValidHexInput.value) return;
   const data = parseHex(checksumInput.value);
   try {
-    const res = await invoke<{ result: string }>('calculate_checksum', {
-      request: { data, algorithm: checksumAlgo.value },
-    });
+    const res = await calculateChecksum(data, checksumAlgo.value);
     checksumResult.value = res.result;
   } catch {
     checksumResult.value = '计算失败';

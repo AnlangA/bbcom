@@ -9,6 +9,7 @@ pub struct DataFrame {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum Direction {
     Tx,
     Rx,

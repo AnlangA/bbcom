@@ -2,7 +2,7 @@
   <div class="ai-assistant">
     <div class="drag-handle" @pointerdown="startDrag">
       <div class="title-group">
-        <button class="ai-orb" type="button" @click.stop="expanded = !expanded">
+        <button class="ai-orb" type="button" @pointerdown.stop @click.stop="expanded = !expanded">
           AI
         </button>
         <div>
@@ -10,7 +10,7 @@
           <div class="drag-subtitle">自然语言生成串口终端命令</div>
         </div>
       </div>
-      <div class="window-actions">
+      <div class="window-actions" @pointerdown.stop>
         <n-button size="tiny" quaternary @click.stop="toggleAlwaysOnTop">
           {{ alwaysOnTop ? '取消置顶' : '置顶' }}
         </n-button>
@@ -94,23 +94,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { NButton, NInput, NSelect, NSwitch, NTag, useMessage } from 'naive-ui';
-import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAppStore } from '../../stores/app';
-
-type Risk = 'safe' | 'caution' | 'dangerous';
-
-interface TerminalAiResponse {
-  command: string;
-  explanation: string;
-  risk: Risk;
-}
-
-interface CommandErrorDetails {
-  message?: string;
-}
+import { AI_MODEL_OPTIONS } from '../../lib/constants';
+import { getCommandErrorMessage, startAiWindowDrag, terminalAiAssist, type TerminalAiResponse } from '../../lib/ipc';
 
 const emitVue = defineEmits<{
   (e: 'applyCommand', command: string): void;
@@ -125,12 +114,7 @@ const expanded = ref(false);
 const alwaysOnTop = ref(true);
 const result = ref<TerminalAiResponse | null>(null);
 
-const modelOptions = [
-  { label: 'GLM-5.1', value: 'glm-5.1' },
-  { label: 'GLM-5 Turbo', value: 'glm-5-turbo' },
-  { label: 'GLM-4.7', value: 'glm-4.7' },
-  { label: 'GLM-4.5 Air', value: 'glm-4.5-air' },
-];
+const modelOptions = AI_MODEL_OPTIONS;
 const modelMenuProps = {
   class: 'ai-model-menu',
   style: 'max-height: 72px;',
@@ -155,9 +139,23 @@ onMounted(async () => {
   }
 });
 
-function saveApiKey() {
-  appStore.setAiApiKey(apiKeyDraft.value.trim());
-  message.success('AI Key 已保存到本地设置');
+watch(
+  () => appStore.aiApiKey,
+  (value) => {
+    if (value !== apiKeyDraft.value) {
+      apiKeyDraft.value = value;
+    }
+  },
+  { immediate: true }
+);
+
+async function saveApiKey() {
+  const ok = await appStore.setAiApiKey(apiKeyDraft.value.trim());
+  if (ok) {
+    message.success('AI Key 已保存到本地设置');
+  } else {
+    message.error('AI Key 保存失败');
+  }
 }
 
 async function generateCommand() {
@@ -170,35 +168,23 @@ async function generateCommand() {
   loading.value = true;
   result.value = null;
   try {
-    const response = await invoke<TerminalAiResponse>('terminal_ai_assist', {
-      request: {
-        prompt: prompt.value.trim(),
-        apiKey: appStore.aiApiKey,
-        model: appStore.aiModel,
-        enableCodingPlan: appStore.aiEnableCodingPlan,
-        shell: 'linux/busybox',
-      },
+    const response = await terminalAiAssist({
+      prompt: prompt.value.trim(),
+      apiKey: appStore.aiApiKey,
+      model: appStore.aiModel,
+      enableCodingPlan: appStore.aiEnableCodingPlan,
+      shell: 'linux/busybox',
     });
     result.value = response;
     if (response.command && response.risk !== 'dangerous') {
       applyCommandToApp(response.command);
     }
   } catch (e: unknown) {
-    const errMsg = getErrorMessage(e);
+    const errMsg = getCommandErrorMessage(e, 'AI 命令生成失败');
     message.error(errMsg);
   } finally {
     loading.value = false;
   }
-}
-
-function getErrorMessage(error: unknown): string {
-  if (typeof error === 'string') return error;
-  if (!error || typeof error !== 'object') return 'AI 命令生成失败';
-  const record = error as Record<string, unknown>;
-  const details = record.details as CommandErrorDetails | undefined;
-  if (details?.message) return details.message;
-  if (typeof record.message === 'string') return record.message;
-  return 'AI 命令生成失败';
 }
 
 async function copyCommand() {
@@ -217,9 +203,18 @@ function applyCommandToApp(command: string) {
   emitVue('applyCommand', command);
 }
 
-async function startDrag() {
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(
+    target.closest('button, input, textarea, select, [role="button"], .n-button, .n-input, .n-select, .n-switch')
+  );
+}
+
+async function startDrag(event: PointerEvent) {
+  if (event.button !== 0 || isInteractiveTarget(event.target)) return;
+
   try {
-    await invoke('start_ai_window_drag');
+    await startAiWindowDrag();
   } catch {
     // ignore
   }

@@ -7,8 +7,16 @@
 </template>
 
 <script setup lang="ts">
+import { onErrorCaptured } from 'vue';
 import { darkTheme, NConfigProvider, NMessageProvider } from 'naive-ui';
 import AppShell from './components/app-shell/AppShell.vue';
+
+onErrorCaptured((err, _instance, info) => {
+  // Component error captured
+  void err;
+  void info;
+  return false;
+});
 
 const themeOverrides = {
   common: {

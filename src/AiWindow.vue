@@ -9,11 +9,18 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref } from 'vue';
+import { nextTick, onMounted, onUnmounted, onErrorCaptured, ref } from 'vue';
 import { darkTheme, NConfigProvider, NMessageProvider } from 'naive-ui';
 import { emit } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
 import AiTerminalAssistant from './components/send-panel/AiTerminalAssistant.vue';
+import { resizeAiWindow } from './lib/ipc';
+
+onErrorCaptured((err, _instance, info) => {
+  // AI Window error captured
+  void err;
+  void info;
+  return false;
+});
 
 const contentEl = ref<HTMLElement | null>(null);
 let observer: ResizeObserver | null = null;
@@ -27,12 +34,7 @@ function scheduleResize() {
 async function resizeToContent() {
   if (!contentEl.value) return;
   const rect = contentEl.value.getBoundingClientRect();
-  await invoke('resize_ai_window', {
-    request: {
-      width: Math.ceil(rect.width),
-      height: Math.ceil(rect.height) + 28,
-    },
-  });
+  await resizeAiWindow(Math.ceil(rect.width), Math.ceil(rect.height) + 28);
 }
 
 onMounted(async () => {

@@ -27,6 +27,10 @@ import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
 import type { SerialSession } from '../../types';
 
+const emit = defineEmits<{
+  (e: 'create'): void;
+}>();
+
 const sessionStore = useSessionStore();
 const { requestCloseSession } = useSessionActions();
 
@@ -46,10 +50,6 @@ function tabTooltip(session: SerialSession): string {
   const frames = session.frames.length;
   return `${session.portName} | ${baud} bps | ${frames} 帧 | ${status}`;
 }
-
-const emit = defineEmits<{
-  (e: 'create'): void;
-}>();
 </script>
 
 <style scoped>

@@ -1,12 +1,13 @@
 import { ref } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import type { DataFrame } from '../types';
+import { invokeExportData } from '../lib/ipc';
+import type { ExportFormat } from '../lib/constants';
 
 export function useExport() {
   const isExporting = ref(false);
 
-  async function exportData(frames: DataFrame[], format: string) {
+  async function exportData(frames: DataFrame[], format: ExportFormat) {
     isExporting.value = true;
     try {
       const extMap: Record<string, { name: string; ext: string }> = {
@@ -27,13 +28,7 @@ export function useExport() {
       });
       if (!path) return false;
 
-      await invoke('export_data', {
-        request: {
-          frames,
-          format,
-          path,
-        },
-      });
+      await invokeExportData(frames, format, path);
       return true;
     } catch {
       return false;

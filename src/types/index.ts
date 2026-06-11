@@ -11,7 +11,7 @@ export interface DataFrame {
   id: string;
   direction: Direction;
   timestamp: string;
-  data: number[];
+  data: Uint8Array;
 }
 
 // Serial port configuration
@@ -61,4 +61,4 @@ export type ChecksumType = 'CHECKSUM' | 'CRC8' | 'CRC16' | 'CRC32';
 export const MAX_FRAMES = 10000;
 export const MAX_HISTORY = 20;
 export const MAX_INPUT_SIZE = 1024 * 1024; // 1MB
-export const CACHE_SIZE = 2000;
+export const CACHE_SIZE = 5000;
