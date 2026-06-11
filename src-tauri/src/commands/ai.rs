@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{Emitter, LogicalSize, Manager};
 use zai_rs::model::{
     chat_base_request::ChatBody, chat_base_response::ChatCompletionResponse, traits::*, *,
 };
@@ -36,83 +35,6 @@ pub struct TerminalAiResponse {
     pub command: String,
     pub explanation: String,
     pub risk: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AiWindowState {
-    pub visible: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResizeAiWindowRequest {
-    pub width: f64,
-    pub height: f64,
-}
-
-#[tauri::command]
-pub fn show_ai_window(app: tauri::AppHandle) -> Result<(), AppError> {
-    let window = app
-        .get_webview_window("ai-assistant")
-        .ok_or_else(|| AppError::AiError {
-            message: "AI 窗口不存在".to_string(),
-        })?;
-    window.show().map_err(|e| AppError::AiError {
-        message: e.to_string(),
-    })?;
-    window.set_focus().ok();
-    app.emit("ai-window-state", AiWindowState { visible: true }).ok();
-    Ok(())
-}
-
-#[tauri::command]
-pub fn hide_ai_window(app: tauri::AppHandle) -> Result<(), AppError> {
-    let window = app
-        .get_webview_window("ai-assistant")
-        .ok_or_else(|| AppError::AiError {
-            message: "AI 窗口不存在".to_string(),
-        })?;
-    window.hide().map_err(|e| AppError::AiError {
-        message: e.to_string(),
-    })?;
-    app.emit("ai-window-state", AiWindowState { visible: false }).ok();
-    Ok(())
-}
-
-#[tauri::command]
-pub fn get_ai_window_state(app: tauri::AppHandle) -> Result<AiWindowState, AppError> {
-    let visible = app
-        .get_webview_window("ai-assistant")
-        .and_then(|w| w.is_visible().ok())
-        .unwrap_or(false);
-    Ok(AiWindowState { visible })
-}
-
-#[tauri::command]
-pub fn resize_ai_window(
-    app: tauri::AppHandle,
-    request: ResizeAiWindowRequest,
-) -> Result<(), AppError> {
-    let window = app
-        .get_webview_window("ai-assistant")
-        .ok_or_else(|| AppError::AiError {
-            message: "AI 窗口不存在".to_string(),
-        })?;
-    let width = request.width.clamp(420.0, 920.0);
-    let height = request.height.clamp(112.0, 560.0);
-    window
-        .set_size(LogicalSize::new(width, height))
-        .map_err(|e| AppError::AiError {
-            message: e.to_string(),
-        })
-}
-
-#[tauri::command]
-pub fn start_ai_window_drag(window: tauri::Window) -> Result<(), AppError> {
-    window.start_dragging().map_err(|e| AppError::AiError {
-        message: e.to_string(),
-    })
 }
 
 #[tauri::command]
@@ -207,24 +129,103 @@ fn extract_text_from_content(value: &Value) -> Option<String> {
 }
 
 fn parse_terminal_ai_response(content: &str) -> Result<TerminalAiResponse, AppError> {
-    let cleaned = content
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
+    let cleaned = extract_json_payload(content);
 
     let mut response: TerminalAiResponse =
-        serde_json::from_str(cleaned).map_err(|e| AppError::AiError {
+        serde_json::from_str(&cleaned).map_err(|e| AppError::AiError {
             message: format!("AI 返回格式无效: {e}"),
         })?;
 
-    response.command = response.command.trim().lines().next().unwrap_or("").to_string();
+    response.command = response
+        .command
+        .trim()
+        .lines()
+        .next()
+        .unwrap_or("")
+        .to_string();
     response.explanation = response.explanation.trim().to_string();
-    response.risk = match response.risk.as_str() {
-        "safe" | "caution" | "dangerous" => response.risk,
+    let risk = response.risk.trim().to_ascii_lowercase();
+    response.risk = match risk.as_str() {
+        "safe" | "caution" | "dangerous" => risk,
         _ => "caution".to_string(),
     };
 
     Ok(response)
+}
+
+fn extract_json_payload(content: &str) -> String {
+    let trimmed = content.trim();
+    if trimmed.starts_with("```") {
+        let mut lines = trimmed.lines();
+        let _fence = lines.next();
+        let body = lines
+            .take_while(|line| !line.trim_start().starts_with("```"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return body.trim().to_string();
+    }
+
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if start < end {
+            return trimmed[start..=end].trim().to_string();
+        }
+    }
+
+    trimmed.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_plain_json_response() {
+        let response = parse_terminal_ai_response(
+            r#"{"command":"pwd","explanation":"显示当前目录","risk":"safe"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.command, "pwd");
+        assert_eq!(response.explanation, "显示当前目录");
+        assert_eq!(response.risk, "safe");
+    }
+
+    #[test]
+    fn parses_fenced_json_response() {
+        let response = parse_terminal_ai_response(
+            "```json\n{\"command\":\"ls -la\",\"explanation\":\"列出文件\",\"risk\":\"caution\"}\n```",
+        )
+        .unwrap();
+
+        assert_eq!(response.command, "ls -la");
+        assert_eq!(response.risk, "caution");
+    }
+
+    #[test]
+    fn extracts_embedded_json_response() {
+        let response = parse_terminal_ai_response(
+            "result: {\"command\":\"cat /proc/cpuinfo\",\"explanation\":\"查看 CPU 信息\",\"risk\":\"safe\"}",
+        )
+        .unwrap();
+
+        assert_eq!(response.command, "cat /proc/cpuinfo");
+    }
+
+    #[test]
+    fn trims_command_to_one_line_and_downgrades_unknown_risk() {
+        let response = parse_terminal_ai_response(
+            r#"{"command":"pwd\nrm -rf /","explanation":"  test  ","risk":"unknown"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.command, "pwd");
+        assert_eq!(response.explanation, "test");
+        assert_eq!(response.risk, "caution");
+    }
+
+    #[test]
+    fn rejects_invalid_json_response() {
+        let err = parse_terminal_ai_response("not json").unwrap_err();
+        assert!(matches!(err, AppError::AiError { .. }));
+    }
 }
