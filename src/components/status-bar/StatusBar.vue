@@ -2,6 +2,7 @@
   <div class="status-bar">
     <template v-if="session">
       <div class="stat">
+        <Usb class="icon-sm stat-icon" />
         <span class="stat-label">端口</span>
         <span class="stat-value port-name">{{ session.portName }}</span>
       </div>
@@ -42,6 +43,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
+import { Usb } from 'lucide-vue-next';
 import type { SerialSession } from '../../types';
 import { formatBytes } from '../../lib/format';
 
@@ -57,42 +59,49 @@ let lastSampleTime = 0;
 const txRate = ref(0);
 const rxRate = ref(0);
 
-watch(() => props.session?.isConnected, (connected) => {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
-  }
-  if (connected) {
+watch(
+  () => props.session?.isConnected,
+  (connected) => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    if (connected) {
+      prevTxBytes = props.session?.txBytes ?? 0;
+      prevRxBytes = props.session?.rxBytes ?? 0;
+      lastSampleTime = Date.now();
+      timer = setInterval(() => {
+        now.value = Date.now();
+        if (props.session) {
+          const elapsed = (now.value - lastSampleTime) / 1000;
+          if (elapsed > 0) {
+            txRate.value = Math.round((props.session.txBytes - prevTxBytes) / elapsed);
+            rxRate.value = Math.round((props.session.rxBytes - prevRxBytes) / elapsed);
+          }
+          prevTxBytes = props.session.txBytes;
+          prevRxBytes = props.session.rxBytes;
+          lastSampleTime = now.value;
+        }
+      }, 1000);
+    } else {
+      txRate.value = 0;
+      rxRate.value = 0;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.session?.id,
+  () => {
+    now.value = Date.now();
     prevTxBytes = props.session?.txBytes ?? 0;
     prevRxBytes = props.session?.rxBytes ?? 0;
     lastSampleTime = Date.now();
-    timer = setInterval(() => {
-      now.value = Date.now();
-      if (props.session) {
-        const elapsed = (now.value - lastSampleTime) / 1000;
-        if (elapsed > 0) {
-          txRate.value = Math.round((props.session.txBytes - prevTxBytes) / elapsed);
-          rxRate.value = Math.round((props.session.rxBytes - prevRxBytes) / elapsed);
-        }
-        prevTxBytes = props.session.txBytes;
-        prevRxBytes = props.session.rxBytes;
-        lastSampleTime = now.value;
-      }
-    }, 1000);
-  } else {
     txRate.value = 0;
     rxRate.value = 0;
-  }
-}, { immediate: true });
-
-watch(() => props.session?.id, () => {
-  now.value = Date.now();
-  prevTxBytes = props.session?.txBytes ?? 0;
-  prevRxBytes = props.session?.rxBytes ?? 0;
-  lastSampleTime = Date.now();
-  txRate.value = 0;
-  rxRate.value = 0;
-});
+  },
+);
 
 onUnmounted(() => {
   if (timer) clearInterval(timer);
@@ -120,17 +129,16 @@ const duration = computed(() => {
   const h = Math.floor(m / 60);
   return `${h.toString().padStart(2, '0')}:${(m % 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 });
-
 </script>
 
 <style scoped>
 .status-bar {
-  height: 26px;
+  height: var(--statusbar-height);
   padding: 0 12px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  background: var(--bg-tertiary);
+  gap: 7px;
+  background: var(--bg-secondary);
   color: var(--text-secondary);
   font-size: 11px;
   font-family: var(--font-mono);
@@ -143,8 +151,14 @@ const duration = computed(() => {
 .stat {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   white-space: nowrap;
+  min-height: 20px;
+  padding: 0 2px;
+}
+
+.stat-icon {
+  color: var(--text-dim);
 }
 
 .stat-label {
@@ -183,8 +197,12 @@ const duration = computed(() => {
 }
 
 .divider {
-  color: var(--border-color);
-  margin: 0 1px;
+  width: 1px;
+  height: 14px;
+  overflow: hidden;
+  color: transparent;
+  background: var(--border-subtle);
+  margin: 0 2px;
   user-select: none;
 }
 
@@ -199,19 +217,21 @@ const duration = computed(() => {
   position: sticky;
   right: 0;
   padding-left: var(--space-sm);
-  background: var(--bg-tertiary);
+  background: var(--bg-secondary);
 }
 
 .status-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  transition: background var(--transition-normal), box-shadow var(--transition-normal);
+  transition:
+    background var(--transition-normal),
+    box-shadow var(--transition-normal);
 }
 
 .status-dot.connected {
   background: var(--accent-green);
-  box-shadow: 0 0 6px rgba(76, 175, 80, 0.6);
+  box-shadow: 0 0 0 3px var(--accent-green-subtle);
 }
 
 .status-dot.disconnected {

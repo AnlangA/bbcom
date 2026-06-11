@@ -15,12 +15,18 @@
         :disabled="!canGenerate"
         @click="generateCommand"
       >
+        <template #icon>
+          <WandSparkles class="icon-sm" />
+        </template>
         生成
       </n-button>
     </div>
 
     <div v-if="activeSession" class="settings-panel">
-      <span class="field-label">命令模型</span>
+      <span class="field-label">
+        <Terminal class="icon-sm" />
+        命令模型
+      </span>
       <n-select
         size="small"
         :value="activeSession.terminalAiModel"
@@ -33,16 +39,22 @@
     <div v-if="result" class="result-row" :class="`risk-${result.risk}`">
       <div class="result-main">
         <div class="result-meta">
-          <n-tag size="small" round :type="riskTagType">{{ riskLabel }}</n-tag>
+          <n-tag size="small" round :type="riskTagType" :bordered="false">{{ riskLabel }}</n-tag>
           <span class="explanation">{{ result.explanation }}</span>
         </div>
         <code class="command">{{ result.command || '需要更多信息' }}</code>
       </div>
       <div class="result-actions">
         <n-button size="tiny" secondary @click="copyCommand" :disabled="!result.command">
+          <template #icon>
+            <Copy class="icon-sm" />
+          </template>
           复制
         </n-button>
         <n-button size="tiny" type="primary" @click="applyCommand" :disabled="!result.command">
+          <template #icon>
+            <SendHorizontal class="icon-sm" />
+          </template>
           填入输入框
         </n-button>
       </div>
@@ -53,6 +65,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { NButton, NInput, NSelect, NTag, useMessage } from 'naive-ui';
+import { Copy, SendHorizontal, Terminal, WandSparkles } from 'lucide-vue-next';
 import { useAppStore } from '../../stores/app';
 import { getAiErrorMessage } from '../../lib/ai-error';
 import { terminalAiAssist, type TerminalAiResponse } from '../../lib/ipc';
@@ -167,12 +180,16 @@ function setTerminalModel(model: AiModel) {
 
 .settings-panel {
   padding: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.018);
+  box-shadow: var(--shadow-inset);
 }
 
 .field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 700;
@@ -182,10 +199,11 @@ function setTerminalModel(model: AiModel) {
 .result-row {
   align-items: stretch;
   min-height: 48px;
-  padding: 8px;
-  border-radius: 10px;
+  padding: 9px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.028);
+  background: var(--bg-tertiary);
+  box-shadow: var(--shadow-inset);
 }
 
 .result-main {
@@ -207,9 +225,10 @@ function setTerminalModel(model: AiModel) {
   color: var(--accent-green);
   font-family: var(--font-mono);
   font-size: 12px;
-  padding: 5px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.26);
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
   word-break: break-all;
   white-space: pre-wrap;
   max-height: 120px;
@@ -233,11 +252,13 @@ function setTerminalModel(model: AiModel) {
 }
 
 .risk-dangerous {
-  border-color: rgba(255, 95, 95, 0.45);
+  border-color: rgba(255, 107, 122, 0.45);
+  background: rgba(255, 107, 122, 0.08);
 }
 
 .risk-caution {
-  border-color: rgba(255, 194, 87, 0.45);
+  border-color: rgba(255, 191, 95, 0.45);
+  background: rgba(255, 191, 95, 0.07);
 }
 
 :global(.ai-model-menu) {

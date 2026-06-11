@@ -2,7 +2,10 @@
   <div class="log-assistant">
     <div class="settings-row">
       <div class="field-group">
-        <span class="field-label">日志模型</span>
+        <span class="field-label">
+          <Bot class="icon-sm" />
+          日志模型
+        </span>
         <n-select
           size="small"
           :value="session.logAiModel"
@@ -12,7 +15,10 @@
         />
       </div>
       <div class="field-group">
-        <span class="field-label">上下文</span>
+        <span class="field-label">
+          <MessageSquareText class="icon-sm" />
+          上下文
+        </span>
         <n-select
           size="small"
           :value="session.logAiContextMode"
@@ -61,7 +67,9 @@
           <li v-for="item in result.suggestions" :key="item">{{ item }}</li>
         </ul>
       </div>
-      <n-tag v-if="result.truncated" size="small" type="warning">上下文已截断</n-tag>
+      <n-tag v-if="result.truncated" size="small" type="warning" :bordered="false"
+        >上下文已截断</n-tag
+      >
     </div>
 
     <div class="prompt-row">
@@ -73,9 +81,15 @@
         @keydown.enter.prevent="ask"
       />
       <n-button size="small" :disabled="session.logAiMessages.length === 0" @click="clearMessages">
+        <template #icon>
+          <Trash2 class="icon-sm" />
+        </template>
         清空
       </n-button>
       <n-button size="small" type="primary" :loading="loading" :disabled="!canAsk" @click="ask">
+        <template #icon>
+          <WandSparkles class="icon-sm" />
+        </template>
         分析
       </n-button>
     </div>
@@ -85,6 +99,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { NButton, NInput, NInputNumber, NSelect, NTag, useMessage } from 'naive-ui';
+import { Bot, MessageSquareText, Trash2, WandSparkles } from 'lucide-vue-next';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/app';
 import type { AiModel, LogAiContextMode, SerialSession } from '../../types';
@@ -199,6 +214,9 @@ function clearMessages() {
 .field-label,
 .section-title,
 .role {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 700;
@@ -211,6 +229,10 @@ function clearMessages() {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-inset);
 }
 
 .empty-hint {
@@ -221,9 +243,9 @@ function clearMessages() {
 .message-item {
   display: flex;
   gap: 8px;
-  padding: 6px 8px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.035);
+  padding: 7px 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
 }
 
 .message-item .content {
@@ -234,7 +256,7 @@ function clearMessages() {
 }
 
 .message-item.user {
-  background: rgba(99, 255, 177, 0.07);
+  background: var(--color-primary-subtle);
 }
 
 .message-item .content,
@@ -249,10 +271,11 @@ function clearMessages() {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px;
+  padding: 9px;
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.028);
+  border-radius: var(--radius-lg);
+  background: var(--bg-tertiary);
+  box-shadow: var(--shadow-inset);
   max-height: 220px;
   overflow-y: auto;
 }

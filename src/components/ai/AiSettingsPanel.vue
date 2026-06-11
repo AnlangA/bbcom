@@ -1,7 +1,10 @@
 <template>
   <div class="ai-settings" :class="{ compact }">
     <button class="settings-toggle" type="button" @click="expanded = !expanded">
-      <span>AI 设置</span>
+      <span class="settings-title">
+        <Settings2 class="icon-sm" />
+        AI 设置
+      </span>
       <span class="settings-state">{{ appStore.aiApiKey ? '已配置' : '未配置' }}</span>
     </button>
     <div v-if="expanded" class="settings-body">
@@ -20,6 +23,9 @@
         />
         <span class="coding-plan-label">Coding Plan</span>
         <n-button size="tiny" type="primary" :loading="saving" @click="saveApiKey">
+          <template #icon>
+            <KeyRound class="icon-sm" />
+          </template>
           保存 Key
         </n-button>
       </div>
@@ -30,6 +36,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import { NButton, NInput, NSwitch, useMessage } from 'naive-ui';
+import { KeyRound, Settings2 } from 'lucide-vue-next';
 import { useAppStore } from '../../stores/app';
 
 defineProps<{
@@ -68,15 +75,16 @@ async function saveApiKey() {
 .ai-settings {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-secondary);
 }
 
 .ai-settings.compact {
   margin: 8px 0 2px;
-  padding: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.035);
+  padding: 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.018);
+  box-shadow: var(--shadow-inset);
 }
 
 .settings-toggle,
@@ -97,10 +105,20 @@ async function saveApiKey() {
   cursor: pointer;
 }
 
+.settings-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .settings-state {
-  color: var(--text-dim);
+  color: var(--text-muted);
   font-size: 11px;
   font-weight: 500;
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  background: var(--bg-tertiary);
 }
 
 .settings-body {

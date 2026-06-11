@@ -10,19 +10,28 @@
           @click="switchSession(session.id)"
           :title="tabTooltip(session)"
         >
+          <span class="tab-status-dot" :class="{ connected: session.isConnected }"></span>
           <span class="tab-port">{{ session.portName }}</span>
-          <span v-if="session.isConnected" class="tab-status connected">●</span>
-          <span v-else class="tab-status disconnected">○</span>
-          <button class="tab-close" type="button" @click.stop="closeSession(session.id)" title="关闭会话">×</button>
+          <button
+            class="tab-close"
+            type="button"
+            @click.stop="closeSession(session.id)"
+            title="关闭会话"
+          >
+            <X class="icon-sm" />
+          </button>
         </div>
       </div>
-      <button class="tab-add" type="button" @click="emit('create')" title="新建会话 (Ctrl+N)">+</button>
+      <button class="tab-add" type="button" @click="emit('create')" title="新建会话 (Ctrl+N)">
+        <Plus class="icon-sm" />
+      </button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import { Plus, X } from 'lucide-vue-next';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
 import type { SerialSession } from '../../types';
@@ -60,19 +69,19 @@ function tabTooltip(session: SerialSession): string {
 .tabs-header {
   display: flex;
   align-items: center;
-  background: var(--bg-tertiary);
+  background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-subtle);
-  padding: 0 6px;
-  height: 34px;
-  min-height: 34px;
+  padding: 6px 8px 0;
+  height: 42px;
+  min-height: 42px;
 }
 
 .tabs-list {
   display: flex;
-  gap: 1px;
+  gap: 4px;
   overflow-x: auto;
   flex: 1;
-  padding-top: 2px;
+  align-self: stretch;
 }
 
 .tabs-list::-webkit-scrollbar {
@@ -82,17 +91,23 @@ function tabTooltip(session: SerialSession): string {
 .tab-item {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 12px;
+  gap: 7px;
+  min-width: 0;
+  max-width: 230px;
+  padding: 0 10px;
   cursor: pointer;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   font-size: 12px;
   color: var(--text-muted);
   background: transparent;
   white-space: nowrap;
-  transition: background var(--transition-normal), color var(--transition-normal), border-color var(--transition-normal);
+  transition:
+    background var(--transition-normal),
+    color var(--transition-normal),
+    border-color var(--transition-normal);
   user-select: none;
-  border-bottom: 2px solid transparent;
   position: relative;
 }
 
@@ -104,40 +119,46 @@ function tabTooltip(session: SerialSession): string {
 .tab-item.active {
   background: var(--bg-primary);
   color: var(--text-primary);
-  border-bottom-color: var(--accent-green);
+  border-color: var(--border-subtle);
+  box-shadow: inset 0 2px 0 var(--color-primary);
 }
 
 .tab-port {
   font-family: var(--font-mono);
   font-weight: 500;
   font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.tab-status {
-  font-size: 7px;
-  line-height: 1;
+.tab-status-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: var(--text-dim);
 }
 
-.tab-status.connected {
-  color: var(--accent-green);
-  text-shadow: 0 0 4px rgba(76, 175, 80, 0.5);
-}
-
-.tab-status.disconnected {
-  color: var(--text-dim);
+.tab-status-dot.connected {
+  background: var(--accent-green);
+  box-shadow: 0 0 0 3px var(--accent-green-subtle);
 }
 
 .tab-close {
-  background: none;
-  border: none;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
   color: transparent;
   cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 0 1px;
-  border-radius: 2px;
+  padding: 0;
+  border-radius: var(--radius-sm);
   margin-left: 2px;
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .tab-item:hover .tab-close {
@@ -146,24 +167,23 @@ function tabTooltip(session: SerialSession): string {
 
 .tab-close:hover {
   color: var(--text-primary) !important;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.09);
 }
 
 .tab-add {
-  background: none;
+  background: var(--bg-tertiary);
   border: 1px dashed var(--border-color);
   color: var(--text-dim);
   cursor: pointer;
-  font-size: 15px;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: grid;
+  place-items: center;
   flex-shrink: 0;
   transition: all var(--transition-normal);
-  margin-left: 4px;
+  margin-left: 6px;
+  margin-bottom: 6px;
 }
 
 .tab-add:hover {

@@ -3,19 +3,29 @@
     <aside class="sidebar">
       <div class="sidebar-header">
         <div class="app-brand">
-          <span class="brand-icon">⚡</span>
-          <span class="brand-title">bbcom</span>
+          <span class="brand-mark">
+            <Zap class="icon-lg" />
+          </span>
+          <span class="brand-copy">
+            <span class="brand-title">bbcom</span>
+            <span class="brand-subtitle">Serial console</span>
+          </span>
         </div>
         <n-button
           size="tiny"
           :type="aiWindowVisible ? 'primary' : 'default'"
           secondary
+          class="ai-toggle"
           @click="toggleAiWindow"
         >
+          <template #icon>
+            <Bot v-if="aiWindowVisible" class="icon-sm" />
+            <BotOff v-else class="icon-sm" />
+          </template>
           {{ aiWindowVisible ? '关闭 AI' : '开启 AI' }}
         </n-button>
       </div>
-      <AiSettingsPanel />
+      <AiSettingsPanel v-if="aiWindowVisible" />
       <div class="sidebar-content">
         <PortSelector />
       </div>
@@ -25,7 +35,9 @@
       <SessionTabs @create="showCreateDialog = true" />
       <div class="session-viewport">
         <div v-if="sessions.length === 0" class="empty-state">
-          <div class="empty-icon">🔌</div>
+          <div class="empty-mark">
+            <Cable class="icon-lg" />
+          </div>
           <div class="empty-title">bbcom</div>
           <div class="empty-text">在左侧选择串口并点击「新建会话」开始调试</div>
           <div class="empty-shortcuts">
@@ -33,11 +45,7 @@
             <span class="shortcut"><kbd>Ctrl</kbd>+<kbd>W</kbd> 关闭会话</span>
           </div>
         </div>
-        <SessionView
-          v-if="activeSession"
-          :key="activeSession.id"
-          :session="activeSession"
-        />
+        <SessionView v-if="activeSession" :key="activeSession.id" :session="activeSession" />
       </div>
       <StatusBar :session="activeSession" />
     </main>
@@ -49,6 +57,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { NButton } from 'naive-ui';
+import { Bot, BotOff, Cable, Zap } from 'lucide-vue-next';
 import PortSelector from '../port-selector/PortSelector.vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
 import SessionView from '../session/SessionView.vue';
@@ -84,7 +93,7 @@ useAppShortcuts({
   width: 100vw;
   height: 100vh;
   display: flex;
-  background: var(--bg-primary);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 160px), var(--bg-app);
 }
 
 .sidebar {
@@ -96,12 +105,14 @@ useAppShortcuts({
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  box-shadow: var(--shadow-inset);
 }
 
 .sidebar-header {
-  padding: 14px 16px;
+  min-height: 58px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-tertiary);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent), var(--bg-secondary);
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -112,24 +123,47 @@ useAppShortcuts({
 .app-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   min-width: 0;
 }
 
-.brand-icon {
-  font-size: 20px;
-  line-height: 1;
+.brand-mark {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+  border: 1px solid var(--color-primary-muted);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-inset);
+}
+
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .brand-title {
-  font-size: var(--font-size-md);
+  font-size: 15px;
   font-weight: var(--font-weight-bold);
-  color: transparent;
-  background: linear-gradient(135deg, #63ffb1 0%, #4fc3ff 55%, #b388ff 100%);
-  background-clip: text;
-  -webkit-background-clip: text;
-  letter-spacing: 0.5px;
+  color: var(--text-primary);
+  line-height: var(--line-height-tight);
   white-space: nowrap;
+}
+
+.brand-subtitle {
+  color: var(--text-dim);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  text-transform: uppercase;
+}
+
+.ai-toggle {
+  flex-shrink: 0;
 }
 
 .sidebar-content {
@@ -161,27 +195,29 @@ useAppShortcuts({
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-lg);
+  gap: var(--space-md);
   color: var(--text-muted);
   user-select: none;
   padding: var(--space-xl);
   text-align: center;
 }
 
-.empty-icon {
-  font-size: 56px;
-  opacity: 0.3;
-  filter: grayscale(0.5);
+.empty-mark {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  color: var(--color-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-inset);
 }
 
 .empty-title {
   font-size: var(--font-size-xl);
-  color: transparent;
-  background: linear-gradient(135deg, #63ffb1 0%, #4fc3ff 55%, #b388ff 100%);
-  background-clip: text;
-  -webkit-background-clip: text;
+  color: var(--text-primary);
   font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.3px;
 }
 
 .empty-text {
@@ -194,7 +230,7 @@ useAppShortcuts({
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: var(--space-xl);
+  gap: var(--space-md);
   font-size: var(--font-size-sm);
   color: var(--text-dim);
 }
@@ -213,11 +249,11 @@ useAppShortcuts({
 
 @media (max-width: 760px) {
   .sidebar {
-    width: 240px;
-    min-width: 220px;
+    width: 252px;
+    min-width: 232px;
   }
 
-  .brand-title {
+  .brand-copy {
     display: none;
   }
 }

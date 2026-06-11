@@ -1,10 +1,14 @@
 <template>
   <div class="port-selector">
     <div class="section">
-      <div class="section-title" @click="toggleSection('port')" style="cursor: pointer">
-        <span>串口选择</span>
-        <span class="toggle-icon">{{ collapsed.port ? '▸' : '▾' }}</span>
-      </div>
+      <button class="section-title" type="button" @click="toggleSection('port')">
+        <span class="section-heading">
+          <Cable class="icon-sm" />
+          串口选择
+        </span>
+        <ChevronRight v-if="collapsed.port" class="toggle-icon" />
+        <ChevronDown v-else class="toggle-icon" />
+      </button>
       <div v-show="!collapsed.port">
         <div class="port-row">
           <n-select
@@ -14,8 +18,16 @@
             clearable
             size="small"
           />
-          <n-button size="small" @click="refreshPorts" :loading="isRefreshing" quaternary>
-            ↻
+          <n-button
+            size="small"
+            @click="refreshPorts"
+            :loading="isRefreshing"
+            quaternary
+            title="刷新串口"
+          >
+            <template #icon>
+              <RefreshCw class="icon-sm" />
+            </template>
           </n-button>
         </div>
         <div v-if="ports.length === 0" class="empty-hint">未检测到串口设备</div>
@@ -26,10 +38,14 @@
     </div>
 
     <div class="section">
-      <div class="section-title" @click="toggleSection('config')" style="cursor: pointer">
-        <span>连接参数</span>
-        <span class="toggle-icon">{{ collapsed.config ? '▸' : '▾' }}</span>
-      </div>
+      <button class="section-title" type="button" @click="toggleSection('config')">
+        <span class="section-heading">
+          <Settings2 class="icon-sm" />
+          连接参数
+        </span>
+        <ChevronRight v-if="collapsed.config" class="toggle-icon" />
+        <ChevronDown v-else class="toggle-icon" />
+      </button>
       <div v-show="!collapsed.config">
         <div class="config-grid">
           <div class="config-item">
@@ -67,17 +83,24 @@
         @click="newSession"
         :disabled="!selectedPort"
         type="primary"
-        ghost
+        secondary
       >
+        <template #icon>
+          <Plus class="icon-sm" />
+        </template>
         新建会话
       </n-button>
     </div>
 
     <div class="section">
-      <div class="section-title" @click="toggleSection('checksum')" style="cursor: pointer">
-        <span>校验和计算</span>
-        <span class="toggle-icon">{{ collapsed.checksum ? '▸' : '▾' }}</span>
-      </div>
+      <button class="section-title" type="button" @click="toggleSection('checksum')">
+        <span class="section-heading">
+          <Hash class="icon-sm" />
+          校验和计算
+        </span>
+        <ChevronRight v-if="collapsed.checksum" class="toggle-icon" />
+        <ChevronDown v-else class="toggle-icon" />
+      </button>
       <div v-show="!collapsed.checksum">
         <div class="checksum-grid">
           <n-input
@@ -112,6 +135,15 @@
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue';
 import { NSelect, NButton, NInput } from 'naive-ui';
+import {
+  Cable,
+  ChevronDown,
+  ChevronRight,
+  Hash,
+  Plus,
+  RefreshCw,
+  Settings2,
+} from 'lucide-vue-next';
 import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
@@ -261,24 +293,34 @@ async function copyChecksum() {
 .port-selector {
   display: flex;
   flex-direction: column;
+  padding: 6px;
+  gap: 6px;
 }
 
 .section {
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.018);
+  box-shadow: var(--shadow-inset);
 }
 
 .section-title {
-  font-size: 10px;
-  font-weight: 700;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 0;
   margin-bottom: 10px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   user-select: none;
+  cursor: pointer;
   transition: color var(--transition-normal);
 }
 
@@ -286,15 +328,22 @@ async function copyChecksum() {
   color: var(--text-secondary);
 }
 
+.section-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .toggle-icon {
-  font-size: 10px;
+  width: 13px;
+  height: 13px;
   color: var(--text-dim);
   transition: transform var(--transition-normal);
 }
 
 .port-row {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
 }
 
@@ -305,10 +354,10 @@ async function copyChecksum() {
 .empty-hint {
   margin-top: 8px;
   font-size: 11px;
-  color: var(--text-dim);
+  color: var(--text-muted);
   text-align: center;
-  padding: 10px 8px;
-  background: var(--bg-elevated);
+  padding: 9px 8px;
+  background: var(--bg-inset);
   border-radius: var(--radius-md);
   border: 1px dashed var(--border-color);
 }
@@ -322,7 +371,7 @@ async function copyChecksum() {
 .config-grid {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 9px;
 }
 
 .config-item {
@@ -372,13 +421,21 @@ async function copyChecksum() {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 9px 10px;
   background: var(--accent-green-subtle);
-  border: 1px solid rgba(76, 175, 80, 0.2);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-primary-muted);
+  border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: 13px;
   cursor: copy;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.checksum-result:hover {
+  border-color: var(--color-primary);
+  background: rgba(61, 220, 151, 0.16);
 }
 
 .checksum-label {

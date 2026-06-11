@@ -5,12 +5,13 @@
     title="新建会话 (Ctrl+N)"
     positive-text="确定"
     negative-text="取消"
+    :style="{ width: '460px' }"
     @update:show="emit('update:show', $event)"
     @positive-click="createSession"
     @negative-click="emit('update:show', false)"
   >
-    <n-form label-placement="left" label-width="60">
-      <n-form-item label="串口">
+    <n-form class="session-form" label-placement="top">
+      <n-form-item class="form-full" label="串口">
         <n-select v-model:value="portName" :options="portOptions" placeholder="选择可用串口" />
       </n-form-item>
       <n-form-item label="波特率">
@@ -66,8 +67,13 @@ const stopBits = ref<PortConfig['stopBits']>(1);
 const parity = ref<PortConfig['parity']>('none');
 const flowControl = ref<PortConfig['flowControl']>('none');
 
-const usedPorts = computed(() =>
-  new Set(sessionStore.sessions.filter((session) => session.isConnected).map((session) => session.portName))
+const usedPorts = computed(
+  () =>
+    new Set(
+      sessionStore.sessions
+        .filter((session) => session.isConnected)
+        .map((session) => session.portName),
+    ),
 );
 
 const portOptions = computed(() =>
@@ -75,7 +81,7 @@ const portOptions = computed(() =>
     label: usedPorts.value.has(port) ? `${port} (使用中)` : port,
     value: port,
     disabled: usedPorts.value.has(port),
-  }))
+  })),
 );
 
 const baudRateOptions = BAUD_RATES;
@@ -112,3 +118,26 @@ function createSession() {
   return true;
 }
 </script>
+
+<style scoped>
+.session-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.form-full {
+  grid-column: 1 / -1;
+}
+
+.session-form :deep(.n-form-item) {
+  margin: 0;
+}
+
+@media (max-width: 560px) {
+  .session-form {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

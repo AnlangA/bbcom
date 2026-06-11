@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider :theme="darkTheme">
+  <n-config-provider :theme="darkTheme" :theme-overrides="themeOverrides">
     <n-message-provider>
       <div ref="contentEl" class="ai-window-content">
         <AiPanel />
@@ -14,6 +14,7 @@ import { darkTheme, NConfigProvider, NMessageProvider } from 'naive-ui';
 import { emit } from '@tauri-apps/api/event';
 import { resizeAiWindow } from './lib/ipc';
 import AiPanel from './components/ai/AiPanel.vue';
+import { themeOverrides } from './styles/naive-theme';
 
 onErrorCaptured((err, _instance, info) => {
   // AI Window error captured

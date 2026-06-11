@@ -50,9 +50,16 @@
           :disabled="!canSend && !looping"
           :type="looping ? 'warning' : 'default'"
         >
+          <template #icon>
+            <SquareStop v-if="looping" class="icon-sm" />
+            <Repeat2 v-else class="icon-sm" />
+          </template>
           {{ looping ? '停止循环' : '循环发送' }}
         </n-button>
         <n-button type="primary" size="small" @click="handleSend" :disabled="!canSend">
+          <template #icon>
+            <SendHorizontal class="icon-sm" />
+          </template>
           发送
         </n-button>
       </div>
@@ -65,9 +72,12 @@
           placeholder="快捷名称"
           style="width: 110px"
         />
-        <n-button size="tiny" @click="addQuickCommand" :disabled="!modelValue.trim()"
-          >保存快捷</n-button
-        >
+        <n-button size="tiny" @click="addQuickCommand" :disabled="!modelValue.trim()">
+          <template #icon>
+            <BookmarkPlus class="icon-sm" />
+          </template>
+          保存快捷
+        </n-button>
       </div>
       <div v-if="quickCommands.length > 0" class="quick-list">
         <div
@@ -83,16 +93,23 @@
             class="quick-remove"
             type="button"
             @click.stop="emit('removeQuickCommand', cmd.id)"
+            title="删除快捷命令"
           >
-            ×
+            <X class="icon-sm" />
           </button>
         </div>
       </div>
     </div>
     <div v-if="history.length > 0" class="send-history">
       <div class="history-header">
-        <span class="history-title">历史记录</span>
-        <button class="history-clear" type="button" @click="emit('clearHistory')">清除</button>
+        <span class="history-title">
+          <HistoryIcon class="icon-sm" />
+          历史记录
+        </span>
+        <button class="history-clear" type="button" @click="emit('clearHistory')">
+          <Trash2 class="icon-sm" />
+          清除
+        </button>
       </div>
       <div class="history-list">
         <div
@@ -113,6 +130,15 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
+import {
+  BookmarkPlus,
+  History as HistoryIcon,
+  Repeat2,
+  SendHorizontal,
+  SquareStop,
+  Trash2,
+  X,
+} from 'lucide-vue-next';
 import {
   encodeUtf8,
   isValidHex as checkValidHex,
@@ -323,11 +349,18 @@ function formatHexInput() {
 
 <style scoped>
 .send-panel {
-  padding: 10px 12px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 9px;
   background: var(--bg-secondary);
+}
+
+.send-input-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-inset);
+  padding: 1px;
 }
 
 .send-actions {
@@ -340,7 +373,7 @@ function formatHexInput() {
 
 .send-left {
   display: flex;
-  gap: 8px;
+  gap: 7px;
   align-items: center;
   flex-wrap: wrap;
 }
@@ -355,7 +388,7 @@ function formatHexInput() {
 .quick-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   min-height: 24px;
   flex-wrap: wrap;
 }
@@ -373,25 +406,40 @@ function formatHexInput() {
 }
 
 .quick-item {
+  min-height: 26px;
   padding: 3px 7px;
-  background: var(--bg-elevated);
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-full);
   cursor: pointer;
   font-size: 11px;
   color: var(--text-secondary);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .quick-item:hover {
   border-color: var(--accent-green);
+  background: var(--accent-green-subtle);
 }
 
 .quick-remove {
-  background: none;
-  border: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
   color: var(--text-dim);
   cursor: pointer;
-  padding: 0 2px;
+  padding: 0;
+  border-radius: var(--radius-full);
+}
+
+.quick-remove:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .byte-count {
@@ -399,8 +447,9 @@ function formatHexInput() {
   color: var(--text-muted);
   font-family: var(--font-mono);
   padding: 2px 6px;
-  background: var(--bg-elevated);
-  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
 }
 
 .send-history {
@@ -416,21 +465,27 @@ function formatHexInput() {
 }
 
 .history-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 10px;
-  color: var(--text-dim);
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
   font-weight: 600;
 }
 
 .history-clear {
-  background: none;
-  border: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 0;
   color: var(--text-dim);
   font-size: 10px;
   cursor: pointer;
-  padding: 1px 4px;
-  border-radius: 2px;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
   transition:
     color var(--transition-fast),
     background var(--transition-fast);
@@ -445,7 +500,7 @@ function formatHexInput() {
   display: flex;
   gap: 4px;
   overflow-x: auto;
-  max-height: 60px;
+  max-height: 64px;
   flex-wrap: wrap;
 }
 
@@ -457,10 +512,11 @@ function formatHexInput() {
   display: flex;
   align-items: center;
   gap: 5px;
+  min-height: 26px;
   padding: 3px 8px;
-  background: var(--bg-elevated);
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-full);
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: 11px;
@@ -481,10 +537,10 @@ function formatHexInput() {
   font-size: 9px;
   font-weight: 600;
   color: var(--text-muted);
-  background: var(--bg-tertiary);
-  padding: 0 4px;
-  border-radius: 2px;
-  letter-spacing: 0.3px;
+  background: var(--bg-inset);
+  padding: 1px 5px;
+  border-radius: var(--radius-full);
+  letter-spacing: 0;
 }
 
 .history-text {

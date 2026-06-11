@@ -9,27 +9,36 @@
           @click="connect"
           :loading="serialState.isConnecting.value"
         >
+          <template #icon>
+            <Power class="icon-sm" />
+          </template>
           连接
         </n-button>
-        <n-button
-          v-else
-          type="error"
-          size="small"
-          ghost
-          @click="disconnect"
-        >
+        <n-button v-else type="error" size="small" ghost @click="disconnect">
+          <template #icon>
+            <PowerOff class="icon-sm" />
+          </template>
           断开
         </n-button>
         <n-button size="small" @click="clear" :disabled="session.frames.length === 0">
+          <template #icon>
+            <Trash2 class="icon-sm" />
+          </template>
           清空
         </n-button>
-        <n-tag :type="session.isConnected ? 'success' : 'default'" size="small" round>
+        <n-tag
+          :type="session.isConnected ? 'success' : 'default'"
+          size="small"
+          round
+          :bordered="false"
+        >
           {{ session.isConnected ? '已连接' : '未连接' }}
         </n-tag>
         <span v-if="serialState.error.value" class="error-hint">{{ serialState.error.value }}</span>
       </div>
       <div class="toolbar-right">
         <div class="toolbar-field">
+          <FileText class="icon-sm field-icon" />
           <span class="field-label">格式</span>
           <n-select
             :value="appStore.displayMode"
@@ -40,21 +49,70 @@
           />
         </div>
         <div class="toolbar-toggles">
-          <n-button size="small" quaternary @click="toggleAutoScroll" :type="appStore.autoScroll ? 'primary' : 'default'" title="自动滚动">
+          <n-button
+            size="small"
+            quaternary
+            @click="toggleAutoScroll"
+            :type="appStore.autoScroll ? 'primary' : 'default'"
+            title="自动滚动"
+          >
+            <template #icon>
+              <ArrowDownUp class="icon-sm" />
+            </template>
             自动滚动
           </n-button>
-          <n-button size="small" quaternary @click="appStore.toggleAnsiColor" :type="appStore.ansiColorEnabled ? 'primary' : 'default'" title="ANSI颜色渲染">
+          <n-button
+            size="small"
+            quaternary
+            @click="appStore.toggleAnsiColor"
+            :type="appStore.ansiColorEnabled ? 'primary' : 'default'"
+            title="ANSI颜色渲染"
+          >
+            <template #icon>
+              <Palette class="icon-sm" />
+            </template>
             颜色
           </n-button>
-          <n-button size="small" quaternary @click="toggleTimestamp" :type="appStore.showTimestamp ? 'primary' : 'default'" title="显示时间">
+          <n-button
+            size="small"
+            quaternary
+            @click="toggleTimestamp"
+            :type="appStore.showTimestamp ? 'primary' : 'default'"
+            title="显示时间"
+          >
+            <template #icon>
+              <Clock class="icon-sm" />
+            </template>
             时间
           </n-button>
-          <n-button size="small" quaternary @click="toggleAutoLog" :type="session.autoLogEnabled ? 'primary' : 'default'" title="接收自动记录">
+          <n-button
+            size="small"
+            quaternary
+            @click="toggleAutoLog"
+            :type="session.autoLogEnabled ? 'primary' : 'default'"
+            title="接收自动记录"
+          >
+            <template #icon>
+              <FileText class="icon-sm" />
+            </template>
             LOG
           </n-button>
         </div>
-        <n-dropdown :options="exportOptions" @select="handleExport" :disabled="session.frames.length === 0 || isExporting">
-          <n-button size="small" quaternary :disabled="session.frames.length === 0" :loading="isExporting" title="导出数据">
+        <n-dropdown
+          :options="exportOptions"
+          @select="handleExport"
+          :disabled="session.frames.length === 0 || isExporting"
+        >
+          <n-button
+            size="small"
+            quaternary
+            :disabled="session.frames.length === 0"
+            :loading="isExporting"
+            title="导出数据"
+          >
+            <template #icon>
+              <Download class="icon-sm" />
+            </template>
             导出
           </n-button>
         </n-dropdown>
@@ -82,6 +140,16 @@
 <script setup lang="ts">
 import { onMounted } from 'vue';
 import { NButton, NTag, NDropdown, NSelect } from 'naive-ui';
+import {
+  ArrowDownUp,
+  Clock,
+  Download,
+  FileText,
+  Palette,
+  Power,
+  PowerOff,
+  Trash2,
+} from 'lucide-vue-next';
 import DataPacketList from '../terminal/DataPacketList.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
 import { useSerialConnection } from '../../composables/useSerialConnection';
@@ -176,7 +244,9 @@ function toggleTimestamp() {
 
 function toggleAutoLog() {
   sessionStore.setAutoLogEnabled(props.session.id, !props.session.autoLogEnabled);
-  message.info(props.session.autoLogEnabled ? '已关闭自动记录标记' : '已开启自动记录标记，可通过导出保存数据');
+  message.info(
+    props.session.autoLogEnabled ? '已关闭自动记录标记' : '已开启自动记录标记，可通过导出保存数据',
+  );
 }
 
 async function handleExport(format: string) {
@@ -203,16 +273,16 @@ async function handleExport(format: string) {
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-tertiary);
-  min-height: 44px;
+  background: var(--bg-secondary);
+  min-height: var(--toolbar-height);
   flex-shrink: 0;
-  gap: 8px;
+  gap: 12px;
 }
 
 .toolbar-left,
 .toolbar-right {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
 }
 
@@ -221,7 +291,7 @@ async function handleExport(format: string) {
 }
 
 .toolbar-right {
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
   min-width: 0;
@@ -235,10 +305,15 @@ async function handleExport(format: string) {
 }
 
 .toolbar-field {
-  padding: 2px 6px;
-  background: var(--bg-secondary);
+  height: 32px;
+  padding: 0 6px 0 8px;
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
+}
+
+.field-icon {
+  color: var(--text-dim);
 }
 
 .field-label {
@@ -254,9 +329,10 @@ async function handleExport(format: string) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 1px 6px;
+  padding: 3px 7px;
   background: var(--accent-red-subtle);
-  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 107, 122, 0.22);
+  border-radius: var(--radius-full);
 }
 
 .display-area {
@@ -268,6 +344,7 @@ async function handleExport(format: string) {
 .send-area {
   border-top: 1px solid var(--border-subtle);
   flex-shrink: 0;
+  background: var(--bg-secondary);
 }
 
 @media (max-width: 900px) {
