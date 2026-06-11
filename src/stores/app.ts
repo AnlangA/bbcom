@@ -2,9 +2,12 @@ import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
 import { loadJson, loadString, saveJson, saveString } from '../lib/storage';
+import { AI_MODELS, type AiModel } from '../lib/constants';
+import { clearSecretString, loadSecretString, saveSecretString } from '../lib/secure-settings';
 
 const STORAGE_KEY = 'bbcom-app-settings';
 const AI_API_KEY_STORAGE_KEY = `${STORAGE_KEY}:ai-api-key`;
+const AI_API_KEY_SECRET_KEY = 'ai-api-key';
 
 export const useAppStore = defineStore('app', () => {
   const displayMode = ref<DisplayMode>('HEX');
@@ -17,12 +20,14 @@ export const useAppStore = defineStore('app', () => {
   const loopIntervalMs = ref(1000);
   const ansiColorEnabled = ref(true);
   const aiApiKey = ref('');
-  const aiModel = ref('glm-4.5-air');
+  const aiModel = ref<AiModel>(AI_MODELS.glm45Air);
   const aiEnableCodingPlan = ref(false);
   const aiCommandDraft = ref('');
   const aiCommandSeq = ref(0);
   const pendingAiCommand = ref('');
+  const aiApiKeyLoaded = ref(false);
   let loaded = false;
+  let aiKeyLoadSeq = 0;
 
   async function load() {
     const saved = loadJson(STORAGE_KEY, {
@@ -47,10 +52,11 @@ export const useAppStore = defineStore('app', () => {
     if (typeof saved.sendAsHex === 'boolean') sendAsHex.value = saved.sendAsHex;
     if (typeof saved.loopIntervalMs === 'number') loopIntervalMs.value = saved.loopIntervalMs;
     if (typeof saved.ansiColorEnabled === 'boolean') ansiColorEnabled.value = saved.ansiColorEnabled;
-    if (typeof saved.aiModel === 'string') aiModel.value = saved.aiModel;
+    if (isAiModel(saved.aiModel)) aiModel.value = saved.aiModel;
     if (typeof saved.aiEnableCodingPlan === 'boolean') aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
     aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
+    void loadAiApiKey();
   }
 
   function save() {
@@ -108,12 +114,13 @@ export const useAppStore = defineStore('app', () => {
     loopIntervalMs.value = Math.max(50, Math.min(3_600_000, Math.floor(value || 1000)));
   }
 
-  function setAiApiKey(value: string) {
-    aiApiKey.value = value;
-    saveString(AI_API_KEY_STORAGE_KEY, value);
+  async function setAiApiKey(value: string): Promise<boolean> {
+    const normalized = value.trim();
+    aiApiKey.value = normalized;
+    return persistAiApiKey(normalized);
   }
 
-  function setAiModel(value: string) {
+  function setAiModel(value: AiModel) {
     aiModel.value = value;
   }
 
@@ -136,6 +143,41 @@ export const useAppStore = defineStore('app', () => {
     return command;
   }
 
+  async function loadAiApiKey() {
+    const seq = (aiKeyLoadSeq += 1);
+    aiApiKeyLoaded.value = false;
+    try {
+      const legacyValue = loadString(AI_API_KEY_STORAGE_KEY);
+      const storedValue = await loadSecretString(AI_API_KEY_SECRET_KEY);
+      if (seq !== aiKeyLoadSeq) return;
+
+      if (storedValue) {
+        aiApiKey.value = storedValue;
+        if (legacyValue) saveString(AI_API_KEY_STORAGE_KEY, '');
+        return;
+      }
+
+      if (legacyValue) {
+        aiApiKey.value = legacyValue;
+        const migrated = await saveSecretString(AI_API_KEY_SECRET_KEY, legacyValue);
+        if (migrated) saveString(AI_API_KEY_STORAGE_KEY, '');
+      }
+    } finally {
+      if (seq === aiKeyLoadSeq) {
+        aiApiKeyLoaded.value = true;
+      }
+    }
+  }
+
+  async function persistAiApiKey(value: string): Promise<boolean> {
+    const storeOk = value
+      ? await saveSecretString(AI_API_KEY_SECRET_KEY, value)
+      : await clearSecretString(AI_API_KEY_SECRET_KEY);
+
+    const fallbackOk = saveString(AI_API_KEY_STORAGE_KEY, storeOk ? '' : value);
+    return storeOk || fallbackOk;
+  }
+
   load();
 
   return {
@@ -154,6 +196,7 @@ export const useAppStore = defineStore('app', () => {
     aiCommandDraft,
     aiCommandSeq,
     pendingAiCommand,
+    aiApiKeyLoaded,
     setDisplayMode,
     toggleAutoScroll,
     toggleShowTimestamp,
@@ -171,3 +214,7 @@ export const useAppStore = defineStore('app', () => {
     consumePendingAiCommand,
   };
 });
+
+function isAiModel(value: unknown): value is AiModel {
+  return typeof value === 'string' && Object.values(AI_MODELS).includes(value as AiModel);
+}
