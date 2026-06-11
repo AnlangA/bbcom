@@ -18,3 +18,5 @@ src-tauri/gen
 # AI
 .claude
 .factory
+.mimocode
+.pnpm-store
