@@ -44,23 +44,30 @@
       </div>
       <div class="send-right">
         <span v-if="modelValue" class="byte-count">{{ byteCount }} 字节</span>
-        <n-button size="small" @click="toggleLoop" :disabled="!canSend && !looping" :type="looping ? 'warning' : 'default'">
+        <n-button
+          size="small"
+          @click="toggleLoop"
+          :disabled="!canSend && !looping"
+          :type="looping ? 'warning' : 'default'"
+        >
           {{ looping ? '停止循环' : '循环发送' }}
         </n-button>
-        <n-button
-          type="primary"
-          size="small"
-          @click="handleSend"
-          :disabled="!canSend"
-        >
+        <n-button type="primary" size="small" @click="handleSend" :disabled="!canSend">
           发送
         </n-button>
       </div>
     </div>
     <div class="quick-row">
       <div class="quick-form">
-        <n-input v-model:value="quickName" size="tiny" placeholder="快捷名称" style="width: 110px" />
-        <n-button size="tiny" @click="addQuickCommand" :disabled="!modelValue.trim()">保存快捷</n-button>
+        <n-input
+          v-model:value="quickName"
+          size="tiny"
+          placeholder="快捷名称"
+          style="width: 110px"
+        />
+        <n-button size="tiny" @click="addQuickCommand" :disabled="!modelValue.trim()"
+          >保存快捷</n-button
+        >
       </div>
       <div v-if="quickCommands.length > 0" class="quick-list">
         <div
@@ -72,7 +79,13 @@
         >
           <span class="history-tag">{{ cmd.isHex ? 'HEX' : 'TXT' }}</span>
           <span>{{ cmd.name }}</span>
-          <button class="quick-remove" type="button" @click.stop="emit('removeQuickCommand', cmd.id)">×</button>
+          <button
+            class="quick-remove"
+            type="button"
+            @click.stop="emit('removeQuickCommand', cmd.id)"
+          >
+            ×
+          </button>
         </div>
       </div>
     </div>
@@ -100,13 +113,19 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
-import { encodeUtf8, isValidHex as checkValidHex, normalizeHex, parseHex } from '../../lib/format';
+import {
+  encodeUtf8,
+  isValidHex as checkValidHex,
+  normalizeHex,
+  parseHex,
+  truncate,
+} from '../../lib/format';
+import { checksumAlgoOptionsWithNone } from '../../lib/checksum-constants';
 import { MAX_INPUT_SIZE } from '../../types';
 import { useAppStore } from '../../stores/app';
 import { useSessionStore } from '../../stores/sessions';
 import { calculateChecksum } from '../../lib/ipc';
-import { CHECKSUM_OPTIONS, type ChecksumAlgorithm } from '../../lib/constants';
-import type { LineEnding, QuickCommand, SendHistoryEntry } from '../../types';
+import type { ChecksumType, LineEnding, QuickCommand, SendHistoryEntry } from '../../types';
 
 const props = defineProps<{
   onSend: (data: string, isHex: boolean) => Promise<boolean>;
@@ -138,7 +157,7 @@ const loopInterval = computed({
   get: () => appStore.loopIntervalMs,
   set: (value) => appStore.setLoopIntervalMs(value ?? 1000),
 });
-const appendChecksum = ref<'none' | ChecksumAlgorithm>('none');
+const appendChecksum = ref<'none' | ChecksumType>('none');
 const looping = ref(false);
 const quickName = ref('');
 let loopTimer: ReturnType<typeof setInterval> | null = null;
@@ -150,7 +169,7 @@ const lineEndingOptions = [
   { label: 'CRLF', value: 'CRLF' },
 ];
 
-const checksumOptions = [{ label: '无校验', value: 'none' }, ...CHECKSUM_OPTIONS];
+const checksumOptions = checksumAlgoOptionsWithNone;
 
 const isValidHex = computed(() => {
   if (!isHex.value || !props.modelValue.trim()) return true;
@@ -172,18 +191,24 @@ const canSend = computed(() => {
   return true;
 });
 
-watch(() => props.disabled, (disabled) => {
-  if (disabled && looping.value) stopLoop();
-});
+watch(
+  () => props.disabled,
+  (disabled) => {
+    if (disabled && looping.value) stopLoop();
+  },
+);
 
-watch(() => appStore.aiCommandSeq, () => {
-  if (!appStore.aiCommandDraft) return;
-  if (!sessionStore.activeSession) {
-    appStore.setPendingAiCommand(appStore.aiCommandDraft);
-    return;
-  }
-  applyAiCommand(appStore.aiCommandDraft);
-});
+watch(
+  () => appStore.aiCommandSeq,
+  () => {
+    if (!appStore.aiCommandDraft) return;
+    if (!sessionStore.activeSession) {
+      appStore.setPendingAiCommand(appStore.aiCommandDraft);
+      return;
+    }
+    applyAiCommand(appStore.aiCommandDraft);
+  },
+);
 
 onUnmounted(() => {
   stopLoop();
@@ -293,11 +318,6 @@ function formatHexInput() {
   if (isHex.value && props.modelValue.trim() && isValidHex.value) {
     updateInput(normalizeHex(props.modelValue));
   }
-}
-
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max) + '...';
 }
 </script>
 
@@ -411,7 +431,9 @@ function truncate(s: string, max: number): string {
   cursor: pointer;
   padding: 1px 4px;
   border-radius: 2px;
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .history-clear:hover {
@@ -445,7 +467,9 @@ function truncate(s: string, max: number): string {
   color: var(--text-secondary);
   white-space: nowrap;
   max-width: 200px;
-  transition: border-color var(--transition-normal), background var(--transition-normal);
+  transition:
+    border-color var(--transition-normal),
+    background var(--transition-normal);
 }
 
 .history-item:hover {

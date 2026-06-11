@@ -2,7 +2,6 @@ import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
 import { loadJson, loadString, saveJson, saveString } from '../lib/storage';
-import { AI_MODELS, type AiModel } from '../lib/constants';
 import { clearSecretString, loadSecretString, saveSecretString } from '../lib/secure-settings';
 
 const STORAGE_KEY = 'bbcom-app-settings';
@@ -20,7 +19,6 @@ export const useAppStore = defineStore('app', () => {
   const loopIntervalMs = ref(1000);
   const ansiColorEnabled = ref(true);
   const aiApiKey = ref('');
-  const aiModel = ref<AiModel>(AI_MODELS.glm45Air);
   const aiEnableCodingPlan = ref(false);
   const aiCommandDraft = ref('');
   const aiCommandSeq = ref(0);
@@ -29,7 +27,7 @@ export const useAppStore = defineStore('app', () => {
   let loaded = false;
   let aiKeyLoadSeq = 0;
 
-  async function load() {
+  function load() {
     const saved = loadJson(STORAGE_KEY, {
       displayMode: displayMode.value,
       autoScroll: autoScroll.value,
@@ -40,7 +38,6 @@ export const useAppStore = defineStore('app', () => {
       sendAsHex: sendAsHex.value,
       loopIntervalMs: loopIntervalMs.value,
       ansiColorEnabled: ansiColorEnabled.value,
-      aiModel: aiModel.value,
       aiEnableCodingPlan: aiEnableCodingPlan.value,
     });
     if (saved.displayMode) displayMode.value = saved.displayMode;
@@ -51,32 +48,51 @@ export const useAppStore = defineStore('app', () => {
     if (saved.lineEnding) lineEnding.value = saved.lineEnding;
     if (typeof saved.sendAsHex === 'boolean') sendAsHex.value = saved.sendAsHex;
     if (typeof saved.loopIntervalMs === 'number') loopIntervalMs.value = saved.loopIntervalMs;
-    if (typeof saved.ansiColorEnabled === 'boolean') ansiColorEnabled.value = saved.ansiColorEnabled;
-    if (isAiModel(saved.aiModel)) aiModel.value = saved.aiModel;
-    if (typeof saved.aiEnableCodingPlan === 'boolean') aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
+    if (typeof saved.ansiColorEnabled === 'boolean')
+      ansiColorEnabled.value = saved.ansiColorEnabled;
+    if (typeof saved.aiEnableCodingPlan === 'boolean')
+      aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
     aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
     void loadAiApiKey();
   }
 
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
   function save() {
     if (!loaded) return;
-    saveJson(STORAGE_KEY, {
-      displayMode: displayMode.value,
-      autoScroll: autoScroll.value,
-      showTimestamp: showTimestamp.value,
-      searchMode: searchMode.value,
-      packetViewMode: packetViewMode.value,
-      lineEnding: lineEnding.value,
-      sendAsHex: sendAsHex.value,
-      loopIntervalMs: loopIntervalMs.value,
-      ansiColorEnabled: ansiColorEnabled.value,
-      aiModel: aiModel.value,
-      aiEnableCodingPlan: aiEnableCodingPlan.value,
-    });
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveJson(STORAGE_KEY, {
+        displayMode: displayMode.value,
+        autoScroll: autoScroll.value,
+        showTimestamp: showTimestamp.value,
+        searchMode: searchMode.value,
+        packetViewMode: packetViewMode.value,
+        lineEnding: lineEnding.value,
+        sendAsHex: sendAsHex.value,
+        loopIntervalMs: loopIntervalMs.value,
+        ansiColorEnabled: ansiColorEnabled.value,
+        aiEnableCodingPlan: aiEnableCodingPlan.value,
+      });
+    }, 300);
   }
 
-  watch([displayMode, autoScroll, showTimestamp, searchMode, packetViewMode, lineEnding, sendAsHex, loopIntervalMs, ansiColorEnabled, aiModel, aiEnableCodingPlan], save);
+  watch(
+    [
+      displayMode,
+      autoScroll,
+      showTimestamp,
+      searchMode,
+      packetViewMode,
+      lineEnding,
+      sendAsHex,
+      loopIntervalMs,
+      ansiColorEnabled,
+      aiEnableCodingPlan,
+    ],
+    save,
+  );
 
   function setDisplayMode(mode: DisplayMode) {
     displayMode.value = mode;
@@ -118,10 +134,6 @@ export const useAppStore = defineStore('app', () => {
     const normalized = value.trim();
     aiApiKey.value = normalized;
     return persistAiApiKey(normalized);
-  }
-
-  function setAiModel(value: AiModel) {
-    aiModel.value = value;
   }
 
   function setAiEnableCodingPlan(value: boolean) {
@@ -191,7 +203,6 @@ export const useAppStore = defineStore('app', () => {
     loopIntervalMs,
     ansiColorEnabled,
     aiApiKey,
-    aiModel,
     aiEnableCodingPlan,
     aiCommandDraft,
     aiCommandSeq,
@@ -207,14 +218,9 @@ export const useAppStore = defineStore('app', () => {
     setSendAsHex,
     setLoopIntervalMs,
     setAiApiKey,
-    setAiModel,
     setAiEnableCodingPlan,
     applyAiCommand,
     setPendingAiCommand,
     consumePendingAiCommand,
   };
 });
-
-function isAiModel(value: unknown): value is AiModel {
-  return typeof value === 'string' && Object.values(AI_MODELS).includes(value as AiModel);
-}

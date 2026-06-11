@@ -4,7 +4,7 @@
       <div class="sidebar-header">
         <div class="app-brand">
           <span class="brand-icon">⚡</span>
-          <span class="brand-title">串口调试助手</span>
+          <span class="brand-title">bbcom</span>
         </div>
         <n-button
           size="tiny"
@@ -15,6 +15,7 @@
           {{ aiWindowVisible ? '关闭 AI' : '开启 AI' }}
         </n-button>
       </div>
+      <AiSettingsPanel />
       <div class="sidebar-content">
         <PortSelector />
       </div>
@@ -25,7 +26,7 @@
       <div class="session-viewport">
         <div v-if="sessions.length === 0" class="empty-state">
           <div class="empty-icon">🔌</div>
-          <div class="empty-title">串口调试助手</div>
+          <div class="empty-title">bbcom</div>
           <div class="empty-text">在左侧选择串口并点击「新建会话」开始调试</div>
           <div class="empty-shortcuts">
             <span class="shortcut"><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建会话</span>
@@ -53,6 +54,7 @@ import SessionTabs from '../session-tabs/SessionTabs.vue';
 import SessionView from '../session/SessionView.vue';
 import StatusBar from '../status-bar/StatusBar.vue';
 import CreateSessionDialog from './CreateSessionDialog.vue';
+import AiSettingsPanel from '../ai/AiSettingsPanel.vue';
 import { useAiWindowState } from '../../composables/useAiWindowState';
 import { useAppShortcuts } from '../../composables/useAppShortcuts';
 import { useSessionActions } from '../../composables/useSessionActions';
@@ -122,7 +124,10 @@ useAppShortcuts({
 .brand-title {
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-bold);
-  color: var(--text-primary);
+  color: transparent;
+  background: linear-gradient(135deg, #63ffb1 0%, #4fc3ff 55%, #b388ff 100%);
+  background-clip: text;
+  -webkit-background-clip: text;
   letter-spacing: 0.5px;
   white-space: nowrap;
 }
@@ -171,7 +176,10 @@ useAppShortcuts({
 
 .empty-title {
   font-size: var(--font-size-xl);
-  color: var(--text-secondary);
+  color: transparent;
+  background: linear-gradient(135deg, #63ffb1 0%, #4fc3ff 55%, #b388ff 100%);
+  background-clip: text;
+  -webkit-background-clip: text;
   font-weight: var(--font-weight-semibold);
   letter-spacing: 0.3px;
 }

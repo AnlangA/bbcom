@@ -1,0 +1,12 @@
+[advisories]
+ignore = [
+    # rand 0.7.3 — unsound with custom logger using rand::rng()
+    # Deep transitive dep: phf_generator 0.8 → selectors → kuchikiki → tauri-utils
+    # Cannot update without tauri upstream; build-time only
+    "RUSTSEC-2026-0097",
+
+    # glib 0.18.5 — unsound Iterator impl for VariantStrIter
+    # Deep transitive dep: gtk-rs 0.18 → wry → tauri-runtime-wry → tauri (Linux only)
+    # Cannot update without tauri upstream
+    "RUSTSEC-2024-0429",
+]

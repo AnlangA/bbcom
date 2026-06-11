@@ -18,9 +18,7 @@
             ↻
           </n-button>
         </div>
-        <div v-if="ports.length === 0" class="empty-hint">
-          未检测到串口设备
-        </div>
+        <div v-if="ports.length === 0" class="empty-hint">未检测到串口设备</div>
         <div v-if="missingActivePorts.length > 0" class="empty-hint warning">
           端口已断开：{{ missingActivePorts.join(', ') }}
         </div>
@@ -52,14 +50,25 @@
           </div>
           <div class="config-item">
             <label>流控</label>
-            <n-select v-model:value="config.flowControl" :options="flowControlOptions" size="small" />
+            <n-select
+              v-model:value="config.flowControl"
+              :options="flowControlOptions"
+              size="small"
+            />
           </div>
         </div>
       </div>
     </div>
 
     <div class="section">
-      <n-button size="small" block @click="newSession" :disabled="!selectedPort" type="primary" ghost>
+      <n-button
+        size="small"
+        block
+        @click="newSession"
+        :disabled="!selectedPort"
+        type="primary"
+        ghost
+      >
         新建会话
       </n-button>
     </div>
@@ -80,14 +89,12 @@
           />
           <div class="checksum-meta">
             <span>{{ checksumByteCount }} 字节</span>
-            <span v-if="checksumInput && !isValidHexInput" class="checksum-error">HEX 长度需为偶数</span>
+            <span v-if="checksumInput && !isValidHexInput" class="checksum-error"
+              >HEX 长度需为偶数</span
+            >
           </div>
           <div class="checksum-actions">
-            <n-select
-              v-model:value="checksumAlgo"
-              :options="checksumAlgoOptions"
-              size="small"
-            />
+            <n-select v-model:value="checksumAlgo" :options="checksumAlgoOptions" size="small" />
           </div>
           <div v-if="checksumResult" class="checksum-result" @click="copyChecksum" title="点击复制">
             <div>
@@ -111,7 +118,15 @@ import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { formatHex, isValidHex, parseHex } from '../../lib/format';
 import { calculateChecksum } from '../../lib/ipc';
-import { BAUD_RATES, DATA_BITS_OPTIONS, STOP_BITS_OPTIONS, PARITY_OPTIONS, FLOW_CONTROL_OPTIONS, CHECKSUM_OPTIONS, type ChecksumAlgorithm } from '../../lib/constants';
+import { checksumOptions } from '../../lib/checksum-constants';
+import {
+  BAUD_RATES,
+  DATA_BITS_OPTIONS,
+  STOP_BITS_OPTIONS,
+  PARITY_OPTIONS,
+  FLOW_CONTROL_OPTIONS,
+} from '../../lib/constants';
+import type { ChecksumType } from '../../types';
 
 const serialStore = useSerialStore();
 const sessionStore = useSessionStore();
@@ -121,7 +136,7 @@ const isRefreshing = ref(false);
 const missingActivePorts = computed(() =>
   sessionStore.sessions
     .filter((s) => s.isConnected && !ports.value.includes(s.portName))
-    .map((s) => s.portName)
+    .map((s) => s.portName),
 );
 
 const collapsed = reactive({
@@ -139,8 +154,8 @@ const selectedPort = computed({
   set: (v) => serialStore.setSelectedPort(v),
 });
 
-const usedPorts = computed(() =>
-  new Set(sessionStore.sessions.filter((s) => s.isConnected).map((s) => s.portName))
+const usedPorts = computed(
+  () => new Set(sessionStore.sessions.filter((s) => s.isConnected).map((s) => s.portName)),
 );
 
 const portOptions = computed(() =>
@@ -148,15 +163,19 @@ const portOptions = computed(() =>
     label: usedPorts.value.has(p) ? `${p} (使用中)` : p,
     value: p,
     disabled: usedPorts.value.has(p),
-  }))
+  })),
 );
 
 // Auto-select first available port when none is selected
-watch(() => ports.value, (newPorts) => {
-  if (!selectedPort.value && newPorts.length > 0) {
-    selectedPort.value = newPorts[0];
-  }
-}, { immediate: true });
+watch(
+  () => ports.value,
+  (newPorts) => {
+    if (!selectedPort.value && newPorts.length > 0) {
+      selectedPort.value = newPorts[0];
+    }
+  },
+  { immediate: true },
+);
 
 const config = computed(() => serialStore.portConfig);
 
@@ -182,11 +201,11 @@ const parityOptions = PARITY_OPTIONS;
 const flowControlOptions = FLOW_CONTROL_OPTIONS;
 
 const checksumInput = ref('');
-const checksumAlgo = ref<ChecksumAlgorithm>('CHECKSUM');
+const checksumAlgo = ref<ChecksumType>('CHECKSUM');
 const checksumResult = ref('');
 let checksumTimer: ReturnType<typeof setTimeout> | null = null;
 
-const checksumAlgoOptions = CHECKSUM_OPTIONS;
+const checksumAlgoOptions = checksumOptions;
 
 const isValidHexInput = computed(() => {
   if (!checksumInput.value.trim()) return true;
@@ -198,8 +217,10 @@ const checksumByteCount = computed(() => {
   return Math.floor(cleaned.length / 2);
 });
 
-const checksumAlgoLabel = computed(() =>
-  checksumAlgoOptions.find((option) => option.value === checksumAlgo.value)?.label ?? checksumAlgo.value
+const checksumAlgoLabel = computed(
+  () =>
+    checksumAlgoOptions.find((option) => option.value === checksumAlgo.value)?.label ??
+    checksumAlgo.value,
 );
 
 watch([checksumInput, checksumAlgo], () => {
@@ -231,7 +252,7 @@ async function copyChecksum() {
   try {
     await navigator.clipboard.writeText(checksumResult.value);
   } catch {
-    // ignore
+    // ignore — clipboard may not be available in some environments
   }
 }
 </script>

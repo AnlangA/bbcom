@@ -10,18 +10,18 @@
   "app": {
     "windows": [
       {
-        "title": "串口调试助手",
+        "title": "bbcom",
         "width": 1280,
         "height": 800,
         "resizable": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173 https://open.bigmodel.cn https://api.bigmodel.cn"
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
     "targets": "all"
   }
 }

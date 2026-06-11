@@ -2,7 +2,7 @@
   <n-config-provider :theme="darkTheme">
     <n-message-provider>
       <div ref="contentEl" class="ai-window-content">
-        <AiTerminalAssistant />
+        <AiPanel />
       </div>
     </n-message-provider>
   </n-config-provider>
@@ -12,8 +12,8 @@
 import { nextTick, onMounted, onUnmounted, onErrorCaptured, ref } from 'vue';
 import { darkTheme, NConfigProvider, NMessageProvider } from 'naive-ui';
 import { emit } from '@tauri-apps/api/event';
-import AiTerminalAssistant from './components/send-panel/AiTerminalAssistant.vue';
 import { resizeAiWindow } from './lib/ipc';
+import AiPanel from './components/ai/AiPanel.vue';
 
 onErrorCaptured((err, _instance, info) => {
   // AI Window error captured
@@ -62,6 +62,6 @@ onUnmounted(() => {
 }
 
 .ai-window-content {
-  width: 760px;
+  width: 820px;
 }
 </style>

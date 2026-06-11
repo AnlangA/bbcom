@@ -8,7 +8,10 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
     let result = tauri::Builder::default()
@@ -34,7 +37,9 @@ pub fn run() {
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
-                        let _ = window_for_event.hide();
+                        if let Err(e) = window_for_event.hide() {
+                            tracing::warn!("failed to hide AI window: {e}");
+                        }
                         let _ = app_handle.emit(
                             "ai-window-state",
                             commands::window::AiWindowState { visible: false },
@@ -47,7 +52,9 @@ pub fn run() {
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { .. } = event {
                         if let Some(ai_window) = app_handle.get_webview_window("ai-assistant") {
-                            let _ = ai_window.close();
+                            if let Err(e) = ai_window.close() {
+                                tracing::warn!("failed to close AI window on exit: {e}");
+                            }
                         }
                         app_handle.exit(0);
                     }
@@ -59,6 +66,7 @@ pub fn run() {
         .plugin(tauri_plugin_serialplugin::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            commands::ai::log_ai_assist,
             commands::ai::terminal_ai_assist,
             commands::checksum::calculate_checksum,
             commands::export::export_data,
