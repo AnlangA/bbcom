@@ -74,6 +74,7 @@
 - 自然语言描述意图，AI 自动生成 Linux/BusyBox 终端命令
 - 基于 ZHIPU AI（`zai-rs`），支持 GLM-5.1 / GLM-5 Turbo / GLM-4.7 / GLM-4.5 Air 模型
 - 命令风险分级（安全 / 谨慎 / 危险），危险命令自动拦截
+- 串口日志分析助手，基于当前会话上下文提取依据和建议
 - 可选启用 Coding Plan 模式，提升复杂命令的生成质量
 - 生成结果一键复制或填入发送输入框
 
@@ -87,18 +88,18 @@
 
 ## 技术栈
 
-| 层级 | 技术 |
-|------|------|
-| 桌面框架 | [Tauri v2](https://v2.tauri.app/) |
-| 后端 | [Rust](https://www.rust-lang.org/)（tokio / serde / chrono / crc / zai-rs） |
-| 前端 | [Vue 3](https://vuejs.org/) Composition API + [TypeScript](https://www.typescriptlang.org/) |
-| 构建 | [Vite 6](https://vite.dev/) |
-| UI 组件库 | [Naive UI](https://www.naiveui.com/)（Dark Theme） |
-| 状态管理 | [Pinia](https://pinia.vuejs.org/) |
-| 虚拟滚动 | [@tanstack/vue-virtual](https://tanstack.com/virtual) |
-| ANSI 渲染 | [ansi_up](https://github.com/drudru/ansi_up) |
-| 代码规范 | ESLint 9 + typescript-eslint |
-| 包管理 | [pnpm](https://pnpm.io/) |
+| 层级      | 技术                                                                                        |
+| --------- | ------------------------------------------------------------------------------------------- |
+| 桌面框架  | [Tauri v2](https://v2.tauri.app/)                                                           |
+| 后端      | [Rust](https://www.rust-lang.org/)（tokio / serde / chrono / crc / zai-rs）                 |
+| 前端      | [Vue 3](https://vuejs.org/) Composition API + [TypeScript](https://www.typescriptlang.org/) |
+| 构建      | [Vite 6](https://vite.dev/)                                                                 |
+| UI 组件库 | [Naive UI](https://www.naiveui.com/)（Dark Theme）                                          |
+| 状态管理  | [Pinia](https://pinia.vuejs.org/)                                                           |
+| 虚拟滚动  | [@tanstack/vue-virtual](https://tanstack.com/virtual)                                       |
+| ANSI 渲染 | [ansi_up](https://github.com/drudru/ansi_up)                                                |
+| 代码规范  | ESLint 9 + typescript-eslint                                                                |
+| 包管理    | [pnpm](https://pnpm.io/)                                                                    |
 
 ## 快速开始
 
@@ -106,7 +107,7 @@
 
 - **Rust** stable（edition 2024，最低 1.85）
 - **Node.js** 22+
-- **pnpm** 10+（推荐）/ npm / yarn
+- **pnpm** 10+
 - 操作系统串口访问权限
 
 ### 方式一：使用开发脚本
@@ -145,16 +146,16 @@ pnpm tauri:build    # Tauri 打包
 
 ### 可用脚本
 
-| 命令 | 说明 |
-|------|------|
-| `pnpm dev` | 启动 Vite 前端开发服务器 |
-| `pnpm build` | Vue 类型检查 + Vite 构建 |
-| `pnpm preview` | 预览前端构建产物 |
-| `pnpm tauri:dev` | 启动 Tauri 开发模式（含前端热重载） |
-| `pnpm tauri:build` | 构建生产桌面安装包 |
+| 命令                 | 说明                                   |
+| -------------------- | -------------------------------------- |
+| `pnpm dev`           | 启动 Vite 前端开发服务器               |
+| `pnpm build`         | Vue 类型检查 + Vite 构建               |
+| `pnpm preview`       | 预览前端构建产物                       |
+| `pnpm tauri:dev`     | 启动 Tauri 开发模式（含前端热重载）    |
+| `pnpm tauri:build`   | 构建生产桌面安装包                     |
 | `pnpm test:frontend` | 使用 Node test runner 运行前端单元测试 |
-| `pnpm test:rust` | 运行 Rust 单元测试 |
-| `pnpm check` | 运行 lint、build 和全部测试 |
+| `pnpm test:rust`     | 运行 Rust 单元测试                     |
+| `pnpm check`         | 运行 lint、build 和全部测试            |
 
 ## 项目结构
 
@@ -163,7 +164,7 @@ bbcom/
 ├── src-tauri/                  # Rust 后端
 │   ├── src/
 │   │   ├── commands/           # Tauri IPC 命令
-│   │   │   ├── ai.rs           #   AI 窗口控制 + 命令生成
+│   │   │   ├── ai.rs           #   AI 命令生成 + 日志分析
 │   │   │   ├── checksum.rs     #   校验和 / CRC 计算
 │   │   │   ├── export.rs       #   数据导出入口
 │   │   │   └── window.rs       #   AI 助手窗口命令
@@ -184,6 +185,7 @@ bbcom/
 │   │   ├── session/            # 会话视图
 │   │   ├── send-panel/         # 发送面板 + AI 助手组件
 │   │   ├── terminal/           # 数据帧列表（虚拟滚动）
+│   │   ├── ai/                 # AI 悬浮窗口面板
 │   │   └── status-bar/         # 状态栏（收发统计 / 连接状态）
 │   ├── composables/            # 组合式函数
 │   │   ├── useSerialConnection.ts # 串口连接 / 监听 / 写入
@@ -247,6 +249,7 @@ bbcom/
 - 串口通过 `tauri-plugin-serialplugin` 管理，前端通过 Tauri Command / Event 与 Rust 后端通信
 - 前端使用 `requestAnimationFrame` + 有界数据队列，确保高波特率下 UI 流畅
 - AI 助手为独立 `WebviewWindow`，关闭时隐藏而非销毁，通过 Tauri Event 同步窗口状态
+- AI 日志上下文按需刷新，不会把每一帧串口数据持续广播到悬浮窗口
 - 应用设置本地持久化；AI API Key 会从旧 localStorage 迁移到 Tauri Store
 
 ## 贡献指南
@@ -273,12 +276,14 @@ bbcom/
 <summary><b>支持哪些平台？</b></summary>
 
 bbcom 支持 **Windows**、**macOS** 和 **Linux**，得益于 Tauri v2 的跨平台架构。
+
 </details>
 
 <details>
 <summary><b>如何获取 ZHIPU AI API Key？</b></summary>
 
 在 [open.bigmodel.cn](https://open.bigmodel.cn/) 注册并创建 API Key，然后在 bbcom 的 AI 助手设置面板中填入即可。
+
 </details>
 
 <details>

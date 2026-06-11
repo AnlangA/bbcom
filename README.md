@@ -74,6 +74,7 @@
 - Describe intent in natural language → AI generates Linux/BusyBox commands
 - Powered by ZHIPU AI (`zai-rs`), supporting GLM-5.1 / GLM-5 Turbo / GLM-4.7 / GLM-4.5 Air models
 - Command risk classification (Safe / Cautious / Dangerous) with auto-blocking of dangerous commands
+- Serial log analysis assistant with per-session context and evidence extraction
 - Optional Coding Plan mode for improved complex command generation quality
 - One-click copy or fill into the send input box
 
@@ -87,18 +88,18 @@
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Desktop Framework | [Tauri v2](https://v2.tauri.app/) |
-| Backend | [Rust](https://www.rust-lang.org/) (tokio / serde / chrono / crc / zai-rs) |
-| Frontend | [Vue 3](https://vuejs.org/) Composition API + [TypeScript](https://www.typescriptlang.org/) |
-| Build | [Vite 6](https://vite.dev/) |
-| UI Components | [Naive UI](https://www.naiveui.com/) (Dark Theme) |
-| State Management | [Pinia](https://pinia.vuejs.org/) |
-| Virtual Scroll | [@tanstack/vue-virtual](https://tanstack.com/virtual) |
-| ANSI Rendering | [ansi_up](https://github.com/drudru/ansi_up) |
-| Linting | ESLint 9 + typescript-eslint |
-| Package Manager | [pnpm](https://pnpm.io/) |
+| Layer             | Technology                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| Desktop Framework | [Tauri v2](https://v2.tauri.app/)                                                           |
+| Backend           | [Rust](https://www.rust-lang.org/) (tokio / serde / chrono / crc / zai-rs)                  |
+| Frontend          | [Vue 3](https://vuejs.org/) Composition API + [TypeScript](https://www.typescriptlang.org/) |
+| Build             | [Vite 6](https://vite.dev/)                                                                 |
+| UI Components     | [Naive UI](https://www.naiveui.com/) (Dark Theme)                                           |
+| State Management  | [Pinia](https://pinia.vuejs.org/)                                                           |
+| Virtual Scroll    | [@tanstack/vue-virtual](https://tanstack.com/virtual)                                       |
+| ANSI Rendering    | [ansi_up](https://github.com/drudru/ansi_up)                                                |
+| Linting           | ESLint 9 + typescript-eslint                                                                |
+| Package Manager   | [pnpm](https://pnpm.io/)                                                                    |
 
 ## Getting Started
 
@@ -106,7 +107,7 @@
 
 - **Rust** stable (edition 2024, minimum 1.85)
 - **Node.js** 22+
-- **pnpm** 10+ (recommended) / npm / yarn
+- **pnpm** 10+
 - Serial port access permissions on your OS
 
 ### Option 1: Using the Dev Script
@@ -145,16 +146,16 @@ pnpm tauri:build    # Tauri packaging
 
 ### Available Scripts
 
-| Command | Description |
-|---|---|
-| `pnpm dev` | Start Vite frontend dev server |
-| `pnpm build` | Vue type check + Vite build |
-| `pnpm preview` | Preview frontend build output |
-| `pnpm tauri:dev` | Start Tauri dev mode (with frontend HMR) |
-| `pnpm tauri:build` | Build production desktop installer |
+| Command              | Description                                   |
+| -------------------- | --------------------------------------------- |
+| `pnpm dev`           | Start Vite frontend dev server                |
+| `pnpm build`         | Vue type check + Vite build                   |
+| `pnpm preview`       | Preview frontend build output                 |
+| `pnpm tauri:dev`     | Start Tauri dev mode (with frontend HMR)      |
+| `pnpm tauri:build`   | Build production desktop installer            |
 | `pnpm test:frontend` | Run frontend unit tests with Node test runner |
-| `pnpm test:rust` | Run Rust unit tests |
-| `pnpm check` | Run lint, build, and all tests |
+| `pnpm test:rust`     | Run Rust unit tests                           |
+| `pnpm check`         | Run lint, build, and all tests                |
 
 ## Project Structure
 
@@ -163,7 +164,7 @@ bbcom/
 ├── src-tauri/                  # Rust backend
 │   ├── src/
 │   │   ├── commands/           # Tauri IPC commands
-│   │   │   ├── ai.rs           #   AI window control + command generation
+│   │   │   ├── ai.rs           #   AI command generation + log analysis
 │   │   │   ├── checksum.rs     #   Checksum / CRC calculation
 │   │   │   ├── export.rs       #   Data export entry point
 │   │   │   └── window.rs       #   AI assistant window commands
@@ -184,6 +185,7 @@ bbcom/
 │   │   ├── session/            # Session view
 │   │   ├── send-panel/         # Send panel + AI assistant components
 │   │   ├── terminal/           # Data frame list (virtual scroll)
+│   │   ├── ai/                 # AI floating window panels
 │   │   └── status-bar/         # Status bar (TX/RX stats / connection)
 │   ├── composables/            # Composable functions
 │   │   ├── useSerialConnection.ts # Serial connect / listen / write
@@ -247,6 +249,7 @@ bbcom/
 - Serial port managed via `tauri-plugin-serialplugin`; frontend communicates with Rust backend through Tauri Command / Event
 - Frontend uses `requestAnimationFrame` + bounded data queues for smooth UI at high baud rates
 - AI assistant runs in an independent `WebviewWindow` — hidden (not destroyed) on close, synced via Tauri Event
+- AI log context is refreshed on demand instead of streaming every received frame into the floating window
 - App settings persist locally; AI API keys migrate from legacy localStorage into Tauri Store
 
 ## Contributing
@@ -273,12 +276,14 @@ Contributions are welcome! Please follow these guidelines:
 <summary><b>Which platforms are supported?</b></summary>
 
 bbcom supports **Windows**, **macOS**, and **Linux**, thanks to Tauri v2's cross-platform architecture.
+
 </details>
 
 <details>
 <summary><b>How do I get a ZHIPU AI API key?</b></summary>
 
 Sign up at [open.bigmodel.cn](https://open.bigmodel.cn/) and create an API key. Enter it in the AI Assistant settings panel within bbcom.
+
 </details>
 
 <details>
