@@ -105,8 +105,8 @@
 ### 环境要求
 
 - **Rust** stable（edition 2024，最低 1.85）
-- **Node.js** 18+
-- **pnpm**（推荐）/ npm / yarn
+- **Node.js** 22+
+- **pnpm** 10+（推荐）/ npm / yarn
 - 操作系统串口访问权限
 
 ### 方式一：使用开发脚本
@@ -152,6 +152,9 @@ pnpm tauri:build    # Tauri 打包
 | `pnpm preview` | 预览前端构建产物 |
 | `pnpm tauri:dev` | 启动 Tauri 开发模式（含前端热重载） |
 | `pnpm tauri:build` | 构建生产桌面安装包 |
+| `pnpm test:frontend` | 使用 Node test runner 运行前端单元测试 |
+| `pnpm test:rust` | 运行 Rust 单元测试 |
+| `pnpm check` | 运行 lint、build 和全部测试 |
 
 ## 项目结构
 
@@ -162,15 +165,14 @@ bbcom/
 │   │   ├── commands/           # Tauri IPC 命令
 │   │   │   ├── ai.rs           #   AI 窗口控制 + 命令生成
 │   │   │   ├── checksum.rs     #   校验和 / CRC 计算
-│   │   │   ├── config.rs       #   配置加载与持久化
-│   │   │   └── export.rs       #   数据导出入口
+│   │   │   ├── export.rs       #   数据导出入口
+│   │   │   └── window.rs       #   AI 助手窗口命令
 │   │   ├── models/             # 数据模型
-│   │   │   ├── port_config.rs  #   串口配置（数据位 / 停止位 / 校验 / 流控）
 │   │   │   ├── data_frame.rs   #   数据帧（TX/RX + 时间戳 + 字节数据）
 │   │   │   ├── errors.rs       #   统一错误类型
 │   │   │   └── checksum_type.rs
 │   │   ├── export/             # 导出格式实现（TXT / CSV / JSONL / BIN）
-│   │   ├── utils/              # 工具函数（HEX 格式化 / 校验算法 / 时间戳）
+│   │   ├── utils/              # 工具函数（HEX 格式化 / 校验算法）
 │   │   ├── lib.rs              # 应用入口，窗口初始化与插件注册
 │   │   └── main.rs
 │   ├── Cargo.toml
@@ -184,8 +186,10 @@ bbcom/
 │   │   ├── terminal/           # 数据帧列表（虚拟滚动）
 │   │   └── status-bar/         # 状态栏（收发统计 / 连接状态）
 │   ├── composables/            # 组合式函数
-│   │   ├── useSerialPort.ts    # 串口连接 / 监听 / 写入
-│   │   ├── useSerialData.ts    # 数据帧管理 + RAF 批量渲染
+│   │   ├── useSerialConnection.ts # 串口连接 / 监听 / 写入
+│   │   ├── useSessionFrames.ts # 会话数据帧操作
+│   │   ├── usePacketFilter.ts  # 方向过滤 / 搜索 / 合并视图
+│   │   ├── usePacketFormatter.ts # HEX / 文本 / ANSI 格式化缓存
 │   │   ├── usePortWatcher.ts   # 热插拔监听
 │   │   ├── useExport.ts        # 导出逻辑
 │   │   └── useSessionActions.ts
@@ -196,6 +200,8 @@ bbcom/
 │   ├── lib/                    # 纯 TS 工具
 │   │   ├── format.ts           # HEX / ASCII / UTF-8 格式化
 │   │   ├── constants.ts        # 波特率 / 数据位等常量
+│   │   ├── ipc.ts              # 类型化 Tauri 命令封装
+│   │   ├── secure-settings.ts  # 基于 Tauri Store 的本地密钥设置
 │   │   ├── lru-cache.ts        # LRU 缓存
 │   │   └── time.ts
 │   ├── types/index.ts          # TypeScript 类型定义
@@ -205,6 +211,7 @@ bbcom/
 │   └── main.ts                 # 入口（路由分发主窗口 / AI 窗口）
 ├── scripts/
 │   └── dev.sh                  # 开发辅助脚本
+├── tests/frontend/             # 前端单元测试
 ├── images/                     # 截图
 ├── package.json
 ├── vite.config.ts
@@ -227,29 +234,30 @@ bbcom/
 ├──────────────────────────┼───────────────────────────────┤
 │  Rust 后端                │                               │
 │  ┌────────────────────────┴───────────────────────────┐  │
-│  │  commands: ai / checksum / config / export          │  │
+│  │  commands: ai / checksum / export / window          │  │
 │  ├─────────────────────────────────────────────────────┤  │
 │  │  tauri-plugin-serialplugin   (串口收发)              │  │
 │  │  tauri-plugin-dialog         (文件保存对话框)         │  │
-│  │  tauri-plugin-store / -fs    (持久化)                │  │
+│  │  tauri-plugin-store         (本地设置)               │  │
 │  │  zai-rs                      (ZHIPU AI Chat API)    │  │
 │  └─────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
 ```
 
 - 串口通过 `tauri-plugin-serialplugin` 管理，前端通过 Tauri Command / Event 与 Rust 后端通信
-- 前端使用 `requestAnimationFrame` + 数据队列批量渲染，确保高波特率下 UI 流畅
+- 前端使用 `requestAnimationFrame` + 有界数据队列，确保高波特率下 UI 流畅
 - AI 助手为独立 `WebviewWindow`，关闭时隐藏而非销毁，通过 Tauri Event 同步窗口状态
-- 所有配置通过 localStorage + Tauri Store 双重持久化
+- 应用设置本地持久化；AI API Key 会从旧 localStorage 迁移到 Tauri Store
 
 ## 贡献指南
 
 欢迎贡献！请遵循以下规范：
 
 1. **提交信息** — 遵循 [Conventional Commits](https://www.conventionalcommits.org/)
-2. **代码风格** — ESLint 9 + typescript-eslint（`no-console: warn`）
+2. **代码风格** — ESLint 9 + typescript-eslint（`no-console: error`）
 3. **Rust** — edition 2024，`tracing` 日志，`thiserror` 错误处理
 4. **TypeScript** — 严格模式（`strict: true`、`noUnusedLocals`、`noUnusedParameters`）
+5. **检查** — 发起 PR 前运行 `pnpm check`
 
 ### 开发流程
 

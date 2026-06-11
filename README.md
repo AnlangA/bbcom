@@ -105,8 +105,8 @@
 ### Prerequisites
 
 - **Rust** stable (edition 2024, minimum 1.85)
-- **Node.js** 18+
-- **pnpm** (recommended) / npm / yarn
+- **Node.js** 22+
+- **pnpm** 10+ (recommended) / npm / yarn
 - Serial port access permissions on your OS
 
 ### Option 1: Using the Dev Script
@@ -152,6 +152,9 @@ pnpm tauri:build    # Tauri packaging
 | `pnpm preview` | Preview frontend build output |
 | `pnpm tauri:dev` | Start Tauri dev mode (with frontend HMR) |
 | `pnpm tauri:build` | Build production desktop installer |
+| `pnpm test:frontend` | Run frontend unit tests with Node test runner |
+| `pnpm test:rust` | Run Rust unit tests |
+| `pnpm check` | Run lint, build, and all tests |
 
 ## Project Structure
 
@@ -162,15 +165,14 @@ bbcom/
 │   │   ├── commands/           # Tauri IPC commands
 │   │   │   ├── ai.rs           #   AI window control + command generation
 │   │   │   ├── checksum.rs     #   Checksum / CRC calculation
-│   │   │   ├── config.rs       #   Config loading & persistence
-│   │   │   └── export.rs       #   Data export entry point
+│   │   │   ├── export.rs       #   Data export entry point
+│   │   │   └── window.rs       #   AI assistant window commands
 │   │   ├── models/             # Data models
-│   │   │   ├── port_config.rs  #   Serial port config
 │   │   │   ├── data_frame.rs   #   Data frame (TX/RX + timestamp + bytes)
 │   │   │   ├── errors.rs       #   Unified error types
 │   │   │   └── checksum_type.rs
 │   │   ├── export/             # Export formats (TXT / CSV / JSONL / BIN)
-│   │   ├── utils/              # Utilities (HEX format / checksum / timestamp)
+│   │   ├── utils/              # Utilities (HEX format / checksum)
 │   │   ├── lib.rs              # App entry, window init & plugin registration
 │   │   └── main.rs
 │   ├── Cargo.toml
@@ -184,8 +186,10 @@ bbcom/
 │   │   ├── terminal/           # Data frame list (virtual scroll)
 │   │   └── status-bar/         # Status bar (TX/RX stats / connection)
 │   ├── composables/            # Composable functions
-│   │   ├── useSerialPort.ts    # Serial connect / listen / write
-│   │   ├── useSerialData.ts    # Data frame management + RAF batch render
+│   │   ├── useSerialConnection.ts # Serial connect / listen / write
+│   │   ├── useSessionFrames.ts # Session frame operations
+│   │   ├── usePacketFilter.ts  # Direction/search/merged view filtering
+│   │   ├── usePacketFormatter.ts # HEX / text / ANSI formatting cache
 │   │   ├── usePortWatcher.ts   # Hot-plug monitoring
 │   │   ├── useExport.ts        # Export logic
 │   │   └── useSessionActions.ts
@@ -196,6 +200,8 @@ bbcom/
 │   ├── lib/                    # Pure TS utilities
 │   │   ├── format.ts           # HEX / ASCII / UTF-8 formatting
 │   │   ├── constants.ts        # Baud rate / data bits constants
+│   │   ├── ipc.ts              # Typed Tauri command wrappers
+│   │   ├── secure-settings.ts  # Tauri Store-backed local secrets
 │   │   ├── lru-cache.ts        # LRU cache
 │   │   └── time.ts
 │   ├── types/index.ts          # TypeScript type definitions
@@ -205,6 +211,7 @@ bbcom/
 │   └── main.ts                 # Entry point (route: main / AI window)
 ├── scripts/
 │   └── dev.sh                  # Dev helper script
+├── tests/frontend/             # Frontend unit tests
 ├── images/                     # Screenshots
 ├── package.json
 ├── vite.config.ts
@@ -227,29 +234,30 @@ bbcom/
 ├──────────────────────────┼───────────────────────────────┤
 │  Rust Backend             │                               │
 │  ┌────────────────────────┴───────────────────────────┐  │
-│  │  commands: ai / checksum / config / export          │  │
+│  │  commands: ai / checksum / export / window          │  │
 │  ├─────────────────────────────────────────────────────┤  │
 │  │  tauri-plugin-serialplugin   (serial TX/RX)         │  │
 │  │  tauri-plugin-dialog         (file save dialog)     │  │
-│  │  tauri-plugin-store / -fs    (persistence)          │  │
+│  │  tauri-plugin-store         (local settings)        │  │
 │  │  zai-rs                      (ZHIPU AI Chat API)    │  │
 │  └─────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
 ```
 
 - Serial port managed via `tauri-plugin-serialplugin`; frontend communicates with Rust backend through Tauri Command / Event
-- Frontend uses `requestAnimationFrame` + data queue batch rendering for smooth UI at high baud rates
+- Frontend uses `requestAnimationFrame` + bounded data queues for smooth UI at high baud rates
 - AI assistant runs in an independent `WebviewWindow` — hidden (not destroyed) on close, synced via Tauri Event
-- All configs dual-persisted through localStorage + Tauri Store
+- App settings persist locally; AI API keys migrate from legacy localStorage into Tauri Store
 
 ## Contributing
 
 Contributions are welcome! Please follow these guidelines:
 
 1. **Commit Messages** — Follow [Conventional Commits](https://www.conventionalcommits.org/)
-2. **Code Style** — ESLint 9 + typescript-eslint (`no-console: warn`)
+2. **Code Style** — ESLint 9 + typescript-eslint (`no-console: error`)
 3. **Rust** — Edition 2024, `tracing` for logging, `thiserror` for error handling
 4. **TypeScript** — Strict mode (`strict: true`, `noUnusedLocals`, `noUnusedParameters`)
+5. **Checks** — Run `pnpm check` before opening a PR
 
 ### Development Workflow
 

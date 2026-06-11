@@ -166,10 +166,9 @@ bbcom/
 │   │   ├── commands/               # Tauri IPC 命令
 │   │   │   ├── ai.rs               #   AI 窗口控制 + 命令生成
 │   │   │   ├── checksum.rs         #   校验和 / CRC 计算
-│   │   │   ├── config.rs           #   配置加载与持久化
-│   │   │   └── export.rs           #   数据导出入口
+│   │   │   ├── export.rs           #   数据导出入口
+│   │   │   └── window.rs           #   AI 助手窗口命令
 │   │   ├── models/                 # 数据模型
-│   │   │   ├── port_config.rs      #   串口配置
 │   │   │   ├── data_frame.rs       #   数据帧 (TX/RX + 时间戳 + 字节数据)
 │   │   │   ├── errors.rs           #   统一错误类型
 │   │   │   └── checksum_type.rs    #   校验类型枚举
@@ -179,7 +178,6 @@ bbcom/
 │   │   ├── utils/                  # 工具函数
 │   │   │   ├── checksum.rs         #   校验算法
 │   │   │   ├── hex.rs              #   HEX 格式化
-│   │   │   ├── timestamp.rs        #   时间戳处理
 │   │   │   └── mod.rs
 │   │   ├── lib.rs                  # 应用入口、窗口初始化与插件注册
 │   │   └── main.rs
@@ -194,8 +192,10 @@ bbcom/
 │   │   ├── terminal/               # 数据帧列表 (虚拟滚动)
 │   │   └── status-bar/             # 状态栏 (TX/RX 统计 / 连接状态)
 │   ├── composables/                # 组合式函数
-│   │   ├── useSerialPort.ts        #   串口连接 / 监听 / 写入
-│   │   ├── useSerialData.ts        #   数据帧管理 + RAF 批量渲染
+│   │   ├── useSerialConnection.ts  #   串口连接 / 监听 / 写入
+│   │   ├── useSessionFrames.ts     #   会话数据帧操作
+│   │   ├── usePacketFilter.ts      #   方向过滤 / 搜索 / 合并视图
+│   │   ├── usePacketFormatter.ts   #   HEX / 文本 / ANSI 格式化缓存
 │   │   ├── usePortWatcher.ts       #   热插拔监控
 │   │   ├── useExport.ts            #   导出逻辑
 │   │   ├── useSessionActions.ts    #   会话操作
@@ -209,6 +209,8 @@ bbcom/
 │   ├── lib/
 │   │   ├── constants.ts            #   常量 (波特率、数据位等枚举)
 │   │   ├── format.ts               #   格式化工具
+│   │   ├── ipc.ts                  #   类型化 Tauri 命令封装
+│   │   ├── secure-settings.ts      #   基于 Tauri Store 的本地密钥设置
 │   │   ├── lru-cache.ts            #   LRU 缓存
 │   │   └── time.ts                 #   时间工具
 │   ├── styles/
@@ -220,7 +222,7 @@ bbcom/
 ├── scripts/
 │   └── dev.sh                      # 开发构建脚本
 ├── images/                         # 截图资源
-├── tests/                          # 测试 (TODO)
+├── tests/frontend/                 # 前端单元测试
 ├── .github/workflows/release.yml   # CI/CD: 自动构建发布
 ├── package.json
 ├── pnpm-lock.yaml
@@ -254,6 +256,15 @@ cd src-tauri && cargo test
 
 # 代码检查
 pnpm lint
+
+# 前端测试
+pnpm test:frontend
+
+# Rust 测试
+pnpm test:rust
+
+# 完整检查
+pnpm check
 ```
 
 ---
