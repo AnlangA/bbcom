@@ -132,8 +132,13 @@ export const useAppStore = defineStore('app', () => {
 
   async function setAiApiKey(value: string): Promise<boolean> {
     const normalized = value.trim();
+    const previous = aiApiKey.value;
     aiApiKey.value = normalized;
-    return persistAiApiKey(normalized);
+    const ok = await persistAiApiKey(normalized);
+    if (!ok) {
+      aiApiKey.value = previous;
+    }
+    return ok;
   }
 
   function setAiEnableCodingPlan(value: boolean) {

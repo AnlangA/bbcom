@@ -120,25 +120,26 @@ async function ask() {
     message.warning('请先保存 API Key');
     return;
   }
-  if (props.session.frames.length === 0) {
-    message.warning('当前会话没有串口数据，请先连接串口并接收数据');
-    return;
-  }
-  const context = buildLogAiContext(props.session);
-  const question = prompt.value.trim();
   loading.value = true;
   try {
+    const latestSession = (await props.bridge.refreshSession()) ?? props.session;
+    if (latestSession.frames.length === 0) {
+      message.warning('当前会话没有串口数据，请先连接串口并接收数据');
+      return;
+    }
+    const context = buildLogAiContext(latestSession);
+    const question = prompt.value.trim();
     await props.bridge.addLogAiMessage({ role: 'user', content: question });
     const response = await invoke<LogAiResponse>('log_ai_assist', {
       request: {
         prompt: question,
         apiKey: appStore.aiApiKey,
-        model: props.session.logAiModel,
+        model: latestSession.logAiModel,
         enableCodingPlan: appStore.aiEnableCodingPlan,
         context: context.text,
-        contextMode: props.session.logAiContextMode,
+        contextMode: latestSession.logAiContextMode,
         contextTruncated: context.truncated,
-        sessionMeta: `${props.session.portName}, ${props.session.portConfig.baudRate} bps, ${context.frameCount} frames, max ${context.charLimit} chars`,
+        sessionMeta: `${latestSession.portName}, ${latestSession.portConfig.baudRate} bps, ${context.frameCount} frames, max ${context.charLimit} chars`,
       },
     });
     result.value = response;

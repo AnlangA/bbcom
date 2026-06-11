@@ -1,5 +1,5 @@
 <template>
-  <div class="ai-settings">
+  <div class="ai-settings" :class="{ compact }">
     <button class="settings-toggle" type="button" @click="expanded = !expanded">
       <span>AI 设置</span>
       <span class="settings-state">{{ appStore.aiApiKey ? '已配置' : '未配置' }}</span>
@@ -19,7 +19,7 @@
           @update:value="appStore.setAiEnableCodingPlan"
         />
         <span class="coding-plan-label">Coding Plan</span>
-        <n-button size="tiny" type="primary" :disabled="!apiKeyDraft.trim()" @click="saveApiKey">
+        <n-button size="tiny" type="primary" :loading="saving" @click="saveApiKey">
           保存 Key
         </n-button>
       </div>
@@ -32,18 +32,35 @@ import { ref, watch } from 'vue';
 import { NButton, NInput, NSwitch, useMessage } from 'naive-ui';
 import { useAppStore } from '../../stores/app';
 
+defineProps<{
+  compact?: boolean;
+}>();
+
 const appStore = useAppStore();
 const message = useMessage();
-const expanded = ref(false);
+const expanded = ref(!appStore.aiApiKey);
 const apiKeyDraft = ref(appStore.aiApiKey);
+const saving = ref(false);
 
-watch(() => appStore.aiApiKey, (value) => {
-  apiKeyDraft.value = value;
-});
+watch(
+  () => appStore.aiApiKey,
+  (value) => {
+    apiKeyDraft.value = value;
+  },
+);
 
-function saveApiKey() {
-  appStore.setAiApiKey(apiKeyDraft.value.trim());
-  message.success('AI Key 已保存到本地设置');
+async function saveApiKey() {
+  saving.value = true;
+  try {
+    const ok = await appStore.setAiApiKey(apiKeyDraft.value.trim());
+    if (ok) {
+      message.success(apiKeyDraft.value.trim() ? 'AI Key 已保存到本地设置' : 'AI Key 已清除');
+    } else {
+      message.error('AI Key 保存失败');
+    }
+  } finally {
+    saving.value = false;
+  }
 }
 </script>
 
@@ -52,6 +69,14 @@ function saveApiKey() {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border-subtle);
   background: rgba(255, 255, 255, 0.02);
+}
+
+.ai-settings.compact {
+  margin: 8px 0 2px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
 }
 
 .settings-toggle,

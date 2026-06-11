@@ -5,7 +5,9 @@
         <div class="ai-orb">AI</div>
         <div>
           <div class="drag-title">AI 助手</div>
-          <div class="drag-subtitle">{{ session ? `${session.portName} 独立上下文` : '请先创建串口会话' }}</div>
+          <div class="drag-subtitle">
+            {{ session ? `${session.portName} 独立上下文` : '请先创建串口会话' }}
+          </div>
         </div>
       </div>
       <div class="window-actions">
@@ -14,6 +16,8 @@
         </n-button>
       </div>
     </div>
+
+    <AiSettingsPanel compact />
 
     <n-tabs v-if="session" v-model:value="activeTab" size="small" animated>
       <n-tab-pane name="terminal" tab="命令助手" display-directive="show">
@@ -35,6 +39,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAiWindowSession } from '../../composables/useAiWindowSession';
 import AiTerminalAssistant from '../send-panel/AiTerminalAssistant.vue';
 import AiLogAssistant from './AiLogAssistant.vue';
+import AiSettingsPanel from './AiSettingsPanel.vue';
 
 const bridge = useAiWindowSession();
 const message = useMessage();

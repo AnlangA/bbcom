@@ -25,16 +25,22 @@ export function useAiSessionBridge() {
   }
 
   onMounted(async () => {
-    unlisteners.push(await listen('ai-session-snapshot-request', () => {
-      void sendSnapshot();
-    }));
-    unlisteners.push(await listen<AiCommandApplyEvent>('ai-command-apply', (event) => {
-      appStore.applyAiCommand(event.payload.command);
-    }));
-    unlisteners.push(await listen<AiSessionUpdateEvent>('ai-session-update', (event) => {
-      applyUpdate(event.payload);
-      void sendSnapshot();
-    }));
+    unlisteners.push(
+      await listen('ai-session-snapshot-request', () => {
+        void sendSnapshot();
+      }),
+    );
+    unlisteners.push(
+      await listen<AiCommandApplyEvent>('ai-command-apply', (event) => {
+        appStore.applyAiCommand(event.payload.command);
+      }),
+    );
+    unlisteners.push(
+      await listen<AiSessionUpdateEvent>('ai-session-update', (event) => {
+        applyUpdate(event.payload);
+        void sendSnapshot();
+      }),
+    );
     await sendSnapshot();
   });
 
@@ -57,13 +63,6 @@ export function useAiSessionBridge() {
     },
   );
 
-  watch(
-    () => session.value?.frames.length,
-    () => {
-      void sendSnapshot();
-    },
-  );
-
   function applyUpdate(event: AiSessionUpdateEvent) {
     switch (event.action) {
       case 'setTerminalAiModel':
@@ -79,7 +78,10 @@ export function useAiSessionBridge() {
         sessionStore.setLogAiFrameLimit(event.sessionId, Number(event.value));
         break;
       case 'addLogAiMessage':
-        sessionStore.addLogAiMessage(event.sessionId, event.value as Omit<AiChatMessage, 'id' | 'timestamp'>);
+        sessionStore.addLogAiMessage(
+          event.sessionId,
+          event.value as Omit<AiChatMessage, 'id' | 'timestamp'>,
+        );
         break;
       case 'clearLogAiMessages':
         sessionStore.clearLogAiMessages(event.sessionId);
