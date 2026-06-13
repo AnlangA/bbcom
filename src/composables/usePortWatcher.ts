@@ -47,8 +47,8 @@ export function usePortWatcher(interval = 1500) {
 
       ports.value = newPorts;
       serialStore.setAvailablePorts(newPorts);
-    } catch (err) {
-      console.debug('port watcher refresh error:', err);
+    } catch {
+      // Ignore transient serial enumeration failures; the next poll will retry.
     }
   }
 

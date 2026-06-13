@@ -16,7 +16,9 @@ export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketForm
   const hexSearchCache = new LRUCache<string, string>(CACHE_SIZE);
   const textSearchCache = new LRUCache<string, string>(CACHE_SIZE);
   const ansiUp = new AnsiUp();
-  ansiUp.use_classes = true;
+  ansiUp.use_classes = false;
+  ansiUp.escape_html = true;
+  ansiUp.url_allowlist = {};
 
   function formatFrame(frame: DataFrame): string {
     const key = `${frame.id}:${displayMode.value}:${ansiColorEnabled.value}`;

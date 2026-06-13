@@ -1,4 +1,4 @@
-import { computed, ref, watch, type Ref } from 'vue';
+import { computed, onScopeDispose, ref, watch, type Ref } from 'vue';
 import type { DataFrame, DirectionFilter, PacketViewMode, SearchMode } from '../types';
 
 interface PacketFilterOptions {
@@ -8,6 +8,8 @@ interface PacketFilterOptions {
   getHexSearchData: (frame: DataFrame) => string;
   getTextSearchData: (frame: DataFrame) => string;
 }
+
+const SEARCH_DEBOUNCE_MS = 150;
 
 export function usePacketFilter({
   frames,
@@ -40,7 +42,7 @@ export function usePacketFilter({
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       searchQuery.value = value;
-    }, 150);
+    }, SEARCH_DEBOUNCE_MS);
   });
 
   const filteredFrames = computed(() => {
@@ -88,21 +90,46 @@ export function usePacketFilter({
     if (packetViewMode.value === 'FRAME') return filteredFrames.value;
 
     const merged: DataFrame[] = [];
-    let current: DataFrame | null = null;
-    for (const frame of filteredFrames.value) {
-      if (!current || current.direction !== frame.direction) {
-        current = { ...frame, id: `merged-${frame.id}`, data: frame.data.slice() };
-        merged.push(current);
-      } else {
-        const prev = current.data;
-        const next = frame.data;
-        const combined = new Uint8Array(prev.length + next.length);
-        combined.set(prev, 0);
-        combined.set(next, prev.length);
-        current.data = combined;
+    let currentDirection: DataFrame['direction'] | null = null;
+    let currentTimestamp = 0;
+    let currentId = '';
+    let currentChunks: Uint8Array[] = [];
+    let currentSize = 0;
+
+    function flushCurrent() {
+      if (!currentDirection) return;
+      const data = new Uint8Array(currentSize);
+      let offset = 0;
+      for (const chunk of currentChunks) {
+        data.set(chunk, offset);
+        offset += chunk.length;
       }
+      merged.push({
+        id: `merged-${currentId}`,
+        direction: currentDirection,
+        timestamp: currentTimestamp,
+        data,
+      });
     }
+
+    for (const frame of filteredFrames.value) {
+      if (currentDirection !== frame.direction) {
+        flushCurrent();
+        currentDirection = frame.direction;
+        currentTimestamp = frame.timestamp;
+        currentId = frame.id;
+        currentChunks = [];
+        currentSize = 0;
+      }
+      currentChunks.push(frame.data);
+      currentSize += frame.data.length;
+    }
+    flushCurrent();
     return merged;
+  });
+
+  onScopeDispose(() => {
+    if (searchTimer) clearTimeout(searchTimer);
   });
 
   return {

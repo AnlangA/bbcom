@@ -3,6 +3,7 @@ node_modules
 dist
 dist-ssr
 *.local
+package-lock.json
 
 # Rust
 /target
@@ -18,3 +19,5 @@ src-tauri/gen
 # AI
 .claude
 .factory
+.mimocode
+.pnpm-store

@@ -2,41 +2,39 @@
   <div class="status-bar">
     <template v-if="session">
       <div class="stat">
+        <Usb class="icon-sm stat-icon" />
         <span class="stat-label">端口</span>
         <span class="stat-value port-name">{{ session.portName }}</span>
       </div>
-      <span class="stat-divider"></span>
+      <span class="divider">|</span>
       <div class="stat">
         <span class="stat-label">TX</span>
         <span class="stat-value tx">{{ formatBytes(session.txBytes) }}</span>
         <span class="stat-detail">{{ session.txFrames }} 帧</span>
       </div>
-      <span class="stat-divider"></span>
+      <span class="divider">|</span>
       <div class="stat">
         <span class="stat-label">RX</span>
         <span class="stat-value rx">{{ formatBytes(session.rxBytes) }}</span>
         <span class="stat-detail">{{ session.rxFrames }} 帧</span>
       </div>
-      <template v-if="session.isConnected && dataRate">
-        <span class="stat-divider"></span>
-        <div class="stat">
-          <span class="stat-label">速率</span>
-          <span class="stat-value rate">{{ dataRate }}</span>
-        </div>
-      </template>
-      <span class="stat-divider"></span>
+      <span v-if="session.isConnected && dataRate" class="divider">|</span>
+      <div v-if="session.isConnected && dataRate" class="stat">
+        <span class="stat-label">速率</span>
+        <span class="stat-value rate">{{ dataRate }}</span>
+      </div>
+      <span class="divider">|</span>
       <div class="stat">
         <span class="stat-label">时长</span>
         <span class="stat-value">{{ duration }}</span>
       </div>
-      <span class="stat-divider"></span>
+      <span class="divider">|</span>
       <div class="stat">
         <span class="stat-label">波特率</span>
         <span class="stat-value">{{ session.portConfig.baudRate }}</span>
       </div>
       <div class="stat status-indicator">
-        <span class="status-dot" :class="session.isConnected ? 'connected' : 'disconnected'" :aria-label="session.isConnected ? '已连接' : '未连接'"></span>
-        <span class="status-text">{{ session.isConnected ? '已连接' : '未连接' }}</span>
+        <span class="status-dot" :class="session.isConnected ? 'connected' : 'disconnected'"></span>
       </div>
     </template>
     <span v-else class="no-session">无活动会话</span>
@@ -44,7 +42,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onUnmounted } from 'vue';
+import { Usb } from 'lucide-vue-next';
 import type { SerialSession } from '../../types';
 import { formatBytes } from '../../lib/format';
 
@@ -60,69 +59,52 @@ let lastSampleTime = 0;
 const txRate = ref(0);
 const rxRate = ref(0);
 
-function sampleNow() {
-  now.value = Date.now();
-  if (props.session) {
-    const elapsed = (now.value - lastSampleTime) / 1000;
-    if (elapsed > 0) {
-      txRate.value = Math.round((props.session.txBytes - prevTxBytes) / elapsed);
-      rxRate.value = Math.round((props.session.rxBytes - prevRxBytes) / elapsed);
+watch(
+  () => props.session?.isConnected,
+  (connected) => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
     }
-    prevTxBytes = props.session.txBytes;
-    prevRxBytes = props.session.rxBytes;
-    lastSampleTime = now.value;
-  }
-}
-
-function startTimer() {
-  if (timer) clearInterval(timer);
-  prevTxBytes = props.session?.txBytes ?? 0;
-  prevRxBytes = props.session?.rxBytes ?? 0;
-  lastSampleTime = Date.now();
-  timer = setInterval(sampleNow, 1000);
-}
-
-function stopTimer() {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
-  }
-  txRate.value = 0;
-  rxRate.value = 0;
-}
-
-watch(() => props.session?.isConnected, (connected) => {
-  if (connected) {
-    if (document.visibilityState === 'visible') {
-      startTimer();
-    }
-  } else {
-    stopTimer();
-  }
-}, { immediate: true });
-
-watch(() => props.session?.id, () => {
-  stopTimer();
-  now.value = Date.now();
-});
-
-function handleVisibilityChange() {
-  if (props.session?.isConnected) {
-    if (document.hidden) {
-      stopTimer();
+    if (connected) {
+      prevTxBytes = props.session?.txBytes ?? 0;
+      prevRxBytes = props.session?.rxBytes ?? 0;
+      lastSampleTime = Date.now();
+      timer = setInterval(() => {
+        now.value = Date.now();
+        if (props.session) {
+          const elapsed = (now.value - lastSampleTime) / 1000;
+          if (elapsed > 0) {
+            txRate.value = Math.round((props.session.txBytes - prevTxBytes) / elapsed);
+            rxRate.value = Math.round((props.session.rxBytes - prevRxBytes) / elapsed);
+          }
+          prevTxBytes = props.session.txBytes;
+          prevRxBytes = props.session.rxBytes;
+          lastSampleTime = now.value;
+        }
+      }, 1000);
     } else {
-      startTimer();
+      txRate.value = 0;
+      rxRate.value = 0;
     }
-  }
-}
+  },
+  { immediate: true },
+);
 
-onMounted(() => {
-  document.addEventListener('visibilitychange', handleVisibilityChange);
-});
+watch(
+  () => props.session?.id,
+  () => {
+    now.value = Date.now();
+    prevTxBytes = props.session?.txBytes ?? 0;
+    prevRxBytes = props.session?.rxBytes ?? 0;
+    lastSampleTime = Date.now();
+    txRate.value = 0;
+    rxRate.value = 0;
+  },
+);
 
 onUnmounted(() => {
-  stopTimer();
-  document.removeEventListener('visibilitychange', handleVisibilityChange);
+  if (timer) clearInterval(timer);
 });
 
 const dataRate = computed(() => {
@@ -147,17 +129,16 @@ const duration = computed(() => {
   const h = Math.floor(m / 60);
   return `${h.toString().padStart(2, '0')}:${(m % 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 });
-
 </script>
 
 <style scoped>
 .status-bar {
-  height: 28px;
+  height: var(--statusbar-height);
   padding: 0 12px;
   display: flex;
   align-items: center;
-  gap: 6px;
-  background: var(--bg-tertiary);
+  gap: 7px;
+  background: var(--bg-secondary);
   color: var(--text-secondary);
   font-size: 11px;
   font-family: var(--font-mono);
@@ -170,16 +151,22 @@ const duration = computed(() => {
 .stat {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   white-space: nowrap;
+  min-height: 20px;
+  padding: 0 2px;
+}
+
+.stat-icon {
+  color: var(--text-dim);
 }
 
 .stat-label {
   color: var(--text-dim);
-  font-size: 9px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.3px;
 }
 
 .stat-value {
@@ -209,11 +196,14 @@ const duration = computed(() => {
   font-size: 10px;
 }
 
-.stat-divider {
+.divider {
   width: 1px;
-  height: 12px;
-  background: var(--border-color);
-  flex-shrink: 0;
+  height: 14px;
+  overflow: hidden;
+  color: transparent;
+  background: var(--border-subtle);
+  margin: 0 2px;
+  user-select: none;
 }
 
 .no-session {
@@ -227,29 +217,24 @@ const duration = computed(() => {
   position: sticky;
   right: 0;
   padding-left: var(--space-sm);
-  background: linear-gradient(90deg, transparent, var(--bg-tertiary) 20%);
+  background: var(--bg-secondary);
 }
 
 .status-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  transition: background var(--transition-normal), box-shadow var(--transition-normal);
+  transition:
+    background var(--transition-normal),
+    box-shadow var(--transition-normal);
 }
 
 .status-dot.connected {
   background: var(--accent-green);
-  box-shadow: 0 0 6px var(--accent-green-glow);
-  animation: connect-pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 0 3px var(--accent-green-subtle);
 }
 
 .status-dot.disconnected {
   background: var(--text-dim);
-}
-
-.status-text {
-  font-size: 10px;
-  color: var(--text-dim);
-  margin-left: 4px;
 }
 </style>

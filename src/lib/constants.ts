@@ -32,3 +32,53 @@ export const FLOW_CONTROL_OPTIONS = [
   { label: '硬件', value: 'hardware' },
   { label: '软件', value: 'software' },
 ];
+
+export const EXPORT_FORMATS = {
+  txtHex: 'txt-hex',
+  txtAscii: 'txt-ascii',
+  csv: 'csv',
+  jsonl: 'jsonl',
+  bin: 'bin',
+} as const;
+
+export type ExportFormat = (typeof EXPORT_FORMATS)[keyof typeof EXPORT_FORMATS];
+
+export const EXPORT_OPTIONS: { label: string; key: ExportFormat }[] = [
+  { label: '导出为 TXT (HEX)', key: EXPORT_FORMATS.txtHex },
+  { label: '导出为 TXT (ASCII)', key: EXPORT_FORMATS.txtAscii },
+  { label: '导出为 CSV', key: EXPORT_FORMATS.csv },
+  { label: '导出为 JSON Lines', key: EXPORT_FORMATS.jsonl },
+  { label: '导出为 BIN', key: EXPORT_FORMATS.bin },
+];
+
+export const CHECKSUM_ALGORITHMS = {
+  checksum: 'CHECKSUM',
+  crc8: 'CRC8',
+  crc16: 'CRC16',
+  crc32: 'CRC32',
+} as const;
+
+export type ChecksumAlgorithm = (typeof CHECKSUM_ALGORITHMS)[keyof typeof CHECKSUM_ALGORITHMS];
+
+export const CHECKSUM_OPTIONS: { label: string; value: ChecksumAlgorithm }[] = [
+  { label: 'Checksum', value: CHECKSUM_ALGORITHMS.checksum },
+  { label: 'CRC-8', value: CHECKSUM_ALGORITHMS.crc8 },
+  { label: 'CRC-16', value: CHECKSUM_ALGORITHMS.crc16 },
+  { label: 'CRC-32', value: CHECKSUM_ALGORITHMS.crc32 },
+];
+
+export const AI_MODELS = {
+  glm51: 'glm-5.1',
+  glm5Turbo: 'glm-5-turbo',
+  glm47: 'glm-4.7',
+  glm45Air: 'glm-4.5-air',
+} as const;
+
+export type AiModel = (typeof AI_MODELS)[keyof typeof AI_MODELS];
+
+export const AI_MODEL_OPTIONS: { label: string; value: AiModel }[] = [
+  { label: 'GLM-5.1', value: AI_MODELS.glm51 },
+  { label: 'GLM-5 Turbo', value: AI_MODELS.glm5Turbo },
+  { label: 'GLM-4.7', value: AI_MODELS.glm47 },
+  { label: 'GLM-4.5 Air', value: AI_MODELS.glm45Air },
+];

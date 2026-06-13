@@ -1,29 +1,37 @@
 <template>
   <div class="ai-panel">
-    <div class="drag-handle" @pointerdown="startDrag">
-      <div class="title-group">
-        <div class="ai-orb">AI</div>
-        <div>
-          <div class="drag-title">AI 助手</div>
-          <div class="drag-subtitle">{{ sessionLabel }}</div>
+    <div class="ai-header">
+      <div class="drag-handle" @pointerdown="startDrag">
+        <div class="title-group">
+          <div class="ai-mark">
+            <Bot class="icon-lg" />
+          </div>
+          <div>
+            <div class="drag-title">AI 助手</div>
+            <div class="drag-subtitle">
+              {{ session ? `${session.portName} 独立上下文` : '请先创建串口会话' }}
+            </div>
+          </div>
         </div>
       </div>
+
       <div class="window-actions">
-        <n-button size="tiny" quaternary @click.stop="toggleAlwaysOnTop" :type="alwaysOnTop ? 'primary' : 'default'">
+        <n-button size="tiny" quaternary @click.stop="toggleAlwaysOnTop">
           <template #icon>
-            <n-icon size="14"><PinIcon /></n-icon>
+            <PinOff v-if="alwaysOnTop" class="icon-sm" />
+            <Pin v-else class="icon-sm" />
           </template>
           {{ alwaysOnTop ? '取消置顶' : '置顶' }}
         </n-button>
       </div>
     </div>
 
-    <n-tabs v-if="hasActiveSession" v-model:value="activeTab" size="small" animated>
+    <n-tabs v-if="session" v-model:value="activeTab" size="small" animated>
       <n-tab-pane name="terminal" tab="命令助手" display-directive="show">
-        <AiTerminalAssistant :bridge="bridge" />
+        <AiTerminalAssistant :session="session" :bridge="bridge" />
       </n-tab-pane>
       <n-tab-pane name="log" tab="日志助手" display-directive="show">
-        <AiLogAssistant :bridge="bridge" />
+        <AiLogAssistant :session="session" :bridge="bridge" />
       </n-tab-pane>
     </n-tabs>
     <div v-else class="empty-state">请先在主窗口创建串口会话。</div>
@@ -32,8 +40,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { NButton, NIcon, NTabPane, NTabs, useMessage } from 'naive-ui';
-import { Pin as PinIcon } from '@vicons/ionicons5';
+import { NButton, NTabPane, NTabs, useMessage } from 'naive-ui';
+import { Bot, Pin, PinOff } from 'lucide-vue-next';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAiWindowSession } from '../../composables/useAiWindowSession';
@@ -42,12 +50,9 @@ import AiLogAssistant from './AiLogAssistant.vue';
 
 const bridge = useAiWindowSession();
 const message = useMessage();
+const session = computed(() => bridge.session.value);
 const activeTab = ref<'terminal' | 'log'>('terminal');
 const alwaysOnTop = ref(true);
-const hasActiveSession = computed(() => !!bridge.sessionId.value);
-const sessionLabel = computed(() =>
-  bridge.sessionId.value ? `${bridge.portName.value} 独立上下文` : '请先创建串口会话'
-);
 
 onMounted(async () => {
   try {
@@ -78,14 +83,23 @@ async function toggleAlwaysOnTop() {
 
 <style scoped>
 .ai-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   padding: 10px;
-  border: 1px solid rgba(99, 255, 177, 0.15);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
   background:
-    radial-gradient(circle at 0 0, rgba(99, 255, 177, 0.1), transparent 32%),
-    linear-gradient(135deg, rgba(18, 26, 32, 0.94), rgba(12, 16, 21, 0.86));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
-  backdrop-filter: blur(20px);
-  border-radius: var(--radius-lg);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 90px), var(--bg-secondary);
+  box-shadow: var(--shadow-lg), var(--shadow-inset);
+  backdrop-filter: blur(16px);
+}
+
+.ai-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
 }
 
 .drag-handle,
@@ -96,18 +110,20 @@ async function toggleAlwaysOnTop() {
 }
 
 .drag-handle {
-  min-height: 36px;
-  justify-content: space-between;
+  min-height: 42px;
+  justify-content: flex-start;
+  padding: 2px 4px;
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 700;
   cursor: grab;
   user-select: none;
   touch-action: none;
+  border-radius: var(--radius-lg);
 }
 
-.drag-handle:active {
-  cursor: grabbing;
+.drag-handle:hover {
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .title-group {
@@ -115,26 +131,28 @@ async function toggleAlwaysOnTop() {
   min-width: 0;
 }
 
-.ai-orb {
-  width: 34px;
-  height: 34px;
+.ai-mark {
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(99, 255, 177, 0.4);
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(99, 255, 177, 0.22), rgba(99, 255, 177, 0.06));
-  color: #9fffc7;
-  font-size: 12px;
-  font-weight: 800;
+  border: 1px solid var(--color-primary-muted);
+  border-radius: var(--radius-lg);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
   flex-shrink: 0;
-  box-shadow: 0 0 12px rgba(99, 255, 177, 0.15);
-  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+.window-actions {
+  min-height: 42px;
+  justify-content: flex-end;
+  justify-self: end;
 }
 
 .drag-title {
   color: var(--text-primary);
   font-size: 13px;
-  letter-spacing: 0.3px;
+  font-weight: var(--font-weight-semibold);
 }
 
 .drag-subtitle,
@@ -145,12 +163,21 @@ async function toggleAlwaysOnTop() {
 }
 
 .empty-state {
-  padding: 18px 8px;
+  padding: 24px 8px 18px;
   text-align: center;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-inset);
 }
 
 :global(.ai-model-menu) {
   max-height: 72px !important;
   overflow-y: auto !important;
+}
+
+@media (max-width: 720px) {
+  .ai-header {
+    grid-template-columns: 1fr auto;
+  }
 }
 </style>

@@ -14,19 +14,48 @@
           size="tiny"
           clearable
           style="width: 160px"
-        />
+        >
+          <template #prefix>
+            <Search class="icon-sm search-icon" />
+          </template>
+        </n-input>
         <n-button-group size="tiny">
-          <n-button :type="appStore.searchMode === 'TEXT' ? 'primary' : 'default'" @click="appStore.setSearchMode('TEXT')">文本</n-button>
-          <n-button :type="appStore.searchMode === 'HEX' ? 'primary' : 'default'" @click="appStore.setSearchMode('HEX')">HEX</n-button>
+          <n-button
+            :type="appStore.searchMode === 'TEXT' ? 'primary' : 'default'"
+            @click="appStore.setSearchMode('TEXT')"
+            >文本</n-button
+          >
+          <n-button
+            :type="appStore.searchMode === 'HEX' ? 'primary' : 'default'"
+            @click="appStore.setSearchMode('HEX')"
+            >HEX</n-button
+          >
         </n-button-group>
         <n-button-group size="tiny">
-          <n-button :type="appStore.packetViewMode === 'FRAME' ? 'primary' : 'default'" @click="appStore.setPacketViewMode('FRAME')">按帧</n-button>
-          <n-button :type="appStore.packetViewMode === 'MERGED' ? 'primary' : 'default'" @click="appStore.setPacketViewMode('MERGED')">合并</n-button>
+          <n-button
+            :type="appStore.packetViewMode === 'FRAME' ? 'primary' : 'default'"
+            @click="appStore.setPacketViewMode('FRAME')"
+            >按帧</n-button
+          >
+          <n-button
+            :type="appStore.packetViewMode === 'MERGED' ? 'primary' : 'default'"
+            @click="appStore.setPacketViewMode('MERGED')"
+            >合并</n-button
+          >
         </n-button-group>
       </div>
       <div class="filter-right">
-        <n-dropdown :options="copyOptions" @select="handleCopySelect" :disabled="filteredFrames.length === 0">
-          <n-button size="tiny" quaternary :disabled="filteredFrames.length === 0">复制</n-button>
+        <n-dropdown
+          :options="copyOptions"
+          @select="handleCopySelect"
+          :disabled="filteredFrames.length === 0"
+        >
+          <n-button size="tiny" quaternary :disabled="filteredFrames.length === 0">
+            <template #icon>
+              <Copy class="icon-sm" />
+            </template>
+            复制
+          </n-button>
         </n-dropdown>
         <span class="frame-count">{{ filteredFrames.length }} / {{ frames.length }}</span>
       </div>
@@ -55,11 +84,16 @@
             ...gridStyle,
           }"
           class="packet-row packet-item"
-          :class="{ tx: visibleFrames[row.index].direction === 'TX', rx: visibleFrames[row.index].direction === 'RX' }"
+          :class="{
+            tx: visibleFrames[row.index].direction === 'TX',
+            rx: visibleFrames[row.index].direction === 'RX',
+          }"
           @contextmenu.prevent="(e: MouseEvent) => showContextMenu(e, visibleFrames[row.index])"
         >
           <span class="col-dir direction">{{ visibleFrames[row.index].direction }}</span>
-          <span v-if="appStore.showTimestamp" class="col-time timestamp">{{ formatTimestamp(visibleFrames[row.index].timestamp) }}</span>
+          <span v-if="appStore.showTimestamp" class="col-time timestamp">{{
+            formatTimestamp(visibleFrames[row.index].timestamp)
+          }}</span>
           <span
             v-if="appStore.displayMode !== 'HEX' && appStore.ansiColorEnabled"
             class="col-data data ansi-data"
@@ -85,6 +119,7 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, NSelect, useMessage } from 'naive-ui';
+import { Copy, Search } from 'lucide-vue-next';
 import { useAppStore } from '../../stores/app';
 import { formatHex, formatUtf8, formatAscii, formatTimestamp } from '../../lib/format';
 import { usePacketFilter } from '../../composables/usePacketFilter';
@@ -103,7 +138,7 @@ const framesRef = toRef(props, 'frames');
 const ctxShow = ref(false);
 const ctxX = ref(0);
 const ctxY = ref(0);
-const ctxFrame = ref<DataFrame | null>(null);
+let ctxFrame: DataFrame | null = null;
 
 const ctxOptions = [
   { label: '复制 HEX', key: 'hex' },
@@ -125,38 +160,33 @@ const directionOptions: { label: string; value: DirectionFilter }[] = [
   { label: 'TX', value: 'TX' },
   { label: 'RX', value: 'RX' },
 ];
+const MAX_COPY_BYTES = 2 * 1024 * 1024;
+const MAX_COPY_FRAMES = 5000;
 
 const gridStyle = computed(() => ({
   gridTemplateColumns: appStore.showTimestamp ? '50px 160px 1fr 50px' : '50px 1fr 50px',
 }));
 
-const {
-  formatFrame,
-  getHexSearchData,
-  getTextSearchData,
-  stripAnsi,
-  clearCaches,
-} = usePacketFormatter({
-  displayMode: computed(() => appStore.displayMode),
-  ansiColorEnabled: computed(() => appStore.ansiColorEnabled),
-});
+const { formatFrame, getHexSearchData, getTextSearchData, stripAnsi, clearCaches } =
+  usePacketFormatter({
+    displayMode: computed(() => appStore.displayMode),
+    ansiColorEnabled: computed(() => appStore.ansiColorEnabled),
+  });
 
 function formatData(frame: DataFrame): string {
   return formatFrame(frame);
 }
 
-watch(() => props.frames.length, (newLen, oldLen) => {
-  if (newLen < oldLen) {
-    clearCaches();
-  }
-});
+watch(
+  () => props.frames.length,
+  (newLen, oldLen) => {
+    if (newLen < oldLen) {
+      clearCaches();
+    }
+  },
+);
 
-const {
-  directionFilter,
-  searchInput,
-  filteredFrames,
-  visibleFrames,
-} = usePacketFilter({
+const { directionFilter, searchInput, filteredFrames, visibleFrames } = usePacketFilter({
   frames: framesRef,
   searchMode: computed(() => appStore.searchMode),
   packetViewMode: computed(() => appStore.packetViewMode),
@@ -164,12 +194,7 @@ const {
   getTextSearchData,
 });
 
-const {
-  scrollRef,
-  virtualItems,
-  totalSize,
-  onScroll,
-} = usePacketVirtualScroll({
+const { scrollRef, virtualItems, totalSize, onScroll } = usePacketVirtualScroll({
   visibleFrames,
   frameCount: computed(() => props.frames.length),
   autoScroll: computed(() => appStore.autoScroll),
@@ -180,7 +205,7 @@ const displayLabel = computed(() =>
 );
 
 function showContextMenu(e: MouseEvent, frame: DataFrame) {
-  ctxFrame.value = frame;
+  ctxFrame = frame;
   ctxX.value = e.clientX;
   ctxY.value = e.clientY;
   ctxShow.value = true;
@@ -188,28 +213,25 @@ function showContextMenu(e: MouseEvent, frame: DataFrame) {
 
 async function handleCtxSelect(key: string) {
   ctxShow.value = false;
-  if (!ctxFrame.value) return;
+  if (!ctxFrame) return;
 
   let text = '';
   switch (key) {
     case 'hex':
-      text = formatHex(ctxFrame.value.data);
+      text = formatHex(ctxFrame.data);
       break;
     case 'ascii':
-      text = formatAscii(ctxFrame.value.data);
+      text = formatAscii(ctxFrame.data);
       break;
     case 'utf8':
-      text = formatUtf8(ctxFrame.value.data);
+      text = formatUtf8(ctxFrame.data);
       break;
     case 'plain':
-      text = stripAnsi(formatAscii(ctxFrame.value.data));
+      text = stripAnsi(formatAscii(ctxFrame.data));
       break;
     case 'row':
-      text = `[${formatTimestamp(ctxFrame.value.timestamp)}] ${ctxFrame.value.direction} | ${formatFrame(ctxFrame.value)}`;
+      text = `[${formatTimestamp(ctxFrame.timestamp)}] ${ctxFrame.direction} | ${formatFrame(ctxFrame)}`;
       break;
-    default:
-      console.debug('unknown context menu key:', key);
-      return;
   }
 
   try {
@@ -221,35 +243,19 @@ async function handleCtxSelect(key: string) {
 }
 
 async function handleCopySelect(key: string) {
-  const source = key.startsWith('all') ? props.frames : filteredFrames.value;
+  const frames = key.startsWith('all') ? props.frames : filteredFrames.value;
+  const totalBytes = frames.reduce((sum, frame) => sum + frame.data.length, 0);
+  if (frames.length > MAX_COPY_FRAMES || totalBytes > MAX_COPY_BYTES) {
+    message.warning('复制内容过大，请先筛选或使用导出');
+    return;
+  }
   const asHex = key.endsWith('hex');
-  const MAX_COPY_FRAMES = 5000;
-  const frames = source.length > MAX_COPY_FRAMES ? source.slice(-MAX_COPY_FRAMES) : source;
-  if (source.length > MAX_COPY_FRAMES) {
-    message.warning(`数据过多，仅复制最近 ${MAX_COPY_FRAMES} 帧`);
-  }
-
-  const CHUNK_SIZE = 500;
-  const parts: string[] = [];
-  for (let start = 0; start < frames.length; start += CHUNK_SIZE) {
-    const end = Math.min(start + CHUNK_SIZE, frames.length);
-    for (let i = start; i < end; i++) {
-      const frame = frames[i];
+  const text = frames
+    .map((frame) => {
       const data = asHex ? formatHex(frame.data) : formatUtf8(frame.data);
-      parts.push(`[${formatTimestamp(frame.timestamp)}] ${frame.direction} | ${data}`);
-    }
-    if (end < frames.length) {
-      await new Promise<void>((resolve) => {
-        if (typeof requestIdleCallback === 'function') {
-          requestIdleCallback(() => resolve());
-        } else {
-          setTimeout(resolve, 0);
-        }
-      });
-    }
-  }
-
-  const text = parts.join('\n');
+      return `[${formatTimestamp(frame.timestamp)}] ${frame.direction} | ${data}`;
+    })
+    .join('\n');
   try {
     await navigator.clipboard.writeText(text);
     message.success('已复制');
@@ -265,14 +271,16 @@ async function handleCopySelect(key: string) {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  background: var(--bg-primary);
 }
 
 .packet-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 7px 10px;
-  background: var(--bg-secondary);
+  min-height: 42px;
+  padding: 7px 12px;
+  background: var(--bg-primary);
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
   gap: var(--space-sm);
@@ -281,7 +289,7 @@ async function handleCopySelect(key: string) {
 
 .filter-left {
   display: flex;
-  gap: 6px;
+  gap: 7px;
   align-items: center;
   flex-wrap: wrap;
   min-width: 0;
@@ -296,14 +304,16 @@ async function handleCopySelect(key: string) {
   gap: 8px;
 }
 
+.search-icon {
+  color: var(--text-dim);
+}
+
 .frame-count {
   color: var(--text-secondary);
-  padding: 2px 8px;
-  border: 1px solid var(--border-color);
+  padding: 2px 7px;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-full);
-  background: var(--bg-elevated);
-  font-weight: 500;
-  font-size: 10px;
+  background: var(--bg-tertiary);
 }
 
 .packet-row {
@@ -317,25 +327,25 @@ async function handleCopySelect(key: string) {
 }
 
 .packet-header {
-  font-weight: 700;
+  font-weight: 600;
   border-bottom: 1px solid var(--border-subtle);
   border-left: 2px solid transparent;
   color: var(--text-muted);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  background: var(--bg-tertiary);
+  background: var(--bg-secondary);
   position: sticky;
   top: 0;
   z-index: 1;
   padding-left: 8px;
-  backdrop-filter: blur(8px);
 }
 
 .packet-items {
   overflow-y: auto;
   flex: 1;
-  background: var(--bg-primary);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.012), transparent 120px), var(--bg-primary);
   position: relative;
 }
 
@@ -348,38 +358,43 @@ async function handleCopySelect(key: string) {
   color: var(--text-dim);
   font-size: 12px;
   pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(circle at center, black 0, transparent 72%);
 }
 
 .packet-item {
   border-bottom: 1px solid var(--border-subtle);
   transition: background var(--transition-fast);
-  cursor: context-menu;
+  cursor: pointer;
 }
 
 .packet-item:hover {
-  background: var(--bg-hover);
+  background-color: var(--bg-hover);
 }
 
 .packet-item.tx .direction {
-  color: var(--accent-green);
-  font-weight: 700;
+  color: var(--text-inverse);
+  background: var(--accent-green);
 }
 
 .packet-item.rx .direction {
-  color: var(--accent-blue);
-  font-weight: 700;
+  color: #06111f;
+  background: var(--accent-blue);
 }
 
 .packet-item.tx {
-  border-left: 3px solid var(--accent-green);
-  padding-left: 7px;
-  background-image: linear-gradient(90deg, var(--color-tx-bar), transparent 140px);
+  border-left: 2px solid var(--accent-green);
+  padding-left: 8px;
+  background-image: linear-gradient(90deg, var(--accent-green-subtle), transparent 140px);
 }
 
 .packet-item.rx {
-  border-left: 3px solid var(--accent-blue);
-  padding-left: 7px;
-  background-image: linear-gradient(90deg, var(--color-rx-bar), transparent 140px);
+  border-left: 2px solid var(--accent-blue);
+  padding-left: 8px;
+  background-image: linear-gradient(90deg, var(--accent-blue-subtle), transparent 140px);
 }
 
 .col-dir {
@@ -392,6 +407,16 @@ async function handleCopySelect(key: string) {
   color: var(--text-muted);
   white-space: nowrap;
   font-size: 11px;
+}
+
+.direction {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  font-weight: var(--font-weight-bold);
+  line-height: 18px;
 }
 
 .col-data {
@@ -411,6 +436,6 @@ async function handleCopySelect(key: string) {
   color: var(--text-dim);
   font-size: 9px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
 }
 </style>

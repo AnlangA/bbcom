@@ -10,45 +10,35 @@
           :loading="serialState.isConnecting.value"
         >
           <template #icon>
-            <n-icon><LinkIcon /></n-icon>
+            <Power class="icon-sm" />
           </template>
           连接
         </n-button>
-        <n-button
-          v-else
-          type="error"
-          size="small"
-          ghost
-          @click="disconnect"
-        >
+        <n-button v-else type="error" size="small" ghost @click="disconnect">
           <template #icon>
-            <n-icon><UnlinkIcon /></n-icon>
+            <PowerOff class="icon-sm" />
           </template>
           断开
         </n-button>
-        <n-button size="small" quaternary @click="clear" :disabled="session.frames.length === 0">
+        <n-button size="small" @click="clear" :disabled="session.frames.length === 0">
           <template #icon>
-            <n-icon><TrashIcon /></n-icon>
+            <Trash2 class="icon-sm" />
           </template>
           清空
         </n-button>
-        <n-tag :type="session.isConnected ? 'success' : 'default'" size="small" round>
-          <template #icon>
-            <n-icon :size="12">
-              <component :is="session.isConnected ? RadioIcon : CubeIcon" />
-            </n-icon>
-          </template>
+        <n-tag
+          :type="session.isConnected ? 'success' : 'default'"
+          size="small"
+          round
+          :bordered="false"
+        >
           {{ session.isConnected ? '已连接' : '未连接' }}
         </n-tag>
-        <Transition name="error-slide">
-          <span v-if="serialState.error.value" class="error-hint">
-            <n-icon size="12"><AlertCircleIcon /></n-icon>
-            {{ serialState.error.value }}
-          </span>
-        </Transition>
+        <span v-if="serialState.error.value" class="error-hint">{{ serialState.error.value }}</span>
       </div>
       <div class="toolbar-right">
         <div class="toolbar-field">
+          <FileText class="icon-sm field-icon" />
           <span class="field-label">格式</span>
           <n-select
             :value="appStore.displayMode"
@@ -58,24 +48,70 @@
             @update:value="appStore.setDisplayMode"
           />
         </div>
-        <n-button-group size="small">
-          <n-button quaternary @click="toggleAutoScroll" :type="appStore.autoScroll ? 'primary' : 'default'" title="自动滚动">
-            <n-icon><ArrowDownCircleIcon /></n-icon>
-          </n-button>
-          <n-button quaternary @click="appStore.toggleAnsiColor" :type="appStore.ansiColorEnabled ? 'primary' : 'default'" title="ANSI颜色渲染">
-            <n-icon><ColorIcon /></n-icon>
-          </n-button>
-          <n-button quaternary @click="toggleTimestamp" :type="appStore.showTimestamp ? 'primary' : 'default'" title="显示时间">
-            <n-icon><TimeIcon /></n-icon>
-          </n-button>
-          <n-button quaternary @click="toggleAutoLog" :type="session.autoLogEnabled ? 'primary' : 'default'" title="接收自动记录">
-            <n-icon><DocumentIcon /></n-icon>
-          </n-button>
-        </n-button-group>
-        <n-dropdown :options="exportOptions" @select="handleExport" :disabled="session.frames.length === 0 || isExporting">
-          <n-button size="small" quaternary :disabled="session.frames.length === 0" :loading="isExporting" title="导出数据">
+        <div class="toolbar-toggles">
+          <n-button
+            size="small"
+            quaternary
+            @click="toggleAutoScroll"
+            :type="appStore.autoScroll ? 'primary' : 'default'"
+            title="自动滚动"
+          >
             <template #icon>
-              <n-icon><DownloadIcon /></n-icon>
+              <ArrowDownUp class="icon-sm" />
+            </template>
+            自动滚动
+          </n-button>
+          <n-button
+            size="small"
+            quaternary
+            @click="appStore.toggleAnsiColor"
+            :type="appStore.ansiColorEnabled ? 'primary' : 'default'"
+            title="ANSI颜色渲染"
+          >
+            <template #icon>
+              <Palette class="icon-sm" />
+            </template>
+            颜色
+          </n-button>
+          <n-button
+            size="small"
+            quaternary
+            @click="toggleTimestamp"
+            :type="appStore.showTimestamp ? 'primary' : 'default'"
+            title="显示时间"
+          >
+            <template #icon>
+              <Clock class="icon-sm" />
+            </template>
+            时间
+          </n-button>
+          <n-button
+            size="small"
+            quaternary
+            @click="toggleAutoLog"
+            :type="session.autoLogEnabled ? 'primary' : 'default'"
+            title="接收自动记录"
+          >
+            <template #icon>
+              <FileText class="icon-sm" />
+            </template>
+            LOG
+          </n-button>
+        </div>
+        <n-dropdown
+          :options="exportOptions"
+          @select="handleExport"
+          :disabled="session.frames.length === 0 || isExporting"
+        >
+          <n-button
+            size="small"
+            quaternary
+            :disabled="session.frames.length === 0"
+            :loading="isExporting"
+            title="导出数据"
+          >
+            <template #icon>
+              <Download class="icon-sm" />
             </template>
             导出
           </n-button>
@@ -103,30 +139,27 @@
 
 <script setup lang="ts">
 import { onMounted } from 'vue';
-import { NButton, NTag, NDropdown, NSelect, NIcon, NButtonGroup, useMessage } from 'naive-ui';
+import { NButton, NTag, NDropdown, NSelect } from 'naive-ui';
 import {
-  Link as LinkIcon,
-  Unlink as UnlinkIcon,
-  TrashOutline as TrashIcon,
-  Radio,
-  CubeOutline as CubeIcon,
-  AlertCircleOutline as AlertCircleIcon,
-  ArrowDownCircleOutline as ArrowDownCircleIcon,
-  ColorPaletteOutline as ColorIcon,
-  TimeOutline as TimeIcon,
-  DocumentTextOutline as DocumentIcon,
-  DownloadOutline as DownloadIcon,
-} from '@vicons/ionicons5';
+  ArrowDownUp,
+  Clock,
+  Download,
+  FileText,
+  Palette,
+  Power,
+  PowerOff,
+  Trash2,
+} from 'lucide-vue-next';
 import DataPacketList from '../terminal/DataPacketList.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
-import { useSerialData } from '../../composables/useSerialData';
+import { useSerialConnection } from '../../composables/useSerialConnection';
 import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
 import { useExport } from '../../composables/useExport';
 import { useSessionActions } from '../../composables/useSessionActions';
+import { useMessage } from 'naive-ui';
+import { EXPORT_OPTIONS, type ExportFormat } from '../../lib/constants';
 import type { DisplayMode, SerialSession } from '../../types';
-
-const RadioIcon = Radio;
 
 const props = defineProps<{
   session: SerialSession;
@@ -137,10 +170,15 @@ const appStore = useAppStore();
 const { requestClearFrames } = useSessionActions();
 const { isExporting, exportData } = useExport();
 const message = useMessage();
-const serialState = useSerialData(
+const serialState = useSerialConnection(
   props.session.id,
   props.session.portName,
   props.session.portConfig,
+  {
+    onDisconnect: () => {
+      message.warning('串口已断开');
+    },
+  },
 );
 
 const displayModeOptions: { label: string; value: DisplayMode }[] = [
@@ -150,13 +188,7 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   { label: 'UTF-8', value: 'UTF8' },
 ];
 
-const exportOptions = [
-  { label: '导出为 TXT (HEX)', key: 'txt-hex' },
-  { label: '导出为 TXT (ASCII)', key: 'txt-ascii' },
-  { label: '导出为 CSV', key: 'csv' },
-  { label: '导出为 JSON Lines', key: 'jsonl' },
-  { label: '导出为 BIN', key: 'bin' },
-];
+const exportOptions = EXPORT_OPTIONS;
 
 onMounted(() => {
   sessionStore.registerCleanup(props.session.id, serialState.stop);
@@ -212,11 +244,13 @@ function toggleTimestamp() {
 
 function toggleAutoLog() {
   sessionStore.setAutoLogEnabled(props.session.id, !props.session.autoLogEnabled);
-  message.info(props.session.autoLogEnabled ? '已关闭自动记录标记' : '已开启自动记录标记，可通过导出保存数据');
+  message.info(
+    props.session.autoLogEnabled ? '已关闭自动记录标记' : '已开启自动记录标记，可通过导出保存数据',
+  );
 }
 
 async function handleExport(format: string) {
-  const ok = await exportData(props.session.frames, format as 'txt-hex' | 'txt-ascii' | 'csv' | 'jsonl' | 'bin');
+  const ok = await exportData(props.session.frames, format as ExportFormat);
   if (ok) {
     message.success('导出成功');
   } else if (props.session.frames.length > 0) {
@@ -239,16 +273,16 @@ async function handleExport(format: string) {
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-tertiary);
-  min-height: 46px;
+  background: var(--bg-secondary);
+  min-height: var(--toolbar-height);
   flex-shrink: 0;
-  gap: 8px;
+  gap: 12px;
 }
 
 .toolbar-left,
 .toolbar-right {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
 }
 
@@ -263,49 +297,42 @@ async function handleExport(format: string) {
   min-width: 0;
 }
 
-.toolbar-field {
+.toolbar-field,
+.toolbar-toggles {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 8px;
-  background: var(--bg-secondary);
+}
+
+.toolbar-field {
+  height: 32px;
+  padding: 0 6px 0 8px;
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
 }
 
+.field-icon {
+  color: var(--text-dim);
+}
+
 .field-label {
   color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .error-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
   color: var(--accent-red);
   font-size: 11px;
-  max-width: 220px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 3px 8px;
+  padding: 3px 7px;
   background: var(--accent-red-subtle);
-  border: 1px solid rgba(244, 67, 54, 0.25);
-  border-radius: var(--radius-md);
-}
-
-.error-slide-enter-active,
-.error-slide-leave-active {
-  transition: all var(--transition-normal);
-}
-
-.error-slide-enter-from,
-.error-slide-leave-to {
-  opacity: 0;
-  transform: translateX(-8px);
+  border: 1px solid rgba(255, 107, 122, 0.22);
+  border-radius: var(--radius-full);
 }
 
 .display-area {
@@ -317,6 +344,7 @@ async function handleExport(format: string) {
 .send-area {
   border-top: 1px solid var(--border-subtle);
   flex-shrink: 0;
+  background: var(--bg-secondary);
 }
 
 @media (max-width: 900px) {

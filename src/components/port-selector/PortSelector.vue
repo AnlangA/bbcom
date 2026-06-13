@@ -1,136 +1,164 @@
 <template>
   <div class="port-selector">
     <div class="section">
-      <div class="section-title" @click="toggleSection('port')">
-        <span>串口选择</span>
-        <n-icon size="14" class="toggle-icon" :class="{ collapsed: collapsed.port }">
-          <ChevronDownIcon />
-        </n-icon>
+      <button class="section-title" type="button" @click="toggleSection('port')">
+        <span class="section-heading">
+          <Cable class="icon-sm" />
+          串口选择
+        </span>
+        <ChevronRight v-if="collapsed.port" class="toggle-icon" />
+        <ChevronDown v-else class="toggle-icon" />
+      </button>
+      <div v-show="!collapsed.port">
+        <div class="port-row">
+          <n-select
+            v-model:value="selectedPort"
+            :options="portOptions"
+            placeholder="选择串口"
+            clearable
+            size="small"
+          />
+          <n-button
+            size="small"
+            @click="refreshPorts"
+            :loading="isRefreshing"
+            quaternary
+            title="刷新串口"
+          >
+            <template #icon>
+              <RefreshCw class="icon-sm" />
+            </template>
+          </n-button>
+        </div>
+        <div v-if="ports.length === 0" class="empty-hint">未检测到串口设备</div>
+        <div v-if="missingActivePorts.length > 0" class="empty-hint warning">
+          端口已断开：{{ missingActivePorts.join(', ') }}
+        </div>
       </div>
-      <Transition name="collapse">
-        <div v-show="!collapsed.port" class="section-body">
-          <div class="port-row">
+    </div>
+
+    <div class="section">
+      <button class="section-title" type="button" @click="toggleSection('config')">
+        <span class="section-heading">
+          <Settings2 class="icon-sm" />
+          连接参数
+        </span>
+        <ChevronRight v-if="collapsed.config" class="toggle-icon" />
+        <ChevronDown v-else class="toggle-icon" />
+      </button>
+      <div v-show="!collapsed.config">
+        <div class="config-grid">
+          <div class="config-item">
+            <label>波特率</label>
+            <n-select v-model:value="config.baudRate" :options="baudRateOptions" size="small" />
+          </div>
+          <div class="config-item">
+            <label>数据位</label>
+            <n-select v-model:value="config.dataBits" :options="dataBitsOptions" size="small" />
+          </div>
+          <div class="config-item">
+            <label>停止位</label>
+            <n-select v-model:value="config.stopBits" :options="stopBitsOptions" size="small" />
+          </div>
+          <div class="config-item">
+            <label>校验位</label>
+            <n-select v-model:value="config.parity" :options="parityOptions" size="small" />
+          </div>
+          <div class="config-item">
+            <label>流控</label>
             <n-select
-              v-model:value="selectedPort"
-              :options="portOptions"
-              placeholder="选择串口"
-              clearable
+              v-model:value="config.flowControl"
+              :options="flowControlOptions"
               size="small"
             />
-            <n-button size="small" @click="refreshPorts" :loading="isRefreshing" quaternary title="刷新端口">
-              <template #icon>
-                <n-icon><RefreshIcon /></n-icon>
-              </template>
-            </n-button>
-          </div>
-          <div v-if="ports.length === 0" class="empty-hint">
-            未检测到串口设备
-          </div>
-          <div v-if="missingActivePorts.length > 0" class="empty-hint warning">
-            端口已断开：{{ missingActivePorts.join(', ') }}
           </div>
         </div>
-      </Transition>
-    </div>
-
-    <div class="section">
-      <div class="section-title" @click="toggleSection('config')">
-        <span>连接参数</span>
-        <n-icon size="14" class="toggle-icon" :class="{ collapsed: collapsed.config }">
-          <ChevronDownIcon />
-        </n-icon>
       </div>
-      <Transition name="collapse">
-        <div v-show="!collapsed.config" class="section-body">
-          <div class="config-grid">
-            <div class="config-item">
-              <label>波特率</label>
-              <n-select :value="serialStore.portConfig.baudRate" :options="baudRateOptions" size="small" @update:value="(v: number) => serialStore.setPortConfig({ baudRate: v })" />
-            </div>
-            <div class="config-item">
-              <label>数据位</label>
-              <n-select :value="serialStore.portConfig.dataBits" :options="dataBitsOptions" size="small" @update:value="(v: number) => serialStore.setPortConfig({ dataBits: v as 5 | 6 | 7 | 8 })" />
-            </div>
-            <div class="config-item">
-              <label>停止位</label>
-              <n-select :value="serialStore.portConfig.stopBits" :options="stopBitsOptions" size="small" @update:value="(v: number) => serialStore.setPortConfig({ stopBits: v as 1 | 2 })" />
-            </div>
-            <div class="config-item">
-              <label>校验位</label>
-              <n-select :value="serialStore.portConfig.parity" :options="parityOptions" size="small" @update:value="(v: string) => serialStore.setPortConfig({ parity: v as 'none' | 'odd' | 'even' })" />
-            </div>
-            <div class="config-item">
-              <label>流控</label>
-              <n-select :value="serialStore.portConfig.flowControl" :options="flowControlOptions" size="small" @update:value="(v: string) => serialStore.setPortConfig({ flowControl: v as 'none' | 'software' | 'hardware' })" />
-            </div>
-          </div>
-        </div>
-      </Transition>
     </div>
 
     <div class="section">
-      <n-button size="small" block @click="newSession" :disabled="!selectedPort" type="primary" ghost>
+      <n-button
+        size="small"
+        block
+        @click="newSession"
+        :disabled="!selectedPort"
+        type="primary"
+        secondary
+      >
         <template #icon>
-          <n-icon><AddIcon /></n-icon>
+          <Plus class="icon-sm" />
         </template>
         新建会话
       </n-button>
     </div>
 
     <div class="section">
-      <div class="section-title" @click="toggleSection('checksum')">
-        <span>校验和计算</span>
-        <n-icon size="14" class="toggle-icon" :class="{ collapsed: collapsed.checksum }">
-          <ChevronDownIcon />
-        </n-icon>
-      </div>
-      <Transition name="collapse">
-        <div v-show="!collapsed.checksum" class="section-body">
-          <div class="checksum-grid">
-            <n-input
-              v-model:value="checksumInput"
-              placeholder="输入 HEX (如: AA BB CC)"
-              size="small"
-              :status="checksumInput && !isValidHexInput ? 'error' : undefined"
-              @blur="normalizeChecksumInput"
-            />
-            <div class="checksum-meta">
-              <span>{{ checksumByteCount }} 字节</span>
-              <span v-if="checksumInput && !isValidHexInput" class="checksum-error">HEX 长度需为偶数</span>
+      <button class="section-title" type="button" @click="toggleSection('checksum')">
+        <span class="section-heading">
+          <Hash class="icon-sm" />
+          校验和计算
+        </span>
+        <ChevronRight v-if="collapsed.checksum" class="toggle-icon" />
+        <ChevronDown v-else class="toggle-icon" />
+      </button>
+      <div v-show="!collapsed.checksum">
+        <div class="checksum-grid">
+          <n-input
+            v-model:value="checksumInput"
+            placeholder="输入 HEX (如: AA BB CC)"
+            size="small"
+            :status="checksumInput && !isValidHexInput ? 'error' : undefined"
+            @blur="normalizeChecksumInput"
+          />
+          <div class="checksum-meta">
+            <span>{{ checksumByteCount }} 字节</span>
+            <span v-if="checksumInput && !isValidHexInput" class="checksum-error"
+              >HEX 长度需为偶数</span
+            >
+          </div>
+          <div class="checksum-actions">
+            <n-select v-model:value="checksumAlgo" :options="checksumAlgoOptions" size="small" />
+          </div>
+          <div v-if="checksumResult" class="checksum-result" @click="copyChecksum" title="点击复制">
+            <div>
+              <span class="checksum-label">结果</span>
+              <span class="checksum-algo">{{ checksumAlgoLabel }}</span>
             </div>
-            <div class="checksum-actions">
-              <n-select
-                v-model:value="checksumAlgo"
-                :options="checksumAlgoOptions"
-                size="small"
-              />
-            </div>
-            <div v-if="checksumResult" class="checksum-result" @click="copyChecksum" title="点击复制">
-              <div>
-                <span class="checksum-label">结果</span>
-                <span class="checksum-algo">{{ checksumAlgoLabel }}</span>
-              </div>
-              <span class="checksum-value">{{ checksumResult }}</span>
-            </div>
+            <span class="checksum-value">{{ checksumResult }}</span>
           </div>
         </div>
-      </Transition>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue';
-import { NSelect, NButton, NInput, NIcon } from 'naive-ui';
-import { ChevronDown as ChevronDownIcon, RefreshOutline as RefreshIcon, Add as AddIcon } from '@vicons/ionicons5';
-import { invoke } from '@tauri-apps/api/core';
+import { NSelect, NButton, NInput } from 'naive-ui';
+import {
+  Cable,
+  ChevronDown,
+  ChevronRight,
+  Hash,
+  Plus,
+  RefreshCw,
+  Settings2,
+} from 'lucide-vue-next';
 import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { formatHex, isValidHex, parseHex } from '../../lib/format';
+import { calculateChecksum } from '../../lib/ipc';
 import { checksumOptions } from '../../lib/checksum-constants';
-import { BAUD_RATES, DATA_BITS_OPTIONS, STOP_BITS_OPTIONS, PARITY_OPTIONS, FLOW_CONTROL_OPTIONS } from '../../lib/constants';
+import {
+  BAUD_RATES,
+  DATA_BITS_OPTIONS,
+  STOP_BITS_OPTIONS,
+  PARITY_OPTIONS,
+  FLOW_CONTROL_OPTIONS,
+} from '../../lib/constants';
+import type { ChecksumType } from '../../types';
 
 const serialStore = useSerialStore();
 const sessionStore = useSessionStore();
@@ -140,7 +168,7 @@ const isRefreshing = ref(false);
 const missingActivePorts = computed(() =>
   sessionStore.sessions
     .filter((s) => s.isConnected && !ports.value.includes(s.portName))
-    .map((s) => s.portName)
+    .map((s) => s.portName),
 );
 
 const collapsed = reactive({
@@ -158,8 +186,8 @@ const selectedPort = computed({
   set: (v) => serialStore.setSelectedPort(v),
 });
 
-const usedPorts = computed(() =>
-  new Set(sessionStore.sessions.filter((s) => s.isConnected).map((s) => s.portName))
+const usedPorts = computed(
+  () => new Set(sessionStore.sessions.filter((s) => s.isConnected).map((s) => s.portName)),
 );
 
 const portOptions = computed(() =>
@@ -167,15 +195,21 @@ const portOptions = computed(() =>
     label: usedPorts.value.has(p) ? `${p} (使用中)` : p,
     value: p,
     disabled: usedPorts.value.has(p),
-  }))
+  })),
 );
 
 // Auto-select first available port when none is selected
-watch(() => ports.value, (newPorts) => {
-  if (!selectedPort.value && newPorts.length > 0) {
-    selectedPort.value = newPorts[0];
-  }
-}, { immediate: true });
+watch(
+  () => ports.value,
+  (newPorts) => {
+    if (!selectedPort.value && newPorts.length > 0) {
+      selectedPort.value = newPorts[0];
+    }
+  },
+  { immediate: true },
+);
+
+const config = computed(() => serialStore.portConfig);
 
 async function refreshPorts() {
   isRefreshing.value = true;
@@ -199,7 +233,7 @@ const parityOptions = PARITY_OPTIONS;
 const flowControlOptions = FLOW_CONTROL_OPTIONS;
 
 const checksumInput = ref('');
-const checksumAlgo = ref<'CHECKSUM' | 'CRC8' | 'CRC16' | 'CRC32'>('CHECKSUM');
+const checksumAlgo = ref<ChecksumType>('CHECKSUM');
 const checksumResult = ref('');
 let checksumTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -215,8 +249,10 @@ const checksumByteCount = computed(() => {
   return Math.floor(cleaned.length / 2);
 });
 
-const checksumAlgoLabel = computed(() =>
-  checksumAlgoOptions.find((option) => option.value === checksumAlgo.value)?.label ?? checksumAlgo.value
+const checksumAlgoLabel = computed(
+  () =>
+    checksumAlgoOptions.find((option) => option.value === checksumAlgo.value)?.label ??
+    checksumAlgo.value,
 );
 
 watch([checksumInput, checksumAlgo], () => {
@@ -230,9 +266,7 @@ async function calcChecksum() {
   if (!checksumInput.value || !isValidHexInput.value) return;
   const data = parseHex(checksumInput.value);
   try {
-    const res = await invoke<{ result: string }>('calculate_checksum', {
-      request: { data: Array.from(data), algorithm: checksumAlgo.value },
-    });
+    const res = await calculateChecksum(data, checksumAlgo.value);
     checksumResult.value = res.result;
   } catch {
     checksumResult.value = '计算失败';
@@ -259,19 +293,28 @@ async function copyChecksum() {
 .port-selector {
   display: flex;
   flex-direction: column;
+  padding: 6px;
+  gap: 6px;
 }
 
 .section {
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.018);
+  box-shadow: var(--shadow-inset);
 }
 
 .section-title {
-  font-size: 10px;
-  font-weight: 700;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 0;
   margin-bottom: 10px;
   display: flex;
   justify-content: space-between;
@@ -285,35 +328,22 @@ async function copyChecksum() {
   color: var(--text-secondary);
 }
 
+.section-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .toggle-icon {
+  width: 13px;
+  height: 13px;
   color: var(--text-dim);
   transition: transform var(--transition-normal);
-  transform: rotate(0deg);
-}
-
-.toggle-icon.collapsed {
-  transform: rotate(-90deg);
-}
-
-.section-body {
-  overflow: hidden;
-}
-
-.collapse-enter-active,
-.collapse-leave-active {
-  transition: opacity var(--transition-normal), max-height var(--transition-normal);
-  max-height: 500px;
-}
-
-.collapse-enter-from,
-.collapse-leave-to {
-  opacity: 0;
-  max-height: 0;
 }
 
 .port-row {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
 }
 
@@ -324,10 +354,10 @@ async function copyChecksum() {
 .empty-hint {
   margin-top: 8px;
   font-size: 11px;
-  color: var(--text-dim);
+  color: var(--text-muted);
   text-align: center;
-  padding: 12px 8px;
-  background: var(--bg-elevated);
+  padding: 9px 8px;
+  background: var(--bg-inset);
   border-radius: var(--radius-md);
   border: 1px dashed var(--border-color);
 }
@@ -341,7 +371,7 @@ async function copyChecksum() {
 .config-grid {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 9px;
 }
 
 .config-item {
@@ -391,19 +421,21 @@ async function copyChecksum() {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 9px 10px;
   background: var(--accent-green-subtle);
-  border: 1px solid rgba(76, 175, 80, 0.25);
+  border: 1px solid var(--color-primary-muted);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: 13px;
   cursor: copy;
-  transition: all var(--transition-normal);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .checksum-result:hover {
-  background: rgba(76, 175, 80, 0.2);
-  border-color: rgba(76, 175, 80, 0.35);
+  border-color: var(--color-primary);
+  background: rgba(61, 220, 151, 0.16);
 }
 
 .checksum-label {

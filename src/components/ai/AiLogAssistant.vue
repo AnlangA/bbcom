@@ -2,42 +2,48 @@
   <div class="log-assistant">
     <div class="settings-row">
       <div class="field-group">
-        <span class="field-label">日志模型</span>
+        <span class="field-label">
+          <Bot class="icon-sm" />
+          日志模型
+        </span>
         <n-select
           size="small"
-          :value="logAiModel"
+          :value="session.logAiModel"
           :options="aiModelOptions"
           :menu-props="aiModelMenuProps"
-          @update:value="(v: AiModel) => bridge.setLogAiModel(v)"
+          @update:value="setLogModel"
         />
       </div>
       <div class="field-group">
-        <span class="field-label">上下文</span>
+        <span class="field-label">
+          <MessageSquareText class="icon-sm" />
+          上下文
+        </span>
         <n-select
           size="small"
-          :value="logAiContextMode"
+          :value="session.logAiContextMode"
           :options="logContextModeOptions"
-          @update:value="(v: LogAiContextMode) => bridge.setLogAiContextMode(v)"
+          @update:value="setContextMode"
         />
       </div>
       <n-input-number
-        v-if="logAiContextMode === 'latest-n-frames'"
+        v-if="session.logAiContextMode === 'latest-n-frames'"
         size="small"
-        :value="logAiFrameLimit"
+        :value="session.logAiFrameLimit"
         :min="20"
         :max="2000"
         :step="20"
         style="width: 112px"
-        @update:value="(v: number | null) => bridge.setLogAiFrameLimit(v ?? 200)"
+        @update:value="setFrameLimit"
       />
     </div>
 
     <div class="message-list">
-      <div v-if="logAiMessages.length === 0" class="empty-hint">
+      <div v-if="session.logAiMessages.length === 0" class="empty-hint">
         可询问“最近有哪些错误？”、“设备为什么重启？”等问题。
       </div>
       <div
-        v-for="item in logAiMessages"
+        v-for="item in session.logAiMessages"
         :key="item.id"
         class="message-item"
         :class="item.role"
@@ -61,7 +67,9 @@
           <li v-for="item in result.suggestions" :key="item">{{ item }}</li>
         </ul>
       </div>
-      <n-tag v-if="result.truncated" size="small" type="warning">上下文已截断</n-tag>
+      <n-tag v-if="result.truncated" size="small" type="warning" :bordered="false"
+        >上下文已截断</n-tag
+      >
     </div>
 
     <div class="prompt-row">
@@ -72,10 +80,16 @@
         :disabled="loading"
         @keydown.enter.prevent="ask"
       />
-      <n-button size="small" :disabled="logAiMessages.length === 0" @click="clearMessages">
+      <n-button size="small" :disabled="session.logAiMessages.length === 0" @click="clearMessages">
+        <template #icon>
+          <Trash2 class="icon-sm" />
+        </template>
         清空
       </n-button>
       <n-button size="small" type="primary" :loading="loading" :disabled="!canAsk" @click="ask">
+        <template #icon>
+          <WandSparkles class="icon-sm" />
+        </template>
         分析
       </n-button>
     </div>
@@ -85,10 +99,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { NButton, NInput, NInputNumber, NSelect, NTag, useMessage } from 'naive-ui';
+import { Bot, MessageSquareText, Trash2, WandSparkles } from 'lucide-vue-next';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/app';
-import type { AiModel, LogAiContextMode } from '../../types';
+import type { AiModel, LogAiContextMode, SerialSession } from '../../types';
 import type { useAiWindowSession } from '../../composables/useAiWindowSession';
+import { buildLogAiContext } from '../../lib/ai-log-context';
 import { getAiErrorMessage } from '../../lib/ai-error';
 import { aiModelMenuProps, aiModelOptions, logContextModeOptions } from './ai-options';
 
@@ -100,18 +116,9 @@ interface LogAiResponse {
 }
 
 const props = defineProps<{
+  session: SerialSession;
   bridge: ReturnType<typeof useAiWindowSession>;
 }>();
-
-const bridge = props.bridge;
-
-const logAiModel = computed(() => bridge.logAiModel.value);
-const logAiContextMode = computed(() => bridge.logAiContextMode.value);
-const logAiFrameLimit = computed(() => bridge.logAiFrameLimit.value);
-const logAiMessages = computed(() => bridge.logAiMessages.value);
-const frameCount = computed(() => bridge.frameCount.value);
-const portName = computed(() => bridge.portName.value);
-const baudRate = computed(() => bridge.baudRate.value);
 
 const appStore = useAppStore();
 const message = useMessage();
@@ -128,28 +135,30 @@ async function ask() {
     message.warning('请先保存 API Key');
     return;
   }
-  if (frameCount.value === 0) {
-    message.warning('当前会话没有串口数据，请先连接串口并接收数据');
-    return;
-  }
-  const question = prompt.value.trim();
   loading.value = true;
   try {
-    await bridge.addLogAiMessage({ role: 'user', content: question });
+    const latestSession = (await props.bridge.refreshSession()) ?? props.session;
+    if (latestSession.frames.length === 0) {
+      message.warning('当前会话没有串口数据，请先连接串口并接收数据');
+      return;
+    }
+    const context = buildLogAiContext(latestSession);
+    const question = prompt.value.trim();
+    await props.bridge.addLogAiMessage({ role: 'user', content: question });
     const response = await invoke<LogAiResponse>('log_ai_assist', {
       request: {
         prompt: question,
         apiKey: appStore.aiApiKey,
-        model: bridge.logAiModel.value,
+        model: latestSession.logAiModel,
         enableCodingPlan: appStore.aiEnableCodingPlan,
-        context: '',
-        contextMode: bridge.logAiContextMode.value,
-        contextTruncated: false,
-        sessionMeta: `${portName.value}, ${baudRate.value} bps, ${frameCount.value} frames`,
+        context: context.text,
+        contextMode: latestSession.logAiContextMode,
+        contextTruncated: context.truncated,
+        sessionMeta: `${latestSession.portName}, ${latestSession.portConfig.baudRate} bps, ${context.frameCount} frames, max ${context.charLimit} chars`,
       },
     });
     result.value = response;
-    await bridge.addLogAiMessage({ role: 'assistant', content: response.answer });
+    await props.bridge.addLogAiMessage({ role: 'assistant', content: response.answer });
     prompt.value = '';
   } catch (e: unknown) {
     message.error(getAiErrorMessage(e, 'AI 日志分析失败'));
@@ -158,8 +167,20 @@ async function ask() {
   }
 }
 
+function setLogModel(model: AiModel) {
+  void props.bridge.setLogAiModel(model);
+}
+
+function setContextMode(mode: LogAiContextMode) {
+  void props.bridge.setLogAiContextMode(mode);
+}
+
+function setFrameLimit(value: number | null) {
+  void props.bridge.setLogAiFrameLimit(value ?? 200);
+}
+
 function clearMessages() {
-  void bridge.clearLogAiMessages();
+  void props.bridge.clearLogAiMessages();
   result.value = null;
 }
 </script>
@@ -193,22 +214,13 @@ function clearMessages() {
 .field-label,
 .section-title,
 .role {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
-}
-
-.role {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-  font-size: 10px;
 }
 
 .message-list {
@@ -217,6 +229,10 @@ function clearMessages() {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-inset);
 }
 
 .empty-hint {
@@ -227,10 +243,9 @@ function clearMessages() {
 .message-item {
   display: flex;
   gap: 8px;
-  padding: 6px 8px;
-  border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.035);
-  animation: slide-in var(--transition-normal);
+  padding: 7px 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
 }
 
 .message-item .content {
@@ -241,17 +256,7 @@ function clearMessages() {
 }
 
 .message-item.user {
-  background: rgba(99, 255, 177, 0.07);
-}
-
-.message-item.user .role {
-  background: rgba(99, 255, 177, 0.15);
-  color: #9fffc7;
-}
-
-.message-item.assistant .role {
-  background: rgba(79, 195, 255, 0.15);
-  color: #74c0fc;
+  background: var(--color-primary-subtle);
 }
 
 .message-item .content,
@@ -266,17 +271,13 @@ function clearMessages() {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--border-color);
+  padding: 9px;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--bg-tertiary);
+  box-shadow: var(--shadow-inset);
   max-height: 220px;
   overflow-y: auto;
-  box-shadow: var(--shadow-sm);
-}
-
-.skeleton-row {
-  padding: 4px 0;
 }
 
 .result-section ul {

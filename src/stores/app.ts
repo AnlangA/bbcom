@@ -1,10 +1,12 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
-import { loadJson, loadSecureString, saveJson, saveSecureString } from '../lib/storage';
+import { loadJson, loadString, saveJson, saveString } from '../lib/storage';
+import { clearSecretString, loadSecretString, saveSecretString } from '../lib/secure-settings';
 
 const STORAGE_KEY = 'bbcom-app-settings';
-const AI_API_KEY_SECURE_KEY = 'ai-api-key';
+const AI_API_KEY_STORAGE_KEY = `${STORAGE_KEY}:ai-api-key`;
+const AI_API_KEY_SECRET_KEY = 'ai-api-key';
 
 export const useAppStore = defineStore('app', () => {
   const displayMode = ref<DisplayMode>('HEX');
@@ -21,7 +23,9 @@ export const useAppStore = defineStore('app', () => {
   const aiCommandDraft = ref('');
   const aiCommandSeq = ref(0);
   const pendingAiCommand = ref('');
+  const aiApiKeyLoaded = ref(false);
   let loaded = false;
+  let aiKeyLoadSeq = 0;
 
   async function load() {
     const saved = loadJson(STORAGE_KEY, {
@@ -44,10 +48,13 @@ export const useAppStore = defineStore('app', () => {
     if (saved.lineEnding) lineEnding.value = saved.lineEnding;
     if (typeof saved.sendAsHex === 'boolean') sendAsHex.value = saved.sendAsHex;
     if (typeof saved.loopIntervalMs === 'number') loopIntervalMs.value = saved.loopIntervalMs;
-    if (typeof saved.ansiColorEnabled === 'boolean') ansiColorEnabled.value = saved.ansiColorEnabled;
-    if (typeof saved.aiEnableCodingPlan === 'boolean') aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
-    aiApiKey.value = await loadSecureString(AI_API_KEY_SECURE_KEY);
+    if (typeof saved.ansiColorEnabled === 'boolean')
+      ansiColorEnabled.value = saved.ansiColorEnabled;
+    if (typeof saved.aiEnableCodingPlan === 'boolean')
+      aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
+    aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
+    void loadAiApiKey();
   }
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -71,7 +78,21 @@ export const useAppStore = defineStore('app', () => {
     }, 300);
   }
 
-  watch([displayMode, autoScroll, showTimestamp, searchMode, packetViewMode, lineEnding, sendAsHex, loopIntervalMs, ansiColorEnabled, aiEnableCodingPlan], save);
+  watch(
+    [
+      displayMode,
+      autoScroll,
+      showTimestamp,
+      searchMode,
+      packetViewMode,
+      lineEnding,
+      sendAsHex,
+      loopIntervalMs,
+      ansiColorEnabled,
+      aiEnableCodingPlan,
+    ],
+    save,
+  );
 
   function setDisplayMode(mode: DisplayMode) {
     displayMode.value = mode;
@@ -109,9 +130,15 @@ export const useAppStore = defineStore('app', () => {
     loopIntervalMs.value = Math.max(50, Math.min(3_600_000, Math.floor(value || 1000)));
   }
 
-  function setAiApiKey(value: string) {
-    aiApiKey.value = value;
-    void saveSecureString(AI_API_KEY_SECURE_KEY, value);
+  async function setAiApiKey(value: string): Promise<boolean> {
+    const normalized = value.trim();
+    const previous = aiApiKey.value;
+    aiApiKey.value = normalized;
+    const ok = await persistAiApiKey(normalized);
+    if (!ok) {
+      aiApiKey.value = previous;
+    }
+    return ok;
   }
 
   function setAiEnableCodingPlan(value: boolean) {
@@ -133,7 +160,42 @@ export const useAppStore = defineStore('app', () => {
     return command;
   }
 
-  void load();
+  async function loadAiApiKey() {
+    const seq = (aiKeyLoadSeq += 1);
+    aiApiKeyLoaded.value = false;
+    try {
+      const legacyValue = loadString(AI_API_KEY_STORAGE_KEY);
+      const storedValue = await loadSecretString(AI_API_KEY_SECRET_KEY);
+      if (seq !== aiKeyLoadSeq) return;
+
+      if (storedValue) {
+        aiApiKey.value = storedValue;
+        if (legacyValue) saveString(AI_API_KEY_STORAGE_KEY, '');
+        return;
+      }
+
+      if (legacyValue) {
+        aiApiKey.value = legacyValue;
+        const migrated = await saveSecretString(AI_API_KEY_SECRET_KEY, legacyValue);
+        if (migrated) saveString(AI_API_KEY_STORAGE_KEY, '');
+      }
+    } finally {
+      if (seq === aiKeyLoadSeq) {
+        aiApiKeyLoaded.value = true;
+      }
+    }
+  }
+
+  async function persistAiApiKey(value: string): Promise<boolean> {
+    const storeOk = value
+      ? await saveSecretString(AI_API_KEY_SECRET_KEY, value)
+      : await clearSecretString(AI_API_KEY_SECRET_KEY);
+
+    const fallbackOk = saveString(AI_API_KEY_STORAGE_KEY, storeOk ? '' : value);
+    return storeOk || fallbackOk;
+  }
+
+  load();
 
   return {
     displayMode,
@@ -150,6 +212,7 @@ export const useAppStore = defineStore('app', () => {
     aiCommandDraft,
     aiCommandSeq,
     pendingAiCommand,
+    aiApiKeyLoaded,
     setDisplayMode,
     toggleAutoScroll,
     toggleShowTimestamp,

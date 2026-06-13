@@ -1,9 +1,8 @@
 import { ref } from 'vue';
 import { save } from '@tauri-apps/plugin-dialog';
-import { invokeWithTimeout } from '../lib/tauri';
 import type { DataFrame } from '../types';
-
-const INVOKE_TIMEOUT_MS = 30_000;
+import { invokeExportData } from '../lib/ipc';
+import type { ExportFormat } from '../lib/constants';
 
 const EXT_MAP: Record<string, { name: string; ext: string }> = {
   'txt-hex': { name: 'TXT', ext: 'txt' },
@@ -20,7 +19,7 @@ function getExportFilter(format: string): { name: string; ext: string } {
 export function useExport() {
   const isExporting = ref(false);
 
-  async function exportData(frames: DataFrame[], format: string) {
+  async function exportData(frames: DataFrame[], format: ExportFormat) {
     isExporting.value = true;
     try {
       const filter = getExportFilter(format);
@@ -34,17 +33,9 @@ export function useExport() {
       });
       if (!path) return false;
 
-      await invokeWithTimeout('export_data', {
-        request: {
-          frames,
-          format,
-          path,
-        },
-      }, INVOKE_TIMEOUT_MS);
-
+      await invokeExportData(frames, format, path);
       return true;
-    } catch (err) {
-      console.debug('export failed:', err);
+    } catch {
       return false;
     } finally {
       isExporting.value = false;

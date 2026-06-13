@@ -3,7 +3,6 @@ use serde_json::Value;
 use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tauri::{Emitter, LogicalSize, Manager};
 use zai_rs::model::{
     chat_base_request::ChatBody, chat_base_response::ChatCompletionResponse, traits::*, *,
 };
@@ -11,7 +10,6 @@ use zai_rs::model::{
 use crate::models::errors::AppError;
 
 pub const AI_WINDOW_LABEL: &str = "ai-assistant";
-const AI_WINDOW_STATE_EVENT: &str = "ai-window-state";
 const AI_REQUEST_TIMEOUT_SECS: u64 = 60;
 const AI_COOLDOWN_SECS: u64 = 2;
 const MAX_AI_CONTEXT_BYTES: usize = 512_000;
@@ -97,84 +95,6 @@ pub struct LogAiResponse {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AiWindowState {
-    pub visible: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResizeAiWindowRequest {
-    pub width: f64,
-    pub height: f64,
-}
-
-fn get_ai_window(app: &tauri::AppHandle, action: &str) -> Result<tauri::WebviewWindow, AppError> {
-    app.get_webview_window(AI_WINDOW_LABEL).ok_or_else(|| {
-        AppError::AiError {
-            message: format!("AI 窗口不存在 ({})", action),
-        }
-    })
-}
-
-fn toggle_ai_window_visibility(app: &tauri::AppHandle, visible: bool) -> Result<(), AppError> {
-    let window = get_ai_window(app, if visible { "show" } else { "hide" })?;
-    if visible {
-        window.show().map_err(|e| AppError::AiError { message: e.to_string() })?;
-        if let Err(e) = window.set_focus() {
-            tracing::warn!("failed to focus AI window: {e}");
-        }
-    } else {
-        window.hide().map_err(|e| AppError::AiError { message: e.to_string() })?;
-    }
-    if let Err(e) = app.emit(AI_WINDOW_STATE_EVENT, AiWindowState { visible }) {
-        tracing::warn!("failed to emit {}: {e}", AI_WINDOW_STATE_EVENT);
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn show_ai_window(app: tauri::AppHandle) -> Result<(), AppError> {
-    toggle_ai_window_visibility(&app, true)
-}
-
-#[tauri::command]
-pub fn hide_ai_window(app: tauri::AppHandle) -> Result<(), AppError> {
-    toggle_ai_window_visibility(&app, false)
-}
-
-#[tauri::command]
-pub fn get_ai_window_state(app: tauri::AppHandle) -> Result<AiWindowState, AppError> {
-    let visible = app
-        .get_webview_window(AI_WINDOW_LABEL)
-        .and_then(|w| w.is_visible().ok())
-        .unwrap_or(false);
-    Ok(AiWindowState { visible })
-}
-
-#[tauri::command]
-pub fn resize_ai_window(
-    app: tauri::AppHandle,
-    request: ResizeAiWindowRequest,
-) -> Result<(), AppError> {
-    let window = get_ai_window(&app, "resize")?;
-    let width = request.width.clamp(420.0, 920.0);
-    let height = request.height.clamp(112.0, 560.0);
-    window
-        .set_size(LogicalSize::new(width, height))
-        .map_err(|e| AppError::AiError {
-            message: e.to_string(),
-        })
-}
-
-#[tauri::command]
-pub fn start_ai_window_drag(window: tauri::Window) -> Result<(), AppError> {
-    window.start_dragging().map_err(|e| AppError::AiError {
-        message: e.to_string(),
-    })
-}
-
 fn truncate_to_utf8_boundary(s: &str, max_bytes: usize, label: &str) -> String {
     if s.len() <= max_bytes {
         return s.to_string();
@@ -208,7 +128,9 @@ pub async fn terminal_ai_assist(
     request: TerminalAiRequest,
 ) -> Result<TerminalAiResponse, AppError> {
     enforce_ai_cooldown().await?;
-    validate_ai_inputs(&request.prompt, &request.api_key, "请输入要生成的终端命令")?;
+    let prompt = request.prompt.trim();
+    let api_key = request.api_key.trim();
+    validate_ai_inputs(prompt, api_key, "请输入要生成的终端命令")?;
 
     let context = truncate_to_utf8_boundary(
         &request.context.unwrap_or_default(),
@@ -219,12 +141,19 @@ pub async fn terminal_ai_assist(
     let shell = request.shell.unwrap_or_else(|| "linux/busybox".to_string());
     let user_prompt = format!(
         "System prompt:\n{TERMINAL_SYSTEM_PROMPT}\n\nTarget shell: {shell}\nRecent serial console context:\n{context}\n\nUser request: {}",
-        request.prompt.trim()
+        prompt
     );
 
     let model = request.model.as_deref().unwrap_or("glm-4.5-air");
     let use_coding_plan = request.enable_coding_plan.unwrap_or(false);
-    let content = run_ai_chat(model, user_prompt, &request.api_key, use_coding_plan, "AI 没有返回可用命令").await?;
+    let content = run_ai_chat(
+        model,
+        user_prompt,
+        api_key,
+        use_coding_plan,
+        "AI 没有返回可用命令",
+    )
+    .await?;
 
     parse_terminal_ai_response(&content)
 }
@@ -232,7 +161,9 @@ pub async fn terminal_ai_assist(
 #[tauri::command]
 pub async fn log_ai_assist(request: LogAiRequest) -> Result<LogAiResponse, AppError> {
     enforce_ai_cooldown().await?;
-    validate_ai_inputs(&request.prompt, &request.api_key, "请输入日志分析问题")?;
+    let prompt = request.prompt.trim();
+    let api_key = request.api_key.trim();
+    validate_ai_inputs(prompt, api_key, "请输入日志分析问题")?;
 
     if request.context.trim().is_empty() {
         return Err(AppError::ValidationError {
@@ -247,12 +178,19 @@ pub async fn log_ai_assist(request: LogAiRequest) -> Result<LogAiResponse, AppEr
     let session_meta = request.session_meta.unwrap_or_default();
     let user_prompt = format!(
         "System prompt:\n{LOG_SYSTEM_PROMPT}\n\nSession:\n{session_meta}\n\nContext mode: {context_mode}\nContext truncated: {context_truncated}\nSerial log context:\n{context}\n\nUser question: {}",
-        request.prompt.trim()
+        prompt
     );
 
     let model = request.model.as_deref().unwrap_or("glm-4.5-air");
     let use_coding_plan = request.enable_coding_plan.unwrap_or(false);
-    let content = run_ai_chat(model, user_prompt, &request.api_key, use_coding_plan, "AI 没有返回可用日志分析").await?;
+    let content = run_ai_chat(
+        model,
+        user_prompt,
+        api_key,
+        use_coding_plan,
+        "AI 没有返回可用日志分析",
+    )
+    .await?;
 
     parse_log_ai_response(&content, context_truncated)
 }
@@ -333,7 +271,7 @@ fn clean_markdown_fence(content: &str) -> &str {
         .trim()
 }
 
-fn extract_json_from_text(content: &str) -> &str {
+fn extract_json_payload(content: &str) -> String {
     let trimmed = clean_markdown_fence(content);
     let first = trimmed.find('{');
     let last = trimmed.rfind('}');
@@ -343,9 +281,9 @@ fn extract_json_from_text(content: &str) -> &str {
             if start > 0 || end < trimmed.len() - 1 {
                 tracing::debug!("AI response contained extra text outside JSON; extracted {}-byte fragment", json_fragment.len());
             }
-            json_fragment
+            json_fragment.to_string()
         }
-        _ => trimmed,
+        _ => trimmed.to_string(),
     }
 }
 
@@ -368,17 +306,24 @@ fn extract_text_from_content(value: &Value) -> Option<String> {
 }
 
 fn parse_terminal_ai_response(content: &str) -> Result<TerminalAiResponse, AppError> {
-    let cleaned = extract_json_from_text(content);
+    let cleaned = extract_json_payload(content);
 
     let mut response: TerminalAiResponse =
-        serde_json::from_str(cleaned).map_err(|e| AppError::AiError {
+        serde_json::from_str(&cleaned).map_err(|e| AppError::AiError {
             message: format!("AI 返回格式无效: {e}"),
         })?;
 
-    response.command = response.command.trim().lines().next().unwrap_or("").to_string();
+    response.command = response
+        .command
+        .trim()
+        .lines()
+        .next()
+        .unwrap_or("")
+        .to_string();
     response.explanation = response.explanation.trim().to_string();
-    response.risk = match response.risk.as_str() {
-        "safe" | "caution" | "dangerous" => response.risk,
+    let risk = response.risk.trim().to_ascii_lowercase();
+    response.risk = match risk.as_str() {
+        "safe" | "caution" | "dangerous" => risk,
         unknown => {
             tracing::warn!("unknown AI risk level '{unknown}', defaulting to 'caution'");
             "caution".to_string()
@@ -388,11 +333,14 @@ fn parse_terminal_ai_response(content: &str) -> Result<TerminalAiResponse, AppEr
     Ok(response)
 }
 
-fn parse_log_ai_response(content: &str, fallback_truncated: bool) -> Result<LogAiResponse, AppError> {
-    let cleaned = extract_json_from_text(content);
+fn parse_log_ai_response(
+    content: &str,
+    fallback_truncated: bool,
+) -> Result<LogAiResponse, AppError> {
+    let cleaned = extract_json_payload(content);
 
     let mut response: LogAiResponse =
-        serde_json::from_str(cleaned).map_err(|e| AppError::AiError {
+        serde_json::from_str(&cleaned).map_err(|e| AppError::AiError {
             message: format!("AI 返回格式无效: {e}"),
         })?;
 
@@ -409,4 +357,60 @@ fn parse_log_ai_response(content: &str, fallback_truncated: bool) -> Result<LogA
     response.truncated = response.truncated || fallback_truncated;
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_plain_json_response() {
+        let response = parse_terminal_ai_response(
+            r#"{"command":"pwd","explanation":"显示当前目录","risk":"safe"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.command, "pwd");
+        assert_eq!(response.explanation, "显示当前目录");
+        assert_eq!(response.risk, "safe");
+    }
+
+    #[test]
+    fn parses_fenced_json_response() {
+        let response = parse_terminal_ai_response(
+            "```json\n{\"command\":\"ls -la\",\"explanation\":\"列出文件\",\"risk\":\"caution\"}\n```",
+        )
+        .unwrap();
+
+        assert_eq!(response.command, "ls -la");
+        assert_eq!(response.risk, "caution");
+    }
+
+    #[test]
+    fn extracts_embedded_json_response() {
+        let response = parse_terminal_ai_response(
+            "result: {\"command\":\"cat /proc/cpuinfo\",\"explanation\":\"查看 CPU 信息\",\"risk\":\"safe\"}",
+        )
+        .unwrap();
+
+        assert_eq!(response.command, "cat /proc/cpuinfo");
+    }
+
+    #[test]
+    fn trims_command_to_one_line_and_downgrades_unknown_risk() {
+        let response = parse_terminal_ai_response(
+            r#"{"command":"pwd\nrm -rf /","explanation":"  test  ","risk":"unknown"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.command, "pwd");
+        assert_eq!(response.explanation, "test");
+        assert_eq!(response.risk, "caution");
+    }
+
+    #[test]
+    fn rejects_invalid_json_response() {
+        let err = parse_terminal_ai_response("not json").unwrap_err();
+        assert!(matches!(err, AppError::AiError { .. }));
+    }
 }
