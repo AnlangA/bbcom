@@ -1,6 +1,6 @@
 <template>
   <div class="app-layout">
-    <aside class="sidebar">
+    <aside class="sidebar" :class="{ 'is-collapsed': sidebarCollapsed }">
       <div class="sidebar-header">
         <div class="app-brand">
           <span class="brand-mark">
@@ -11,21 +11,38 @@
             <span class="brand-subtitle">Serial console</span>
           </span>
         </div>
-        <n-button
-          size="tiny"
-          :type="aiWindowVisible ? 'primary' : 'default'"
-          secondary
-          class="ai-toggle"
-          @click="toggleAiWindow"
-        >
-          <template #icon>
-            <Bot v-if="aiWindowVisible" class="icon-sm" />
-            <BotOff v-else class="icon-sm" />
-          </template>
-          {{ aiWindowVisible ? '关闭 AI' : '开启 AI' }}
-        </n-button>
+        <div class="sidebar-actions">
+          <n-button
+            size="tiny"
+            quaternary
+            class="sidebar-collapse"
+            :title="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
+            :aria-label="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
+            @click="toggleSidebar"
+          >
+            <template #icon>
+              <PanelLeftOpen v-if="sidebarCollapsed" class="icon-sm" />
+              <PanelLeftClose v-else class="icon-sm" />
+            </template>
+          </n-button>
+          <n-button
+            size="tiny"
+            :type="aiWindowVisible ? 'primary' : 'default'"
+            secondary
+            class="ai-toggle"
+            :title="aiWindowVisible ? '关闭 AI' : '开启 AI'"
+            :aria-label="aiWindowVisible ? '关闭 AI' : '开启 AI'"
+            @click="toggleAiWindow"
+          >
+            <template #icon>
+              <Bot v-if="aiWindowVisible" class="icon-sm" />
+              <BotOff v-else class="icon-sm" />
+            </template>
+            <span class="action-label">{{ aiWindowVisible ? '关闭 AI' : '开启 AI' }}</span>
+          </n-button>
+        </div>
       </div>
-      <AiSettingsPanel v-if="aiWindowVisible" />
+      <AiSettingsPanel v-if="aiWindowVisible && !sidebarCollapsed" />
       <div class="sidebar-content">
         <PortSelector />
       </div>
@@ -57,7 +74,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { NButton } from 'naive-ui';
-import { Bot, BotOff, Cable, Zap } from 'lucide-vue-next';
+import { Bot, BotOff, Cable, PanelLeftClose, PanelLeftOpen, Zap } from 'lucide-vue-next';
 import PortSelector from '../port-selector/PortSelector.vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
 import SessionView from '../session/SessionView.vue';
@@ -76,6 +93,11 @@ const { visible: aiWindowVisible, toggle: toggleAiWindow } = useAiWindowState();
 const sessions = computed(() => sessionStore.sessions);
 const activeSession = computed(() => sessionStore.activeSession);
 const showCreateDialog = ref(false);
+const sidebarCollapsed = ref(false);
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value;
+}
 
 useAppShortcuts({
   onCreateSession: () => {
@@ -106,6 +128,16 @@ useAppShortcuts({
   flex-direction: column;
   overflow: hidden;
   box-shadow: var(--shadow-inset);
+  transition:
+    width 0.18s ease,
+    min-width 0.18s ease,
+    max-width 0.18s ease;
+}
+
+.sidebar.is-collapsed {
+  width: 58px;
+  min-width: 58px;
+  max-width: 58px;
 }
 
 .sidebar-header {
@@ -120,11 +152,22 @@ useAppShortcuts({
   gap: var(--space-sm);
 }
 
+.sidebar.is-collapsed .sidebar-header {
+  min-height: 132px;
+  padding: 12px 8px;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
 .app-brand {
   display: flex;
   align-items: center;
   gap: 11px;
   min-width: 0;
+}
+
+.sidebar.is-collapsed .app-brand {
+  justify-content: center;
 }
 
 .brand-mark {
@@ -162,8 +205,26 @@ useAppShortcuts({
   text-transform: uppercase;
 }
 
+.sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.sidebar.is-collapsed .sidebar-actions {
+  flex-direction: column;
+}
+
+.sidebar-collapse,
 .ai-toggle {
   flex-shrink: 0;
+}
+
+.sidebar.is-collapsed .brand-copy,
+.sidebar.is-collapsed .action-label,
+.sidebar.is-collapsed .sidebar-content {
+  display: none;
 }
 
 .sidebar-content {
@@ -251,6 +312,12 @@ useAppShortcuts({
   .sidebar {
     width: 252px;
     min-width: 232px;
+  }
+
+  .sidebar.is-collapsed {
+    width: 54px;
+    min-width: 54px;
+    max-width: 54px;
   }
 
   .brand-copy {
