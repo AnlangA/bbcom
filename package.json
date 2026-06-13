@@ -16,6 +16,7 @@
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-fs": "^2.0.0",
     "@tauri-apps/plugin-store": "^2.0.0",
+    "@vicons/ionicons5": "^0.13.0",
     "ansi_up": "^6.0.6",
     "naive-ui": "^2.40.0",
     "pinia": "^2.2.0",

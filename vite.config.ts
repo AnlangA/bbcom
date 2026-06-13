@@ -16,7 +16,7 @@ export default defineConfig(async () => ({
     watch: {
       ignored: ["**/src-tauri/**"],
     },
-    host: "127.0.0.1",
+    host: true,
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

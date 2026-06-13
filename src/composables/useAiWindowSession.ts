@@ -1,18 +1,47 @@
 import { onMounted, onUnmounted, ref } from 'vue';
 import { emit, listen } from '@tauri-apps/api/event';
-import type { AiChatMessage, AiModel, LogAiContextMode, SerialSession } from '../types';
+import type { AiChatMessage, AiModel, LogAiContextMode } from '../types';
 
 interface AiSessionSnapshot {
-  session: SerialSession | null;
+  sessionId: string;
+  portName: string;
+  isConnected: boolean;
+  frameCount: number;
+  baudRate: number;
+  terminalAiModel: AiModel;
+  logAiModel: AiModel;
+  logAiContextMode: LogAiContextMode;
+  logAiFrameLimit: number;
+  logAiMessageCount: number;
+  logAiMessages: AiChatMessage[];
 }
 
 export function useAiWindowSession() {
-  const session = ref<SerialSession | null>(null);
+  const sessionId = ref<string | null>(null);
+  const portName = ref('');
+  const isConnected = ref(false);
+  const frameCount = ref(0);
+  const baudRate = ref(115200);
+  const terminalAiModel = ref<AiModel>('glm-4.5-air');
+  const logAiModel = ref<AiModel>('glm-4.5-air');
+  const logAiContextMode = ref<LogAiContextMode>('latest-10k');
+  const logAiFrameLimit = ref(200);
+  const logAiMessages = ref<AiChatMessage[]>([]);
   const unlisteners: Array<() => void> = [];
 
   onMounted(async () => {
     unlisteners.push(await listen<AiSessionSnapshot>('ai-session-snapshot', (event) => {
-      session.value = event.payload.session;
+      const snap = event.payload;
+      sessionId.value = snap.sessionId;
+      portName.value = snap.portName;
+      isConnected.value = snap.isConnected;
+      frameCount.value = snap.frameCount;
+      baudRate.value = snap.baudRate;
+      terminalAiModel.value = snap.terminalAiModel;
+      logAiModel.value = snap.logAiModel;
+      logAiContextMode.value = snap.logAiContextMode;
+      logAiFrameLimit.value = snap.logAiFrameLimit;
+      logAiMessages.value = snap.logAiMessages;
     }));
     await emit('ai-session-snapshot-request');
   });
@@ -27,32 +56,27 @@ export function useAiWindowSession() {
   }
 
   async function setTerminalAiModel(model: AiModel) {
-    if (!session.value) return;
-    session.value.terminalAiModel = model;
+    terminalAiModel.value = model;
     await emitUpdate('setTerminalAiModel', model);
   }
 
   async function setLogAiModel(model: AiModel) {
-    if (!session.value) return;
-    session.value.logAiModel = model;
+    logAiModel.value = model;
     await emitUpdate('setLogAiModel', model);
   }
 
   async function setLogAiContextMode(mode: LogAiContextMode) {
-    if (!session.value) return;
-    session.value.logAiContextMode = mode;
+    logAiContextMode.value = mode;
     await emitUpdate('setLogAiContextMode', mode);
   }
 
   async function setLogAiFrameLimit(limit: number) {
-    if (!session.value) return;
-    session.value.logAiFrameLimit = limit;
+    logAiFrameLimit.value = limit;
     await emitUpdate('setLogAiFrameLimit', limit);
   }
 
   async function addLogAiMessage(message: Omit<AiChatMessage, 'id' | 'timestamp'>) {
-    if (!session.value) return;
-    session.value.logAiMessages.push({
+    logAiMessages.value.push({
       ...message,
       id: crypto.randomUUID(),
       timestamp: Date.now(),
@@ -61,22 +85,30 @@ export function useAiWindowSession() {
   }
 
   async function clearLogAiMessages() {
-    if (!session.value) return;
-    session.value.logAiMessages = [];
+    logAiMessages.value = [];
     await emitUpdate('clearLogAiMessages', null);
   }
 
   async function emitUpdate(action: string, value: unknown) {
-    if (!session.value) return;
+    if (!sessionId.value) return;
     await emit('ai-session-update', {
-      sessionId: session.value.id,
+      sessionId: sessionId.value,
       action,
       value,
     });
   }
 
   return {
-    session,
+    sessionId,
+    portName,
+    isConnected,
+    frameCount,
+    baudRate,
+    terminalAiModel,
+    logAiModel,
+    logAiContextMode,
+    logAiFrameLimit,
+    logAiMessages,
     applyCommand,
     setTerminalAiModel,
     setLogAiModel,

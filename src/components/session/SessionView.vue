@@ -9,6 +9,9 @@
           @click="connect"
           :loading="serialState.isConnecting.value"
         >
+          <template #icon>
+            <n-icon><LinkIcon /></n-icon>
+          </template>
           连接
         </n-button>
         <n-button
@@ -18,15 +21,31 @@
           ghost
           @click="disconnect"
         >
+          <template #icon>
+            <n-icon><UnlinkIcon /></n-icon>
+          </template>
           断开
         </n-button>
-        <n-button size="small" @click="clear" :disabled="session.frames.length === 0">
+        <n-button size="small" quaternary @click="clear" :disabled="session.frames.length === 0">
+          <template #icon>
+            <n-icon><TrashIcon /></n-icon>
+          </template>
           清空
         </n-button>
         <n-tag :type="session.isConnected ? 'success' : 'default'" size="small" round>
+          <template #icon>
+            <n-icon :size="12">
+              <component :is="session.isConnected ? RadioIcon : CubeIcon" />
+            </n-icon>
+          </template>
           {{ session.isConnected ? '已连接' : '未连接' }}
         </n-tag>
-        <span v-if="serialState.error.value" class="error-hint">{{ serialState.error.value }}</span>
+        <Transition name="error-slide">
+          <span v-if="serialState.error.value" class="error-hint">
+            <n-icon size="12"><AlertCircleIcon /></n-icon>
+            {{ serialState.error.value }}
+          </span>
+        </Transition>
       </div>
       <div class="toolbar-right">
         <div class="toolbar-field">
@@ -39,22 +58,25 @@
             @update:value="appStore.setDisplayMode"
           />
         </div>
-        <div class="toolbar-toggles">
-          <n-button size="small" quaternary @click="toggleAutoScroll" :type="appStore.autoScroll ? 'primary' : 'default'" title="自动滚动">
-            自动滚动
+        <n-button-group size="small">
+          <n-button quaternary @click="toggleAutoScroll" :type="appStore.autoScroll ? 'primary' : 'default'" title="自动滚动">
+            <n-icon><ArrowDownCircleIcon /></n-icon>
           </n-button>
-          <n-button size="small" quaternary @click="appStore.toggleAnsiColor" :type="appStore.ansiColorEnabled ? 'primary' : 'default'" title="ANSI颜色渲染">
-            颜色
+          <n-button quaternary @click="appStore.toggleAnsiColor" :type="appStore.ansiColorEnabled ? 'primary' : 'default'" title="ANSI颜色渲染">
+            <n-icon><ColorIcon /></n-icon>
           </n-button>
-          <n-button size="small" quaternary @click="toggleTimestamp" :type="appStore.showTimestamp ? 'primary' : 'default'" title="显示时间">
-            时间
+          <n-button quaternary @click="toggleTimestamp" :type="appStore.showTimestamp ? 'primary' : 'default'" title="显示时间">
+            <n-icon><TimeIcon /></n-icon>
           </n-button>
-          <n-button size="small" quaternary @click="toggleAutoLog" :type="session.autoLogEnabled ? 'primary' : 'default'" title="接收自动记录">
-            LOG
+          <n-button quaternary @click="toggleAutoLog" :type="session.autoLogEnabled ? 'primary' : 'default'" title="接收自动记录">
+            <n-icon><DocumentIcon /></n-icon>
           </n-button>
-        </div>
+        </n-button-group>
         <n-dropdown :options="exportOptions" @select="handleExport" :disabled="session.frames.length === 0 || isExporting">
           <n-button size="small" quaternary :disabled="session.frames.length === 0" :loading="isExporting" title="导出数据">
+            <template #icon>
+              <n-icon><DownloadIcon /></n-icon>
+            </template>
             导出
           </n-button>
         </n-dropdown>
@@ -81,7 +103,20 @@
 
 <script setup lang="ts">
 import { onMounted } from 'vue';
-import { NButton, NTag, NDropdown, NSelect } from 'naive-ui';
+import { NButton, NTag, NDropdown, NSelect, NIcon, NButtonGroup, useMessage } from 'naive-ui';
+import {
+  Link as LinkIcon,
+  Unlink as UnlinkIcon,
+  TrashOutline as TrashIcon,
+  Radio,
+  CubeOutline as CubeIcon,
+  AlertCircleOutline as AlertCircleIcon,
+  ArrowDownCircleOutline as ArrowDownCircleIcon,
+  ColorPaletteOutline as ColorIcon,
+  TimeOutline as TimeIcon,
+  DocumentTextOutline as DocumentIcon,
+  DownloadOutline as DownloadIcon,
+} from '@vicons/ionicons5';
 import DataPacketList from '../terminal/DataPacketList.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
 import { useSerialData } from '../../composables/useSerialData';
@@ -89,8 +124,9 @@ import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
 import { useExport } from '../../composables/useExport';
 import { useSessionActions } from '../../composables/useSessionActions';
-import { useMessage } from 'naive-ui';
 import type { DisplayMode, SerialSession } from '../../types';
+
+const RadioIcon = Radio;
 
 const props = defineProps<{
   session: SerialSession;
@@ -204,7 +240,7 @@ async function handleExport(format: string) {
   align-items: center;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-tertiary);
-  min-height: 44px;
+  min-height: 46px;
   flex-shrink: 0;
   gap: 8px;
 }
@@ -221,21 +257,17 @@ async function handleExport(format: string) {
 }
 
 .toolbar-right {
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
   min-width: 0;
 }
 
-.toolbar-field,
-.toolbar-toggles {
+.toolbar-field {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.toolbar-field {
-  padding: 2px 6px;
+  padding: 3px 8px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -243,20 +275,37 @@ async function handleExport(format: string) {
 
 .field-label {
   color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .error-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--accent-red);
   font-size: 11px;
-  max-width: 200px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 1px 6px;
+  padding: 3px 8px;
   background: var(--accent-red-subtle);
-  border-radius: var(--radius-sm);
+  border: 1px solid rgba(244, 67, 54, 0.25);
+  border-radius: var(--radius-md);
+}
+
+.error-slide-enter-active,
+.error-slide-leave-active {
+  transition: all var(--transition-normal);
+}
+
+.error-slide-enter-from,
+.error-slide-leave-to {
+  opacity: 0;
+  transform: translateX(-8px);
 }
 
 .display-area {

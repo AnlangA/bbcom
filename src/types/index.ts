@@ -13,8 +13,8 @@ export type LogAiContextMode = 'latest-10k' | 'latest-n-frames' | 'full-capped';
 export interface DataFrame {
   id: string;
   direction: Direction;
-  timestamp: string;
-  data: number[];
+  timestamp: number;
+  data: Uint8Array;
 }
 
 // Serial port configuration

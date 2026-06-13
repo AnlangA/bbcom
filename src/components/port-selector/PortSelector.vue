@@ -1,110 +1,128 @@
 <template>
   <div class="port-selector">
     <div class="section">
-      <div class="section-title" @click="toggleSection('port')" style="cursor: pointer">
+      <div class="section-title" @click="toggleSection('port')">
         <span>串口选择</span>
-        <span class="toggle-icon">{{ collapsed.port ? '▸' : '▾' }}</span>
+        <n-icon size="14" class="toggle-icon" :class="{ collapsed: collapsed.port }">
+          <ChevronDownIcon />
+        </n-icon>
       </div>
-      <div v-show="!collapsed.port">
-        <div class="port-row">
-          <n-select
-            v-model:value="selectedPort"
-            :options="portOptions"
-            placeholder="选择串口"
-            clearable
-            size="small"
-          />
-          <n-button size="small" @click="refreshPorts" :loading="isRefreshing" quaternary>
-            ↻
-          </n-button>
+      <Transition name="collapse">
+        <div v-show="!collapsed.port" class="section-body">
+          <div class="port-row">
+            <n-select
+              v-model:value="selectedPort"
+              :options="portOptions"
+              placeholder="选择串口"
+              clearable
+              size="small"
+            />
+            <n-button size="small" @click="refreshPorts" :loading="isRefreshing" quaternary title="刷新端口">
+              <template #icon>
+                <n-icon><RefreshIcon /></n-icon>
+              </template>
+            </n-button>
+          </div>
+          <div v-if="ports.length === 0" class="empty-hint">
+            未检测到串口设备
+          </div>
+          <div v-if="missingActivePorts.length > 0" class="empty-hint warning">
+            端口已断开：{{ missingActivePorts.join(', ') }}
+          </div>
         </div>
-        <div v-if="ports.length === 0" class="empty-hint">
-          未检测到串口设备
-        </div>
-        <div v-if="missingActivePorts.length > 0" class="empty-hint warning">
-          端口已断开：{{ missingActivePorts.join(', ') }}
-        </div>
-      </div>
+      </Transition>
     </div>
 
     <div class="section">
-      <div class="section-title" @click="toggleSection('config')" style="cursor: pointer">
+      <div class="section-title" @click="toggleSection('config')">
         <span>连接参数</span>
-        <span class="toggle-icon">{{ collapsed.config ? '▸' : '▾' }}</span>
+        <n-icon size="14" class="toggle-icon" :class="{ collapsed: collapsed.config }">
+          <ChevronDownIcon />
+        </n-icon>
       </div>
-      <div v-show="!collapsed.config">
-        <div class="config-grid">
-          <div class="config-item">
-            <label>波特率</label>
-            <n-select v-model:value="config.baudRate" :options="baudRateOptions" size="small" />
-          </div>
-          <div class="config-item">
-            <label>数据位</label>
-            <n-select v-model:value="config.dataBits" :options="dataBitsOptions" size="small" />
-          </div>
-          <div class="config-item">
-            <label>停止位</label>
-            <n-select v-model:value="config.stopBits" :options="stopBitsOptions" size="small" />
-          </div>
-          <div class="config-item">
-            <label>校验位</label>
-            <n-select v-model:value="config.parity" :options="parityOptions" size="small" />
-          </div>
-          <div class="config-item">
-            <label>流控</label>
-            <n-select v-model:value="config.flowControl" :options="flowControlOptions" size="small" />
+      <Transition name="collapse">
+        <div v-show="!collapsed.config" class="section-body">
+          <div class="config-grid">
+            <div class="config-item">
+              <label>波特率</label>
+              <n-select :value="serialStore.portConfig.baudRate" :options="baudRateOptions" size="small" @update:value="(v: number) => serialStore.setPortConfig({ baudRate: v })" />
+            </div>
+            <div class="config-item">
+              <label>数据位</label>
+              <n-select :value="serialStore.portConfig.dataBits" :options="dataBitsOptions" size="small" @update:value="(v: number) => serialStore.setPortConfig({ dataBits: v as 5 | 6 | 7 | 8 })" />
+            </div>
+            <div class="config-item">
+              <label>停止位</label>
+              <n-select :value="serialStore.portConfig.stopBits" :options="stopBitsOptions" size="small" @update:value="(v: number) => serialStore.setPortConfig({ stopBits: v as 1 | 2 })" />
+            </div>
+            <div class="config-item">
+              <label>校验位</label>
+              <n-select :value="serialStore.portConfig.parity" :options="parityOptions" size="small" @update:value="(v: string) => serialStore.setPortConfig({ parity: v as 'none' | 'odd' | 'even' })" />
+            </div>
+            <div class="config-item">
+              <label>流控</label>
+              <n-select :value="serialStore.portConfig.flowControl" :options="flowControlOptions" size="small" @update:value="(v: string) => serialStore.setPortConfig({ flowControl: v as 'none' | 'software' | 'hardware' })" />
+            </div>
           </div>
         </div>
-      </div>
+      </Transition>
     </div>
 
     <div class="section">
       <n-button size="small" block @click="newSession" :disabled="!selectedPort" type="primary" ghost>
+        <template #icon>
+          <n-icon><AddIcon /></n-icon>
+        </template>
         新建会话
       </n-button>
     </div>
 
     <div class="section">
-      <div class="section-title" @click="toggleSection('checksum')" style="cursor: pointer">
+      <div class="section-title" @click="toggleSection('checksum')">
         <span>校验和计算</span>
-        <span class="toggle-icon">{{ collapsed.checksum ? '▸' : '▾' }}</span>
+        <n-icon size="14" class="toggle-icon" :class="{ collapsed: collapsed.checksum }">
+          <ChevronDownIcon />
+        </n-icon>
       </div>
-      <div v-show="!collapsed.checksum">
-        <div class="checksum-grid">
-          <n-input
-            v-model:value="checksumInput"
-            placeholder="输入 HEX (如: AA BB CC)"
-            size="small"
-            :status="checksumInput && !isValidHexInput ? 'error' : undefined"
-            @blur="normalizeChecksumInput"
-          />
-          <div class="checksum-meta">
-            <span>{{ checksumByteCount }} 字节</span>
-            <span v-if="checksumInput && !isValidHexInput" class="checksum-error">HEX 长度需为偶数</span>
-          </div>
-          <div class="checksum-actions">
-            <n-select
-              v-model:value="checksumAlgo"
-              :options="checksumAlgoOptions"
+      <Transition name="collapse">
+        <div v-show="!collapsed.checksum" class="section-body">
+          <div class="checksum-grid">
+            <n-input
+              v-model:value="checksumInput"
+              placeholder="输入 HEX (如: AA BB CC)"
               size="small"
+              :status="checksumInput && !isValidHexInput ? 'error' : undefined"
+              @blur="normalizeChecksumInput"
             />
-          </div>
-          <div v-if="checksumResult" class="checksum-result" @click="copyChecksum" title="点击复制">
-            <div>
-              <span class="checksum-label">结果</span>
-              <span class="checksum-algo">{{ checksumAlgoLabel }}</span>
+            <div class="checksum-meta">
+              <span>{{ checksumByteCount }} 字节</span>
+              <span v-if="checksumInput && !isValidHexInput" class="checksum-error">HEX 长度需为偶数</span>
             </div>
-            <span class="checksum-value">{{ checksumResult }}</span>
+            <div class="checksum-actions">
+              <n-select
+                v-model:value="checksumAlgo"
+                :options="checksumAlgoOptions"
+                size="small"
+              />
+            </div>
+            <div v-if="checksumResult" class="checksum-result" @click="copyChecksum" title="点击复制">
+              <div>
+                <span class="checksum-label">结果</span>
+                <span class="checksum-algo">{{ checksumAlgoLabel }}</span>
+              </div>
+              <span class="checksum-value">{{ checksumResult }}</span>
+            </div>
           </div>
         </div>
-      </div>
+      </Transition>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue';
-import { NSelect, NButton, NInput } from 'naive-ui';
+import { NSelect, NButton, NInput, NIcon } from 'naive-ui';
+import { ChevronDown as ChevronDownIcon, RefreshOutline as RefreshIcon, Add as AddIcon } from '@vicons/ionicons5';
 import { invoke } from '@tauri-apps/api/core';
 import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
@@ -158,8 +176,6 @@ watch(() => ports.value, (newPorts) => {
     selectedPort.value = newPorts[0];
   }
 }, { immediate: true });
-
-const config = computed(() => serialStore.portConfig);
 
 async function refreshPorts() {
   isRefreshing.value = true;
@@ -215,7 +231,7 @@ async function calcChecksum() {
   const data = parseHex(checksumInput.value);
   try {
     const res = await invoke<{ result: string }>('calculate_checksum', {
-      request: { data, algorithm: checksumAlgo.value },
+      request: { data: Array.from(data), algorithm: checksumAlgo.value },
     });
     checksumResult.value = res.result;
   } catch {
@@ -261,6 +277,7 @@ async function copyChecksum() {
   justify-content: space-between;
   align-items: center;
   user-select: none;
+  cursor: pointer;
   transition: color var(--transition-normal);
 }
 
@@ -269,9 +286,29 @@ async function copyChecksum() {
 }
 
 .toggle-icon {
-  font-size: 10px;
   color: var(--text-dim);
   transition: transform var(--transition-normal);
+  transform: rotate(0deg);
+}
+
+.toggle-icon.collapsed {
+  transform: rotate(-90deg);
+}
+
+.section-body {
+  overflow: hidden;
+}
+
+.collapse-enter-active,
+.collapse-leave-active {
+  transition: opacity var(--transition-normal), max-height var(--transition-normal);
+  max-height: 500px;
+}
+
+.collapse-enter-from,
+.collapse-leave-to {
+  opacity: 0;
+  max-height: 0;
 }
 
 .port-row {
@@ -289,7 +326,7 @@ async function copyChecksum() {
   font-size: 11px;
   color: var(--text-dim);
   text-align: center;
-  padding: 10px 8px;
+  padding: 12px 8px;
   background: var(--bg-elevated);
   border-radius: var(--radius-md);
   border: 1px dashed var(--border-color);
@@ -356,11 +393,17 @@ async function copyChecksum() {
   gap: 8px;
   padding: 8px 10px;
   background: var(--accent-green-subtle);
-  border: 1px solid rgba(76, 175, 80, 0.2);
-  border-radius: var(--radius-sm);
+  border: 1px solid rgba(76, 175, 80, 0.25);
+  border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: 13px;
   cursor: copy;
+  transition: all var(--transition-normal);
+}
+
+.checksum-result:hover {
+  background: rgba(76, 175, 80, 0.2);
+  border-color: rgba(76, 175, 80, 0.35);
 }
 
 .checksum-label {

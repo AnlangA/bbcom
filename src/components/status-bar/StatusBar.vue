@@ -5,29 +5,31 @@
         <span class="stat-label">端口</span>
         <span class="stat-value port-name">{{ session.portName }}</span>
       </div>
-      <span class="divider">|</span>
+      <span class="stat-divider"></span>
       <div class="stat">
         <span class="stat-label">TX</span>
         <span class="stat-value tx">{{ formatBytes(session.txBytes) }}</span>
         <span class="stat-detail">{{ session.txFrames }} 帧</span>
       </div>
-      <span class="divider">|</span>
+      <span class="stat-divider"></span>
       <div class="stat">
         <span class="stat-label">RX</span>
         <span class="stat-value rx">{{ formatBytes(session.rxBytes) }}</span>
         <span class="stat-detail">{{ session.rxFrames }} 帧</span>
       </div>
-      <span v-if="session.isConnected && dataRate" class="divider">|</span>
-      <div v-if="session.isConnected && dataRate" class="stat">
-        <span class="stat-label">速率</span>
-        <span class="stat-value rate">{{ dataRate }}</span>
-      </div>
-      <span class="divider">|</span>
+      <template v-if="session.isConnected && dataRate">
+        <span class="stat-divider"></span>
+        <div class="stat">
+          <span class="stat-label">速率</span>
+          <span class="stat-value rate">{{ dataRate }}</span>
+        </div>
+      </template>
+      <span class="stat-divider"></span>
       <div class="stat">
         <span class="stat-label">时长</span>
         <span class="stat-value">{{ duration }}</span>
       </div>
-      <span class="divider">|</span>
+      <span class="stat-divider"></span>
       <div class="stat">
         <span class="stat-label">波特率</span>
         <span class="stat-value">{{ session.portConfig.baudRate }}</span>
@@ -150,11 +152,11 @@ const duration = computed(() => {
 
 <style scoped>
 .status-bar {
-  height: 26px;
+  height: 28px;
   padding: 0 12px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   background: var(--bg-tertiary);
   color: var(--text-secondary);
   font-size: 11px;
@@ -174,10 +176,10 @@ const duration = computed(() => {
 
 .stat-label {
   color: var(--text-dim);
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 9px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.5px;
 }
 
 .stat-value {
@@ -207,10 +209,11 @@ const duration = computed(() => {
   font-size: 10px;
 }
 
-.divider {
-  color: var(--border-color);
-  margin: 0 1px;
-  user-select: none;
+.stat-divider {
+  width: 1px;
+  height: 12px;
+  background: var(--border-color);
+  flex-shrink: 0;
 }
 
 .no-session {
@@ -224,7 +227,7 @@ const duration = computed(() => {
   position: sticky;
   right: 0;
   padding-left: var(--space-sm);
-  background: var(--bg-tertiary);
+  background: linear-gradient(90deg, transparent, var(--bg-tertiary) 20%);
 }
 
 .status-dot {
@@ -236,7 +239,8 @@ const duration = computed(() => {
 
 .status-dot.connected {
   background: var(--accent-green);
-  box-shadow: 0 0 6px rgba(76, 175, 80, 0.6);
+  box-shadow: 0 0 6px var(--accent-green-glow);
+  animation: connect-pulse 2s ease-in-out infinite;
 }
 
 .status-dot.disconnected {

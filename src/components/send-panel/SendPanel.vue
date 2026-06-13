@@ -44,15 +44,22 @@
       </div>
       <div class="send-right">
         <span v-if="modelValue" class="byte-count">{{ byteCount }} 字节</span>
-        <n-button size="small" @click="toggleLoop" :disabled="!canSend && !looping" :type="looping ? 'warning' : 'default'">
-          {{ looping ? '停止循环' : '循环发送' }}
+        <n-button size="small" @click="toggleLoop" :disabled="!canSend && !looping" :type="looping ? 'warning' : 'default'" title="循环发送">
+          <template #icon>
+            <n-icon><RepeatIcon /></n-icon>
+          </template>
+          {{ looping ? '停止' : '循环' }}
         </n-button>
         <n-button
           type="primary"
           size="small"
           @click="handleSend"
           :disabled="!canSend"
+          title="发送 (Ctrl+Enter)"
         >
+          <template #icon>
+            <n-icon><SendIcon /></n-icon>
+          </template>
           发送
         </n-button>
       </div>
@@ -99,7 +106,8 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
-import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
+import { NInput, NButton, NCheckbox, NSelect, NInputNumber, NIcon, useMessage } from 'naive-ui';
+import { RepeatOutline as RepeatIcon, SendOutline as SendIcon } from '@vicons/ionicons5';
 import { invoke } from '@tauri-apps/api/core';
 import { encodeUtf8, isValidHex as checkValidHex, normalizeHex, parseHex, truncate } from '../../lib/format';
 import { checksumAlgoOptionsWithNone } from '../../lib/checksum-constants';
@@ -217,7 +225,7 @@ async function buildData(): Promise<string | null> {
     const payload = parseHex(data);
     try {
       const res = await invoke<{ result: string }>('calculate_checksum', {
-        request: { data: payload, algorithm: appendChecksum.value },
+        request: { data: Array.from(payload), algorithm: appendChecksum.value },
       });
       data = data + ' ' + res.result;
     } catch {
@@ -363,34 +371,53 @@ function formatHexInput() {
 }
 
 .quick-item {
-  padding: 3px 7px;
+  padding: 3px 8px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-full);
   cursor: pointer;
   font-size: 11px;
   color: var(--text-secondary);
+  transition: all var(--transition-normal);
 }
 
 .quick-item:hover {
   border-color: var(--accent-green);
+  background: var(--accent-green-subtle);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
 }
 
 .quick-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   color: var(--text-dim);
   cursor: pointer;
   padding: 0 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 12px;
+  transition: all var(--transition-fast);
+}
+
+.quick-remove:hover {
+  color: var(--accent-red);
+  background: var(--accent-red-subtle);
 }
 
 .byte-count {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  padding: 2px 6px;
+  padding: 2px 8px;
   background: var(--bg-elevated);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  font-weight: 500;
 }
 
 .send-history {
@@ -410,7 +437,7 @@ function formatHexInput() {
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .history-clear {
@@ -419,14 +446,14 @@ function formatHexInput() {
   color: var(--text-dim);
   font-size: 10px;
   cursor: pointer;
-  padding: 1px 4px;
-  border-radius: 2px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
   transition: color var(--transition-fast), background var(--transition-fast);
 }
 
 .history-clear:hover {
-  color: var(--text-secondary);
-  background: var(--bg-hover);
+  color: var(--accent-red);
+  background: var(--accent-red-subtle);
 }
 
 .history-list {
@@ -448,28 +475,29 @@ function formatHexInput() {
   padding: 3px 8px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-secondary);
   white-space: nowrap;
   max-width: 200px;
-  transition: border-color var(--transition-normal), background var(--transition-normal);
+  transition: all var(--transition-normal);
 }
 
 .history-item:hover {
   border-color: var(--accent-green);
   background: var(--accent-green-subtle);
+  transform: translateY(-1px);
 }
 
 .history-tag {
   font-size: 9px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-muted);
   background: var(--bg-tertiary);
-  padding: 0 4px;
-  border-radius: 2px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
   letter-spacing: 0.3px;
 }
 

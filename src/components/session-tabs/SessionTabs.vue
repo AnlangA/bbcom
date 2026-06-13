@@ -11,12 +11,20 @@
           :title="tabTooltip(session)"
         >
           <span class="tab-port">{{ session.portName }}</span>
-          <span v-if="session.isConnected" class="tab-status connected" aria-label="已连接">●</span>
-          <span v-else class="tab-status disconnected" aria-label="未连接">○</span>
-          <button class="tab-close" type="button" @click.stop="closeSession(session.id)" aria-label="关闭会话" title="关闭会话">×</button>
+          <span v-if="session.isConnected" class="tab-status connected" aria-label="已连接"></span>
+          <span v-else class="tab-status disconnected" aria-label="未连接"></span>
+          <button class="tab-close" type="button" @click.stop="closeSession(session.id)" aria-label="关闭会话" title="关闭会话">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+              <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </button>
         </div>
       </div>
-      <button class="tab-add" type="button" @click="emit('create')" aria-label="新建会话" title="新建会话 (Ctrl+N)">+</button>
+      <button class="tab-add" type="button" @click="emit('create')" aria-label="新建会话" title="新建会话 (Ctrl+N)">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </button>
     </div>
   </div>
 </template>
@@ -63,16 +71,16 @@ const emit = defineEmits<{
   background: var(--bg-tertiary);
   border-bottom: 1px solid var(--border-subtle);
   padding: 0 6px;
-  height: 34px;
-  min-height: 34px;
+  height: 36px;
+  min-height: 36px;
 }
 
 .tabs-list {
   display: flex;
-  gap: 1px;
+  gap: 2px;
   overflow-x: auto;
   flex: 1;
-  padding-top: 2px;
+  padding-top: 3px;
 }
 
 .tabs-list::-webkit-scrollbar {
@@ -82,15 +90,15 @@ const emit = defineEmits<{
 .tab-item {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 12px;
+  gap: 6px;
+  padding: 5px 12px 5px 14px;
   cursor: pointer;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   font-size: 12px;
   color: var(--text-muted);
   background: transparent;
   white-space: nowrap;
-  transition: background var(--transition-normal), color var(--transition-normal), border-color var(--transition-normal);
+  transition: background var(--transition-normal), color var(--transition-normal);
   user-select: none;
   border-bottom: 2px solid transparent;
   position: relative;
@@ -105,6 +113,18 @@ const emit = defineEmits<{
   background: var(--bg-primary);
   color: var(--text-primary);
   border-bottom-color: var(--accent-green);
+  box-shadow: var(--shadow-inset);
+}
+
+.tab-item.active::before {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--gradient-brand);
+  border-radius: 2px 2px 0 0;
 }
 
 .tab-port {
@@ -114,28 +134,33 @@ const emit = defineEmits<{
 }
 
 .tab-status {
-  font-size: 7px;
-  line-height: 1;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .tab-status.connected {
-  color: var(--accent-green);
-  text-shadow: 0 0 4px rgba(76, 175, 80, 0.5);
+  background: var(--accent-green);
+  box-shadow: 0 0 5px var(--accent-green-glow);
+  animation: breathe 2.5s ease-in-out infinite;
 }
 
 .tab-status.disconnected {
-  color: var(--text-dim);
+  background: var(--text-dim);
 }
 
 .tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   color: transparent;
   cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 0 1px;
-  border-radius: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
   margin-left: 2px;
   transition: color var(--transition-fast), background var(--transition-fast);
 }
@@ -146,21 +171,20 @@ const emit = defineEmits<{
 
 .tab-close:hover {
   color: var(--text-primary) !important;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .tab-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: 1px dashed var(--border-color);
   color: var(--text-dim);
   cursor: pointer;
-  font-size: 15px;
-  width: 26px;
+  width: 28px;
   height: 26px;
-  border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  border-radius: var(--radius-md);
   flex-shrink: 0;
   transition: all var(--transition-normal);
   margin-left: 4px;
@@ -171,5 +195,6 @@ const emit = defineEmits<{
   border-style: solid;
   color: var(--accent-green);
   background: var(--accent-green-subtle);
+  box-shadow: 0 0 8px rgba(76, 175, 80, 0.15);
 }
 </style>

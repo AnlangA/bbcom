@@ -19,20 +19,16 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
   let unlistenData: (() => void) | null = null;
   let unlistenDisconnect: (() => void) | null = null;
 
-  function concatUint8Arrays(chunks: Uint8Array[]): number[] {
-    if (chunks.length === 0) return [];
-    if (chunks.length === 1) {
-      const c = chunks[0];
-      const out = new Array<number>(c.length);
-      for (let i = 0; i < c.length; i++) out[i] = c[i];
-      return out;
-    }
-    const out = new Array<number>(totalQueueSize);
+  function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
+    if (chunks.length === 0) return new Uint8Array(0);
+    if (chunks.length === 1) return chunks[0];
+    const result = new Uint8Array(totalQueueSize);
     let offset = 0;
     for (const chunk of chunks) {
-      for (let i = 0; i < chunk.length; i++) out[offset++] = chunk[i];
+      result.set(chunk, offset);
+      offset += chunk.length;
     }
-    return out;
+    return result;
   }
 
   async function start() {
@@ -93,7 +89,7 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
   async function send(data: string, isHex: boolean) {
     if (!serial.port.value) return false;
 
-    let payload: number[];
+    let payload: Uint8Array;
     if (isHex) {
       try {
         payload = parseHex(data);
@@ -107,15 +103,14 @@ export function useSerialData(sessionId: string, portName: string, config: PortC
       if (data.length === 0) {
         return false;
       }
-      const encoded = encodeUtf8(data);
-      payload = Array.from(encoded);
+      payload = encodeUtf8(data);
     }
 
     if (payload.length > MAX_INPUT_SIZE) {
       return false;
     }
 
-    const ok = await serial.write(payload);
+    const ok = await serial.write(Array.from(payload));
     if (ok) {
       sessionStore.addFrame(sessionId, {
         direction: 'TX',

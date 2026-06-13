@@ -59,7 +59,7 @@
           @contextmenu.prevent="(e: MouseEvent) => showContextMenu(e, visibleFrames[row.index])"
         >
           <span class="col-dir direction">{{ visibleFrames[row.index].direction }}</span>
-          <span v-if="appStore.showTimestamp" class="col-time timestamp">{{ visibleFrames[row.index].timestamp }}</span>
+          <span v-if="appStore.showTimestamp" class="col-time timestamp">{{ formatTimestamp(visibleFrames[row.index].timestamp) }}</span>
           <span
             v-if="appStore.displayMode !== 'HEX' && appStore.ansiColorEnabled"
             class="col-data data ansi-data"
@@ -86,7 +86,7 @@
 import { computed, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, NSelect, useMessage } from 'naive-ui';
 import { useAppStore } from '../../stores/app';
-import { formatHex, formatUtf8, formatAscii } from '../../lib/format';
+import { formatHex, formatUtf8, formatAscii, formatTimestamp } from '../../lib/format';
 import { usePacketFilter } from '../../composables/usePacketFilter';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
 import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
@@ -205,7 +205,7 @@ async function handleCtxSelect(key: string) {
       text = stripAnsi(formatAscii(ctxFrame.value.data));
       break;
     case 'row':
-      text = `[${ctxFrame.value.timestamp}] ${ctxFrame.value.direction} | ${formatFrame(ctxFrame.value)}`;
+      text = `[${formatTimestamp(ctxFrame.value.timestamp)}] ${ctxFrame.value.direction} | ${formatFrame(ctxFrame.value)}`;
       break;
     default:
       console.debug('unknown context menu key:', key);
@@ -228,12 +228,27 @@ async function handleCopySelect(key: string) {
   if (source.length > MAX_COPY_FRAMES) {
     message.warning(`数据过多，仅复制最近 ${MAX_COPY_FRAMES} 帧`);
   }
-  const parts: string[] = new Array(frames.length);
-  for (let i = 0; i < frames.length; i++) {
-    const frame = frames[i];
-    const data = asHex ? formatHex(frame.data) : formatUtf8(frame.data);
-    parts[i] = `[${frame.timestamp}] ${frame.direction} | ${data}`;
+
+  const CHUNK_SIZE = 500;
+  const parts: string[] = [];
+  for (let start = 0; start < frames.length; start += CHUNK_SIZE) {
+    const end = Math.min(start + CHUNK_SIZE, frames.length);
+    for (let i = start; i < end; i++) {
+      const frame = frames[i];
+      const data = asHex ? formatHex(frame.data) : formatUtf8(frame.data);
+      parts.push(`[${formatTimestamp(frame.timestamp)}] ${frame.direction} | ${data}`);
+    }
+    if (end < frames.length) {
+      await new Promise<void>((resolve) => {
+        if (typeof requestIdleCallback === 'function') {
+          requestIdleCallback(() => resolve());
+        } else {
+          setTimeout(resolve, 0);
+        }
+      });
+    }
   }
+
   const text = parts.join('\n');
   try {
     await navigator.clipboard.writeText(text);
@@ -266,7 +281,7 @@ async function handleCopySelect(key: string) {
 
 .filter-left {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
   flex-wrap: wrap;
   min-width: 0;
@@ -282,11 +297,13 @@ async function handleCopySelect(key: string) {
 }
 
 .frame-count {
-  color: var(--text-muted);
-  padding: 1px 6px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
   background: var(--bg-elevated);
+  font-weight: 500;
+  font-size: 10px;
 }
 
 .packet-row {
@@ -300,7 +317,7 @@ async function handleCopySelect(key: string) {
 }
 
 .packet-header {
-  font-weight: 600;
+  font-weight: 700;
   border-bottom: 1px solid var(--border-subtle);
   border-left: 2px solid transparent;
   color: var(--text-muted);
@@ -312,6 +329,7 @@ async function handleCopySelect(key: string) {
   top: 0;
   z-index: 1;
   padding-left: 8px;
+  backdrop-filter: blur(8px);
 }
 
 .packet-items {
@@ -335,7 +353,7 @@ async function handleCopySelect(key: string) {
 .packet-item {
   border-bottom: 1px solid var(--border-subtle);
   transition: background var(--transition-fast);
-  cursor: pointer;
+  cursor: context-menu;
 }
 
 .packet-item:hover {
@@ -353,15 +371,15 @@ async function handleCopySelect(key: string) {
 }
 
 .packet-item.tx {
-  border-left: 2px solid var(--accent-green);
-  padding-left: 8px;
-  background-image: linear-gradient(90deg, rgba(76, 175, 80, 0.06), transparent 120px);
+  border-left: 3px solid var(--accent-green);
+  padding-left: 7px;
+  background-image: linear-gradient(90deg, var(--color-tx-bar), transparent 140px);
 }
 
 .packet-item.rx {
-  border-left: 2px solid var(--accent-blue);
-  padding-left: 8px;
-  background-image: linear-gradient(90deg, rgba(33, 150, 243, 0.06), transparent 120px);
+  border-left: 3px solid var(--accent-blue);
+  padding-left: 7px;
+  background-image: linear-gradient(90deg, var(--color-rx-bar), transparent 140px);
 }
 
 .col-dir {

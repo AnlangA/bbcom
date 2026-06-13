@@ -41,3 +41,40 @@ export function saveString(key: string, value: string): boolean {
     return false;
   }
 }
+
+const secureStoreReady = (async () => {
+  try {
+    const { load } = await import('@tauri-apps/plugin-store');
+    await load('secure.json', { autoSave: false } as any);
+  } catch {
+    // Secure store may not be available during SSR or testing
+  }
+})();
+
+export async function loadSecureString(key: string): Promise<string> {
+  try {
+    await secureStoreReady;
+    const { load } = await import('@tauri-apps/plugin-store');
+    const store = await load('secure.json', { autoSave: false } as any);
+    return (await store.get<string>(key)) ?? '';
+  } catch {
+    return loadString(key);
+  }
+}
+
+export async function saveSecureString(key: string, value: string): Promise<boolean> {
+  try {
+    await secureStoreReady;
+    const { load } = await import('@tauri-apps/plugin-store');
+    const store = await load('secure.json', { autoSave: false } as any);
+    if (value) {
+      await store.set(key, value);
+    } else {
+      await store.delete(key);
+    }
+    await store.save();
+    return true;
+  } catch {
+    return saveString(key, value);
+  }
+}

@@ -14,6 +14,20 @@ interface AiSessionUpdateEvent {
   value: unknown;
 }
 
+interface AiSessionSnapshotPayload {
+  sessionId: string;
+  portName: string;
+  isConnected: boolean;
+  frameCount: number;
+  baudRate: number;
+  terminalAiModel: AiModel;
+  logAiModel: AiModel;
+  logAiContextMode: LogAiContextMode;
+  logAiFrameLimit: number;
+  logAiMessageCount: number;
+  logAiMessages: AiChatMessage[];
+}
+
 const SNAPSHOT_DEBOUNCE_MS = 200;
 
 export function useAiSessionBridge() {
@@ -30,6 +44,24 @@ export function useAiSessionBridge() {
     return `${s.id}:${s.isConnected}:${s.frames.length}:${s.logAiMessages.length}:${s.terminalAiModel}:${s.logAiModel}:${s.logAiContextMode}:${s.logAiFrameLimit}`;
   }
 
+  function buildSnapshot(): AiSessionSnapshotPayload | null {
+    const s = session.value;
+    if (!s) return null;
+    return {
+      sessionId: s.id,
+      portName: s.portName,
+      isConnected: s.isConnected,
+      frameCount: s.frames.length,
+      baudRate: s.portConfig.baudRate,
+      terminalAiModel: s.terminalAiModel,
+      logAiModel: s.logAiModel,
+      logAiContextMode: s.logAiContextMode,
+      logAiFrameLimit: s.logAiFrameLimit,
+      logAiMessageCount: s.logAiMessages.length,
+      logAiMessages: s.logAiMessages,
+    };
+  }
+
   function sendSnapshotDeferred() {
     if (snapshotTimer) return;
     snapshotTimer = setTimeout(() => {
@@ -37,7 +69,7 @@ export function useAiSessionBridge() {
       const key = snapshotKey();
       if (key === lastSnapshotKey) return;
       lastSnapshotKey = key;
-      emit('ai-session-snapshot', { session: session.value }).catch((err) => {
+      emit('ai-session-snapshot', buildSnapshot()).catch((err) => {
         console.debug('failed to emit ai-session-snapshot:', err);
       });
     }, SNAPSHOT_DEBOUNCE_MS);
@@ -47,7 +79,7 @@ export function useAiSessionBridge() {
     const key = snapshotKey();
     lastSnapshotKey = key;
     try {
-      await emit('ai-session-snapshot', { session: session.value });
+      await emit('ai-session-snapshot', buildSnapshot());
     } catch (err) {
       console.debug('failed to emit ai-session-snapshot:', err);
     }

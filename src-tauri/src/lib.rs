@@ -17,6 +17,10 @@ pub fn run() {
 
     let result = tauri::Builder::default()
         .setup(|app| {
+            #[cfg(feature = "devtools")]
+            {
+                app.get_webview_window("main").map(|w| w.open_devtools());
+            }
             WebviewWindowBuilder::new(
                 app,
                 AI_WINDOW_LABEL,

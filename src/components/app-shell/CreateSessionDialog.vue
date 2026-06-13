@@ -2,30 +2,34 @@
   <n-modal
     :show="show"
     preset="dialog"
-    title="新建会话 (Ctrl+N)"
+    title="新建会话"
     positive-text="确定"
     negative-text="取消"
     @update:show="emit('update:show', $event)"
     @positive-click="createSession"
     @negative-click="emit('update:show', false)"
   >
-    <n-form label-placement="left" label-width="60">
+    <n-form label-placement="left" label-width="60" style="margin-top: 8px">
       <n-form-item label="串口">
         <n-select v-model:value="portName" :options="portOptions" placeholder="选择可用串口" />
       </n-form-item>
-      <n-form-item label="波特率">
-        <n-select v-model:value="baudRate" :options="baudRateOptions" />
-      </n-form-item>
-      <n-form-item label="数据位">
-        <n-select v-model:value="dataBits" :options="dataBitsOptions" />
-      </n-form-item>
-      <n-form-item label="停止位">
-        <n-select v-model:value="stopBits" :options="stopBitsOptions" />
-      </n-form-item>
-      <n-form-item label="校验位">
-        <n-select v-model:value="parity" :options="parityOptions" />
-      </n-form-item>
-      <n-form-item label="流控">
+      <div class="form-row">
+        <n-form-item label="波特率" :show-feedback="false">
+          <n-select v-model:value="baudRate" :options="baudRateOptions" />
+        </n-form-item>
+        <n-form-item label="数据位" :show-feedback="false">
+          <n-select v-model:value="dataBits" :options="dataBitsOptions" />
+        </n-form-item>
+      </div>
+      <div class="form-row">
+        <n-form-item label="停止位" :show-feedback="false">
+          <n-select v-model:value="stopBits" :options="stopBitsOptions" />
+        </n-form-item>
+        <n-form-item label="校验位" :show-feedback="false">
+          <n-select v-model:value="parity" :options="parityOptions" />
+        </n-form-item>
+      </div>
+      <n-form-item label="流控" :show-feedback="false">
         <n-select v-model:value="flowControl" :options="flowControlOptions" />
       </n-form-item>
     </n-form>
@@ -112,3 +116,14 @@ function createSession() {
   return true;
 }
 </script>
+
+<style scoped>
+.form-row {
+  display: flex;
+  gap: 12px;
+}
+
+.form-row .n-form-item {
+  flex: 1;
+}
+</style>

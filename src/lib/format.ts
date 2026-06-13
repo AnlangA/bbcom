@@ -13,7 +13,7 @@ const HEX_TABLE = Array.from({ length: 256 }, (_, i) =>
 /**
  * Format byte array as HEX string with spaces
  */
-export function formatHex(data: number[] | Uint8Array): string {
+export function formatHex(data: Uint8Array): string {
   if (data.length === 0) return '';
   const parts = new Array<string>(data.length);
   for (let i = 0; i < data.length; i += 1) {
@@ -57,14 +57,14 @@ export function truncate(str: string, maxLength: number): string {
 /**
  * Parse HEX string to byte array
  */
-export function parseHex(input: string): number[] {
+export function parseHex(input: string): Uint8Array {
   const cleaned = input.replace(/[^0-9a-fA-F]/g, '');
   if (cleaned.length % 2 !== 0) {
     throw new Error('Invalid hex string: odd number of digits');
   }
-  const result: number[] = [];
+  const result = new Uint8Array(cleaned.length / 2);
   for (let i = 0; i < cleaned.length; i += 2) {
-    result.push(parseInt(cleaned.substring(i, i + 2), 16));
+    result[i / 2] = parseInt(cleaned.substring(i, i + 2), 16);
   }
   return result;
 }
@@ -85,17 +85,15 @@ export function isValidHex(input: string): boolean {
 /**
  * Format byte array as UTF-8 string
  */
-export function formatUtf8(data: number[] | Uint8Array): string {
-  const arr = Array.isArray(data) ? new Uint8Array(data) : data;
-  return utf8Decoder.decode(arr);
+export function formatUtf8(data: Uint8Array): string {
+  return utf8Decoder.decode(data);
 }
 
 /**
  * Format byte array as ASCII string
  */
-export function formatAscii(data: number[] | Uint8Array): string {
-  const arr = Array.isArray(data) ? new Uint8Array(data) : data;
-  return asciiDecoder.decode(arr);
+export function formatAscii(data: Uint8Array): string {
+  return asciiDecoder.decode(data);
 }
 
 export function encodeUtf8(data: string): Uint8Array {

@@ -2,7 +2,10 @@
   <div class="ai-settings">
     <button class="settings-toggle" type="button" @click="expanded = !expanded">
       <span>AI 设置</span>
-      <span class="settings-state">{{ appStore.aiApiKey ? '已配置' : '未配置' }}</span>
+      <span class="settings-state" :class="{ configured: appStore.aiApiKey }">
+        <span class="state-dot"></span>
+        {{ appStore.aiApiKey ? '已配置' : '未配置' }}
+      </span>
     </button>
     <div v-if="expanded" class="settings-body">
       <n-input
@@ -51,7 +54,7 @@ function saveApiKey() {
 .ai-settings {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--gradient-brand-subtle);
 }
 
 .settings-toggle,
@@ -70,19 +73,50 @@ function saveApiKey() {
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
+  transition: color var(--transition-normal);
+}
+
+.settings-toggle:hover {
+  color: var(--text-primary);
 }
 
 .settings-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+
+.state-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.settings-state.configured {
+  color: var(--accent-green);
+  border-color: rgba(76, 175, 80, 0.25);
+}
+
+.settings-state.configured .state-dot {
+  background: var(--accent-green);
+  box-shadow: 0 0 4px var(--accent-green-glow);
 }
 
 .settings-body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 10px;
+  animation: slide-in var(--transition-normal);
 }
 
 .settings-actions {

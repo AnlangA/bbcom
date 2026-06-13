@@ -19,14 +19,14 @@
       </n-button>
     </div>
 
-    <div v-if="activeSession" class="settings-panel">
+    <div v-if="hasSession" class="settings-panel">
       <span class="field-label">命令模型</span>
       <n-select
         size="small"
-        :value="activeSession.terminalAiModel"
+        :value="terminalAiModel"
         :options="aiModelOptions"
         :menu-props="aiModelMenuProps"
-        @update:value="setTerminalModel"
+        @update:value="(v: AiModel) => bridge.setTerminalAiModel(v)"
       />
     </div>
 
@@ -66,10 +66,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { NButton, NInput, NSelect, NTag, NModal, useMessage } from 'naive-ui';
-import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/app';
+import { invokeWithTimeout } from '../../lib/tauri';
 import { getAiErrorMessage } from '../../lib/ai-error';
-import type { AiModel, SerialSession } from '../../types';
+import type { AiModel } from '../../types';
 import type { useAiWindowSession } from '../../composables/useAiWindowSession';
 import { aiModelMenuProps, aiModelOptions } from '../ai/ai-options';
 
@@ -81,12 +81,15 @@ interface TerminalAiResponse {
   risk: Risk;
 }
 
-const INVOKE_TIMEOUT_MS = 30_000;
+const AI_INVOKE_TIMEOUT_MS = 30_000;
 
 const props = defineProps<{
-  session: SerialSession;
   bridge: ReturnType<typeof useAiWindowSession>;
 }>();
+
+const bridge = props.bridge;
+const hasSession = computed(() => !!bridge.sessionId.value);
+const terminalAiModel = computed(() => bridge.terminalAiModel.value);
 
 const emit = defineEmits<{
   (e: 'applyCommand', command: string): void;
@@ -100,9 +103,8 @@ const result = ref<TerminalAiResponse | null>(null);
 const showCautionConfirm = ref(false);
 const cautionPendingCommand = ref('');
 
-const activeSession = computed(() => props.session);
 const hasApiKey = computed(() => Boolean(appStore.aiApiKey.trim()));
-const canGenerate = computed(() => prompt.value.trim().length > 0 && !loading.value);
+const canGenerate = computed(() => prompt.value.trim().length > 0 && !loading.value && hasSession.value);
 const riskLabel = computed(() => {
   if (!result.value) return '';
   return { safe: '安全', caution: '谨慎', dangerous: '危险' }[result.value.risk];
@@ -112,38 +114,28 @@ const riskTagType = computed(() => {
   return result.value.risk === 'safe' ? 'success' : result.value.risk === 'caution' ? 'warning' : 'error';
 });
 
-async function invokeAi<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
-  const result = await Promise.race([
-    invoke<T>(cmd, args),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`AI 请求超时 (${INVOKE_TIMEOUT_MS / 1000}s)`)), INVOKE_TIMEOUT_MS),
-    ),
-  ]);
-  return result;
-}
-
 async function generateCommand() {
   if (!canGenerate.value) return;
   if (!hasApiKey.value) {
     message.warning('请先保存 API Key');
     return;
   }
-  if (!activeSession.value) {
+  if (!hasSession.value) {
     message.warning('请先创建串口会话');
     return;
   }
   loading.value = true;
   result.value = null;
   try {
-    const response = await invokeAi<TerminalAiResponse>('terminal_ai_assist', {
+    const response = await invokeWithTimeout<TerminalAiResponse>('terminal_ai_assist', {
       request: {
         prompt: prompt.value.trim(),
         apiKey: appStore.aiApiKey,
-        model: activeSession.value.terminalAiModel,
+        model: props.bridge.terminalAiModel.value,
         enableCodingPlan: appStore.aiEnableCodingPlan,
         shell: 'linux/busybox',
       },
-    });
+    }, AI_INVOKE_TIMEOUT_MS);
     result.value = response;
     if (response.command) {
       if (response.risk === 'caution') {
@@ -191,10 +183,6 @@ function applyCommandToApp(command: string) {
   emit('applyCommand', command);
 }
 
-function setTerminalModel(model: AiModel) {
-  void props.bridge.setTerminalAiModel(model);
-}
-
 </script>
 
 <style scoped>
@@ -220,10 +208,10 @@ function setTerminalModel(model: AiModel) {
 }
 
 .settings-panel {
-  padding: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.035);
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .field-label {
@@ -236,10 +224,11 @@ function setTerminalModel(model: AiModel) {
 .result-row {
   align-items: stretch;
   min-height: 48px;
-  padding: 8px;
-  border-radius: 10px;
-  border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.028);
+  padding: 10px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.022);
+  animation: slide-in var(--transition-normal);
 }
 
 .result-main {
@@ -261,13 +250,14 @@ function setTerminalModel(model: AiModel) {
   color: var(--accent-green);
   font-family: var(--font-mono);
   font-size: 12px;
-  padding: 5px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.26);
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.28);
   word-break: break-all;
   white-space: pre-wrap;
   max-height: 120px;
   overflow-y: auto;
+  border: 1px solid rgba(76, 175, 80, 0.1);
 }
 
 .explanation {
@@ -287,11 +277,13 @@ function setTerminalModel(model: AiModel) {
 }
 
 .risk-dangerous {
-  border-color: rgba(255, 95, 95, 0.45);
+  border-color: rgba(255, 95, 95, 0.4);
+  background: rgba(244, 67, 54, 0.04);
 }
 
 .risk-caution {
-  border-color: rgba(255, 194, 87, 0.45);
+  border-color: rgba(255, 194, 87, 0.4);
+  background: rgba(255, 152, 0, 0.03);
 }
 
 :deep(.ai-model-menu) {

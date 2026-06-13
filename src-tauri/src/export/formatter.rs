@@ -1,6 +1,7 @@
 use crate::models::data_frame::{DataFrame, Direction};
 use crate::models::errors::AppError;
 use crate::utils::hex;
+use crate::utils::timestamp;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
@@ -57,7 +58,7 @@ async fn export_text(frames: &[DataFrame], path: &str, ascii: bool) -> Result<()
         let data_str = data_to_string(&frame.data, ascii);
         let line = format!(
             "[{}] {} | {}\n",
-            frame.timestamp,
+            timestamp::format_timestamp(frame.timestamp),
             dir_label(&frame.direction),
             data_str
         );
@@ -78,7 +79,7 @@ async fn export_csv(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
         let escaped = data_str.replace('"', "\"\"");
         let line = format!(
             "{},{},\"{}\"\n",
-            frame.timestamp,
+            timestamp::format_timestamp(frame.timestamp),
             dir_label(&frame.direction),
             escaped
         );

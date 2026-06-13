@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct DataFrame {
     pub id: String,
     pub direction: Direction,
-    pub timestamp: String,
+    pub timestamp: f64,
     pub data: Vec<u8>,
 }
 

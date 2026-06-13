@@ -11,6 +11,7 @@
   --color-primary-hover: #66bb6a;
   --color-primary-pressed: #388e3c;
   --color-primary-subtle: rgba(76, 175, 80, 0.1);
+  --color-primary-glow: rgba(76, 175, 80, 0.4);
 
   /* Semantic Colors */
   --color-success: #4caf50;
@@ -21,46 +22,60 @@
   /* Data Direction Colors */
   --color-tx: #4caf50;
   --color-tx-subtle: rgba(76, 175, 80, 0.15);
+  --color-tx-bar: rgba(76, 175, 80, 0.12);
   --color-rx: #2196f3;
   --color-rx-subtle: rgba(33, 150, 243, 0.15);
+  --color-rx-bar: rgba(33, 150, 243, 0.12);
 
-  /* Background Colors */
-  --bg-primary: #1e1e1e;
-  --bg-secondary: #252526;
-  --bg-tertiary: #2a2a2a;
-  --bg-elevated: #2d2d2d;
-  --bg-hover: rgba(255, 255, 255, 0.05);
-  --bg-active: #3d3d3d;
+  /* Background Colors - layered for depth */
+  --bg-primary: #1a1a1d;
+  --bg-secondary: #1f1f23;
+  --bg-tertiary: #252529;
+  --bg-elevated: #2a2a2f;
+  --bg-overlay: #303036;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-active: #38383f;
+  --bg-glass: rgba(30, 30, 35, 0.85);
+  --bg-glass-blur: rgba(30, 30, 35, 0.72);
 
   /* Text Colors */
-  --text-primary: #e5e5e5;
-  --text-secondary: #cccccc;
-  --text-muted: #999999;
-  --text-dim: #666666;
+  --text-primary: #ececec;
+  --text-secondary: #c8c8c8;
+  --text-muted: #8a8a8a;
+  --text-dim: #5a5a5a;
 
   /* Border Colors */
-  --border-color: #3c3c3c;
-  --border-subtle: #2e2e2e;
-  --border-strong: #505050;
+  --border-color: #36363a;
+  --border-subtle: #28282c;
+  --border-strong: #48484e;
   --border-focus: var(--color-primary);
+  --border-glow: rgba(76, 175, 80, 0.3);
 
   /* Accent Colors */
   --accent-green: #4caf50;
   --accent-green-hover: #66bb6a;
   --accent-green-subtle: rgba(76, 175, 80, 0.15);
+  --accent-green-glow: rgba(76, 175, 80, 0.4);
   --accent-blue: #2196f3;
   --accent-blue-subtle: rgba(33, 150, 243, 0.15);
+  --accent-blue-glow: rgba(33, 150, 243, 0.4);
   --accent-red: #f44336;
   --accent-red-subtle: rgba(244, 67, 54, 0.15);
   --accent-orange: #ff9800;
   --accent-orange-subtle: rgba(255, 152, 0, 0.15);
   --accent-amber: #ffb74d;
   --accent-amber-subtle: rgba(255, 183, 77, 0.12);
+  --accent-purple: #b388ff;
+  --accent-purple-subtle: rgba(179, 136, 255, 0.15);
+
+  /* Brand Gradient */
+  --gradient-brand: linear-gradient(135deg, #63ffb1 0%, #4fc3ff 55%, #b388ff 100%);
+  --gradient-brand-subtle: linear-gradient(135deg, rgba(99, 255, 177, 0.08) 0%, rgba(79, 195, 255, 0.06) 55%, rgba(179, 136, 255, 0.05) 100%);
 
   /* === Typography === */
   --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-sans: var(--font-family);
-  --font-mono: 'Menlo', 'Consolas', 'Courier New', monospace;
+  --font-mono: 'SF Mono', 'Menlo', 'Consolas', 'Courier New', monospace;
 
   --font-size-xs: 10px;
   --font-size-sm: 11px;
@@ -88,21 +103,26 @@
 
   /* === Border Radius === */
   --radius-sm: 3px;
-  --radius-md: 4px;
-  --radius-lg: 6px;
-  --radius-xl: 8px;
+  --radius-md: 5px;
+  --radius-lg: 7px;
+  --radius-xl: 10px;
   --radius-full: 9999px;
 
   /* === Shadows === */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.5);
-  --shadow-focus: 0 0 0 2px rgba(76, 175, 80, 0.15);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-xl: 0 12px 36px rgba(0, 0, 0, 0.55);
+  --shadow-focus: 0 0 0 2px rgba(76, 175, 80, 0.2);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  --shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
 
   /* === Transitions === */
-  --transition-fast: 100ms ease;
-  --transition-normal: 200ms ease;
-  --transition-slow: 300ms ease;
+  --transition-fast: 100ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 280ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-bounce: 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
 
   /* === Z-Index === */
   --z-dropdown: 1000;
@@ -114,8 +134,50 @@
   --sidebar-width: 280px;
   --sidebar-width-min: 240px;
   --sidebar-width-max: 320px;
-  --toolbar-height: 38px;
-  --statusbar-height: 24px;
+  --toolbar-height: 42px;
+  --statusbar-height: 26px;
+}
+
+/* === Animations === */
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
+
+@keyframes breathe {
+  0%, 100% { box-shadow: 0 0 4px var(--accent-green-glow); opacity: 1; }
+  50% { box-shadow: 0 0 10px var(--accent-green-glow); opacity: 0.7; }
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes connect-pulse {
+  0% { box-shadow: 0 0 0 0 var(--accent-green-glow); }
+  70% { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes blink-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 /* === Utility Classes === */
@@ -144,13 +206,28 @@
   white-space: nowrap;
 }
 
+.anim-fade-in { animation: fade-in var(--transition-normal); }
+.anim-slide-in { animation: slide-in var(--transition-slow); }
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-elevated) 25%,
+    var(--bg-overlay) 50%,
+    var(--bg-elevated) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius-md);
+}
+
 .scrollbar-thin::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-track {
-  background: var(--bg-secondary);
+  background: transparent;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
@@ -159,5 +236,5 @@
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: var(--text-dim);
+  background: var(--border-strong);
 }

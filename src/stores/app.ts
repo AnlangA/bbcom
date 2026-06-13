@@ -1,10 +1,10 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
-import { loadJson, loadString, saveJson, saveString } from '../lib/storage';
+import { loadJson, loadSecureString, saveJson, saveSecureString } from '../lib/storage';
 
 const STORAGE_KEY = 'bbcom-app-settings';
-const AI_API_KEY_STORAGE_KEY = `${STORAGE_KEY}:ai-api-key`;
+const AI_API_KEY_SECURE_KEY = 'ai-api-key';
 
 export const useAppStore = defineStore('app', () => {
   const displayMode = ref<DisplayMode>('HEX');
@@ -23,7 +23,7 @@ export const useAppStore = defineStore('app', () => {
   const pendingAiCommand = ref('');
   let loaded = false;
 
-  function load() {
+  async function load() {
     const saved = loadJson(STORAGE_KEY, {
       displayMode: displayMode.value,
       autoScroll: autoScroll.value,
@@ -46,7 +46,7 @@ export const useAppStore = defineStore('app', () => {
     if (typeof saved.loopIntervalMs === 'number') loopIntervalMs.value = saved.loopIntervalMs;
     if (typeof saved.ansiColorEnabled === 'boolean') ansiColorEnabled.value = saved.ansiColorEnabled;
     if (typeof saved.aiEnableCodingPlan === 'boolean') aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
-    aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
+    aiApiKey.value = await loadSecureString(AI_API_KEY_SECURE_KEY);
     loaded = true;
   }
 
@@ -111,7 +111,7 @@ export const useAppStore = defineStore('app', () => {
 
   function setAiApiKey(value: string) {
     aiApiKey.value = value;
-    saveString(AI_API_KEY_STORAGE_KEY, value);
+    void saveSecureString(AI_API_KEY_SECURE_KEY, value);
   }
 
   function setAiEnableCodingPlan(value: boolean) {
@@ -133,7 +133,7 @@ export const useAppStore = defineStore('app', () => {
     return command;
   }
 
-  load();
+  void load();
 
   return {
     displayMode,

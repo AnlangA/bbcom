@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::LazyLock;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tauri::{Emitter, LogicalSize, Manager};
 use zai_rs::model::{
     chat_base_request::ChatBody, chat_base_response::ChatCompletionResponse, traits::*, *,
@@ -11,7 +13,27 @@ use crate::models::errors::AppError;
 pub const AI_WINDOW_LABEL: &str = "ai-assistant";
 const AI_WINDOW_STATE_EVENT: &str = "ai-window-state";
 const AI_REQUEST_TIMEOUT_SECS: u64 = 60;
+const AI_COOLDOWN_SECS: u64 = 2;
 const MAX_AI_CONTEXT_BYTES: usize = 512_000;
+
+static LAST_AI_REQUEST: LazyLock<Mutex<std::time::Instant>> =
+    LazyLock::new(|| Mutex::new(std::time::Instant::now() - Duration::from_secs(AI_COOLDOWN_SECS + 1)));
+
+async fn enforce_ai_cooldown() -> Result<(), AppError> {
+    let mut last = LAST_AI_REQUEST.lock().await;
+    let elapsed = last.elapsed();
+    if elapsed < Duration::from_secs(AI_COOLDOWN_SECS) {
+        let remaining = Duration::from_secs(AI_COOLDOWN_SECS) - elapsed;
+        return Err(AppError::AiError {
+            message: format!(
+                "请求过于频繁，请等待 {} 秒后重试",
+                remaining.as_secs() + 1
+            ),
+        });
+    }
+    *last = std::time::Instant::now();
+    Ok(())
+}
 
 const TERMINAL_SYSTEM_PROMPT: &str = r#"You are an expert Linux terminal command generator for an embedded serial console.
 Convert the user's natural-language request into the single safest shell command that should be typed into a Linux-like serial terminal.
@@ -185,6 +207,7 @@ fn validate_ai_inputs(prompt: &str, api_key: &str, prompt_empty_msg: &str) -> Re
 pub async fn terminal_ai_assist(
     request: TerminalAiRequest,
 ) -> Result<TerminalAiResponse, AppError> {
+    enforce_ai_cooldown().await?;
     validate_ai_inputs(&request.prompt, &request.api_key, "请输入要生成的终端命令")?;
 
     let context = truncate_to_utf8_boundary(
@@ -208,6 +231,7 @@ pub async fn terminal_ai_assist(
 
 #[tauri::command]
 pub async fn log_ai_assist(request: LogAiRequest) -> Result<LogAiResponse, AppError> {
+    enforce_ai_cooldown().await?;
     validate_ai_inputs(&request.prompt, &request.api_key, "请输入日志分析问题")?;
 
     if request.context.trim().is_empty() {

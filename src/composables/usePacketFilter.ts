@@ -21,6 +21,21 @@ export function usePacketFilter({
   const searchQuery = ref('');
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
+  let cachedFiltered: DataFrame[] = [];
+  let cachedFrameCount = 0;
+  let needsFullRebuild = true;
+
+  function matchesFilter(frame: DataFrame, query: string, hasDirection: boolean, hasSearch: boolean, hexNeedle: string): boolean {
+    if (hasDirection && frame.direction !== directionFilter.value) return false;
+    if (!hasSearch) return true;
+    if (searchMode.value === 'HEX') return hexNeedle.length > 0 && getHexSearchData(frame).includes(hexNeedle);
+    return getTextSearchData(frame).includes(query);
+  }
+
+  watch([directionFilter, searchQuery, searchMode], () => {
+    needsFullRebuild = true;
+  });
+
   watch(searchInput, (value) => {
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
@@ -30,18 +45,43 @@ export function usePacketFilter({
 
   const filteredFrames = computed(() => {
     const query = searchQuery.value.trim().toLowerCase();
-    const hasDirectionFilter = directionFilter.value !== 'ALL';
+    const hasDirection = directionFilter.value !== 'ALL';
     const hasSearch = query.length > 0;
 
-    if (!hasDirectionFilter && !hasSearch) return frames.value;
+    if (!hasDirection && !hasSearch) {
+      cachedFiltered = frames.value;
+      cachedFrameCount = frames.value.length;
+      needsFullRebuild = false;
+      return frames.value;
+    }
 
     const hexNeedle = searchMode.value === 'HEX' ? query.replace(/[^0-9a-f]/g, '') : '';
-    return frames.value.filter((frame) => {
-      if (hasDirectionFilter && frame.direction !== directionFilter.value) return false;
-      if (!hasSearch) return true;
-      if (searchMode.value === 'HEX') return hexNeedle.length > 0 && getHexSearchData(frame).includes(hexNeedle);
-      return getTextSearchData(frame).includes(query);
-    });
+
+    if (needsFullRebuild) {
+      cachedFiltered = frames.value.filter((frame) =>
+        matchesFilter(frame, query, hasDirection, hasSearch, hexNeedle),
+      );
+      cachedFrameCount = frames.value.length;
+      needsFullRebuild = false;
+    } else if (frames.value.length !== cachedFrameCount) {
+      const newCount = frames.value.length;
+      const oldCount = cachedFrameCount;
+      if (newCount > oldCount) {
+        for (let i = oldCount; i < newCount; i++) {
+          const frame = frames.value[i];
+          if (matchesFilter(frame, query, hasDirection, hasSearch, hexNeedle)) {
+            cachedFiltered.push(frame);
+          }
+        }
+      } else {
+        cachedFiltered = frames.value.filter((frame) =>
+          matchesFilter(frame, query, hasDirection, hasSearch, hexNeedle),
+        );
+      }
+      cachedFrameCount = newCount;
+    }
+
+    return cachedFiltered;
   });
 
   const visibleFrames = computed<DataFrame[]>(() => {
@@ -51,15 +91,14 @@ export function usePacketFilter({
     let current: DataFrame | null = null;
     for (const frame of filteredFrames.value) {
       if (!current || current.direction !== frame.direction) {
-        // Shallow-copy the frame; data array is extended in-place below
         current = { ...frame, id: `merged-${frame.id}`, data: frame.data.slice() };
         merged.push(current);
       } else {
-        const prev = current.data as number[];
-        const next = frame.data as number[];
-        const combined = new Array<number>(prev.length + next.length);
-        for (let i = 0; i < prev.length; i++) combined[i] = prev[i];
-        for (let i = 0; i < next.length; i++) combined[prev.length + i] = next[i];
+        const prev = current.data;
+        const next = frame.data;
+        const combined = new Uint8Array(prev.length + next.length);
+        combined.set(prev, 0);
+        combined.set(next, prev.length);
         current.data = combined;
       }
     }

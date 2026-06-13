@@ -8,8 +8,12 @@ rust-version = "1.85"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = []
+devtools = ["tauri/devtools"]
+
 [dependencies]
-tauri = { version = "2", features = ["devtools"] }
+tauri = { version = "2", features = [] }
 tauri-plugin-serialplugin = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
