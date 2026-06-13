@@ -231,7 +231,7 @@ const duration = computed(() => {
 
 .status-dot.connected {
   background: var(--accent-green);
-  box-shadow: 0 0 0 3px var(--accent-green-subtle);
+  animation: pulse-green 2s ease-in-out infinite;
 }
 
 .status-dot.disconnected {

@@ -1,17 +1,22 @@
 <template>
   <div class="app-layout">
-    <aside class="sidebar">
+    <aside class="sidebar" :class="{ collapsed: appStore.sidebarCollapsed }" :style="sidebarStyle">
       <div class="sidebar-header">
         <div class="app-brand">
+          <button class="collapse-btn" type="button" @click="appStore.toggleSidebarCollapsed" :title="appStore.sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
+            <PanelLeftClose v-if="!appStore.sidebarCollapsed" class="icon" />
+            <PanelLeftOpen v-else class="icon" />
+          </button>
           <span class="brand-mark">
             <Zap class="icon-lg" />
           </span>
-          <span class="brand-copy">
+          <span v-if="!appStore.sidebarCollapsed" class="brand-copy">
             <span class="brand-title">bbcom</span>
             <span class="brand-subtitle">Serial console</span>
           </span>
         </div>
         <n-button
+          v-if="!appStore.sidebarCollapsed"
           size="tiny"
           :type="aiWindowVisible ? 'primary' : 'default'"
           secondary
@@ -25,11 +30,19 @@
           {{ aiWindowVisible ? '关闭 AI' : '开启 AI' }}
         </n-button>
       </div>
-      <AiSettingsPanel v-if="aiWindowVisible" />
-      <div class="sidebar-content">
-        <PortSelector />
-      </div>
+      <template v-if="!appStore.sidebarCollapsed">
+        <AiSettingsPanel v-if="aiWindowVisible" />
+        <div class="sidebar-content">
+          <PortSelector />
+        </div>
+      </template>
     </aside>
+
+    <div
+      class="resize-handle"
+      :class="{ dragging: isDragging }"
+      @mousedown="startResize"
+    ></div>
 
     <main class="main">
       <SessionTabs @create="showCreateDialog = true" />
@@ -45,7 +58,9 @@
             <span class="shortcut"><kbd>Ctrl</kbd>+<kbd>W</kbd> 关闭会话</span>
           </div>
         </div>
-        <SessionView v-if="activeSession" :key="activeSession.id" :session="activeSession" />
+        <Transition name="fade-slide" mode="out-in">
+          <SessionView v-if="activeSession" :key="activeSession.id" :session="activeSession" />
+        </Transition>
       </div>
       <StatusBar :session="activeSession" />
     </main>
@@ -55,9 +70,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onUnmounted, ref } from 'vue';
 import { NButton } from 'naive-ui';
-import { Bot, BotOff, Cable, Zap } from 'lucide-vue-next';
+import { Bot, BotOff, Cable, PanelLeftClose, PanelLeftOpen, Zap } from 'lucide-vue-next';
 import PortSelector from '../port-selector/PortSelector.vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
 import SessionView from '../session/SessionView.vue';
@@ -68,14 +83,53 @@ import { useAiWindowState } from '../../composables/useAiWindowState';
 import { useAppShortcuts } from '../../composables/useAppShortcuts';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { useSessionStore } from '../../stores/sessions';
+import { useAppStore } from '../../stores/app';
 
 const sessionStore = useSessionStore();
+const appStore = useAppStore();
 const { requestCloseSession } = useSessionActions();
 const { visible: aiWindowVisible, toggle: toggleAiWindow } = useAiWindowState();
 
 const sessions = computed(() => sessionStore.sessions);
 const activeSession = computed(() => sessionStore.activeSession);
 const showCreateDialog = ref(false);
+
+const isDragging = ref(false);
+let startX = 0;
+let startWidth = 0;
+
+const sidebarStyle = computed(() => ({
+  width: appStore.sidebarCollapsed ? '48px' : `${appStore.sidebarWidth}px`,
+}));
+
+function startResize(e: MouseEvent) {
+  if (appStore.sidebarCollapsed) return;
+  isDragging.value = true;
+  startX = e.clientX;
+  startWidth = appStore.sidebarWidth;
+  document.addEventListener('mousemove', onResize);
+  document.addEventListener('mouseup', stopResize);
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+}
+
+function onResize(e: MouseEvent) {
+  const delta = e.clientX - startX;
+  appStore.setSidebarWidth(startWidth + delta);
+}
+
+function stopResize() {
+  isDragging.value = false;
+  document.removeEventListener('mousemove', onResize);
+  document.removeEventListener('mouseup', stopResize);
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+}
+
+onUnmounted(() => {
+  document.removeEventListener('mousemove', onResize);
+  document.removeEventListener('mouseup', stopResize);
+});
 
 useAppShortcuts({
   onCreateSession: () => {
@@ -97,8 +151,7 @@ useAppShortcuts({
 }
 
 .sidebar {
-  width: var(--sidebar-width);
-  min-width: var(--sidebar-width-min);
+  min-width: 48px;
   max-width: var(--sidebar-width-max);
   border-right: 1px solid var(--border-subtle);
   background: var(--bg-secondary);
@@ -106,6 +159,12 @@ useAppShortcuts({
   flex-direction: column;
   overflow: hidden;
   box-shadow: var(--shadow-inset);
+  transition: width var(--transition-slow);
+}
+
+.sidebar.collapsed {
+  min-width: 48px;
+  max-width: 48px;
 }
 
 .sidebar-header {
@@ -120,11 +179,48 @@ useAppShortcuts({
   gap: var(--space-sm);
 }
 
+.sidebar.collapsed .sidebar-header {
+  padding: 12px 7px;
+  justify-content: center;
+}
+
 .app-brand {
   display: flex;
   align-items: center;
   gap: 11px;
   min-width: 0;
+}
+
+.sidebar.collapsed .app-brand {
+  flex-direction: column;
+  gap: 0;
+}
+
+.collapse-btn {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.collapse-btn:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.sidebar.collapsed .collapse-btn {
+  width: 34px;
+  height: 34px;
 }
 
 .brand-mark {
@@ -138,6 +234,11 @@ useAppShortcuts({
   border: 1px solid var(--color-primary-muted);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-inset);
+  transition: transform var(--transition-normal);
+}
+
+.brand-mark:hover {
+  transform: rotate(12deg);
 }
 
 .brand-copy {
@@ -172,6 +273,21 @@ useAppShortcuts({
   overflow-x: hidden;
 }
 
+.resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+  transition: background var(--transition-fast);
+}
+
+.resize-handle:hover,
+.resize-handle.dragging {
+  background: var(--color-primary);
+}
+
 .main {
   flex: 1;
   display: flex;
@@ -200,6 +316,7 @@ useAppShortcuts({
   user-select: none;
   padding: var(--space-xl);
   text-align: center;
+  animation: fade-in 300ms ease, slide-up 300ms ease;
 }
 
 .empty-mark {
@@ -212,6 +329,7 @@ useAppShortcuts({
   border: 1px solid var(--border-color);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-inset);
+  animation: scale-in 400ms ease;
 }
 
 .empty-title {
@@ -247,10 +365,24 @@ useAppShortcuts({
   line-height: 1.4;
 }
 
+.fade-slide-enter-active,
+.fade-slide-leave-active {
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.fade-slide-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.fade-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
 @media (max-width: 760px) {
   .sidebar {
-    width: 252px;
-    min-width: 232px;
+    max-width: 252px;
   }
 
   .brand-copy {

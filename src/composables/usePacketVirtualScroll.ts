@@ -52,7 +52,10 @@ export function usePacketVirtualScroll({
       void nextTick(() => {
         requestAnimationFrame(() => {
           if (scrollRef.value) {
-            scrollRef.value.scrollTop = scrollRef.value.scrollHeight;
+            scrollRef.value.scrollTo({
+              top: scrollRef.value.scrollHeight,
+              behavior: 'smooth',
+            });
           }
         });
       });

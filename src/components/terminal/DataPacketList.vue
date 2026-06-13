@@ -66,7 +66,13 @@
       <span class="col-data">数据</span>
       <span class="col-mode">模式</span>
     </div>
-    <div ref="scrollRef" class="packet-items" @scroll="onScroll">
+    <div
+      ref="scrollRef"
+      class="packet-items"
+      tabindex="0"
+      @scroll="onScroll"
+      @keydown="onKeydown"
+    >
       <div v-if="visibleFrames.length === 0" class="packet-empty">
         {{ frames.length === 0 ? '暂无串口数据' : '没有匹配的数据帧' }}
       </div>
@@ -87,7 +93,10 @@
           :class="{
             tx: visibleFrames[row.index].direction === 'TX',
             rx: visibleFrames[row.index].direction === 'RX',
+            even: row.index % 2 === 0,
+            selected: selectedFrameId === visibleFrames[row.index].id,
           }"
+          @click="selectFrame(visibleFrames[row.index])"
           @contextmenu.prevent="(e: MouseEvent) => showContextMenu(e, visibleFrames[row.index])"
         >
           <span class="col-dir direction">{{ visibleFrames[row.index].direction }}</span>
@@ -139,6 +148,7 @@ const ctxShow = ref(false);
 const ctxX = ref(0);
 const ctxY = ref(0);
 let ctxFrame: DataFrame | null = null;
+const selectedFrameId = ref<string | null>(null);
 
 const ctxOptions = [
   { label: '复制 HEX', key: 'hex' },
@@ -209,6 +219,59 @@ function showContextMenu(e: MouseEvent, frame: DataFrame) {
   ctxX.value = e.clientX;
   ctxY.value = e.clientY;
   ctxShow.value = true;
+  selectFrame(frame);
+}
+
+function selectFrame(frame: DataFrame) {
+  selectedFrameId.value = frame.id;
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (!scrollRef.value) return;
+  const frames = visibleFrames.value;
+  if (frames.length === 0) return;
+
+  const currentIndex = selectedFrameId.value
+    ? frames.findIndex((f) => f.id === selectedFrameId.value)
+    : -1;
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const nextIndex = Math.min(currentIndex + 1, frames.length - 1);
+    selectFrame(frames[nextIndex]);
+    scrollToIndex(nextIndex);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prevIndex = Math.max(currentIndex - 1, 0);
+    selectFrame(frames[prevIndex]);
+    scrollToIndex(prevIndex);
+  } else if (e.key === 'c' && (e.ctrlKey || e.metaKey) && selectedFrameId.value) {
+    e.preventDefault();
+    const frame = frames.find((f) => f.id === selectedFrameId.value);
+    if (frame) {
+      const text = `[${frame.timestamp}] ${frame.direction} | ${formatFrame(frame)}`;
+      navigator.clipboard.writeText(text).then(
+        () => message.success('已复制'),
+        () => message.error('复制失败'),
+      );
+    }
+  }
+}
+
+function scrollToIndex(index: number) {
+  if (!scrollRef.value) return;
+  const item = virtualItems.value.find((v) => v.index === index);
+  if (item) {
+    const itemTop = item.start;
+    const itemBottom = itemTop + item.size;
+    const scrollTop = scrollRef.value.scrollTop;
+    const viewportHeight = scrollRef.value.clientHeight;
+    if (itemTop < scrollTop) {
+      scrollRef.value.scrollTop = itemTop;
+    } else if (itemBottom > scrollTop + viewportHeight) {
+      scrollRef.value.scrollTop = itemBottom - viewportHeight;
+    }
+  }
 }
 
 async function handleCtxSelect(key: string) {
@@ -339,6 +402,7 @@ async function handleCopySelect(key: string) {
   top: 0;
   z-index: 1;
   padding-left: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .packet-items {
@@ -347,6 +411,7 @@ async function handleCopySelect(key: string) {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.012), transparent 120px), var(--bg-primary);
   position: relative;
+  outline: none;
 }
 
 .packet-empty {
@@ -375,6 +440,19 @@ async function handleCopySelect(key: string) {
   background-color: var(--bg-hover);
 }
 
+.packet-item.even {
+  background-color: rgba(255, 255, 255, 0.015);
+}
+
+.packet-item.even:hover {
+  background-color: var(--bg-hover);
+}
+
+.packet-item.selected {
+  background-color: var(--bg-selected) !important;
+  border-left-color: var(--color-primary) !important;
+}
+
 .packet-item.tx .direction {
   color: var(--text-inverse);
   background: var(--accent-green);
@@ -395,6 +473,18 @@ async function handleCopySelect(key: string) {
   border-left: 2px solid var(--accent-blue);
   padding-left: 8px;
   background-image: linear-gradient(90deg, var(--accent-blue-subtle), transparent 140px);
+}
+
+.packet-item.tx.even {
+  background-image:
+    linear-gradient(90deg, var(--accent-green-subtle), transparent 140px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0.015));
+}
+
+.packet-item.rx.even {
+  background-image:
+    linear-gradient(90deg, var(--accent-blue-subtle), transparent 140px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0.015));
 }
 
 .col-dir {

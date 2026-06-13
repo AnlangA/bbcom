@@ -6,10 +6,9 @@
           <Cable class="icon-sm" />
           串口选择
         </span>
-        <ChevronRight v-if="collapsed.port" class="toggle-icon" />
-        <ChevronDown v-else class="toggle-icon" />
+        <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.port }" />
       </button>
-      <div v-show="!collapsed.port">
+      <div class="section-body" :class="{ collapsed: collapsed.port }">
         <div class="port-row">
           <n-select
             v-model:value="selectedPort"
@@ -43,10 +42,9 @@
           <Settings2 class="icon-sm" />
           连接参数
         </span>
-        <ChevronRight v-if="collapsed.config" class="toggle-icon" />
-        <ChevronDown v-else class="toggle-icon" />
+        <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.config }" />
       </button>
-      <div v-show="!collapsed.config">
+      <div class="section-body" :class="{ collapsed: collapsed.config }">
         <div class="config-grid">
           <div class="config-item">
             <label>波特率</label>
@@ -98,10 +96,9 @@
           <Hash class="icon-sm" />
           校验和计算
         </span>
-        <ChevronRight v-if="collapsed.checksum" class="toggle-icon" />
-        <ChevronDown v-else class="toggle-icon" />
+        <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.checksum }" />
       </button>
-      <div v-show="!collapsed.checksum">
+      <div class="section-body" :class="{ collapsed: collapsed.checksum }">
         <div class="checksum-grid">
           <n-input
             v-model:value="checksumInput"
@@ -137,7 +134,6 @@ import { computed, ref, reactive, watch } from 'vue';
 import { NSelect, NButton, NInput } from 'naive-ui';
 import {
   Cable,
-  ChevronDown,
   ChevronRight,
   Hash,
   Plus,
@@ -328,6 +324,14 @@ async function copyChecksum() {
   color: var(--text-secondary);
 }
 
+.section-title:hover .toggle-icon {
+  transform: translateX(2px);
+}
+
+.section-title:hover .toggle-icon.expanded {
+  transform: translateX(-2px);
+}
+
 .section-heading {
   display: inline-flex;
   align-items: center;
@@ -339,6 +343,26 @@ async function copyChecksum() {
   height: 13px;
   color: var(--text-dim);
   transition: transform var(--transition-normal);
+}
+
+.toggle-icon.expanded {
+  transform: rotate(90deg);
+}
+
+.section-body {
+  overflow: hidden;
+  max-height: 500px;
+  opacity: 1;
+  transition:
+    max-height var(--transition-slow),
+    opacity var(--transition-normal),
+    margin-top var(--transition-normal);
+}
+
+.section-body.collapsed {
+  max-height: 0;
+  opacity: 0;
+  margin-top: -10px;
 }
 
 .port-row {

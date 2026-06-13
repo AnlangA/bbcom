@@ -171,7 +171,7 @@ async function toggleAlwaysOnTop() {
 }
 
 :global(.ai-model-menu) {
-  max-height: 72px !important;
+  max-height: 200px !important;
   overflow-y: auto !important;
 }
 

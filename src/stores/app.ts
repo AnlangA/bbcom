@@ -24,6 +24,8 @@ export const useAppStore = defineStore('app', () => {
   const aiCommandSeq = ref(0);
   const pendingAiCommand = ref('');
   const aiApiKeyLoaded = ref(false);
+  const sidebarWidth = ref(292);
+  const sidebarCollapsed = ref(false);
   let loaded = false;
   let aiKeyLoadSeq = 0;
 
@@ -39,6 +41,8 @@ export const useAppStore = defineStore('app', () => {
       loopIntervalMs: loopIntervalMs.value,
       ansiColorEnabled: ansiColorEnabled.value,
       aiEnableCodingPlan: aiEnableCodingPlan.value,
+      sidebarWidth: sidebarWidth.value,
+      sidebarCollapsed: sidebarCollapsed.value,
     });
     if (saved.displayMode) displayMode.value = saved.displayMode;
     if (typeof saved.autoScroll === 'boolean') autoScroll.value = saved.autoScroll;
@@ -52,6 +56,10 @@ export const useAppStore = defineStore('app', () => {
       ansiColorEnabled.value = saved.ansiColorEnabled;
     if (typeof saved.aiEnableCodingPlan === 'boolean')
       aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
+    if (typeof saved.sidebarWidth === 'number')
+      sidebarWidth.value = Math.max(252, Math.min(340, saved.sidebarWidth));
+    if (typeof saved.sidebarCollapsed === 'boolean')
+      sidebarCollapsed.value = saved.sidebarCollapsed;
     aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
     void loadAiApiKey();
@@ -74,6 +82,8 @@ export const useAppStore = defineStore('app', () => {
         loopIntervalMs: loopIntervalMs.value,
         ansiColorEnabled: ansiColorEnabled.value,
         aiEnableCodingPlan: aiEnableCodingPlan.value,
+        sidebarWidth: sidebarWidth.value,
+        sidebarCollapsed: sidebarCollapsed.value,
       });
     }, 300);
   }
@@ -90,6 +100,8 @@ export const useAppStore = defineStore('app', () => {
       loopIntervalMs,
       ansiColorEnabled,
       aiEnableCodingPlan,
+      sidebarWidth,
+      sidebarCollapsed,
     ],
     save,
   );
@@ -160,6 +172,14 @@ export const useAppStore = defineStore('app', () => {
     return command;
   }
 
+  function setSidebarWidth(width: number) {
+    sidebarWidth.value = Math.max(252, Math.min(340, Math.round(width)));
+  }
+
+  function toggleSidebarCollapsed() {
+    sidebarCollapsed.value = !sidebarCollapsed.value;
+  }
+
   async function loadAiApiKey() {
     const seq = (aiKeyLoadSeq += 1);
     aiApiKeyLoaded.value = false;
@@ -213,6 +233,8 @@ export const useAppStore = defineStore('app', () => {
     aiCommandSeq,
     pendingAiCommand,
     aiApiKeyLoaded,
+    sidebarWidth,
+    sidebarCollapsed,
     setDisplayMode,
     toggleAutoScroll,
     toggleShowTimestamp,
@@ -227,5 +249,7 @@ export const useAppStore = defineStore('app', () => {
     applyAiCommand,
     setPendingAiCommand,
     consumePendingAiCommand,
+    setSidebarWidth,
+    toggleSidebarCollapsed,
   };
 });

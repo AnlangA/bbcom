@@ -189,6 +189,14 @@ export const useSessionStore = defineStore('sessions', () => {
     session.logAiMessages = [];
   }
 
+  function reorderSessions(fromIndex: number, toIndex: number) {
+    if (fromIndex === toIndex) return;
+    if (fromIndex < 0 || fromIndex >= sessions.value.length) return;
+    if (toIndex < 0 || toIndex >= sessions.value.length) return;
+    const [moved] = sessions.value.splice(fromIndex, 1);
+    sessions.value.splice(toIndex, 0, moved);
+  }
+
   return {
     sessions,
     activeSessionId,
@@ -212,5 +220,6 @@ export const useSessionStore = defineStore('sessions', () => {
     setLogAiFrameLimit,
     addLogAiMessage,
     clearLogAiMessages,
+    reorderSessions,
   };
 });

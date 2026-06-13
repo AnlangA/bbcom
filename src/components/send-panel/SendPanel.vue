@@ -1,6 +1,6 @@
 <template>
   <div class="send-panel">
-    <div class="send-input-row">
+    <div class="send-input-row" :class="{ 'send-flash': showFlash }">
       <n-input
         :value="modelValue"
         type="textarea"
@@ -56,7 +56,7 @@
           </template>
           {{ looping ? '停止循环' : '循环发送' }}
         </n-button>
-        <n-button type="primary" size="small" @click="handleSend" :disabled="!canSend">
+        <n-button type="primary" size="small" @click="handleSend" :disabled="!canSend" class="send-btn">
           <template #icon>
             <SendHorizontal class="icon-sm" />
           </template>
@@ -64,63 +64,79 @@
         </n-button>
       </div>
     </div>
-    <div class="quick-row">
-      <div class="quick-form">
-        <n-input
-          v-model:value="quickName"
-          size="tiny"
-          placeholder="快捷名称"
-          style="width: 110px"
-        />
-        <n-button size="tiny" @click="addQuickCommand" :disabled="!modelValue.trim()">
-          <template #icon>
-            <BookmarkPlus class="icon-sm" />
-          </template>
-          保存快捷
-        </n-button>
-      </div>
-      <div v-if="quickCommands.length > 0" class="quick-list">
-        <div
-          v-for="cmd in quickCommands"
-          :key="cmd.id"
-          class="quick-item"
-          :title="cmd.data"
-          @click="sendQuick(cmd)"
-        >
-          <span class="history-tag">{{ cmd.isHex ? 'HEX' : 'TXT' }}</span>
-          <span>{{ cmd.name }}</span>
-          <button
-            class="quick-remove"
-            type="button"
-            @click.stop="emit('removeQuickCommand', cmd.id)"
-            title="删除快捷命令"
-          >
-            <X class="icon-sm" />
-          </button>
+    <div class="collapsible-section">
+      <button class="section-toggle" type="button" @click="quickExpanded = !quickExpanded">
+        <span class="toggle-label">
+          <BookmarkPlus class="icon-sm" />
+          快捷命令
+        </span>
+        <ChevronRight class="toggle-icon" :class="{ expanded: quickExpanded }" />
+      </button>
+      <div class="section-body" :class="{ collapsed: !quickExpanded }">
+        <div class="quick-row">
+          <div class="quick-form">
+            <n-input
+              v-model:value="quickName"
+              size="tiny"
+              placeholder="快捷名称"
+              style="width: 110px"
+            />
+            <n-button size="tiny" @click="addQuickCommand" :disabled="!modelValue.trim()">
+              <template #icon>
+                <BookmarkPlus class="icon-sm" />
+              </template>
+              保存快捷
+            </n-button>
+          </div>
+          <div v-if="quickCommands.length > 0" class="quick-list">
+            <div
+              v-for="cmd in quickCommands"
+              :key="cmd.id"
+              class="quick-item"
+              :title="cmd.data"
+              @click="sendQuick(cmd)"
+            >
+              <span class="history-tag">{{ cmd.isHex ? 'HEX' : 'TXT' }}</span>
+              <span>{{ cmd.name }}</span>
+              <button
+                class="quick-remove"
+                type="button"
+                @click.stop="emit('removeQuickCommand', cmd.id)"
+                title="删除快捷命令"
+              >
+                <X class="icon-sm" />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
-    <div v-if="history.length > 0" class="send-history">
-      <div class="history-header">
-        <span class="history-title">
+    <div v-if="history.length > 0" class="collapsible-section">
+      <button class="section-toggle" type="button" @click="historyExpanded = !historyExpanded">
+        <span class="toggle-label">
           <HistoryIcon class="icon-sm" />
           历史记录
         </span>
-        <button class="history-clear" type="button" @click="emit('clearHistory')">
-          <Trash2 class="icon-sm" />
-          清除
-        </button>
-      </div>
-      <div class="history-list">
-        <div
-          v-for="(item, i) in history"
-          :key="i"
-          class="history-item"
-          @click="resend(item)"
-          :title="item.data"
-        >
-          <span class="history-tag">{{ item.isHex ? 'HEX' : 'TXT' }}</span>
-          <span class="history-text">{{ truncate(item.data, 40) }}</span>
+        <div class="toggle-right">
+          <button class="history-clear" type="button" @click.stop="emit('clearHistory')">
+            <Trash2 class="icon-sm" />
+            清除
+          </button>
+          <ChevronRight class="toggle-icon" :class="{ expanded: historyExpanded }" />
+        </div>
+      </button>
+      <div class="section-body" :class="{ collapsed: !historyExpanded }">
+        <div class="history-list">
+          <div
+            v-for="(item, i) in history"
+            :key="i"
+            class="history-item"
+            @click="resend(item)"
+            :title="item.data"
+          >
+            <span class="history-tag">{{ item.isHex ? 'HEX' : 'TXT' }}</span>
+            <span class="history-text">{{ truncate(item.data, 40) }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -132,6 +148,7 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
 import {
   BookmarkPlus,
+  ChevronRight,
   History as HistoryIcon,
   Repeat2,
   SendHorizontal,
@@ -186,7 +203,11 @@ const loopInterval = computed({
 const appendChecksum = ref<'none' | ChecksumType>('none');
 const looping = ref(false);
 const quickName = ref('');
+const quickExpanded = ref(true);
+const historyExpanded = ref(false);
+const showFlash = ref(false);
 let loopTimer: ReturnType<typeof setInterval> | null = null;
+let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
 const lineEndingOptions = [
   { label: '无结尾', value: 'none' },
@@ -238,6 +259,7 @@ watch(
 
 onUnmounted(() => {
   stopLoop();
+  if (flashTimer) clearTimeout(flashTimer);
 });
 
 function withLineEnding(data: string): string {
@@ -281,9 +303,18 @@ async function handleSend() {
   const ok = await props.onSend(data, isHex.value);
   if (ok) {
     if (!looping.value) updateInput('');
+    triggerFlash();
   } else {
     message.error('发送失败，请检查连接状态');
   }
+}
+
+function triggerFlash() {
+  showFlash.value = true;
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    showFlash.value = false;
+  }, 300);
 }
 
 function toggleLoop() {
@@ -361,6 +392,17 @@ function formatHexInput() {
   border-radius: var(--radius-lg);
   background: var(--bg-inset);
   padding: 1px;
+  position: relative;
+  overflow: hidden;
+}
+
+.send-input-row.send-flash::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--color-primary-subtle), transparent);
+  animation: send-flash 300ms ease;
+  pointer-events: none;
 }
 
 .send-actions {
@@ -383,6 +425,74 @@ function formatHexInput() {
   gap: 8px;
   align-items: center;
   margin-left: auto;
+}
+
+.send-btn:active {
+  transform: scale(0.95);
+}
+
+.collapsible-section {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+.section-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  cursor: pointer;
+  margin-bottom: 6px;
+  transition: color var(--transition-fast);
+}
+
+.section-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toggle-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggle-icon {
+  width: 12px;
+  height: 12px;
+  color: var(--text-dim);
+  transition: transform var(--transition-normal);
+}
+
+.toggle-icon.expanded {
+  transform: rotate(90deg);
+}
+
+.section-body {
+  overflow: hidden;
+  max-height: 200px;
+  opacity: 1;
+  transition:
+    max-height var(--transition-slow),
+    opacity var(--transition-normal);
+}
+
+.section-body.collapsed {
+  max-height: 0;
+  opacity: 0;
 }
 
 .quick-row {
@@ -416,12 +526,14 @@ function formatHexInput() {
   color: var(--text-secondary);
   transition:
     border-color var(--transition-fast),
-    background var(--transition-fast);
+    background var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .quick-item:hover {
   border-color: var(--accent-green);
   background: var(--accent-green-subtle);
+  transform: translateY(-1px);
 }
 
 .quick-remove {
@@ -450,29 +562,6 @@ function formatHexInput() {
   background: var(--bg-tertiary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-full);
-}
-
-.send-history {
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 8px;
-}
-
-.history-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-
-.history-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0;
-  font-weight: 600;
 }
 
 .history-clear {
@@ -525,12 +614,14 @@ function formatHexInput() {
   max-width: 200px;
   transition:
     border-color var(--transition-normal),
-    background var(--transition-normal);
+    background var(--transition-normal),
+    transform var(--transition-fast);
 }
 
 .history-item:hover {
   border-color: var(--accent-green);
   background: var(--accent-green-subtle);
+  transform: translateY(-1px);
 }
 
 .history-tag {
