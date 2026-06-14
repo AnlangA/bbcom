@@ -60,7 +60,7 @@
         <span class="frame-count">{{ filteredFrames.length }} / {{ frames.length }}</span>
       </div>
     </div>
-    <div class="packet-row packet-header" :style="gridStyle">
+    <div class="packet-row packet-header" :style="{ gridTemplateColumns: columns }">
       <span class="col-dir">方向</span>
       <span v-if="appStore.showTimestamp" class="col-time">时间</span>
       <span class="col-data">数据</span>
@@ -71,37 +71,20 @@
         {{ frames.length === 0 ? '暂无串口数据' : '没有匹配的数据帧' }}
       </div>
       <div :style="{ height: `${totalSize}px`, width: '100%', position: 'relative' }">
-        <div
-          v-for="row in virtualItems"
-          :key="visibleFrames[row.index].id"
-          :style="{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: `${row.size}px`,
-            transform: `translateY(${row.start}px)`,
-            ...gridStyle,
-          }"
-          class="packet-row packet-item"
-          :class="{
-            tx: visibleFrames[row.index].direction === 'TX',
-            rx: visibleFrames[row.index].direction === 'RX',
-          }"
-          @contextmenu.prevent="(e: MouseEvent) => showContextMenu(e, visibleFrames[row.index])"
-        >
-          <span class="col-dir direction">{{ visibleFrames[row.index].direction }}</span>
-          <span v-if="appStore.showTimestamp" class="col-time timestamp">{{
-            formatTimestamp(visibleFrames[row.index].timestamp)
-          }}</span>
-          <span
-            v-if="appStore.displayMode !== 'HEX' && appStore.ansiColorEnabled"
-            class="col-data data ansi-data"
-            v-html="formatData(visibleFrames[row.index])"
-          ></span>
-          <span v-else class="col-data data">{{ formatData(visibleFrames[row.index]) }}</span>
-          <span class="col-mode mode">{{ displayLabel }}</span>
-        </div>
+        <PacketRow
+          v-for="row in rows"
+          :key="row.key"
+          v-memo="[row.key, row.start, row.size, appStore.displayMode, appStore.ansiColorEnabled, appStore.showTimestamp]"
+          :style="row.style"
+          :frame="row.frame"
+          :formatted="row.formatted"
+          :timestamp="row.timestamp"
+          :show-timestamp="row.showTimestamp"
+          :columns="row.columns"
+          :display-label="row.displayLabel"
+          :use-html="row.useHtml"
+          @contextmenu="onRowContextMenu"
+        />
       </div>
     </div>
     <n-dropdown
@@ -125,6 +108,7 @@ import { formatHex, formatUtf8, formatAscii, formatTimestamp } from '../../lib/f
 import { usePacketFilter } from '../../composables/usePacketFilter';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
 import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
+import PacketRow from './PacketRow.vue';
 import type { DataFrame, DirectionFilter } from '../../types';
 
 const props = defineProps<{
@@ -163,19 +147,13 @@ const directionOptions: { label: string; value: DirectionFilter }[] = [
 const MAX_COPY_BYTES = 2 * 1024 * 1024;
 const MAX_COPY_FRAMES = 5000;
 
-const gridStyle = computed(() => ({
-  gridTemplateColumns: appStore.showTimestamp ? '50px 160px 1fr 50px' : '50px 1fr 50px',
-}));
+const columns = computed(() => (appStore.showTimestamp ? '50px 160px 1fr 50px' : '50px 1fr 50px'));
 
 const { formatFrame, getHexSearchData, getTextSearchData, stripAnsi, clearCaches } =
   usePacketFormatter({
     displayMode: computed(() => appStore.displayMode),
     ansiColorEnabled: computed(() => appStore.ansiColorEnabled),
   });
-
-function formatData(frame: DataFrame): string {
-  return formatFrame(frame);
-}
 
 watch(
   () => props.frames.length,
@@ -204,11 +182,77 @@ const displayLabel = computed(() =>
   appStore.packetViewMode === 'MERGED' ? `${appStore.displayMode}*` : appStore.displayMode,
 );
 
+const useHtml = computed(() => appStore.displayMode !== 'HEX' && appStore.ansiColorEnabled);
+
+interface PacketRowData {
+  key: string;
+  start: number;
+  size: number;
+  style: {
+    position: 'absolute';
+    top: string;
+    left: string;
+    width: string;
+    height: string;
+    transform: string;
+  };
+  frame: DataFrame;
+  formatted: string;
+  timestamp: string;
+  showTimestamp: boolean;
+  columns: string;
+  displayLabel: string;
+  useHtml: boolean;
+}
+
+// Pre-map the virtualized items into stable row descriptors. Formatting runs
+// here (shared LRU cache), so each visible row carries an already-formatted
+// string; combined with v-memo on <PacketRow>, unchanged rows skip the v-html
+// diff entirely when only the buffer grows.
+const rows = computed<PacketRowData[]>(() => {
+  const items = virtualItems.value;
+  const frames = visibleFrames.value;
+  const showTimestamp = appStore.showTimestamp;
+  const cols = columns.value;
+  const label = displayLabel.value;
+  const html = useHtml.value;
+  const out: PacketRowData[] = [];
+  for (const item of items) {
+    const frame = frames[item.index];
+    if (!frame) continue;
+    out.push({
+      key: frame.id,
+      start: item.start,
+      size: item.size,
+      style: {
+        position: 'absolute',
+        top: '0px',
+        left: '0px',
+        width: '100%',
+        height: `${item.size}px`,
+        transform: `translateY(${item.start}px)`,
+      },
+      frame,
+      formatted: formatFrame(frame),
+      timestamp: formatTimestamp(frame.timestamp),
+      showTimestamp,
+      columns: cols,
+      displayLabel: label,
+      useHtml: html,
+    });
+  }
+  return out;
+});
+
 function showContextMenu(e: MouseEvent, frame: DataFrame) {
   ctxFrame = frame;
   ctxX.value = e.clientX;
   ctxY.value = e.clientY;
   ctxShow.value = true;
+}
+
+function onRowContextMenu(e: MouseEvent, frame: DataFrame) {
+  showContextMenu(e, frame);
 }
 
 async function handleCtxSelect(key: string) {
@@ -365,38 +409,6 @@ async function handleCopySelect(key: string) {
   mask-image: radial-gradient(circle at center, black 0, transparent 72%);
 }
 
-.packet-item {
-  border-bottom: 1px solid var(--border-subtle);
-  transition: background var(--transition-fast);
-  cursor: pointer;
-}
-
-.packet-item:hover {
-  background-color: var(--bg-hover);
-}
-
-.packet-item.tx .direction {
-  color: var(--text-inverse);
-  background: var(--accent-green);
-}
-
-.packet-item.rx .direction {
-  color: #06111f;
-  background: var(--accent-blue);
-}
-
-.packet-item.tx {
-  border-left: 2px solid var(--accent-green);
-  padding-left: 8px;
-  background-image: linear-gradient(90deg, var(--accent-green-subtle), transparent 140px);
-}
-
-.packet-item.rx {
-  border-left: 2px solid var(--accent-blue);
-  padding-left: 8px;
-  background-image: linear-gradient(90deg, var(--accent-blue-subtle), transparent 140px);
-}
-
 .col-dir {
   text-align: center;
   font-size: 10px;
@@ -409,26 +421,11 @@ async function handleCopySelect(key: string) {
   font-size: 11px;
 }
 
-.direction {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 18px;
-  border-radius: var(--radius-full);
-  font-weight: var(--font-weight-bold);
-  line-height: 18px;
-}
-
 .col-data {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   letter-spacing: 0.3px;
-}
-
-.ansi-data {
-  white-space: pre-wrap;
-  word-break: break-all;
 }
 
 .col-mode {

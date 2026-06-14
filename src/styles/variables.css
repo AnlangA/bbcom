@@ -50,9 +50,10 @@
 
   /* Accents */
   --accent-green: var(--color-tx);
-  --accent-green-hover: #69e19d;
+  --accent-green-hover: #5ee8d8;
   --accent-green-subtle: var(--color-tx-subtle);
   --accent-blue: var(--color-rx);
+  --accent-blue-hover: #7cb9ff;
   --accent-blue-subtle: var(--color-rx-subtle);
   --accent-red: var(--color-error);
   --accent-red-subtle: rgba(255, 107, 122, 0.12);

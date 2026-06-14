@@ -142,6 +142,7 @@ const duration = computed(() => {
   color: var(--text-secondary);
   font-size: 11px;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   border-top: 1px solid var(--border-subtle);
   flex-shrink: 0;
   overflow-x: auto;
