@@ -285,11 +285,11 @@ function toggleAutoLog() {
 }
 
 async function handleExport(format: string) {
-  const ok = await exportData(props.session.frames, format as ExportFormat);
-  if (ok) {
+  const result = await exportData(props.session.frames, format as ExportFormat);
+  if (result.ok) {
     message.success('导出成功');
-  } else if (props.session.frames.length > 0) {
-    message.error('导出失败');
+  } else if (result.error) {
+    message.error(`导出失败：${result.error}`);
   }
 }
 </script>
