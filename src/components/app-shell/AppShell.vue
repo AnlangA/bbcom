@@ -40,6 +40,18 @@
             </template>
             <span class="action-label">{{ aiWindowVisible ? '关闭 AI' : '开启 AI' }}</span>
           </n-button>
+          <n-button
+            size="tiny"
+            quaternary
+            class="settings-toggle"
+            title="设置"
+            aria-label="设置"
+            @click="showSettings = true"
+          >
+            <template #icon>
+              <Settings class="icon-sm" />
+            </template>
+          </n-button>
         </div>
       </div>
       <AiSettingsPanel v-if="aiWindowVisible && !sidebarCollapsed" />
@@ -68,18 +80,20 @@
     </main>
 
     <CreateSessionDialog v-model:show="showCreateDialog" />
+    <SettingsModal v-model:show="showSettings" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onErrorCaptured, ref } from 'vue';
 import { NButton, useMessage } from 'naive-ui';
-import { Bot, BotOff, Cable, PanelLeftClose, PanelLeftOpen, Zap } from 'lucide-vue-next';
+import { Bot, BotOff, Cable, PanelLeftClose, PanelLeftOpen, Settings, Zap } from 'lucide-vue-next';
 import PortSelector from '../port-selector/PortSelector.vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
 import SessionView from '../session/SessionView.vue';
 import StatusBar from '../status-bar/StatusBar.vue';
 import CreateSessionDialog from './CreateSessionDialog.vue';
+import SettingsModal from './SettingsModal.vue';
 import AiSettingsPanel from '../ai/AiSettingsPanel.vue';
 import { useAiWindowState } from '../../composables/useAiWindowState';
 import { useAppShortcuts } from '../../composables/useAppShortcuts';
@@ -93,6 +107,7 @@ const { visible: aiWindowVisible, toggle: toggleAiWindow } = useAiWindowState();
 const sessions = computed(() => sessionStore.sessions);
 const activeSession = computed(() => sessionStore.activeSession);
 const showCreateDialog = ref(false);
+const showSettings = ref(false);
 const sidebarCollapsed = ref(false);
 const message = useMessage();
 

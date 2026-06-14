@@ -26,6 +26,20 @@
           </template>
           清空
         </n-button>
+        <n-button
+          v-if="session.isConnected"
+          size="small"
+          ghost
+          :type="session.capturePaused ? 'warning' : 'default'"
+          :title="session.capturePaused ? '继续捕获' : '暂停捕获（冻结视图，继续缓冲）'"
+          @click="togglePause"
+        >
+          <template #icon>
+            <Pause v-if="!session.capturePaused" class="icon-sm" />
+            <Play v-else class="icon-sm" />
+          </template>
+          {{ session.capturePaused ? '继续' : '暂停' }}
+        </n-button>
         <n-tag
           :type="session.isConnected ? 'success' : 'default'"
           size="small"
@@ -153,6 +167,8 @@ import {
   Download,
   FileText,
   Palette,
+  Pause,
+  Play,
   Power,
   PowerOff,
   Trash2,
@@ -218,6 +234,10 @@ async function disconnect() {
 
 function clear() {
   requestClearFrames(props.session.id);
+}
+
+function togglePause() {
+  sessionStore.setCapturePaused(props.session.id, !props.session.capturePaused);
 }
 
 async function handleSend(data: string, isHex: boolean) {
