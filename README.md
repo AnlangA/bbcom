@@ -153,9 +153,11 @@ pnpm tauri:build    # Tauri packaging
 | `pnpm preview`       | Preview frontend build output                 |
 | `pnpm tauri:dev`     | Start Tauri dev mode (with frontend HMR)      |
 | `pnpm tauri:build`   | Build production desktop installer            |
+| `pnpm format`        | Format frontend + Rust code                   |
+| `pnpm format:check`  | Check formatting without writing              |
 | `pnpm test:frontend` | Run frontend unit tests with Node test runner |
 | `pnpm test:rust`     | Run Rust unit tests                           |
-| `pnpm check`         | Run lint, build, and all tests                |
+| `pnpm check`         | Run format check, lint, build, and all tests  |
 
 ## Project Structure
 
@@ -201,9 +203,13 @@ bbcom/
 │   │   └── app.ts              # Global settings (display / AI / shortcuts)
 │   ├── lib/                    # Pure TS utilities
 │   │   ├── format.ts           # HEX / ASCII / UTF-8 formatting
+│   │   ├── bytes.ts            # Uint8Array concatenation
+│   │   ├── logger.ts           # Structured frontend logger
 │   │   ├── constants.ts        # Baud rate / data bits constants
 │   │   ├── ipc.ts              # Typed Tauri command wrappers
 │   │   ├── secure-settings.ts  # Tauri Store-backed local secrets
+│   │   ├── serial-utils.ts    # Serial port path / list utilities
+│   │   ├── serial-config.ts   # Serial port config → enum mapping
 │   │   ├── lru-cache.ts        # LRU cache
 │   │   └── time.ts
 │   ├── types/index.ts          # TypeScript type definitions
@@ -257,7 +263,7 @@ bbcom/
 Contributions are welcome! Please follow these guidelines:
 
 1. **Commit Messages** — Follow [Conventional Commits](https://www.conventionalcommits.org/)
-2. **Code Style** — ESLint 9 + typescript-eslint (`no-console: error`)
+2. **Code Style** — ESLint 9 + typescript-eslint (`no-console: error`, `eqeqeq: error`)
 3. **Rust** — Edition 2024, `tracing` for logging, `thiserror` for error handling
 4. **TypeScript** — Strict mode (`strict: true`, `noUnusedLocals`, `noUnusedParameters`)
 5. **Checks** — Run `pnpm check` before opening a PR

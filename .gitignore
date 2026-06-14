@@ -16,6 +16,10 @@ src-tauri/gen
 *.swp
 *.swo
 
+# OS
+.DS_Store
+Thumbs.db
+
 # AI
 .claude
 .factory

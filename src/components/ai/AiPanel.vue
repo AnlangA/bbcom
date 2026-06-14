@@ -42,11 +42,12 @@
 import { computed, onMounted, ref } from 'vue';
 import { NButton, NTabPane, NTabs, useMessage } from 'naive-ui';
 import { Bot, Pin, PinOff } from 'lucide-vue-next';
-import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAiWindowSession } from '../../composables/useAiWindowSession';
+import { startAiWindowDrag } from '../../lib/ipc';
 import AiTerminalAssistant from '../send-panel/AiTerminalAssistant.vue';
 import AiLogAssistant from './AiLogAssistant.vue';
+import { logger } from '../../lib/logger';
 
 const bridge = useAiWindowSession();
 const message = useMessage();
@@ -57,16 +58,16 @@ const alwaysOnTop = ref(true);
 onMounted(async () => {
   try {
     alwaysOnTop.value = await getCurrentWindow().isAlwaysOnTop();
-  } catch {
-    // ignore — window state query can fail during early lifecycle
+  } catch (e) {
+    logger.debug('always-on-top query failed during early lifecycle:', e);
   }
 });
 
 async function startDrag() {
   try {
-    await invoke('start_ai_window_drag');
-  } catch {
-    // ignore — drag may fail if window is being resized
+    await startAiWindowDrag();
+  } catch (e) {
+    logger.debug('AI window drag failed:', e);
   }
 }
 

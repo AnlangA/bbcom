@@ -45,7 +45,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { Usb } from 'lucide-vue-next';
 import type { SerialSession } from '../../types';
-import { formatBytes } from '../../lib/format';
+import { formatBytes, formatDuration, formatRate } from '../../lib/format';
 
 const props = defineProps<{
   session: SerialSession | null;
@@ -75,8 +75,15 @@ watch(
         if (props.session) {
           const elapsed = (now.value - lastSampleTime) / 1000;
           if (elapsed > 0) {
-            txRate.value = Math.round((props.session.txBytes - prevTxBytes) / elapsed);
-            rxRate.value = Math.round((props.session.rxBytes - prevRxBytes) / elapsed);
+            // Counters reset to 0 on clearFrames; a negative delta means a reset
+            // happened since the last sample, so measure from zero instead of
+            // producing a (hidden, negative) bogus rate.
+            let txDelta = props.session.txBytes - prevTxBytes;
+            let rxDelta = props.session.rxBytes - prevRxBytes;
+            if (txDelta < 0) txDelta = props.session.txBytes;
+            if (rxDelta < 0) rxDelta = props.session.rxBytes;
+            txRate.value = Math.round(txDelta / elapsed);
+            rxRate.value = Math.round(rxDelta / elapsed);
           }
           prevTxBytes = props.session.txBytes;
           prevRxBytes = props.session.rxBytes;
@@ -115,19 +122,9 @@ const dataRate = computed(() => {
   return parts.join(' ') || '';
 });
 
-function formatRate(bytesPerSec: number): string {
-  if (bytesPerSec < 1024) return `${bytesPerSec} B/s`;
-  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
-  return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
-}
-
 const duration = computed(() => {
   if (!props.session?.startTime) return '--:--:--';
-  const ms = now.value - props.session.startTime;
-  const s = Math.floor(ms / 1000);
-  const m = Math.floor(s / 60);
-  const h = Math.floor(m / 60);
-  return `${h.toString().padStart(2, '0')}:${(m % 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
+  return formatDuration(now.value - props.session.startTime);
 });
 </script>
 

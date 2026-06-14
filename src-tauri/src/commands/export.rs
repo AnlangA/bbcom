@@ -27,14 +27,36 @@ pub struct ExportRequest {
 #[tauri::command]
 pub async fn export_data(request: ExportRequest) -> Result<(), AppError> {
     if request.frames.len() > MAX_EXPORT_FRAMES {
+        tracing::warn!(
+            "export rejected: too many frames ({} > max {})",
+            request.frames.len(),
+            MAX_EXPORT_FRAMES
+        );
         return Err(AppError::ValidationError {
-            message: format!("too many frames: {} (max {})", request.frames.len(), MAX_EXPORT_FRAMES),
+            message: format!(
+                "too many frames: {} (max {})",
+                request.frames.len(),
+                MAX_EXPORT_FRAMES
+            ),
             field: "frames".to_string(),
         });
     }
 
     validate_export_path(&request.path, request.format)?;
-    formatter::export(&request.frames, &request.format, &request.path).await
+    let frame_count = request.frames.len();
+    tracing::debug!(
+        "exporting {} frames as {:?} to {}",
+        frame_count,
+        request.format,
+        request.path
+    );
+    formatter::export(&request.frames, &request.format, &request.path).await?;
+    tracing::info!(
+        "export complete: {} frames written to {}",
+        frame_count,
+        request.path
+    );
+    Ok(())
 }
 
 fn validate_export_path(path: &str, format: ExportFormat) -> Result<(), AppError> {
@@ -119,5 +141,29 @@ mod tests {
     fn rejects_mismatched_extension() {
         let err = validate_export_path("capture.txt", ExportFormat::Csv).unwrap_err();
         assert!(matches!(err, AppError::ValidationError { field, .. } if field == "path"));
+    }
+
+    #[test]
+    fn rejects_directory_path() {
+        let dir = std::env::temp_dir();
+        let err = validate_export_path(&dir.to_string_lossy(), ExportFormat::Csv).unwrap_err();
+        assert!(matches!(err, AppError::ValidationError { field, .. } if field == "path"));
+    }
+
+    #[test]
+    fn rejects_path_with_nonexistent_parent() {
+        let mut path = std::env::temp_dir();
+        path.push("bbcom-nonexistent-subdir-xyz");
+        path.push("out.csv");
+        let err = validate_export_path(&path.to_string_lossy(), ExportFormat::Csv).unwrap_err();
+        assert!(matches!(err, AppError::ValidationError { field, .. } if field == "path"));
+    }
+
+    #[test]
+    fn accepts_well_formed_path() {
+        // A path in the existing temp dir with the right extension must pass.
+        let mut path = std::env::temp_dir();
+        path.push(format!("bbcom-export-validate-{}.csv", std::process::id()));
+        assert!(validate_export_path(&path.to_string_lossy(), ExportFormat::Csv).is_ok());
     }
 }

@@ -12,13 +12,12 @@ import { darkTheme, NConfigProvider, NMessageProvider } from 'naive-ui';
 import AppShell from './components/app-shell/AppShell.vue';
 import { useAiSessionBridge } from './composables/useAiSessionBridge';
 import { themeOverrides } from './styles/naive-theme';
+import { logger } from './lib/logger';
 
 useAiSessionBridge();
 
 onErrorCaptured((err, _instance, info) => {
-  // Component error captured
-  void err;
-  void info;
+  logger.error('uncaught component error:', info, err);
   return false;
 });
 </script>

@@ -48,7 +48,7 @@ import {
 } from '../../lib/constants';
 import type { PortConfig } from '../../types';
 
-defineProps<{
+const props = defineProps<{
   show: boolean;
 }>();
 
@@ -61,6 +61,17 @@ const sessionStore = useSessionStore();
 const { createSession: createSessionFromConfig } = useSessionActions();
 
 const portName = ref('');
+
+// Pre-fill the port from the sidebar selection when the dialog opens, mirroring
+// how the config fields are synced from serialStore.portConfig below.
+watch(
+  () => props.show,
+  (show) => {
+    if (show && serialStore.selectedPort) {
+      portName.value = serialStore.selectedPort;
+    }
+  },
+);
 const baudRate = ref(115200);
 const dataBits = ref<PortConfig['dataBits']>(8);
 const stopBits = ref<PortConfig['stopBits']>(1);

@@ -66,8 +66,7 @@ pub fn resize_ai_window(
         .ok_or_else(|| AppError::AiError {
             message: "AI 窗口不存在".to_string(),
         })?;
-    let width = request.width.clamp(420.0, 920.0);
-    let height = request.height.clamp(112.0, 560.0);
+    let (width, height) = clamp_window_size(request.width, request.height);
     window
         .set_size(LogicalSize::new(width, height))
         .map_err(|e| AppError::AiError {
@@ -75,9 +74,50 @@ pub fn resize_ai_window(
         })
 }
 
+/// Bounds enforced by the AI window's resizable range (see lib.rs builder).
+pub const AI_WINDOW_MIN_WIDTH: f64 = 420.0;
+pub const AI_WINDOW_MAX_WIDTH: f64 = 920.0;
+pub const AI_WINDOW_MIN_HEIGHT: f64 = 112.0;
+pub const AI_WINDOW_MAX_HEIGHT: f64 = 560.0;
+
+/// Clamp a requested AI window size to its allowed range. Pure so it can be unit-tested
+/// independently of the Tauri window handle.
+pub fn clamp_window_size(width: f64, height: f64) -> (f64, f64) {
+    (
+        width.clamp(AI_WINDOW_MIN_WIDTH, AI_WINDOW_MAX_WIDTH),
+        height.clamp(AI_WINDOW_MIN_HEIGHT, AI_WINDOW_MAX_HEIGHT),
+    )
+}
+
 #[tauri::command]
 pub fn start_ai_window_drag(window: tauri::Window) -> Result<(), AppError> {
     window.start_dragging().map_err(|e| AppError::AiError {
         message: e.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamps_undersized_request_to_minimum() {
+        assert_eq!(clamp_window_size(100.0, 50.0), (420.0, 112.0));
+    }
+
+    #[test]
+    fn clamps_oversized_request_to_maximum() {
+        assert_eq!(clamp_window_size(2000.0, 900.0), (920.0, 560.0));
+    }
+
+    #[test]
+    fn leaves_in_range_request_unchanged() {
+        assert_eq!(clamp_window_size(760.0, 170.0), (760.0, 170.0));
+    }
+
+    #[test]
+    fn clamps_each_axis_independently() {
+        assert_eq!(clamp_window_size(100.0, 170.0), (420.0, 170.0));
+        assert_eq!(clamp_window_size(760.0, 5000.0), (760.0, 560.0));
+    }
 }

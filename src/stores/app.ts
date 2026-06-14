@@ -1,12 +1,14 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
-import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
+import type { ChecksumType, DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
 import { loadJson, loadString, saveJson, saveString } from '../lib/storage';
 import { clearSecretString, loadSecretString, saveSecretString } from '../lib/secure-settings';
 
 const STORAGE_KEY = 'bbcom-app-settings';
 const AI_API_KEY_STORAGE_KEY = `${STORAGE_KEY}:ai-api-key`;
 const AI_API_KEY_SECRET_KEY = 'ai-api-key';
+
+export type AppendChecksum = 'none' | ChecksumType;
 
 export const useAppStore = defineStore('app', () => {
   const displayMode = ref<DisplayMode>('HEX');
@@ -17,7 +19,9 @@ export const useAppStore = defineStore('app', () => {
   const lineEnding = ref<LineEnding>('none');
   const sendAsHex = ref(false);
   const loopIntervalMs = ref(1000);
+  const appendChecksum = ref<AppendChecksum>('none');
   const ansiColorEnabled = ref(true);
+  const sidebarCollapsed = ref(false);
   const aiApiKey = ref('');
   const aiEnableCodingPlan = ref(false);
   const aiCommandDraft = ref('');
@@ -37,7 +41,9 @@ export const useAppStore = defineStore('app', () => {
       lineEnding: lineEnding.value,
       sendAsHex: sendAsHex.value,
       loopIntervalMs: loopIntervalMs.value,
+      appendChecksum: appendChecksum.value,
       ansiColorEnabled: ansiColorEnabled.value,
+      sidebarCollapsed: sidebarCollapsed.value,
       aiEnableCodingPlan: aiEnableCodingPlan.value,
     });
     if (saved.displayMode) displayMode.value = saved.displayMode;
@@ -48,8 +54,11 @@ export const useAppStore = defineStore('app', () => {
     if (saved.lineEnding) lineEnding.value = saved.lineEnding;
     if (typeof saved.sendAsHex === 'boolean') sendAsHex.value = saved.sendAsHex;
     if (typeof saved.loopIntervalMs === 'number') loopIntervalMs.value = saved.loopIntervalMs;
+    if (saved.appendChecksum) appendChecksum.value = saved.appendChecksum;
     if (typeof saved.ansiColorEnabled === 'boolean')
       ansiColorEnabled.value = saved.ansiColorEnabled;
+    if (typeof saved.sidebarCollapsed === 'boolean')
+      sidebarCollapsed.value = saved.sidebarCollapsed;
     if (typeof saved.aiEnableCodingPlan === 'boolean')
       aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
     aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
@@ -72,7 +81,9 @@ export const useAppStore = defineStore('app', () => {
         lineEnding: lineEnding.value,
         sendAsHex: sendAsHex.value,
         loopIntervalMs: loopIntervalMs.value,
+        appendChecksum: appendChecksum.value,
         ansiColorEnabled: ansiColorEnabled.value,
+        sidebarCollapsed: sidebarCollapsed.value,
         aiEnableCodingPlan: aiEnableCodingPlan.value,
       });
     }, 300);
@@ -88,7 +99,9 @@ export const useAppStore = defineStore('app', () => {
       lineEnding,
       sendAsHex,
       loopIntervalMs,
+      appendChecksum,
       ansiColorEnabled,
+      sidebarCollapsed,
       aiEnableCodingPlan,
     ],
     save,
@@ -206,7 +219,9 @@ export const useAppStore = defineStore('app', () => {
     lineEnding,
     sendAsHex,
     loopIntervalMs,
+    appendChecksum,
     ansiColorEnabled,
+    sidebarCollapsed,
     aiApiKey,
     aiEnableCodingPlan,
     aiCommandDraft,

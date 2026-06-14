@@ -84,8 +84,13 @@
           v-for="cmd in quickCommands"
           :key="cmd.id"
           class="quick-item"
+          role="button"
+          :tabindex="disabled ? -1 : 0"
+          :aria-label="`发送快捷命令 ${cmd.name}`"
           :title="cmd.data"
           @click="sendQuick(cmd)"
+          @keydown.enter="sendQuick(cmd)"
+          @keydown.space.prevent="sendQuick(cmd)"
         >
           <span class="history-tag">{{ cmd.isHex ? 'HEX' : 'TXT' }}</span>
           <span>{{ cmd.name }}</span>
@@ -116,7 +121,12 @@
           v-for="(item, i) in history"
           :key="i"
           class="history-item"
+          role="button"
+          :tabindex="disabled ? -1 : 0"
+          :aria-label="`重发 ${item.data}`"
           @click="resend(item)"
+          @keydown.enter="resend(item)"
+          @keydown.space.prevent="resend(item)"
           :title="item.data"
         >
           <span class="history-tag">{{ item.isHex ? 'HEX' : 'TXT' }}</span>
@@ -140,7 +150,8 @@ import {
   X,
 } from 'lucide-vue-next';
 import {
-  encodeUtf8,
+  appendLineEnding,
+  computeSendByteCount,
   isValidHex as checkValidHex,
   normalizeHex,
   parseHex,
@@ -183,7 +194,12 @@ const loopInterval = computed({
   get: () => appStore.loopIntervalMs,
   set: (value) => appStore.setLoopIntervalMs(value ?? 1000),
 });
-const appendChecksum = ref<'none' | ChecksumType>('none');
+const appendChecksum = computed({
+  get: () => appStore.appendChecksum,
+  set: (value: 'none' | ChecksumType) => {
+    appStore.appendChecksum = value;
+  },
+});
 const looping = ref(false);
 const quickName = ref('');
 let loopTimer: ReturnType<typeof setInterval> | null = null;
@@ -202,18 +218,16 @@ const isValidHex = computed(() => {
   return checkValidHex(props.modelValue);
 });
 
-const byteCount = computed(() => {
-  if (!props.modelValue.trim()) return 0;
-  if (isHex.value) {
-    const cleaned = props.modelValue.replace(/[^0-9a-fA-F]/g, '');
-    return Math.floor(cleaned.length / 2);
-  }
-  return encodeUtf8(withLineEnding(props.modelValue)).length;
-});
+const byteCount = computed(() =>
+  computeSendByteCount(props.modelValue, isHex.value, appendChecksum.value, lineEnding.value),
+);
 
 const canSend = computed(() => {
   if (props.disabled || !props.modelValue.trim()) return false;
   if (isHex.value && !isValidHex.value) return false;
+  // Disable (and block the loop from starting) when the payload exceeds the
+  // send limit — otherwise a loop would spam the "too large" error every tick.
+  if (byteCount.value > MAX_INPUT_SIZE) return false;
   return true;
 });
 
@@ -242,19 +256,16 @@ onUnmounted(() => {
 
 function withLineEnding(data: string): string {
   if (isHex.value) return data;
-  const endings: Record<LineEnding, string> = {
-    none: '',
-    CR: '\r',
-    LF: '\n',
-    CRLF: '\r\n',
-  };
-  return data + endings[lineEnding.value];
+  return appendLineEnding(data, lineEnding.value);
 }
 
 async function buildData(): Promise<string | null> {
   let data = props.modelValue;
 
-  if (data.length > MAX_INPUT_SIZE) {
+  // byteCount is byte-accurate (hex bytes incl. checksum, or UTF-8 bytes incl.
+  // line ending), matching what send() actually writes — checking the raw
+  // string length would falsely cap HEX at ~1/3 of the real limit.
+  if (byteCount.value > MAX_INPUT_SIZE) {
     message.error('输入数据过大，最大支持 1MB');
     return null;
   }
@@ -277,7 +288,7 @@ async function handleSend() {
   if (!canSend.value) return;
 
   const data = await buildData();
-  if (data == null) return;
+  if (data === null) return;
   const ok = await props.onSend(data, isHex.value);
   if (ok) {
     if (!looping.value) updateInput('');
@@ -424,6 +435,12 @@ function formatHexInput() {
   background: var(--accent-green-subtle);
 }
 
+.quick-item:focus-visible,
+.history-item:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
 .quick-remove {
   width: 18px;
   height: 18px;
@@ -499,13 +516,14 @@ function formatHexInput() {
 .history-list {
   display: flex;
   gap: 4px;
-  overflow-x: auto;
+  overflow-y: auto;
   max-height: 64px;
   flex-wrap: wrap;
+  align-content: flex-start;
 }
 
 .history-list::-webkit-scrollbar {
-  height: 3px;
+  width: 3px;
 }
 
 .history-item {

@@ -11,11 +11,12 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "lint": "eslint src/",
-    "format": "prettier --write src/",
+    "format": "prettier --write src/ && cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "format:check": "prettier --check src/ && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
     "test:frontend": "node --test --experimental-strip-types --import ./tests/frontend/register-loader.mjs tests/frontend/*.test.ts",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test": "pnpm run test:frontend && pnpm run test:rust",
-    "check": "pnpm run lint && pnpm run build && pnpm run test"
+    "check": "pnpm run lint && pnpm run format:check && pnpm run build && pnpm run test"
   },
   "dependencies": {
     "@tanstack/vue-virtual": "^3.0.0",

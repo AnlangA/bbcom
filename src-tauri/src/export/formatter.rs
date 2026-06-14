@@ -103,7 +103,12 @@ async fn export_bin(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Monotonic counter guarantees unique temp paths even when two parallel tests
+    // sample the same nanosecond timestamp (e.g. exports_txt_hex / exports_txt_ascii).
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn frames() -> Vec<DataFrame> {
         vec![
@@ -127,8 +132,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let mut path = std::env::temp_dir();
-        path.push(format!("bbcom-export-{}-{nanos}.{ext}", std::process::id()));
+        path.push(format!(
+            "bbcom-export-{}-{nanos}-{counter}.{ext}",
+            std::process::id()
+        ));
         path.to_string_lossy().into_owned()
     }
 
@@ -143,6 +152,21 @@ mod tests {
 
         assert!(content.contains("TX | 41 42"));
         assert!(content.contains("RX | 43 44"));
+    }
+
+    #[tokio::test]
+    async fn exports_txt_ascii() {
+        let path = temp_path("txt");
+        export(&frames(), &ExportFormat::TxtAscii, &path)
+            .await
+            .unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        fs::remove_file(&path).ok();
+
+        // 0x41/0x42 = "AB", 0x43/0x44 = "CD" — ASCII payload, not hex pairs
+        assert!(content.contains("TX | AB"));
+        assert!(content.contains("RX | CD"));
+        assert!(!content.contains("TX | 41 42"));
     }
 
     #[tokio::test]

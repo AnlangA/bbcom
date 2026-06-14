@@ -11,3 +11,11 @@ export const checksumAlgoOptionsWithNone: { label: string; value: 'none' | Check
   { label: '无校验', value: 'none' },
   ...checksumOptions,
 ];
+
+/** Number of bytes each checksum algorithm appends to the payload. */
+export const CHECKSUM_BYTE_LENGTH: Record<ChecksumType, number> = {
+  CHECKSUM: 1,
+  CRC8: 1,
+  CRC16: 2,
+  CRC32: 4,
+};

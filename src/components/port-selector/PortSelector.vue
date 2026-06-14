@@ -119,12 +119,21 @@
           <div class="checksum-actions">
             <n-select v-model:value="checksumAlgo" :options="checksumAlgoOptions" size="small" />
           </div>
-          <div v-if="checksumResult" class="checksum-result" @click="copyChecksum" title="点击复制">
+          <div
+            v-if="checksumResult"
+            class="checksum-result"
+            :class="{ error: isChecksumError }"
+            @click="copyChecksum"
+            :title="isChecksumError ? undefined : '点击复制'"
+          >
             <div>
               <span class="checksum-label">结果</span>
               <span class="checksum-algo">{{ checksumAlgoLabel }}</span>
             </div>
-            <span class="checksum-value">{{ checksumResult }}</span>
+            <span class="checksum-value-row">
+              <span class="checksum-value">{{ checksumResult }}</span>
+              <Copy v-if="!isChecksumError" class="icon-sm copy-icon" />
+            </span>
           </div>
         </div>
       </div>
@@ -134,11 +143,12 @@
 
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue';
-import { NSelect, NButton, NInput } from 'naive-ui';
+import { NSelect, NButton, NInput, useMessage } from 'naive-ui';
 import {
   Cable,
   ChevronDown,
   ChevronRight,
+  Copy,
   Hash,
   Plus,
   RefreshCw,
@@ -148,8 +158,9 @@ import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
-import { formatHex, isValidHex, parseHex } from '../../lib/format';
+import { formatHex, hexByteCount, isValidHex, parseHex } from '../../lib/format';
 import { calculateChecksum } from '../../lib/ipc';
+import { logger } from '../../lib/logger';
 import { checksumOptions } from '../../lib/checksum-constants';
 import {
   BAUD_RATES,
@@ -162,6 +173,7 @@ import type { ChecksumType } from '../../types';
 
 const serialStore = useSerialStore();
 const sessionStore = useSessionStore();
+const message = useMessage();
 const { createSession } = useSessionActions();
 const { ports, refresh } = usePortWatcher();
 const isRefreshing = ref(false);
@@ -213,8 +225,11 @@ const config = computed(() => serialStore.portConfig);
 
 async function refreshPorts() {
   isRefreshing.value = true;
-  await refresh();
-  isRefreshing.value = false;
+  try {
+    await refresh();
+  } finally {
+    isRefreshing.value = false;
+  }
 }
 
 function newSession() {
@@ -235,7 +250,10 @@ const flowControlOptions = FLOW_CONTROL_OPTIONS;
 const checksumInput = ref('');
 const checksumAlgo = ref<ChecksumType>('CHECKSUM');
 const checksumResult = ref('');
+const CHECKSUM_FAILED = '计算失败';
 let checksumTimer: ReturnType<typeof setTimeout> | null = null;
+
+const isChecksumError = computed(() => checksumResult.value === CHECKSUM_FAILED);
 
 const checksumAlgoOptions = checksumOptions;
 
@@ -244,10 +262,7 @@ const isValidHexInput = computed(() => {
   return isValidHex(checksumInput.value);
 });
 
-const checksumByteCount = computed(() => {
-  const cleaned = checksumInput.value.replace(/[^0-9a-fA-F]/g, '');
-  return Math.floor(cleaned.length / 2);
-});
+const checksumByteCount = computed(() => hexByteCount(checksumInput.value));
 
 const checksumAlgoLabel = computed(
   () =>
@@ -268,8 +283,9 @@ async function calcChecksum() {
   try {
     const res = await calculateChecksum(data, checksumAlgo.value);
     checksumResult.value = res.result;
-  } catch {
-    checksumResult.value = '计算失败';
+  } catch (e) {
+    logger.warn('checksum calculation failed:', e);
+    checksumResult.value = CHECKSUM_FAILED;
   }
 }
 
@@ -280,11 +296,13 @@ function normalizeChecksumInput() {
 }
 
 async function copyChecksum() {
-  if (!checksumResult.value || checksumResult.value === '计算失败') return;
+  if (!checksumResult.value || isChecksumError.value) return;
   try {
     await navigator.clipboard.writeText(checksumResult.value);
-  } catch {
-    // ignore — clipboard may not be available in some environments
+    message.success('已复制');
+  } catch (e) {
+    logger.warn('clipboard write failed:', e);
+    message.error('复制失败');
   }
 }
 </script>
@@ -427,15 +445,34 @@ async function copyChecksum() {
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: 13px;
-  cursor: copy;
   transition:
     border-color var(--transition-fast),
     background var(--transition-fast);
 }
 
-.checksum-result:hover {
+.checksum-result:not(.error) {
+  cursor: copy;
+}
+
+.checksum-result:not(.error):hover {
   border-color: var(--color-primary);
   background: rgba(61, 220, 151, 0.16);
+}
+
+.checksum-result.error {
+  background: var(--accent-red-subtle);
+  border-color: rgba(255, 107, 122, 0.4);
+  cursor: default;
+}
+
+.checksum-value-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.copy-icon {
+  color: var(--text-dim);
 }
 
 .checksum-label {
@@ -447,6 +484,10 @@ async function copyChecksum() {
   color: var(--accent-green);
   font-weight: 700;
   letter-spacing: 0.8px;
+}
+
+.checksum-result.error .checksum-value {
+  color: var(--accent-red);
 }
 
 .checksum-algo {

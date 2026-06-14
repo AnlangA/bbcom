@@ -1,6 +1,13 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { AiChatMessage, AiModel, LogAiContextMode, SerialSession, DataFrame, SendHistoryEntry } from '../types';
+import type {
+  AiChatMessage,
+  AiModel,
+  LogAiContextMode,
+  SerialSession,
+  DataFrame,
+  SendHistoryEntry,
+} from '../types';
 import { MAX_FRAMES, MAX_HISTORY } from '../types';
 import { nowMillis } from '../lib/time';
 
@@ -11,8 +18,8 @@ export const useSessionStore = defineStore('sessions', () => {
   const activeSessionId = ref<string | null>(null);
   const cleanupFns = new Map<string, () => Promise<void>>();
 
-  const activeSession = computed(() =>
-    sessions.value.find((s) => s.id === activeSessionId.value) ?? null
+  const activeSession = computed(
+    () => sessions.value.find((s) => s.id === activeSessionId.value) ?? null,
   );
 
   function createSession(portName: string, portConfig: SerialSession['portConfig']): string {
@@ -92,8 +99,12 @@ export const useSessionStore = defineStore('sessions', () => {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.isConnected = connected;
-    if (connected && !session.startTime) {
-      session.startTime = Date.now();
+    if (connected) {
+      if (!session.startTime) session.startTime = nowMillis();
+    } else {
+      // Reset so the StatusBar duration reflects the *active* connection and
+      // does not accumulate offline time across reconnects.
+      session.startTime = null;
     }
   }
 
@@ -111,7 +122,7 @@ export const useSessionStore = defineStore('sessions', () => {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.sendHistory = session.sendHistory.filter(
-      (h) => !(h.data === entry.data && h.isHex === entry.isHex)
+      (h) => !(h.data === entry.data && h.isHex === entry.isHex),
     );
     session.sendHistory.unshift(entry);
     if (session.sendHistory.length > MAX_HISTORY) {
@@ -131,7 +142,10 @@ export const useSessionStore = defineStore('sessions', () => {
     session.sendDraft = draft;
   }
 
-  function addQuickCommand(sessionId: string, command: Omit<SerialSession['quickCommands'][number], 'id'>) {
+  function addQuickCommand(
+    sessionId: string,
+    command: Omit<SerialSession['quickCommands'][number], 'id'>,
+  ) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.quickCommands.push({ ...command, id: crypto.randomUUID() });

@@ -14,19 +14,21 @@ const AI_REQUEST_TIMEOUT_SECS: u64 = 60;
 const AI_COOLDOWN_SECS: u64 = 2;
 const MAX_AI_CONTEXT_BYTES: usize = 512_000;
 
-static LAST_AI_REQUEST: LazyLock<Mutex<std::time::Instant>> =
-    LazyLock::new(|| Mutex::new(std::time::Instant::now() - Duration::from_secs(AI_COOLDOWN_SECS + 1)));
+static LAST_AI_REQUEST: LazyLock<Mutex<std::time::Instant>> = LazyLock::new(|| {
+    Mutex::new(std::time::Instant::now() - Duration::from_secs(AI_COOLDOWN_SECS + 1))
+});
 
 async fn enforce_ai_cooldown() -> Result<(), AppError> {
     let mut last = LAST_AI_REQUEST.lock().await;
     let elapsed = last.elapsed();
     if elapsed < Duration::from_secs(AI_COOLDOWN_SECS) {
         let remaining = Duration::from_secs(AI_COOLDOWN_SECS) - elapsed;
+        tracing::debug!(
+            "AI request rate-limited; {:.1}s of cooldown remaining",
+            remaining.as_secs_f64()
+        );
         return Err(AppError::AiError {
-            message: format!(
-                "请求过于频繁，请等待 {} 秒后重试",
-                remaining.as_secs() + 1
-            ),
+            message: format!("请求过于频繁，请等待 {} 秒后重试", remaining.as_secs() + 1),
         });
     }
     *last = std::time::Instant::now();
@@ -127,10 +129,12 @@ fn validate_ai_inputs(prompt: &str, api_key: &str, prompt_empty_msg: &str) -> Re
 pub async fn terminal_ai_assist(
     request: TerminalAiRequest,
 ) -> Result<TerminalAiResponse, AppError> {
-    enforce_ai_cooldown().await?;
     let prompt = request.prompt.trim();
     let api_key = request.api_key.trim();
     validate_ai_inputs(prompt, api_key, "请输入要生成的终端命令")?;
+    // Only consume the rate-limit cooldown for requests that will actually
+    // reach the model — invalid input short-circuits above without throttling.
+    enforce_ai_cooldown().await?;
 
     let context = truncate_to_utf8_boundary(
         &request.context.unwrap_or_default(),
@@ -160,7 +164,6 @@ pub async fn terminal_ai_assist(
 
 #[tauri::command]
 pub async fn log_ai_assist(request: LogAiRequest) -> Result<LogAiResponse, AppError> {
-    enforce_ai_cooldown().await?;
     let prompt = request.prompt.trim();
     let api_key = request.api_key.trim();
     validate_ai_inputs(prompt, api_key, "请输入日志分析问题")?;
@@ -172,8 +175,15 @@ pub async fn log_ai_assist(request: LogAiRequest) -> Result<LogAiResponse, AppEr
         });
     }
 
-    let context = truncate_to_utf8_boundary(&request.context, MAX_AI_CONTEXT_BYTES, "log AI context");
-    let context_mode = request.context_mode.unwrap_or_else(|| "latest-10k".to_string());
+    // Only consume the rate-limit cooldown for requests that will actually
+    // reach the model — validation above short-circuits without throttling.
+    enforce_ai_cooldown().await?;
+
+    let context =
+        truncate_to_utf8_boundary(&request.context, MAX_AI_CONTEXT_BYTES, "log AI context");
+    let context_mode = request
+        .context_mode
+        .unwrap_or_else(|| "latest-10k".to_string());
     let context_truncated = request.context_truncated.unwrap_or(false);
     let session_meta = request.session_meta.unwrap_or_default();
     let user_prompt = format!(
@@ -247,18 +257,28 @@ where
         .with_thinking(ThinkingType::enabled());
 
     let result = if use_coding_plan {
-        tokio::time::timeout(Duration::from_secs(AI_REQUEST_TIMEOUT_SECS), client.with_coding_plan().send()).await
+        tokio::time::timeout(
+            Duration::from_secs(AI_REQUEST_TIMEOUT_SECS),
+            client.with_coding_plan().send(),
+        )
+        .await
     } else {
         tokio::time::timeout(Duration::from_secs(AI_REQUEST_TIMEOUT_SECS), client.send()).await
     };
 
     match result {
-        Ok(result) => result.map_err(|e| AppError::AiError {
-            message: e.to_string(),
+        Ok(result) => result.map_err(|e| {
+            tracing::warn!("AI chat request failed: {e}");
+            AppError::AiError {
+                message: e.to_string(),
+            }
         }),
-        Err(_elapsed) => Err(AppError::AiError {
-            message: format!("AI 请求超时 ({}s)", AI_REQUEST_TIMEOUT_SECS),
-        }),
+        Err(_elapsed) => {
+            tracing::warn!("AI chat request timed out after {AI_REQUEST_TIMEOUT_SECS}s");
+            Err(AppError::AiError {
+                message: format!("AI 请求超时 ({}s)", AI_REQUEST_TIMEOUT_SECS),
+            })
+        }
     }
 }
 
@@ -279,7 +299,10 @@ fn extract_json_payload(content: &str) -> String {
         (Some(start), Some(end)) if start <= end => {
             let json_fragment = &trimmed[start..=end];
             if start > 0 || end < trimmed.len() - 1 {
-                tracing::debug!("AI response contained extra text outside JSON; extracted {}-byte fragment", json_fragment.len());
+                tracing::debug!(
+                    "AI response contained extra text outside JSON; extracted {}-byte fragment",
+                    json_fragment.len()
+                );
             }
             json_fragment.to_string()
         }
@@ -325,8 +348,10 @@ fn parse_terminal_ai_response(content: &str) -> Result<TerminalAiResponse, AppEr
     response.risk = match risk.as_str() {
         "safe" | "caution" | "dangerous" => risk,
         unknown => {
-            tracing::warn!("unknown AI risk level '{unknown}', defaulting to 'caution'");
-            "caution".to_string()
+            // Default unknown to the most conservative level so an unclassified
+            // (potentially destructive) command is not auto-filled into the input.
+            tracing::warn!("unknown AI risk level '{unknown}', defaulting to 'dangerous'");
+            "dangerous".to_string()
         }
     };
 
@@ -364,6 +389,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extract_text_from_string_content() {
+        let v = serde_json::json!("hello world");
+        assert_eq!(
+            extract_text_from_content(&v),
+            Some("hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_text_from_text_object() {
+        let v = serde_json::json!({"text": "world"});
+        assert_eq!(extract_text_from_content(&v), Some("world".to_string()));
+    }
+
+    #[test]
+    fn extract_text_returns_none_for_empty_or_unknown_shapes() {
+        assert_eq!(extract_text_from_content(&serde_json::json!("")), None);
+        assert_eq!(
+            extract_text_from_content(&serde_json::json!({"text": ""})),
+            None
+        );
+        assert_eq!(extract_text_from_content(&serde_json::json!(42)), None);
+        assert_eq!(
+            extract_text_from_content(&serde_json::json!({"other": "x"})),
+            None
+        );
+        assert_eq!(extract_text_from_content(&serde_json::json!(null)), None);
+    }
+
+    #[test]
     fn parses_plain_json_response() {
         let response = parse_terminal_ai_response(
             r#"{"command":"pwd","explanation":"显示当前目录","risk":"safe"}"#,
@@ -397,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn trims_command_to_one_line_and_downgrades_unknown_risk() {
+    fn trims_command_to_one_line_and_defaults_unknown_risk_to_dangerous() {
         let response = parse_terminal_ai_response(
             r#"{"command":"pwd\nrm -rf /","explanation":"  test  ","risk":"unknown"}"#,
         )
@@ -405,12 +460,99 @@ mod tests {
 
         assert_eq!(response.command, "pwd");
         assert_eq!(response.explanation, "test");
-        assert_eq!(response.risk, "caution");
+        // Unknown risk defaults to the most conservative level (no auto-fill).
+        assert_eq!(response.risk, "dangerous");
     }
 
     #[test]
     fn rejects_invalid_json_response() {
         let err = parse_terminal_ai_response("not json").unwrap_err();
         assert!(matches!(err, AppError::AiError { .. }));
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_chat_model_without_network() {
+        let err = send_chat_by_name("glm-bogus", "hi".into(), "key", false)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AppError::ValidationError { field, .. } if field == "model"
+        ));
+    }
+
+    #[test]
+    fn truncate_returns_input_within_limit_unchanged() {
+        let s = "hello";
+        assert_eq!(truncate_to_utf8_boundary(s, 100, "test"), s);
+        // exactly at the boundary is not truncated
+        assert_eq!(truncate_to_utf8_boundary(s, s.len(), "test"), s);
+    }
+
+    #[test]
+    fn truncate_falls_back_to_a_valid_utf8_boundary() {
+        // "中文" is 6 bytes: 中(0..3), 文(3..6)
+        let s = "中文";
+        assert_eq!(s.len(), 6);
+
+        // 4 is inside 文 — must walk back to the 3-byte boundary
+        assert_eq!(truncate_to_utf8_boundary(s, 4, "test"), "中");
+        assert_eq!(truncate_to_utf8_boundary(s, 3, "test"), "中");
+        // 1 byte cannot hold a full char, falls back to empty
+        assert_eq!(truncate_to_utf8_boundary(s, 1, "test"), "");
+    }
+
+    #[test]
+    fn clean_markdown_fence_strips_json_and_plain_fences() {
+        assert_eq!(clean_markdown_fence("```json\n{\"a\":1}\n```"), "{\"a\":1}");
+        assert_eq!(clean_markdown_fence("```\n{\"a\":1}\n```"), "{\"a\":1}");
+        assert_eq!(clean_markdown_fence("  {\"a\":1}  "), "{\"a\":1}");
+    }
+
+    #[test]
+    fn extract_json_payload_isolates_braced_fragment() {
+        assert_eq!(
+            extract_json_payload("noise {\"a\":1} trailing"),
+            "{\"a\":1}"
+        );
+        // fenced payload extracts the JSON body, not the fence
+        assert_eq!(extract_json_payload("```json\n{\"a\":1}\n```"), "{\"a\":1}");
+    }
+
+    #[test]
+    fn extract_json_payload_without_braces_returns_trimmed_input() {
+        assert_eq!(extract_json_payload("totally not json"), "totally not json");
+    }
+
+    #[test]
+    fn validate_ai_inputs_rejects_blank_prompt_and_key() {
+        let prompt_err = validate_ai_inputs("   ", "key", "need prompt").unwrap_err();
+        assert!(matches!(
+            prompt_err,
+            AppError::ValidationError { field, .. } if field == "prompt"
+        ));
+
+        let key_err = validate_ai_inputs("cmd", "  ", "need prompt").unwrap_err();
+        assert!(matches!(
+            key_err,
+            AppError::ValidationError { field, .. } if field == "apiKey"
+        ));
+
+        assert!(validate_ai_inputs("cmd", "key", "need prompt").is_ok());
+    }
+
+    #[test]
+    fn log_response_dedupes_and_preserves_truncation_flag() {
+        let response = parse_log_ai_response(
+            r#"{"answer":"ok","evidence":["","a "," "],"suggestions":["x","","y"],"truncated":false}"#,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(response.answer, "ok");
+        assert_eq!(response.evidence, vec!["a"]);
+        assert_eq!(response.suggestions, vec!["x", "y"]);
+        // fallback truncation flag ORs into the result
+        assert!(response.truncated);
     }
 }

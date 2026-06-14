@@ -213,7 +213,10 @@ async function handleSend(data: string, isHex: boolean) {
   const ok = await serialState.send(data, isHex);
   if (ok) {
     sessionStore.addSendHistory(props.session.id, { data, isHex });
-    sessionStore.setSendDraft(props.session.id, '');
+    // Note: do NOT clear the draft here. SendPanel owns the input and clears it
+    // via updateInput on success — gated by !looping so a cyclic-send loop can
+    // keep resending the same payload. Clearing here would empty the input after
+    // the first loop tick and break every subsequent send.
   }
   return ok;
 }
@@ -250,12 +253,13 @@ function toggleAutoLog() {
 }
 
 async function handleExport(format: string) {
-  const ok = await exportData(props.session.frames, format as ExportFormat);
-  if (ok) {
+  const result = await exportData(props.session.frames, format as ExportFormat);
+  if (result === 'success') {
     message.success('导出成功');
-  } else if (props.session.frames.length > 0) {
+  } else if (result === 'error') {
     message.error('导出失败');
   }
+  // 'cancelled' (user dismissed the save dialog) → no message
 }
 </script>
 

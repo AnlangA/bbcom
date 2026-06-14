@@ -1,68 +1,21 @@
 import { ref, onUnmounted } from 'vue';
 import { listen } from '@tauri-apps/api/event';
-import {
-  SerialPort,
-  DataBits as PluginDataBits,
-  StopBits as PluginStopBits,
-  Parity as PluginParity,
-  FlowControl as PluginFlowControl,
-} from 'tauri-plugin-serialplugin-api';
+import { SerialPort } from 'tauri-plugin-serialplugin-api';
 import { useSessionStore } from '../stores/sessions';
 import { useSessionFrames } from './useSessionFrames';
 import { encodeUtf8, parseHex } from '../lib/format';
+import { concatUint8Arrays } from '../lib/bytes';
+import { escapeSerialPath } from '../lib/serial-utils';
+import { mapDataBits, mapFlowControl, mapParity, mapStopBits } from '../lib/serial-config';
+import { logger } from '../lib/logger';
 import { MAX_INPUT_SIZE } from '../types';
 import type { PortConfig } from '../types';
 
 const MAX_RX_QUEUE_BYTES = MAX_INPUT_SIZE * 2;
 const MAX_RX_QUEUE_CHUNKS = 512;
-
-function mapDataBits(n: number): PluginDataBits {
-  switch (n) {
-    case 5:
-      return PluginDataBits.Five;
-    case 6:
-      return PluginDataBits.Six;
-    case 7:
-      return PluginDataBits.Seven;
-    case 8:
-    default:
-      return PluginDataBits.Eight;
-  }
-}
-
-function mapStopBits(n: number): PluginStopBits {
-  switch (n) {
-    case 2:
-      return PluginStopBits.Two;
-    case 1:
-    default:
-      return PluginStopBits.One;
-  }
-}
-
-function mapParity(p: string): PluginParity {
-  switch (p) {
-    case 'odd':
-      return PluginParity.Odd;
-    case 'even':
-      return PluginParity.Even;
-    case 'none':
-    default:
-      return PluginParity.None;
-  }
-}
-
-function mapFlowControl(f: string): PluginFlowControl {
-  switch (f) {
-    case 'software':
-      return PluginFlowControl.Software;
-    case 'hardware':
-      return PluginFlowControl.Hardware;
-    case 'none':
-    default:
-      return PluginFlowControl.None;
-  }
-}
+// Prefix used to recognize (and clear) the transient RX-overflow error so it
+// does not persist in the SessionView error pill after the buffer recovers.
+const RX_OVERFLOW_PREFIX = '接收缓冲区溢出';
 
 interface SerialConnectionOptions {
   onDisconnect?: () => void;
@@ -88,24 +41,41 @@ export function useSerialConnection(
   let unlistenData: (() => void) | null = null;
   let unlistenDisconnect: (() => void) | null = null;
 
-  function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
-    if (chunks.length === 0) return new Uint8Array(0);
-    if (chunks.length === 1) return chunks[0];
-
-    const merged = new Uint8Array(totalQueueSize);
-    let offset = 0;
-    for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return merged;
-  }
-
   async function start() {
     isConnecting.value = true;
     error.value = null;
+    // Tear down any leftover state from a previous connection (e.g. reconnect
+    // after an unexpected disconnect) so the old port's Tauri event listeners
+    // don't leak when we overwrite the references below, and stale unflushed
+    // RX data doesn't bleed into the new connection's first frame.
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    dataQueue = [];
+    totalQueueSize = 0;
+    droppedRxBytes = 0;
+    if (unlistenData) {
+      unlistenData();
+      unlistenData = null;
+    }
+    if (unlistenDisconnect) {
+      unlistenDisconnect();
+      unlistenDisconnect = null;
+    }
+    if (port.value) {
+      const previous = port.value;
+      port.value = null;
+      try {
+        await previous.stopListening();
+        await previous.close();
+      } catch (e) {
+        logger.debug('serial previous-port cleanup failed for', portName, e);
+      }
+    }
+    let p: SerialPort | null = null;
     try {
-      const p = new SerialPort({
+      p = new SerialPort({
         path: portName,
         baudRate: config.baudRate,
         dataBits: mapDataBits(config.dataBits),
@@ -114,9 +84,36 @@ export function useSerialConnection(
         flowControl: mapFlowControl(config.flowControl),
       });
       await p.open();
+      // Register the data callback BEFORE starting the read pump. Tauri
+      // discards events that have no listener, so bytes arriving the instant
+      // listening begins (e.g. a device that sends on connect) would otherwise
+      // be dropped during the gap between startListening and listen.
+      unlistenData = await p.listen((data: string | number[] | Uint8Array) => {
+        const bytes =
+          data instanceof Uint8Array
+            ? data
+            : typeof data === 'string'
+              ? encodeUtf8(data)
+              : new Uint8Array(data as number[]);
+
+        enqueueReceivedBytes(bytes);
+      }, false);
       await p.startListening();
       port.value = p;
     } catch (e) {
+      // Roll back any partial registration so a failed connect leaves no leaks.
+      if (unlistenData) {
+        unlistenData();
+        unlistenData = null;
+      }
+      if (p) {
+        try {
+          await p.close();
+        } catch (closeErr) {
+          logger.debug('serial cleanup close failed for', portName, closeErr);
+        }
+      }
+      logger.warn('serial open failed for', portName, e);
       error.value = String(e);
       return false;
     } finally {
@@ -126,19 +123,8 @@ export function useSerialConnection(
     isConnected.value = true;
     sessionStore.setConnected(sessionId, true);
 
-    unlistenData = await port.value.listen((data: string | number[] | Uint8Array) => {
-      const bytes =
-        data instanceof Uint8Array
-          ? data
-          : typeof data === 'string'
-            ? encodeUtf8(data)
-            : new Uint8Array(data as number[]);
-
-      enqueueReceivedBytes(bytes);
-    }, false);
-
     unlistenDisconnect = await listen(
-      `plugin-serialplugin-disconnected-${portName}`,
+      `plugin-serialplugin-disconnected-${escapeSerialPath(portName)}`,
       () => {
         isConnected.value = false;
         sessionStore.setConnected(sessionId, false);
@@ -152,7 +138,8 @@ export function useSerialConnection(
   function enqueueReceivedBytes(bytes: Uint8Array) {
     while (
       dataQueue.length > 0 &&
-      (totalQueueSize + bytes.length > MAX_RX_QUEUE_BYTES || dataQueue.length >= MAX_RX_QUEUE_CHUNKS)
+      (totalQueueSize + bytes.length > MAX_RX_QUEUE_BYTES ||
+        dataQueue.length >= MAX_RX_QUEUE_CHUNKS)
     ) {
       const dropped = dataQueue.shift();
       if (!dropped) break;
@@ -171,7 +158,11 @@ export function useSerialConnection(
     }
 
     if (droppedRxBytes > 0) {
-      error.value = `接收缓冲区溢出，已丢弃 ${droppedRxBytes} 字节`;
+      error.value = `${RX_OVERFLOW_PREFIX}，已丢弃 ${droppedRxBytes} 字节`;
+    } else if (error.value?.startsWith(RX_OVERFLOW_PREFIX)) {
+      // Buffer has recovered — clear a stale overflow message, but leave any
+      // connection-level error (which uses a different prefix) untouched.
+      error.value = null;
     }
 
     if (!rafId) {
@@ -221,8 +212,11 @@ export function useSerialConnection(
     }
 
     try {
-      await port.value.writeBinary(Array.from(payload));
-    } catch {
+      // writeBinary accepts Uint8Array directly and converts internally, so no
+      // need to box the payload into a regular array here (avoids a redundant copy).
+      await port.value.writeBinary(payload);
+    } catch (e) {
+      logger.warn('serial write failed on', portName, e);
       return false;
     }
 
@@ -241,6 +235,9 @@ export function useSerialConnection(
     dataQueue = [];
     totalQueueSize = 0;
     droppedRxBytes = 0;
+    // Clear any transient error (e.g. buffer-overflow) so a stale message does
+    // not linger in the SessionView error pill after disconnect.
+    error.value = null;
     if (unlistenData) {
       unlistenData();
       unlistenData = null;
@@ -253,8 +250,9 @@ export function useSerialConnection(
       try {
         await port.value.stopListening();
         await port.value.close();
-      } catch {
-        // ignore
+      } catch (e) {
+        // Closing an already-closed/disconnected port is expected; log at debug.
+        logger.debug('serial close ignored error for', portName, e);
       }
       port.value = null;
     }

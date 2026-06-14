@@ -136,6 +136,9 @@ async function ask() {
     return;
   }
   loading.value = true;
+  // Drop the previous analysis so a stale result card isn't shown while the
+  // new answer is loading (matches AiTerminalAssistant.generateCommand).
+  result.value = null;
   try {
     const latestSession = (await props.bridge.refreshSession()) ?? props.session;
     if (latestSession.frames.length === 0) {

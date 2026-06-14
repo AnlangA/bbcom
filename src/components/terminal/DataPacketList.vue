@@ -97,9 +97,9 @@
           <span
             v-if="appStore.displayMode !== 'HEX' && appStore.ansiColorEnabled"
             class="col-data data ansi-data"
-            v-html="formatData(visibleFrames[row.index])"
+            v-html="formatFrame(visibleFrames[row.index])"
           ></span>
-          <span v-else class="col-data data">{{ formatData(visibleFrames[row.index]) }}</span>
+          <span v-else class="col-data data">{{ formatFrame(visibleFrames[row.index]) }}</span>
           <span class="col-mode mode">{{ displayLabel }}</span>
         </div>
       </div>
@@ -121,7 +121,14 @@ import { computed, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, NSelect, useMessage } from 'naive-ui';
 import { Copy, Search } from 'lucide-vue-next';
 import { useAppStore } from '../../stores/app';
-import { formatHex, formatUtf8, formatAscii, formatTimestamp } from '../../lib/format';
+import {
+  formatHex,
+  formatLogLine,
+  formatUtf8,
+  formatAscii,
+  formatTimestamp,
+} from '../../lib/format';
+import { logger } from '../../lib/logger';
 import { usePacketFilter } from '../../composables/usePacketFilter';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
 import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
@@ -172,10 +179,6 @@ const { formatFrame, getHexSearchData, getTextSearchData, stripAnsi, clearCaches
     displayMode: computed(() => appStore.displayMode),
     ansiColorEnabled: computed(() => appStore.ansiColorEnabled),
   });
-
-function formatData(frame: DataFrame): string {
-  return formatFrame(frame);
-}
 
 watch(
   () => props.frames.length,
@@ -229,15 +232,23 @@ async function handleCtxSelect(key: string) {
     case 'plain':
       text = stripAnsi(formatAscii(ctxFrame.data));
       break;
-    case 'row':
-      text = `[${formatTimestamp(ctxFrame.timestamp)}] ${ctxFrame.direction} | ${formatFrame(ctxFrame)}`;
+    case 'row': {
+      // Plain text only — formatFrame would emit HTML (ansi_to_html spans) in
+      // colored modes, which is useless when pasted.
+      const plain =
+        appStore.displayMode === 'HEX'
+          ? formatHex(ctxFrame.data)
+          : stripAnsi(formatUtf8(ctxFrame.data));
+      text = formatLogLine(ctxFrame.timestamp, ctxFrame.direction, plain);
       break;
+    }
   }
 
   try {
     await navigator.clipboard.writeText(text);
     message.success('已复制');
-  } catch {
+  } catch (e) {
+    logger.warn('context copy failed:', e);
     message.error('复制失败');
   }
 }
@@ -253,13 +264,14 @@ async function handleCopySelect(key: string) {
   const text = frames
     .map((frame) => {
       const data = asHex ? formatHex(frame.data) : formatUtf8(frame.data);
-      return `[${formatTimestamp(frame.timestamp)}] ${frame.direction} | ${data}`;
+      return formatLogLine(frame.timestamp, frame.direction, data);
     })
     .join('\n');
   try {
     await navigator.clipboard.writeText(text);
     message.success('已复制');
-  } catch {
+  } catch (e) {
+    logger.warn('bulk copy failed:', e);
     message.error('复制失败');
   }
 }
@@ -369,6 +381,9 @@ async function handleCopySelect(key: string) {
   border-bottom: 1px solid var(--border-subtle);
   transition: background var(--transition-fast);
   cursor: pointer;
+  /* Virtualized rows have a fixed height; clip multi-line ANSI/UTF-8 content
+     so it cannot overlap the next absolutely-positioned row. */
+  overflow: hidden;
 }
 
 .packet-item:hover {
@@ -424,6 +439,9 @@ async function handleCopySelect(key: string) {
   text-overflow: ellipsis;
   white-space: nowrap;
   letter-spacing: 0.3px;
+  /* Single-line cells fill the 22px track (no visual change); for wrapped
+     ANSI/UTF-8 content, top-align so the clipped row shows the first line. */
+  align-self: start;
 }
 
 .ansi-data {

@@ -1,4 +1,4 @@
-import { computed, nextTick, ref, watch, type Ref } from 'vue';
+import { computed, nextTick, onScopeDispose, ref, watch, type Ref } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import type { DataFrame } from '../types';
 
@@ -61,6 +61,15 @@ export function usePacketVirtualScroll({
 
   watch(visibleFrames, () => {
     virtualizer.value.measure();
+  });
+
+  // Cancel any measure RAF queued just before the component unmounts, so it does
+  // not fire on the torn-down virtualizer.
+  onScopeDispose(() => {
+    if (measureTimer !== null) {
+      cancelAnimationFrame(measureTimer);
+      measureTimer = null;
+    }
   });
 
   return {

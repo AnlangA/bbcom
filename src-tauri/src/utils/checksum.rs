@@ -1,4 +1,4 @@
-use crc::{Crc, CRC_16_IBM_SDLC, CRC_32_ISO_HDLC, CRC_8_SMBUS};
+use crc::{CRC_8_SMBUS, CRC_16_IBM_SDLC, CRC_32_ISO_HDLC, Crc};
 use std::sync::LazyLock;
 
 static CRC8: LazyLock<Crc<u8>> = LazyLock::new(|| Crc::<u8>::new(&CRC_8_SMBUS));
@@ -29,6 +29,14 @@ mod tests {
     #[test]
     fn test_checksum() {
         assert_eq!(calculate_checksum(&[0x01, 0x02, 0x03]), "06");
+    }
+
+    #[test]
+    fn test_checksum_masks_to_one_byte() {
+        // 0xFF + 0x02 = 0x101 — must be masked to the low byte (0x01), not 0x101.
+        assert_eq!(calculate_checksum(&[0xFF, 0x02]), "01");
+        // 0xFF + 0x01 = 0x100 → low byte 0x00.
+        assert_eq!(calculate_checksum(&[0xFF, 0x01]), "00");
     }
 
     #[test]

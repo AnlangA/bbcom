@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ChecksumAlgorithm, ExportFormat } from './constants';
+import type { ExportFormat } from './constants';
+import type { ChecksumType } from '../types';
 import type { DataFrame } from '../types';
 
 export type AiRisk = 'safe' | 'caution' | 'dangerous';
@@ -23,14 +24,7 @@ export interface AiWindowState {
   visible: boolean;
 }
 
-export interface AppCommandErrorDetails {
-  message?: string;
-  field?: string;
-  format?: string;
-  path?: string;
-}
-
-export async function calculateChecksum(data: ArrayLike<number>, algorithm: ChecksumAlgorithm) {
+export async function calculateChecksum(data: ArrayLike<number>, algorithm: ChecksumType) {
   return invoke<{ result: string }>('calculate_checksum', {
     request: { data: Array.from(data), algorithm },
   });
@@ -66,14 +60,4 @@ export async function resizeAiWindow(width: number, height: number) {
 
 export async function startAiWindowDrag() {
   return invoke<void>('start_ai_window_drag');
-}
-
-export function getCommandErrorMessage(error: unknown, fallback: string): string {
-  if (typeof error === 'string') return error;
-  if (!error || typeof error !== 'object') return fallback;
-  const record = error as Record<string, unknown>;
-  const details = record.details as AppCommandErrorDetails | undefined;
-  if (details?.message) return details.message;
-  if (typeof record.message === 'string') return record.message;
-  return fallback;
 }

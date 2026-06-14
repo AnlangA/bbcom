@@ -42,7 +42,7 @@
           </n-button>
         </div>
       </div>
-      <AiSettingsPanel v-if="aiWindowVisible && !sidebarCollapsed" />
+      <AiSettingsPanel v-if="!sidebarCollapsed" />
       <div class="sidebar-content">
         <PortSelector />
       </div>
@@ -85,15 +85,22 @@ import { useAiWindowState } from '../../composables/useAiWindowState';
 import { useAppShortcuts } from '../../composables/useAppShortcuts';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { useSessionStore } from '../../stores/sessions';
+import { useAppStore } from '../../stores/app';
 
 const sessionStore = useSessionStore();
+const appStore = useAppStore();
 const { requestCloseSession } = useSessionActions();
 const { visible: aiWindowVisible, toggle: toggleAiWindow } = useAiWindowState();
 
 const sessions = computed(() => sessionStore.sessions);
 const activeSession = computed(() => sessionStore.activeSession);
 const showCreateDialog = ref(false);
-const sidebarCollapsed = ref(false);
+const sidebarCollapsed = computed({
+  get: () => appStore.sidebarCollapsed,
+  set: (value: boolean) => {
+    appStore.sidebarCollapsed = value;
+  },
+});
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value;

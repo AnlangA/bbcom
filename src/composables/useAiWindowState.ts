@@ -1,6 +1,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import { listen } from '@tauri-apps/api/event';
 import { getAiWindowState, hideAiWindow, showAiWindow, type AiWindowState } from '../lib/ipc';
+import { logger } from '../lib/logger';
 
 export function useAiWindowState() {
   const visible = ref(false);
@@ -10,7 +11,8 @@ export function useAiWindowState() {
     try {
       const state = await getAiWindowState();
       visible.value = state.visible;
-    } catch {
+    } catch (e) {
+      logger.debug('ai-window state query failed:', e);
       visible.value = false;
     }
   }
@@ -24,7 +26,10 @@ export function useAiWindowState() {
         await showAiWindow();
         visible.value = true;
       }
-    } catch {
+    } catch (e) {
+      // User clicked the AI toggle but show/hide failed — surface it so the
+      // silent no-op is at least diagnosable.
+      logger.warn('ai-window toggle failed:', e);
       visible.value = false;
     }
   }

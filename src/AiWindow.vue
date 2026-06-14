@@ -15,11 +15,10 @@ import { emit } from '@tauri-apps/api/event';
 import { resizeAiWindow } from './lib/ipc';
 import AiPanel from './components/ai/AiPanel.vue';
 import { themeOverrides } from './styles/naive-theme';
+import { logger } from './lib/logger';
 
 onErrorCaptured((err, _instance, info) => {
-  // AI Window error captured
-  void err;
-  void info;
+  logger.error('AI window uncaught component error:', info, err);
   return false;
 });
 
@@ -35,7 +34,11 @@ function scheduleResize() {
 async function resizeToContent() {
   if (!contentEl.value) return;
   const rect = contentEl.value.getBoundingClientRect();
-  await resizeAiWindow(Math.ceil(rect.width), Math.ceil(rect.height) + 28);
+  try {
+    await resizeAiWindow(Math.ceil(rect.width), Math.ceil(rect.height) + 28);
+  } catch (e) {
+    logger.warn('AI window resize failed:', e);
+  }
 }
 
 onMounted(async () => {

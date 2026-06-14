@@ -28,7 +28,11 @@ export function buildLogAiContext(session: SerialSession): LogAiContextResult {
   };
 }
 
-function selectFrames(frames: DataFrame[], mode: LogAiContextMode, frameLimit: number): DataFrame[] {
+function selectFrames(
+  frames: DataFrame[],
+  mode: LogAiContextMode,
+  frameLimit: number,
+): DataFrame[] {
   if (mode === 'latest-n-frames') {
     if (frameLimit <= 0) return [];
     return frames.slice(-frameLimit);
@@ -48,13 +52,18 @@ function sanitizeText(text: string): string {
 }
 
 function isReadable(text: string): boolean {
-  if (!text.trim()) return false;
-  if (text.length === 0) return false;
-  const printable = [...text].filter((ch) => {
-    const code = ch.charCodeAt(0);
-    return code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127);
-  }).length;
-  return printable / text.length > 0.75;
+  if (text.length === 0 || !text.trim()) return false;
+  let printable = 0;
+  let total = 0;
+  // Iterate by code point (for..of) without materializing an array.
+  for (const ch of text) {
+    total += 1;
+    const code = ch.codePointAt(0) ?? 0;
+    if (code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127)) {
+      printable += 1;
+    }
+  }
+  return total > 0 && printable / total > 0.75;
 }
 
 function trimStartToLimit(text: string, limit: number): string {

@@ -17,11 +17,19 @@ export default [
     },
     rules: {
       'no-console': 'error',
+      'eqeqeq': 'error',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'error',
       'vue/multi-word-component-names': 'off',
       'vue/define-macros-order': ['error', { order: ['defineProps', 'defineEmits'] }],
       'vue/no-unused-refs': 'error',
+    },
+  },
+  {
+    // The logger is the single sanctioned console surface in src/.
+    files: ['src/lib/logger.ts'],
+    rules: {
+      'no-console': 'off',
     },
   },
   {

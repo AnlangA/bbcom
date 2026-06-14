@@ -27,10 +27,17 @@ export function usePacketFilter({
   let cachedFrameCount = 0;
   let needsFullRebuild = true;
 
-  function matchesFilter(frame: DataFrame, query: string, hasDirection: boolean, hasSearch: boolean, hexNeedle: string): boolean {
+  function matchesFilter(
+    frame: DataFrame,
+    query: string,
+    hasDirection: boolean,
+    hasSearch: boolean,
+    hexNeedle: string,
+  ): boolean {
     if (hasDirection && frame.direction !== directionFilter.value) return false;
     if (!hasSearch) return true;
-    if (searchMode.value === 'HEX') return hexNeedle.length > 0 && getHexSearchData(frame).includes(hexNeedle);
+    if (searchMode.value === 'HEX')
+      return hexNeedle.length > 0 && getHexSearchData(frame).includes(hexNeedle);
     return getTextSearchData(frame).includes(query);
   }
 

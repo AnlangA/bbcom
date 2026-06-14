@@ -153,9 +153,11 @@ pnpm tauri:build    # Tauri 打包
 | `pnpm preview`       | 预览前端构建产物                       |
 | `pnpm tauri:dev`     | 启动 Tauri 开发模式（含前端热重载）    |
 | `pnpm tauri:build`   | 构建生产桌面安装包                     |
+| `pnpm format`        | 格式化前端 + Rust 代码                 |
+| `pnpm format:check`  | 检查格式（不写入）                     |
 | `pnpm test:frontend` | 使用 Node test runner 运行前端单元测试 |
 | `pnpm test:rust`     | 运行 Rust 单元测试                     |
-| `pnpm check`         | 运行 lint、build 和全部测试            |
+| `pnpm check`         | 运行格式检查、lint、build 和全部测试   |
 
 ## 项目结构
 
@@ -201,9 +203,13 @@ bbcom/
 │   │   └── app.ts              # 全局设置（显示模式 / AI 配置 / 快捷键）
 │   ├── lib/                    # 纯 TS 工具
 │   │   ├── format.ts           # HEX / ASCII / UTF-8 格式化
+│   │   ├── bytes.ts            # Uint8Array 拼接
+│   │   ├── logger.ts           # 结构化前端日志
 │   │   ├── constants.ts        # 波特率 / 数据位等常量
 │   │   ├── ipc.ts              # 类型化 Tauri 命令封装
 │   │   ├── secure-settings.ts  # 基于 Tauri Store 的本地密钥设置
+│   │   ├── serial-utils.ts    # 串口路径 / 列表工具
+│   │   ├── serial-config.ts   # 串口配置 → 枚举映射
 │   │   ├── lru-cache.ts        # LRU 缓存
 │   │   └── time.ts
 │   ├── types/index.ts          # TypeScript 类型定义
@@ -257,7 +263,7 @@ bbcom/
 欢迎贡献！请遵循以下规范：
 
 1. **提交信息** — 遵循 [Conventional Commits](https://www.conventionalcommits.org/)
-2. **代码风格** — ESLint 9 + typescript-eslint（`no-console: error`）
+2. **代码风格** — ESLint 9 + typescript-eslint（`no-console: error`、`eqeqeq: error`）
 3. **Rust** — edition 2024，`tracing` 日志，`thiserror` 错误处理
 4. **TypeScript** — 严格模式（`strict: true`、`noUnusedLocals`、`noUnusedParameters`）
 5. **检查** — 发起 PR 前运行 `pnpm check`

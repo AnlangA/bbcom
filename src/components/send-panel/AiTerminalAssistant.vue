@@ -69,17 +69,14 @@ import { Copy, SendHorizontal, Terminal, WandSparkles } from 'lucide-vue-next';
 import { useAppStore } from '../../stores/app';
 import { getAiErrorMessage } from '../../lib/ai-error';
 import { terminalAiAssist, type TerminalAiResponse } from '../../lib/ipc';
+import { logger } from '../../lib/logger';
 import type { AiModel, SerialSession } from '../../types';
 import type { useAiWindowSession } from '../../composables/useAiWindowSession';
-import { aiModelMenuProps, aiModelOptions } from '../ai/ai-options';
+import { aiModelMenuProps, aiModelOptions, AI_RISK_LABELS, aiRiskTagType } from '../ai/ai-options';
 
 const props = defineProps<{
   session: SerialSession;
   bridge: ReturnType<typeof useAiWindowSession>;
-}>();
-
-const emitVue = defineEmits<{
-  (e: 'applyCommand', command: string): void;
 }>();
 
 const appStore = useAppStore();
@@ -91,18 +88,8 @@ const result = ref<TerminalAiResponse | null>(null);
 const activeSession = computed(() => props.session);
 const hasApiKey = computed(() => Boolean(appStore.aiApiKey.trim()));
 const canGenerate = computed(() => prompt.value.trim().length > 0 && !loading.value);
-const riskLabel = computed(() => {
-  if (!result.value) return '';
-  return { safe: '安全', caution: '谨慎', dangerous: '危险' }[result.value.risk];
-});
-const riskTagType = computed(() => {
-  if (!result.value) return 'default';
-  return result.value.risk === 'safe'
-    ? 'success'
-    : result.value.risk === 'caution'
-      ? 'warning'
-      : 'error';
-});
+const riskLabel = computed(() => (result.value ? AI_RISK_LABELS[result.value.risk] : ''));
+const riskTagType = computed(() => (result.value ? aiRiskTagType(result.value.risk) : 'default'));
 
 async function generateCommand() {
   if (!canGenerate.value) return;
@@ -137,8 +124,13 @@ async function generateCommand() {
 
 async function copyCommand() {
   if (!result.value?.command) return;
-  await navigator.clipboard.writeText(result.value.command);
-  message.success('命令已复制');
+  try {
+    await navigator.clipboard.writeText(result.value.command);
+    message.success('命令已复制');
+  } catch (e) {
+    logger.warn('clipboard write failed:', e);
+    message.error('复制失败');
+  }
 }
 
 function applyCommand() {
@@ -148,7 +140,6 @@ function applyCommand() {
 
 function applyCommandToApp(command: string) {
   void props.bridge.applyCommand(command);
-  emitVue('applyCommand', command);
 }
 
 function setTerminalModel(model: AiModel) {

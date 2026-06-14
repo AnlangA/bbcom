@@ -4,13 +4,6 @@ use thiserror::Error;
 #[derive(Debug, Error, Serialize)]
 #[serde(tag = "type", content = "details")]
 pub enum AppError {
-    #[error("invalid hex string: {message}")]
-    InvalidHex {
-        message: String,
-        #[serde(skip)]
-        position: Option<usize>,
-    },
-
     #[error("export failed: {message}")]
     ExportError {
         message: String,
@@ -44,15 +37,37 @@ impl From<std::io::Error> for AppError {
     }
 }
 
-impl From<serde_json::Error> for AppError {
-    fn from(e: serde_json::Error) -> Self {
-        AppError::ConfigError {
-            message: format!(
-                "JSON parse error at line {} col {}: {}",
-                e.line(),
-                e.column(),
-                e
-            ),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn io_error_converts_preserving_kind_and_message() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing file");
+        let app_err: AppError = io_err.into();
+        match app_err {
+            AppError::IoError { message, kind } => {
+                assert_eq!(kind, std::io::ErrorKind::NotFound);
+                assert!(message.contains("missing file"));
+            }
+            other => panic!("expected IoError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn other_io_error_kinds_convert_too() {
+        let kinds = [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::AlreadyExists,
+            std::io::ErrorKind::UnexpectedEof,
+        ];
+        for kind in kinds {
+            let io_err = std::io::Error::new(kind, "x");
+            let app_err: AppError = io_err.into();
+            assert!(
+                matches!(app_err, AppError::IoError { kind: k, .. } if k == kind),
+                "{kind:?} did not round-trip"
+            );
         }
     }
 }

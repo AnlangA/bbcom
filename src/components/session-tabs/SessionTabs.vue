@@ -1,13 +1,19 @@
 <template>
   <div class="session-tabs">
     <div class="tabs-header">
-      <div class="tabs-list">
+      <div class="tabs-list" role="tablist" aria-label="串口会话">
         <div
           v-for="session in sessions"
           :key="session.id"
           class="tab-item"
           :class="{ active: session.id === activeId }"
+          role="tab"
+          tabindex="0"
+          :aria-selected="session.id === activeId"
+          :aria-label="tabTooltip(session)"
           @click="switchSession(session.id)"
+          @keydown.enter="switchSession(session.id)"
+          @keydown.space.prevent="switchSession(session.id)"
           :title="tabTooltip(session)"
         >
           <span class="tab-status-dot" :class="{ connected: session.isConnected }"></span>
@@ -114,6 +120,11 @@ function tabTooltip(session: SerialSession): string {
 .tab-item:hover {
   background: var(--bg-hover);
   color: var(--text-secondary);
+}
+
+.tab-item:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
 }
 
 .tab-item.active {

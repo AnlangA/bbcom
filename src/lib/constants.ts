@@ -1,3 +1,5 @@
+import type { AiModel } from '../types';
+
 export const BAUD_RATES = [
   { label: '9600', value: 9600 },
   { label: '19200', value: 19200 },
@@ -51,30 +53,12 @@ export const EXPORT_OPTIONS: { label: string; key: ExportFormat }[] = [
   { label: '导出为 BIN', key: EXPORT_FORMATS.bin },
 ];
 
-export const CHECKSUM_ALGORITHMS = {
-  checksum: 'CHECKSUM',
-  crc8: 'CRC8',
-  crc16: 'CRC16',
-  crc32: 'CRC32',
-} as const;
-
-export type ChecksumAlgorithm = (typeof CHECKSUM_ALGORITHMS)[keyof typeof CHECKSUM_ALGORITHMS];
-
-export const CHECKSUM_OPTIONS: { label: string; value: ChecksumAlgorithm }[] = [
-  { label: 'Checksum', value: CHECKSUM_ALGORITHMS.checksum },
-  { label: 'CRC-8', value: CHECKSUM_ALGORITHMS.crc8 },
-  { label: 'CRC-16', value: CHECKSUM_ALGORITHMS.crc16 },
-  { label: 'CRC-32', value: CHECKSUM_ALGORITHMS.crc32 },
-];
-
 export const AI_MODELS = {
   glm51: 'glm-5.1',
   glm5Turbo: 'glm-5-turbo',
   glm47: 'glm-4.7',
   glm45Air: 'glm-4.5-air',
 } as const;
-
-export type AiModel = (typeof AI_MODELS)[keyof typeof AI_MODELS];
 
 export const AI_MODEL_OPTIONS: { label: string; value: AiModel }[] = [
   { label: 'GLM-5.1', value: AI_MODELS.glm51 },
