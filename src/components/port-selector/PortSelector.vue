@@ -72,6 +72,17 @@
               size="small"
             />
           </div>
+          <div class="config-item config-signals">
+            <label>信号</label>
+            <div class="signals">
+              <label class="signal-toggle"
+                ><n-switch v-model:value="config.dtr" size="small" /> DTR</label
+              >
+              <label class="signal-toggle"
+                ><n-switch v-model:value="config.rts" size="small" /> RTS</label
+              >
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -134,7 +145,7 @@
 
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue';
-import { NSelect, NButton, NInput } from 'naive-ui';
+import { NSelect, NButton, NInput, NSwitch } from 'naive-ui';
 import {
   Cable,
   ChevronDown,
@@ -391,6 +402,23 @@ async function copyChecksum() {
 
 .config-item .n-select {
   flex: 1;
+}
+
+.config-signals .signals {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.signal-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  cursor: pointer;
 }
 
 .checksum-grid {

@@ -123,6 +123,15 @@ export function useSerialConnection(
       await p.open();
       await p.startListening();
       port.value = p;
+      // Apply DTR/RTS handshake levels — needed for Arduino auto-reset, ESP32
+      // boot-mode entry, modems, etc. Some drivers reject these writes; ignore
+      // so the connection itself still succeeds.
+      try {
+        await p.setDataTerminalReady(config.dtr);
+        await p.setRequestToSend(config.rts);
+      } catch {
+        // control-signal write unsupported on this driver — non-fatal
+      }
     } catch (e) {
       error.value = String(e);
       return false;

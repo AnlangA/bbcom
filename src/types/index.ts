@@ -24,8 +24,8 @@ export interface PortConfig {
   stopBits: 1 | 2;
   parity: 'none' | 'odd' | 'even';
   flowControl: 'none' | 'software' | 'hardware';
-  dtr?: boolean;
-  rts?: boolean;
+  dtr: boolean;
+  rts: boolean;
 }
 
 // Send history
