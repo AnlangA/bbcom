@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { SerialPort } from 'tauri-plugin-serialplugin-api';
 import { useSessionStore } from '../stores/sessions';
 import { useSessionFrames } from './useSessionFrames';
+import { useAutoLog } from './useAutoLog';
 import { encodeUtf8, parseHex } from '../lib/format';
 import { concatUint8Arrays } from '../lib/bytes';
 import { escapeSerialPath } from '../lib/serial-utils';
@@ -29,6 +30,7 @@ export function useSerialConnection(
 ) {
   const sessionStore = useSessionStore();
   const { addFrame } = useSessionFrames(sessionId);
+  const { appendFrame } = useAutoLog();
   const port = ref<SerialPort | null>(null);
   const isConnecting = ref(false);
   const isConnected = ref(false);
@@ -181,10 +183,11 @@ export function useSerialConnection(
     droppedRxBytes = 0;
     rafId = null;
 
-    addFrame({
+    const frame = addFrame({
       direction: 'RX',
       data: concatUint8Arrays(chunks),
     });
+    if (frame) appendFrame(sessionId, frame);
   }
 
   async function send(data: string, isHex: boolean) {
@@ -220,10 +223,11 @@ export function useSerialConnection(
       return false;
     }
 
-    addFrame({
+    const txFrame = addFrame({
       direction: 'TX',
       data: payload,
     });
+    if (txFrame) appendFrame(sessionId, txFrame);
     return true;
   }
 

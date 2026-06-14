@@ -1,6 +1,12 @@
 import { watch, type Ref } from 'vue';
 import { AnsiUp } from 'ansi_up';
-import { formatAscii, formatHex, formatUtf8, toContinuousHex } from '../lib/format';
+import {
+  formatAscii,
+  formatHex,
+  formatUtf8,
+  stripAnsiEscapes,
+  toContinuousHex,
+} from '../lib/format';
 import { LRUCache } from '../lib/lru-cache';
 import { CACHE_SIZE, type DataFrame, type DisplayMode } from '../types';
 
@@ -8,10 +14,6 @@ interface PacketFormatterOptions {
   displayMode: Ref<DisplayMode>;
   ansiColorEnabled: Ref<boolean>;
 }
-
-// Match any CSI escape sequence (ESC [ params final), not just SGR colors —
-// cursor moves, erases, and DEC-private sequences also clutter a search index.
-const ANSI_RE = new RegExp(String.fromCharCode(27) + '\\[[0-9;?]*[A-Za-z]', 'g');
 
 export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketFormatterOptions) {
   const formatCache = new LRUCache<string, string>(CACHE_SIZE);
@@ -69,13 +71,9 @@ export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketForm
   function getTextSearchData(frame: DataFrame): string {
     const cached = textSearchCache.get(frame.id);
     if (cached !== undefined) return cached;
-    const result = stripAnsi(formatUtf8(frame.data)).toLowerCase();
+    const result = stripAnsiEscapes(formatUtf8(frame.data)).toLowerCase();
     textSearchCache.set(frame.id, result);
     return result;
-  }
-
-  function stripAnsi(text: string): string {
-    return text.replace(ANSI_RE, '');
   }
 
   function clearCaches() {
@@ -92,7 +90,6 @@ export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketForm
     formatFrame,
     getHexSearchData,
     getTextSearchData,
-    stripAnsi,
     clearCaches,
   };
 }

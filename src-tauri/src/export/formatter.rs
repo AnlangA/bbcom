@@ -206,3 +206,65 @@ mod tests {
         assert_eq!(content, vec![0x41, 0x42, 0x43, 0x44]);
     }
 }
+
+#[cfg(test)]
+mod ipc_sim_tests {
+    use crate::commands::export::ExportRequest;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static SIM_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    // EXACT JSON the frontend sends via invoke('export_data', { request: {...} }).
+    // Tauri's IPC serializer converts the Uint8Array to a JSON array via Array.from.
+    // "Hello" -> [72,101,108,108,111].
+    fn frontend_payload(format: &str, path: &str) -> String {
+        let data = r#"[{"id":"1","direction":"TX","timestamp":0.0,"data":[72,101,108,108,111]}]"#;
+        format!(r#"{{"frames":{data},"format":"{format}","path":"{path}"}}"#)
+    }
+
+    async fn run_frontend_export(format: &str, ext: &str) -> Vec<u8> {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let c = SIM_COUNTER.fetch_add(1, Ordering::Relaxed);
+        path.push(format!("bbcom-ipc-sim-{nanos}-{c}.{ext}"));
+        let path_str = path.to_string_lossy().to_string();
+
+        let json = frontend_payload(format, &path_str);
+        let req: ExportRequest = serde_json::from_str(&json).expect("IPC payload must deserialize");
+        super::export(&req.frames, &req.format, &path_str)
+            .await
+            .unwrap();
+        let bytes = fs::read(&path).unwrap();
+        fs::remove_file(&path).ok();
+        bytes
+    }
+
+    #[tokio::test]
+    async fn txt_hex_is_not_raw_binary() {
+        let bytes = run_frontend_export("txt-hex", "txt").await;
+        let s = String::from_utf8(bytes.clone()).unwrap();
+        // TXT-HEX must contain hex pairs, NOT the raw "Hello" bytes.
+        assert!(s.contains("48 65 6C 6C 6F"), "got: {s}");
+        assert!(!s.contains("Hello"), "raw text leaked into hex export: {s}");
+    }
+
+    #[tokio::test]
+    async fn txt_ascii_is_decoded_text() {
+        let bytes = run_frontend_export("txt-ascii", "txt").await;
+        let s = String::from_utf8(bytes).unwrap();
+        // TXT-ASCII must decode the bytes back to readable "Hello".
+        assert!(s.contains("Hello"), "expected decoded text, got: {s}");
+    }
+
+    #[tokio::test]
+    async fn bin_is_raw_bytes() {
+        let bytes = run_frontend_export("bin", "bin").await;
+        // BIN is the ONLY format that should be raw bytes.
+        assert_eq!(bytes, vec![b'H', b'e', b'l', b'l', b'o']);
+    }
+}

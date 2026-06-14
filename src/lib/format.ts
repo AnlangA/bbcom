@@ -2,7 +2,7 @@
  * Unified formatting utilities for the application
  */
 
-import type { ChecksumType, Direction, LineEnding } from '../types';
+import type { ChecksumType, Direction, DisplayMode, LineEnding } from '../types';
 import { CHECKSUM_BYTE_LENGTH } from './checksum-constants';
 
 // Singleton decoders for better performance
@@ -201,4 +201,37 @@ export function formatAscii(data: Uint8Array): string {
 
 export function encodeUtf8(data: string): Uint8Array {
   return textEncoder.encode(data);
+}
+
+// Match any CSI escape sequence (ESC [ params final) — SGR colors, cursor
+// moves, erases, DEC-private sequences. Built from a char code (rather than a
+// \x1b literal) to satisfy eslint's no-control-regex rule. Shared by the packet
+// formatter (search index) and the auto-log writer (clean log lines).
+const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, 'g');
+
+/** Remove ANSI CSI escape sequences from text. */
+export function stripAnsiEscapes(text: string): string {
+  return text.replace(ANSI_ESCAPE_RE, '');
+}
+
+/**
+ * Decode frame bytes into the representation used by the given display mode —
+ * the same decoding the terminal uses, minus ANSI HTML rendering. The auto-log
+ * writer uses this so logged lines match what the user sees on screen.
+ */
+export function formatFrameData(data: Uint8Array, displayMode: DisplayMode): string {
+  switch (displayMode) {
+    case 'HEX':
+      return formatHex(data);
+    case 'UTF8':
+      return formatUtf8(data);
+    case 'ASCII':
+      return formatAscii(data);
+    case 'ANSI':
+      // ANSI mode is ASCII text with embedded escape codes; strip the escapes
+      // so the log file stays readable.
+      return stripAnsiEscapes(formatAscii(data));
+    default:
+      return formatAscii(data);
+  }
 }

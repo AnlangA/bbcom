@@ -90,7 +90,11 @@
             quaternary
             @click="toggleAutoLog"
             :type="session.autoLogEnabled ? 'primary' : 'default'"
-            title="接收自动记录"
+            :title="
+              session.autoLogEnabled && session.logPath
+                ? `正在记录到 ${session.logPath}（再次点击停止）`
+                : '自动记录 TX/RX 到文件'
+            "
           >
             <template #icon>
               <FileText class="icon-sm" />
@@ -156,9 +160,10 @@ import { useSerialConnection } from '../../composables/useSerialConnection';
 import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
 import { useExport } from '../../composables/useExport';
+import { useAutoLog } from '../../composables/useAutoLog';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { useMessage } from 'naive-ui';
-import { EXPORT_OPTIONS, type ExportFormat } from '../../lib/constants';
+import { EXPORT_OPTIONS, type ExportChoice } from '../../lib/constants';
 import type { DisplayMode, SerialSession } from '../../types';
 
 const props = defineProps<{
@@ -169,6 +174,7 @@ const sessionStore = useSessionStore();
 const appStore = useAppStore();
 const { requestClearFrames } = useSessionActions();
 const { isExporting, exportData } = useExport();
+const { enable: enableAutoLog, disable: disableAutoLog } = useAutoLog();
 const message = useMessage();
 const serialState = useSerialConnection(
   props.session.id,
@@ -245,15 +251,30 @@ function toggleTimestamp() {
   appStore.toggleShowTimestamp();
 }
 
-function toggleAutoLog() {
-  sessionStore.setAutoLogEnabled(props.session.id, !props.session.autoLogEnabled);
-  message.info(
-    props.session.autoLogEnabled ? '已关闭自动记录标记' : '已开启自动记录标记，可通过导出保存数据',
-  );
+async function toggleAutoLog() {
+  if (props.session.autoLogEnabled) {
+    disableAutoLog(props.session.id);
+    message.info('已停止自动记录');
+    return;
+  }
+  // enable prompts for a target file; frames (TX+RX) are then appended to it in
+  // the current display format as they arrive.
+  const path = await enableAutoLog(props.session.id);
+  if (path) {
+    message.success(`正在记录到 ${path}`);
+  }
+  // user dismissed the save dialog → no message
 }
 
-async function handleExport(format: string) {
-  const result = await exportData(props.session.frames, format as ExportFormat);
+async function handleExport(choice: string) {
+  // The text export follows the currently selected display mode, so the saved
+  // file matches the encoding the user is viewing (HEX → hex, ASCII/UTF-8 →
+  // decoded text). Passing appStore.displayMode lets useExport resolve it.
+  const result = await exportData(
+    props.session.frames,
+    choice as ExportChoice,
+    appStore.displayMode,
+  );
   if (result === 'success') {
     message.success('导出成功');
   } else if (result === 'error') {

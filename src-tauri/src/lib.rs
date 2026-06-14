@@ -77,6 +77,7 @@ pub fn run() {
             commands::ai::terminal_ai_assist,
             commands::checksum::calculate_checksum,
             commands::export::export_data,
+            commands::log::append_log,
             commands::window::get_ai_window_state,
             commands::window::hide_ai_window,
             commands::window::resize_ai_window,

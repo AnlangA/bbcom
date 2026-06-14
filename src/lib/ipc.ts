@@ -36,6 +36,12 @@ export async function invokeExportData(frames: DataFrame[], format: ExportFormat
   });
 }
 
+/** Append a chunk of text to the auto-log file (created if missing). Stateless
+ * on the Rust side; the caller serializes calls to preserve order. */
+export async function invokeAppendLog(path: string, content: string) {
+  return invoke<void>('append_log', { path, content });
+}
+
 export async function terminalAiAssist(request: TerminalAiRequest) {
   return invoke<TerminalAiResponse>('terminal_ai_assist', { request });
 }

@@ -39,6 +39,7 @@ export const useSessionStore = defineStore('sessions', () => {
       sendDraft: '',
       quickCommands: [],
       autoLogEnabled: false,
+      logPath: null,
       terminalAiModel: 'glm-4.5-air',
       logAiModel: 'glm-4.5-air',
       logAiContextMode: 'latest-10k',
@@ -69,9 +70,12 @@ export const useSessionStore = defineStore('sessions', () => {
     cleanupFns.set(id, fn);
   }
 
-  function addFrame(sessionId: string, frame: Omit<DataFrame, 'id' | 'timestamp'>) {
+  function addFrame(
+    sessionId: string,
+    frame: Omit<DataFrame, 'id' | 'timestamp'>,
+  ): DataFrame | undefined {
     const session = sessions.value.find((s) => s.id === sessionId);
-    if (!session) return;
+    if (!session) return undefined;
 
     const fullFrame: DataFrame = {
       ...frame,
@@ -93,6 +97,8 @@ export const useSessionStore = defineStore('sessions', () => {
       session.rxBytes += frame.data.length;
       session.rxFrames += 1;
     }
+
+    return fullFrame;
   }
 
   function setConnected(sessionId: string, connected: boolean) {
@@ -157,10 +163,13 @@ export const useSessionStore = defineStore('sessions', () => {
     session.quickCommands = session.quickCommands.filter((c) => c.id !== commandId);
   }
 
-  function setAutoLogEnabled(sessionId: string, enabled: boolean) {
+  /** Enable auto-logging to `path`, or disable it when `path` is null. Sets
+   * logPath and autoLogEnabled together so they can never disagree. */
+  function setAutoLogTarget(sessionId: string, path: string | null) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.autoLogEnabled = enabled;
+    session.logPath = path;
+    session.autoLogEnabled = path !== null;
   }
 
   function setTerminalAiModel(sessionId: string, model: AiModel) {
@@ -219,7 +228,7 @@ export const useSessionStore = defineStore('sessions', () => {
     setSendDraft,
     addQuickCommand,
     removeQuickCommand,
-    setAutoLogEnabled,
+    setAutoLogTarget,
     setTerminalAiModel,
     setLogAiModel,
     setLogAiContextMode,

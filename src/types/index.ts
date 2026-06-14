@@ -64,6 +64,10 @@ export interface SerialSession {
   sendDraft: string;
   quickCommands: QuickCommand[];
   autoLogEnabled: boolean;
+  /** Target file path for auto-logging, or null when disabled. Kept in sync
+   * with autoLogEnabled via sessionStore.setAutoLogTarget. Runtime-only — not
+   * persisted, since sessions themselves are not persisted across reloads. */
+  logPath: string | null;
   terminalAiModel: AiModel;
   logAiModel: AiModel;
   logAiContextMode: LogAiContextMode;

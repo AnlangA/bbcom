@@ -13,10 +13,12 @@ import {
   formatRate,
   formatTimestamp,
   formatUtf8,
+  formatFrameData,
   hexByteCount,
   isValidHex,
   normalizeHex,
   parseHex,
+  stripAnsiEscapes,
   toContinuousHex,
   truncate,
 } from '../../src/lib/format.ts';
@@ -185,7 +187,7 @@ test('packet formatter caches formatted output and hex search data', () => {
 });
 
 test('text search index strips ANSI codes and lowercases for matching', () => {
-  const { getTextSearchData, stripAnsi } = usePacketFormatter({
+  const { getTextSearchData } = usePacketFormatter({
     displayMode: ref('UTF8'),
     ansiColorEnabled: ref(true),
   });
@@ -193,9 +195,9 @@ test('text search index strips ANSI codes and lowercases for matching', () => {
 
   // search index has no escape sequences and is lowercased
   assert.equal(getTextSearchData(f), 'error reboot now');
-  assert.equal(stripAnsi('\x1b[1;32mok\x1b[0m'), 'ok');
+  assert.equal(stripAnsiEscapes('\x1b[1;32mok\x1b[0m'), 'ok');
   // non-SGR CSI sequences (cursor move, erase, DEC-private) are also stripped
-  assert.equal(stripAnsi('\x1b[2J\x1b[1;1Hcleared\x1b[?25h'), 'cleared');
+  assert.equal(stripAnsiEscapes('\x1b[2J\x1b[1;1Hcleared\x1b[?25h'), 'cleared');
 });
 
 test('formatFrame renders each display mode from the same bytes', () => {
@@ -250,3 +252,22 @@ test('formatFrame must not serve stale output for a stable id with growing data 
   assert.equal(formatFrame(f2), 'hello world');
 });
 
+
+test('stripAnsiEscapes removes CSI color/control sequences', () => {
+  const red = '\x1b[31m';
+  const reset = '\x1b[0m';
+  assert.equal(stripAnsiEscapes(`${red}hello${reset}`), 'hello');
+  // cursor moves / DEC-private sequences are stripped too
+  assert.equal(stripAnsiEscapes('a\x1b[2Kb\x1b[?25hc'), 'abc');
+});
+
+test('formatFrameData decodes bytes per the selected display mode', () => {
+  // 'AB' = 0x41 0x42
+  const data = new Uint8Array([0x41, 0x42]);
+  assert.equal(formatFrameData(data, 'HEX'), '41 42');
+  assert.equal(formatFrameData(data, 'ASCII'), 'AB');
+  assert.equal(formatFrameData(data, 'UTF8'), 'AB');
+  // ANSI mode strips escape codes from the ASCII-decoded text
+  const colored = new Uint8Array([...encodeUtf8('\x1b[32mOK\x1b[0m')]);
+  assert.equal(formatFrameData(colored, 'ANSI'), 'OK');
+});

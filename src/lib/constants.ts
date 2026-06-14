@@ -1,4 +1,4 @@
-import type { AiModel } from '../types';
+import type { AiModel, DisplayMode } from '../types';
 
 export const BAUD_RATES = [
   { label: '9600', value: 9600 },
@@ -35,6 +35,8 @@ export const FLOW_CONTROL_OPTIONS = [
   { label: '软件', value: 'software' },
 ];
 
+// Wire formats the Rust backend deserializes (commands::export::ExportFormat).
+// Kept as the source of truth for the frontend -> Rust contract.
 export const EXPORT_FORMATS = {
   txtHex: 'txt-hex',
   txtAscii: 'txt-ascii',
@@ -45,13 +47,33 @@ export const EXPORT_FORMATS = {
 
 export type ExportFormat = (typeof EXPORT_FORMATS)[keyof typeof EXPORT_FORMATS];
 
-export const EXPORT_OPTIONS: { label: string; key: ExportFormat }[] = [
-  { label: '导出为 TXT (HEX)', key: EXPORT_FORMATS.txtHex },
-  { label: '导出为 TXT (ASCII)', key: EXPORT_FORMATS.txtAscii },
-  { label: '导出为 CSV', key: EXPORT_FORMATS.csv },
-  { label: '导出为 JSON Lines', key: EXPORT_FORMATS.jsonl },
-  { label: '导出为 BIN', key: EXPORT_FORMATS.bin },
+// User-facing export choices. The text export ("txt") follows the selected
+// display mode so the saved file matches what the user sees on screen — HEX
+// display yields a hex dump, ASCII/UTF-8/ANSI yields decoded text. See
+// useExport.resolveExportFormat. Decoupling the two (a separate "TXT (HEX)"
+// vs "TXT (ASCII)" picker) was the root cause of saved logs always landing as
+// hex regardless of the encoding the user had selected.
+export type ExportChoice = 'txt' | 'csv' | 'jsonl' | 'bin';
+
+export const EXPORT_OPTIONS: { label: string; key: ExportChoice }[] = [
+  { label: '导出为 TXT（按显示格式）', key: 'txt' },
+  { label: '导出为 CSV', key: 'csv' },
+  { label: '导出为 JSON Lines', key: 'jsonl' },
+  { label: '导出为 BIN', key: 'bin' },
 ];
+
+/**
+ * Map a user-facing export choice to the wire format the Rust backend expects.
+ * The text export ("txt") follows the selected display mode so the saved file
+ * matches what the user sees on screen — HEX display yields a hex dump,
+ * ASCII/UTF-8/ANSI yields decoded text. Structured/binary choices pass through.
+ */
+export function resolveExportFormat(choice: ExportChoice, displayMode: DisplayMode): ExportFormat {
+  if (choice === 'txt') {
+    return displayMode === 'HEX' ? EXPORT_FORMATS.txtHex : EXPORT_FORMATS.txtAscii;
+  }
+  return choice;
+}
 
 export const AI_MODELS = {
   glm51: 'glm-5.1',

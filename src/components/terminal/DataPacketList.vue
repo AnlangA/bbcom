@@ -127,6 +127,7 @@ import {
   formatUtf8,
   formatAscii,
   formatTimestamp,
+  stripAnsiEscapes,
 } from '../../lib/format';
 import { logger } from '../../lib/logger';
 import { usePacketFilter } from '../../composables/usePacketFilter';
@@ -174,11 +175,10 @@ const gridStyle = computed(() => ({
   gridTemplateColumns: appStore.showTimestamp ? '50px 160px 1fr 50px' : '50px 1fr 50px',
 }));
 
-const { formatFrame, getHexSearchData, getTextSearchData, stripAnsi, clearCaches } =
-  usePacketFormatter({
-    displayMode: computed(() => appStore.displayMode),
-    ansiColorEnabled: computed(() => appStore.ansiColorEnabled),
-  });
+const { formatFrame, getHexSearchData, getTextSearchData, clearCaches } = usePacketFormatter({
+  displayMode: computed(() => appStore.displayMode),
+  ansiColorEnabled: computed(() => appStore.ansiColorEnabled),
+});
 
 watch(
   () => props.frames.length,
@@ -230,7 +230,7 @@ async function handleCtxSelect(key: string) {
       text = formatUtf8(ctxFrame.data);
       break;
     case 'plain':
-      text = stripAnsi(formatAscii(ctxFrame.data));
+      text = stripAnsiEscapes(formatAscii(ctxFrame.data));
       break;
     case 'row': {
       // Plain text only — formatFrame would emit HTML (ansi_to_html spans) in
@@ -238,7 +238,7 @@ async function handleCtxSelect(key: string) {
       const plain =
         appStore.displayMode === 'HEX'
           ? formatHex(ctxFrame.data)
-          : stripAnsi(formatUtf8(ctxFrame.data));
+          : stripAnsiEscapes(formatUtf8(ctxFrame.data));
       text = formatLogLine(ctxFrame.timestamp, ctxFrame.direction, plain);
       break;
     }
