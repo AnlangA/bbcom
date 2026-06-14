@@ -72,8 +72,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import { NButton } from 'naive-ui';
+import { computed, onErrorCaptured, ref } from 'vue';
+import { NButton, useMessage } from 'naive-ui';
 import { Bot, BotOff, Cable, PanelLeftClose, PanelLeftOpen, Zap } from 'lucide-vue-next';
 import PortSelector from '../port-selector/PortSelector.vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
@@ -94,6 +94,17 @@ const sessions = computed(() => sessionStore.sessions);
 const activeSession = computed(() => sessionStore.activeSession);
 const showCreateDialog = ref(false);
 const sidebarCollapsed = ref(false);
+const message = useMessage();
+
+onErrorCaptured((err) => {
+  // Surface component render errors with a toast instead of a silent blank
+  // screen — critical for a desktop debugging tool where a blank window looks
+  // like a hang.
+  // eslint-disable-next-line no-console
+  console.error('[bbcom] component error:', err);
+  message.error(`界面渲染出错：${err instanceof Error ? err.message : String(err)}`);
+  return false;
+});
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value;

@@ -33,7 +33,19 @@ pub async fn export_data(request: ExportRequest) -> Result<(), AppError> {
         });
     }
 
-    validate_export_path(&request.path, request.format)?;
+    // validate_export_path issues blocking fs stat syscalls (is_dir / parent.exists);
+    // run them off the tokio async worker so a slow/network mount can't stall it.
+    let path_for_validation = request.path.clone();
+    let fmt = request.format;
+    let validation = tokio::task::spawn_blocking(move || validate_export_path(&path_for_validation, fmt))
+        .await
+        .map_err(|e| AppError::ExportError {
+            message: format!("export validation task failed: {e}"),
+            format: "unknown".to_string(),
+            path: request.path.clone(),
+        })?;
+    validation?;
+
     formatter::export(&request.frames, &request.format, &request.path).await
 }
 

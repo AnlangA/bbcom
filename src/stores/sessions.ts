@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { computed, markRaw, ref } from 'vue';
 import type { AiChatMessage, AiModel, LogAiContextMode, SerialSession, DataFrame, SendHistoryEntry } from '../types';
 import { MAX_FRAMES, MAX_HISTORY } from '../types';
 import { nowMillis } from '../lib/time';
@@ -66,11 +66,16 @@ export const useSessionStore = defineStore('sessions', () => {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
 
-    const fullFrame: DataFrame = {
+    // Frames are immutable after creation; markRaw opts them (and their
+    // Uint8Array payload) out of deep reactivity, so Vue never builds per-byte
+    // proxy traps across up to MAX_FRAMES entries — the dominant cost at high
+    // baud rates. The frames array itself stays reactive (length changes still
+    // trigger updates); only the element contents are raw.
+    const fullFrame: DataFrame = markRaw({
       ...frame,
       id: crypto.randomUUID(),
       timestamp: nowMillis(),
-    };
+    });
 
     session.frames.push(fullFrame);
 
@@ -176,11 +181,13 @@ export const useSessionStore = defineStore('sessions', () => {
   function addLogAiMessage(sessionId: string, message: Omit<AiChatMessage, 'id' | 'timestamp'>) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.logAiMessages.push({
-      ...message,
-      id: crypto.randomUUID(),
-      timestamp: Date.now(),
-    });
+    session.logAiMessages.push(
+      markRaw({
+        ...message,
+        id: crypto.randomUUID(),
+        timestamp: Date.now(),
+      }),
+    );
   }
 
   function clearLogAiMessages(sessionId: string) {

@@ -16,8 +16,11 @@
   --color-warning: #ffbf5f;
   --color-info: #60a5fa;
 
-  --color-tx: #57d68d;
-  --color-tx-subtle: rgba(87, 214, 141, 0.11);
+  /* Direction hues are deliberately distinct from the brand mint
+     (--color-primary/--color-success) so a transmitted row never reads as
+     "success/brand". TX = cool teal, RX = azure blue. */
+  --color-tx: #2dd4bf;
+  --color-tx-subtle: rgba(45, 212, 191, 0.12);
   --color-rx: #5aa9ff;
   --color-rx-subtle: rgba(90, 169, 255, 0.12);
 
@@ -53,10 +56,12 @@
   --accent-blue-subtle: var(--color-rx-subtle);
   --accent-red: var(--color-error);
   --accent-red-subtle: rgba(255, 107, 122, 0.12);
+  --accent-red-border: rgba(255, 107, 122, 0.42);
   --accent-orange: #ff9f5a;
   --accent-orange-subtle: rgba(255, 159, 90, 0.12);
   --accent-amber: var(--color-warning);
   --accent-amber-subtle: rgba(255, 191, 95, 0.13);
+  --accent-amber-border: rgba(255, 191, 95, 0.42);
   --accent-violet: #a78bfa;
   --accent-violet-subtle: rgba(167, 139, 250, 0.13);
 

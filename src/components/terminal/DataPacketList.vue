@@ -66,7 +66,7 @@
       <span class="col-data">数据</span>
       <span class="col-mode">模式</span>
     </div>
-    <div ref="scrollRef" class="packet-items" @scroll="onScroll">
+    <div ref="scrollRef" class="packet-items" @scroll.passive="onScroll">
       <div v-if="visibleFrames.length === 0" class="packet-empty">
         {{ frames.length === 0 ? '暂无串口数据' : '没有匹配的数据帧' }}
       </div>

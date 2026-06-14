@@ -365,7 +365,7 @@ async function copyChecksum() {
 .empty-hint.warning {
   color: var(--accent-red);
   background: var(--accent-red-subtle);
-  border-color: rgba(244, 67, 54, 0.35);
+  border-color: var(--accent-red-border);
 }
 
 .config-grid {

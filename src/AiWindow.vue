@@ -17,9 +17,10 @@ import AiPanel from './components/ai/AiPanel.vue';
 import { themeOverrides } from './styles/naive-theme';
 
 onErrorCaptured((err, _instance, info) => {
-  // AI Window error captured
-  void err;
-  void info;
+  // Surface AI-window render errors to the console instead of failing silently
+  // with a blank floating window.
+  // eslint-disable-next-line no-console
+  console.error('[bbcom] AI window component error:', err, '\ninfo:', info);
   return false;
 });
 

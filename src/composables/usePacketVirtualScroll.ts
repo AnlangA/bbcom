@@ -10,6 +10,16 @@ interface PacketVirtualScrollOptions {
 
 const ROW_HEIGHT = 28;
 
+/**
+ * Virtual scrolling for the packet list.
+ *
+ * Rows are a fixed height (ROW_HEIGHT), so the virtualizer never needs a manual
+ * `measure()` call: @tanstack/vue-virtual recomputes the visible range on its
+ * own internal scroll/resize listeners, and `useVirtualizer` re-derives the
+ * instance whenever `count` changes (the options are a computed). Calling
+ * `measure()` on every scroll tick (as this previously did) forced a full O(n)
+ * offset recompute on every frame of auto-scroll — the dominant scroll jank.
+ */
 export function usePacketVirtualScroll({
   visibleFrames,
   frameCount,
@@ -17,7 +27,6 @@ export function usePacketVirtualScroll({
 }: PacketVirtualScrollOptions) {
   const scrollRef = ref<HTMLDivElement | null>(null);
   const shouldAutoScroll = ref(true);
-  let measureTimer: number | null = null;
 
   const virtualizer = useVirtualizer(
     computed(() => ({
@@ -31,23 +40,16 @@ export function usePacketVirtualScroll({
   const virtualItems = computed(() => virtualizer.value.getVirtualItems());
   const totalSize = computed(() => virtualizer.value.getTotalSize());
 
-  function scheduleMeasure() {
-    if (measureTimer) return;
-    measureTimer = requestAnimationFrame(() => {
-      measureTimer = null;
-      virtualizer.value.measure();
-    });
-  }
-
   function onScroll() {
     if (!scrollRef.value) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollRef.value;
+    // Track whether the user is parked near the bottom so new frames can
+    // auto-scroll only when appropriate. The virtualizer handles its own range
+    // updates on scroll — we do NOT remeasure here.
     shouldAutoScroll.value = scrollHeight - scrollTop - clientHeight < ROW_HEIGHT * 2;
-    scheduleMeasure();
   }
 
   watch(frameCount, () => {
-    virtualizer.value.measure();
     if (shouldAutoScroll.value && autoScroll.value) {
       void nextTick(() => {
         requestAnimationFrame(() => {
@@ -57,10 +59,6 @@ export function usePacketVirtualScroll({
         });
       });
     }
-  });
-
-  watch(visibleFrames, () => {
-    virtualizer.value.measure();
   });
 
   return {

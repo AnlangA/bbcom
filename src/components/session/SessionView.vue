@@ -35,6 +35,13 @@
           {{ session.isConnected ? '已连接' : '未连接' }}
         </n-tag>
         <span v-if="serialState.error.value" class="error-hint">{{ serialState.error.value }}</span>
+        <span
+          v-if="serialState.totalDroppedBytes.value > 0"
+          class="drop-hint"
+          :title="`本次连接累计丢弃 ${serialState.totalDroppedBytes.value} 字节（接收速率超过处理能力）`"
+        >
+          丢弃 {{ formatBytes(serialState.totalDroppedBytes.value) }}
+        </span>
       </div>
       <div class="toolbar-right">
         <div class="toolbar-field">
@@ -159,6 +166,7 @@ import { useExport } from '../../composables/useExport';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { useMessage } from 'naive-ui';
 import { EXPORT_OPTIONS, type ExportFormat } from '../../lib/constants';
+import { formatBytes } from '../../lib/format';
 import type { DisplayMode, SerialSession } from '../../types';
 
 const props = defineProps<{
@@ -177,6 +185,9 @@ const serialState = useSerialConnection(
   {
     onDisconnect: () => {
       message.warning('串口已断开');
+    },
+    onOverflow: (total) => {
+      message.warning(`接收缓冲区溢出，已丢弃约 ${formatBytes(total)} 数据（速率超过处理能力）`);
     },
   },
 );
@@ -332,6 +343,16 @@ async function handleExport(format: string) {
   padding: 3px 7px;
   background: var(--accent-red-subtle);
   border: 1px solid rgba(255, 107, 122, 0.22);
+  border-radius: var(--radius-full);
+}
+
+.drop-hint {
+  color: var(--accent-amber);
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 3px 7px;
+  background: var(--accent-amber-subtle);
+  border: 1px solid var(--accent-amber-border);
   border-radius: var(--radius-full);
 }
 

@@ -66,6 +66,8 @@ function mapFlowControl(f: string): PluginFlowControl {
 
 interface SerialConnectionOptions {
   onDisconnect?: () => void;
+  /** Fired once per connection when RX data is first dropped due to overflow. */
+  onOverflow?: (totalDroppedBytes: number) => void;
 }
 
 export function useSerialConnection(
@@ -80,10 +82,13 @@ export function useSerialConnection(
   const isConnecting = ref(false);
   const isConnected = ref(false);
   const error = ref<string | null>(null);
+  /** Cumulative RX bytes dropped due to queue overflow for this connection. */
+  const totalDroppedBytes = ref(0);
 
   let dataQueue: Uint8Array[] = [];
   let totalQueueSize = 0;
   let droppedRxBytes = 0;
+  let overflowNotified = false;
   let rafId: number | null = null;
   let unlistenData: (() => void) | null = null;
   let unlistenDisconnect: (() => void) | null = null;
@@ -104,6 +109,8 @@ export function useSerialConnection(
   async function start() {
     isConnecting.value = true;
     error.value = null;
+    totalDroppedBytes.value = 0;
+    overflowNotified = false;
     try {
       const p = new SerialPort({
         path: portName,
@@ -157,12 +164,12 @@ export function useSerialConnection(
       const dropped = dataQueue.shift();
       if (!dropped) break;
       totalQueueSize -= dropped.length;
-      droppedRxBytes += dropped.length;
+      recordDrop(dropped.length);
     }
 
     if (bytes.length > MAX_RX_QUEUE_BYTES) {
       const retained = bytes.slice(bytes.length - MAX_RX_QUEUE_BYTES);
-      droppedRxBytes += bytes.length - retained.length;
+      recordDrop(bytes.length - retained.length);
       dataQueue.push(retained);
       totalQueueSize += retained.length;
     } else {
@@ -176,6 +183,18 @@ export function useSerialConnection(
 
     if (!rafId) {
       rafId = requestAnimationFrame(flushQueue);
+    }
+  }
+
+  function recordDrop(count: number) {
+    if (count <= 0) return;
+    droppedRxBytes += count;
+    totalDroppedBytes.value += count;
+    if (!overflowNotified) {
+      // Notify once per connection so silent data loss is at least surfaced
+      // once; the running total stays visible in the toolbar afterwards.
+      overflowNotified = true;
+      options?.onOverflow?.(totalDroppedBytes.value);
     }
   }
 
@@ -271,6 +290,7 @@ export function useSerialConnection(
     isConnecting,
     isConnected,
     error,
+    totalDroppedBytes,
     start,
     send,
     stop,
