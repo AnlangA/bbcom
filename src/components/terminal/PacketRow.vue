@@ -71,7 +71,7 @@ function onContextMenu(ev: MouseEvent) {
 .packet-item.tx {
   border-left: 2px solid var(--accent-green);
   padding-left: 8px;
-  background-image: linear-gradient(90deg, var(--accent-green-subtle), transparent 140px);
+  background-image: linear-gradient(90deg, var(--accent-green-subtle), transparent 220px);
 }
 
 .packet-item.tx:hover {
@@ -81,7 +81,7 @@ function onContextMenu(ev: MouseEvent) {
 .packet-item.rx {
   border-left: 2px solid var(--accent-blue);
   padding-left: 8px;
-  background-image: linear-gradient(90deg, var(--accent-blue-subtle), transparent 140px);
+  background-image: linear-gradient(90deg, var(--accent-blue-subtle), transparent 220px);
 }
 
 .packet-item.rx:hover {

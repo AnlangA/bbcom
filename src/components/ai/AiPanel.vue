@@ -92,7 +92,6 @@ async function toggleAlwaysOnTop() {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 90px), var(--bg-secondary);
   box-shadow: var(--shadow-lg), var(--shadow-inset);
-  backdrop-filter: blur(16px);
 }
 
 .ai-header {

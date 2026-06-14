@@ -151,7 +151,7 @@ function tabTooltip(session: SerialSession): string {
   place-items: center;
   background: transparent;
   border: 0;
-  color: transparent;
+  color: var(--text-dim);
   cursor: pointer;
   padding: 0;
   border-radius: var(--radius-sm);

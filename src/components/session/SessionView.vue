@@ -69,54 +69,58 @@
             @update:value="appStore.setDisplayMode"
           />
         </div>
-        <div class="toolbar-toggles">
+        <div class="toggle-group" role="group" aria-label="显示选项">
           <n-button
+            class="toggle-btn"
             size="small"
             quaternary
-            @click="toggleAutoScroll"
             :type="appStore.autoScroll ? 'primary' : 'default'"
             title="自动滚动"
+            aria-label="自动滚动"
+            @click="toggleAutoScroll"
           >
             <template #icon>
               <ArrowDownUp class="icon-sm" />
             </template>
-            自动滚动
           </n-button>
           <n-button
+            class="toggle-btn"
             size="small"
             quaternary
-            @click="appStore.toggleAnsiColor"
             :type="appStore.ansiColorEnabled ? 'primary' : 'default'"
-            title="ANSI颜色渲染"
+            title="ANSI 颜色渲染"
+            aria-label="ANSI 颜色"
+            @click="appStore.toggleAnsiColor"
           >
             <template #icon>
               <Palette class="icon-sm" />
             </template>
-            颜色
           </n-button>
           <n-button
+            class="toggle-btn"
             size="small"
             quaternary
-            @click="toggleTimestamp"
             :type="appStore.showTimestamp ? 'primary' : 'default'"
-            title="显示时间"
+            title="显示时间戳"
+            aria-label="时间戳"
+            @click="toggleTimestamp"
           >
             <template #icon>
               <Clock class="icon-sm" />
             </template>
-            时间
           </n-button>
           <n-button
+            class="toggle-btn"
             size="small"
             quaternary
-            @click="toggleAutoLog"
             :type="session.autoLogEnabled ? 'primary' : 'default'"
-            title="接收自动记录"
+            title="标记自动记录"
+            aria-label="自动记录"
+            @click="toggleAutoLog"
           >
             <template #icon>
               <FileText class="icon-sm" />
             </template>
-            LOG
           </n-button>
         </div>
         <n-dropdown
@@ -328,11 +332,20 @@ async function handleExport(format: string) {
   min-width: 0;
 }
 
-.toolbar-field,
-.toolbar-toggles {
+.toolbar-field {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.toggle-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
 }
 
 .toolbar-field {
