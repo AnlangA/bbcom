@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
+import { toRaw } from 'vue';
 import type { ExportFormat } from './constants';
-import type { ChecksumType } from '../types';
-import type { DataFrame } from '../types';
+import type { ChecksumType, DataFrame } from '../types';
 
 export type AiRisk = 'safe' | 'caution' | 'dangerous';
 
@@ -24,6 +24,13 @@ export interface AiWindowState {
   visible: boolean;
 }
 
+export interface AppCommandErrorDetails {
+  message?: string;
+  field?: string;
+  format?: string;
+  path?: string;
+}
+
 export async function calculateChecksum(data: ArrayLike<number>, algorithm: ChecksumType) {
   return invoke<{ result: string }>('calculate_checksum', {
     request: { data: Array.from(data), algorithm },
@@ -32,7 +39,10 @@ export async function calculateChecksum(data: ArrayLike<number>, algorithm: Chec
 
 export async function invokeExportData(frames: DataFrame[], format: ExportFormat, path: string) {
   return invoke<void>('export_data', {
-    request: { frames, format, path },
+    // toRaw unwraps the reactive array proxy; frame elements are markRaw'd at
+    // creation, so the Tauri serializer walks raw typed arrays instead of
+    // recursing through per-byte proxies.
+    request: { frames: toRaw(frames), format, path },
   });
 }
 
@@ -66,4 +76,14 @@ export async function resizeAiWindow(width: number, height: number) {
 
 export async function startAiWindowDrag() {
   return invoke<void>('start_ai_window_drag');
+}
+
+export function getCommandErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'string') return error;
+  if (!error || typeof error !== 'object') return fallback;
+  const record = error as Record<string, unknown>;
+  const details = record.details as AppCommandErrorDetails | undefined;
+  if (details?.message) return details.message;
+  if (typeof record.message === 'string') return record.message;
+  return fallback;
 }

@@ -3,6 +3,7 @@ use crate::models::data_frame::{DataFrame, Direction};
 use crate::models::errors::AppError;
 use crate::utils::hex;
 use crate::utils::timestamp;
+use std::io::Write as _;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
@@ -21,17 +22,19 @@ pub async fn export(
 }
 
 async fn export_jsonl(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
-    let file = File::create(path).await.map_err(AppError::from)?;
-    let mut w = BufWriter::new(file);
+    // Build the whole document into one buffer, then issue a single write.
+    // Collapses ~one async yield per frame into one write per export.
+    let mut buf: Vec<u8> = Vec::with_capacity(frames.len() * 64);
     for frame in frames {
-        let line = serde_json::to_string(frame).map_err(|e| AppError::ExportError {
+        serde_json::to_writer(&mut buf, frame).map_err(|e| AppError::ExportError {
             message: e.to_string(),
             format: "jsonl".to_string(),
             path: path.to_string(),
         })?;
-        w.write_all(line.as_bytes()).await.map_err(AppError::from)?;
-        w.write_all(b"\n").await.map_err(AppError::from)?;
+        buf.push(b'\n');
     }
+    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
+    w.write_all(&buf).await.map_err(AppError::from)?;
     w.flush().await.map_err(AppError::from)?;
     Ok(())
 }
@@ -52,49 +55,64 @@ fn data_to_string(data: &[u8], ascii: bool) -> String {
 }
 
 async fn export_text(frames: &[DataFrame], path: &str, ascii: bool) -> Result<(), AppError> {
-    let file = File::create(path).await.map_err(AppError::from)?;
-    let mut w = BufWriter::new(file);
+    let mut buf: Vec<u8> = Vec::with_capacity(frames.len() * 80);
     for frame in frames {
         let data_str = data_to_string(&frame.data, ascii);
-        let line = format!(
+        // Vec<u8> implements std::fmt::Write, so write! appends UTF-8 bytes
+        // without allocating a per-frame String.
+        write!(
+            &mut buf,
             "[{}] {} | {}\n",
             timestamp::format_timestamp(frame.timestamp),
             dir_label(&frame.direction),
             data_str
-        );
-        w.write_all(line.as_bytes()).await.map_err(AppError::from)?;
+        )
+        .map_err(|e| AppError::ExportError {
+            message: e.to_string(),
+            format: "txt".to_string(),
+            path: path.to_string(),
+        })?;
     }
+    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
+    w.write_all(&buf).await.map_err(AppError::from)?;
     w.flush().await.map_err(AppError::from)?;
     Ok(())
 }
 
 async fn export_csv(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
-    let file = File::create(path).await.map_err(AppError::from)?;
-    let mut w = BufWriter::new(file);
-    w.write_all(b"timestamp,direction,data\n")
-        .await
-        .map_err(AppError::from)?;
+    let mut buf: Vec<u8> = Vec::with_capacity(frames.len() * 80);
+    buf.extend_from_slice(b"timestamp,direction,data\n");
     for frame in frames {
+        // hex output is [0-9A-F ]+ — it never contains quotes, so the previous
+        // unconditional replace('"', "\"\"") was dead work; drop it.
         let data_str = hex::format_hex(&frame.data);
-        let escaped = data_str.replace('"', "\"\"");
-        let line = format!(
+        write!(
+            &mut buf,
             "{},{},\"{}\"\n",
             timestamp::format_timestamp(frame.timestamp),
             dir_label(&frame.direction),
-            escaped
-        );
-        w.write_all(line.as_bytes()).await.map_err(AppError::from)?;
+            data_str
+        )
+        .map_err(|e| AppError::ExportError {
+            message: e.to_string(),
+            format: "csv".to_string(),
+            path: path.to_string(),
+        })?;
     }
+    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
+    w.write_all(&buf).await.map_err(AppError::from)?;
     w.flush().await.map_err(AppError::from)?;
     Ok(())
 }
 
 async fn export_bin(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
-    let file = File::create(path).await.map_err(AppError::from)?;
-    let mut w = BufWriter::new(file);
+    let total: usize = frames.iter().map(|frame| frame.data.len()).sum();
+    let mut buf: Vec<u8> = Vec::with_capacity(total);
     for frame in frames {
-        w.write_all(&frame.data).await.map_err(AppError::from)?;
+        buf.extend_from_slice(&frame.data);
     }
+    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
+    w.write_all(&buf).await.map_err(AppError::from)?;
     w.flush().await.map_err(AppError::from)?;
     Ok(())
 }

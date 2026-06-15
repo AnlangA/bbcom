@@ -33,14 +33,14 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--scrollbar-thumb);
   border: 2px solid transparent;
   border-radius: var(--radius-full);
   background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.24);
+  background: var(--scrollbar-thumb-hover);
   background-clip: padding-box;
 }
 
@@ -115,4 +115,66 @@ pre {
 
 .n-input--textarea textarea {
   font-family: var(--font-mono);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes send-flash {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes pulse-green {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px var(--accent-green-subtle);
+  }
+  50% {
+    box-shadow: 0 0 0 6px var(--accent-green-subtle);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 200ms ease;
+}
+
+.animate-slide-up {
+  animation: slide-up 200ms ease;
+}
+
+.animate-scale-in {
+  animation: scale-in 300ms ease;
 }

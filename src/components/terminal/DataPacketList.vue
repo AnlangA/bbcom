@@ -60,48 +60,44 @@
         <span class="frame-count">{{ filteredFrames.length }} / {{ frames.length }}</span>
       </div>
     </div>
-    <div class="packet-row packet-header" :style="gridStyle">
+    <div class="packet-row packet-header" :style="{ gridTemplateColumns: columns }">
       <span class="col-dir">方向</span>
       <span v-if="appStore.showTimestamp" class="col-time">时间</span>
       <span class="col-data">数据</span>
       <span class="col-mode">模式</span>
     </div>
-    <div ref="scrollRef" class="packet-items" @scroll="onScroll">
+    <div
+      ref="scrollRef"
+      class="packet-items"
+      tabindex="0"
+      @scroll.passive="onScroll"
+      @keydown="onKeydown"
+    >
       <div v-if="visibleFrames.length === 0" class="packet-empty">
         {{ frames.length === 0 ? '暂无串口数据' : '没有匹配的数据帧' }}
       </div>
       <div :style="{ height: `${totalSize}px`, width: '100%', position: 'relative' }">
-        <div
-          v-for="row in virtualItems"
-          :key="visibleFrames[row.index].id"
-          :style="{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: `${row.size}px`,
-            transform: `translateY(${row.start}px)`,
-            ...gridStyle,
-          }"
-          class="packet-row packet-item"
-          :class="{
-            tx: visibleFrames[row.index].direction === 'TX',
-            rx: visibleFrames[row.index].direction === 'RX',
-          }"
-          @contextmenu.prevent="(e: MouseEvent) => showContextMenu(e, visibleFrames[row.index])"
-        >
-          <span class="col-dir direction">{{ visibleFrames[row.index].direction }}</span>
-          <span v-if="appStore.showTimestamp" class="col-time timestamp">{{
-            formatTimestamp(visibleFrames[row.index].timestamp)
-          }}</span>
-          <span
-            v-if="appStore.displayMode !== 'HEX' && appStore.ansiColorEnabled"
-            class="col-data data ansi-data"
-            v-html="formatFrame(visibleFrames[row.index])"
-          ></span>
-          <span v-else class="col-data data">{{ formatFrame(visibleFrames[row.index]) }}</span>
-          <span class="col-mode mode">{{ displayLabel }}</span>
-        </div>
+        <PacketRow
+          v-for="row in rows"
+          :key="row.key"
+          v-memo="[
+            row.key,
+            row.start,
+            row.size,
+            appStore.displayMode,
+            appStore.ansiColorEnabled,
+            appStore.showTimestamp,
+          ]"
+          :style="row.style"
+          :frame="row.frame"
+          :formatted="row.formatted"
+          :timestamp="row.timestamp"
+          :show-timestamp="row.showTimestamp"
+          :columns="row.columns"
+          :display-label="row.displayLabel"
+          :use-html="row.useHtml"
+          @contextmenu="onRowContextMenu"
+        />
       </div>
     </div>
     <n-dropdown
@@ -121,18 +117,11 @@ import { computed, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, NSelect, useMessage } from 'naive-ui';
 import { Copy, Search } from 'lucide-vue-next';
 import { useAppStore } from '../../stores/app';
-import {
-  formatHex,
-  formatLogLine,
-  formatUtf8,
-  formatAscii,
-  formatTimestamp,
-  stripAnsiEscapes,
-} from '../../lib/format';
-import { logger } from '../../lib/logger';
+import { formatHex, formatUtf8, formatAscii, formatTimestamp } from '../../lib/format';
 import { usePacketFilter } from '../../composables/usePacketFilter';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
 import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
+import PacketRow from './PacketRow.vue';
 import type { DataFrame, DirectionFilter } from '../../types';
 
 const props = defineProps<{
@@ -147,6 +136,7 @@ const ctxShow = ref(false);
 const ctxX = ref(0);
 const ctxY = ref(0);
 let ctxFrame: DataFrame | null = null;
+const selectedFrameId = ref<string | null>(null);
 
 const ctxOptions = [
   { label: '复制 HEX', key: 'hex' },
@@ -171,14 +161,13 @@ const directionOptions: { label: string; value: DirectionFilter }[] = [
 const MAX_COPY_BYTES = 2 * 1024 * 1024;
 const MAX_COPY_FRAMES = 5000;
 
-const gridStyle = computed(() => ({
-  gridTemplateColumns: appStore.showTimestamp ? '50px 160px 1fr 50px' : '50px 1fr 50px',
-}));
+const columns = computed(() => (appStore.showTimestamp ? '50px 160px 1fr 50px' : '50px 1fr 50px'));
 
-const { formatFrame, getHexSearchData, getTextSearchData, clearCaches } = usePacketFormatter({
-  displayMode: computed(() => appStore.displayMode),
-  ansiColorEnabled: computed(() => appStore.ansiColorEnabled),
-});
+const { formatFrame, getHexSearchData, getTextSearchData, stripAnsi, clearCaches } =
+  usePacketFormatter({
+    displayMode: computed(() => appStore.displayMode),
+    ansiColorEnabled: computed(() => appStore.ansiColorEnabled),
+  });
 
 watch(
   () => props.frames.length,
@@ -207,11 +196,130 @@ const displayLabel = computed(() =>
   appStore.packetViewMode === 'MERGED' ? `${appStore.displayMode}*` : appStore.displayMode,
 );
 
+const useHtml = computed(() => appStore.displayMode !== 'HEX' && appStore.ansiColorEnabled);
+
+interface PacketRowData {
+  key: string;
+  start: number;
+  size: number;
+  style: {
+    position: 'absolute';
+    top: string;
+    left: string;
+    width: string;
+    height: string;
+    transform: string;
+  };
+  frame: DataFrame;
+  formatted: string;
+  timestamp: string;
+  showTimestamp: boolean;
+  columns: string;
+  displayLabel: string;
+  useHtml: boolean;
+}
+
+// Pre-map the virtualized items into stable row descriptors. Formatting runs
+// here (shared LRU cache), so each visible row carries an already-formatted
+// string; combined with v-memo on <PacketRow>, unchanged rows skip the v-html
+// diff entirely when only the buffer grows.
+const rows = computed<PacketRowData[]>(() => {
+  const items = virtualItems.value;
+  const frames = visibleFrames.value;
+  const showTimestamp = appStore.showTimestamp;
+  const cols = columns.value;
+  const label = displayLabel.value;
+  const html = useHtml.value;
+  const out: PacketRowData[] = [];
+  for (const item of items) {
+    const frame = frames[item.index];
+    if (!frame) continue;
+    out.push({
+      key: frame.id,
+      start: item.start,
+      size: item.size,
+      style: {
+        position: 'absolute',
+        top: '0px',
+        left: '0px',
+        width: '100%',
+        height: `${item.size}px`,
+        transform: `translateY(${item.start}px)`,
+      },
+      frame,
+      formatted: formatFrame(frame),
+      timestamp: formatTimestamp(frame.timestamp),
+      showTimestamp,
+      columns: cols,
+      displayLabel: label,
+      useHtml: html,
+    });
+  }
+  return out;
+});
+
 function showContextMenu(e: MouseEvent, frame: DataFrame) {
   ctxFrame = frame;
   ctxX.value = e.clientX;
   ctxY.value = e.clientY;
   ctxShow.value = true;
+  selectFrame(frame);
+}
+
+function selectFrame(frame: DataFrame) {
+  selectedFrameId.value = frame.id;
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (!scrollRef.value) return;
+  const frames = visibleFrames.value;
+  if (frames.length === 0) return;
+
+  const currentIndex = selectedFrameId.value
+    ? frames.findIndex((f) => f.id === selectedFrameId.value)
+    : -1;
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const nextIndex = Math.min(currentIndex + 1, frames.length - 1);
+    selectFrame(frames[nextIndex]);
+    scrollToIndex(nextIndex);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prevIndex = Math.max(currentIndex - 1, 0);
+    selectFrame(frames[prevIndex]);
+    scrollToIndex(prevIndex);
+  } else if (e.key === 'c' && (e.ctrlKey || e.metaKey) && selectedFrameId.value) {
+    e.preventDefault();
+    const frame = frames.find((f) => f.id === selectedFrameId.value);
+    if (frame) {
+      const text = `[${frame.timestamp}] ${frame.direction} | ${formatFrame(frame)}`;
+      navigator.clipboard.writeText(text).then(
+        () => message.success('已复制'),
+        () => message.error('复制失败'),
+      );
+    }
+  }
+}
+
+function scrollToIndex(index: number) {
+  if (!scrollRef.value) return;
+  const item = virtualItems.value.find((v) => v.index === index);
+  if (item) {
+    const itemTop = item.start;
+    const itemBottom = itemTop + item.size;
+    const scrollTop = scrollRef.value.scrollTop;
+    const viewportHeight = scrollRef.value.clientHeight;
+    if (itemTop < scrollTop) {
+      scrollRef.value.scrollTop = itemTop;
+    } else if (itemBottom > scrollTop + viewportHeight) {
+      scrollRef.value.scrollTop = itemBottom - viewportHeight;
+    }
+  }
+}
+
+function onRowContextMenu(e: MouseEvent, frame: DataFrame) {
+  showContextMenu(e, frame);
 }
 
 async function handleCtxSelect(key: string) {
@@ -230,25 +338,17 @@ async function handleCtxSelect(key: string) {
       text = formatUtf8(ctxFrame.data);
       break;
     case 'plain':
-      text = stripAnsiEscapes(formatAscii(ctxFrame.data));
+      text = stripAnsi(formatAscii(ctxFrame.data));
       break;
-    case 'row': {
-      // Plain text only — formatFrame would emit HTML (ansi_to_html spans) in
-      // colored modes, which is useless when pasted.
-      const plain =
-        appStore.displayMode === 'HEX'
-          ? formatHex(ctxFrame.data)
-          : stripAnsiEscapes(formatUtf8(ctxFrame.data));
-      text = formatLogLine(ctxFrame.timestamp, ctxFrame.direction, plain);
+    case 'row':
+      text = `[${formatTimestamp(ctxFrame.timestamp)}] ${ctxFrame.direction} | ${formatFrame(ctxFrame)}`;
       break;
-    }
   }
 
   try {
     await navigator.clipboard.writeText(text);
     message.success('已复制');
-  } catch (e) {
-    logger.warn('context copy failed:', e);
+  } catch {
     message.error('复制失败');
   }
 }
@@ -264,14 +364,13 @@ async function handleCopySelect(key: string) {
   const text = frames
     .map((frame) => {
       const data = asHex ? formatHex(frame.data) : formatUtf8(frame.data);
-      return formatLogLine(frame.timestamp, frame.direction, data);
+      return `[${formatTimestamp(frame.timestamp)}] ${frame.direction} | ${data}`;
     })
     .join('\n');
   try {
     await navigator.clipboard.writeText(text);
     message.success('已复制');
-  } catch (e) {
-    logger.warn('bulk copy failed:', e);
+  } catch {
     message.error('复制失败');
   }
 }
@@ -351,14 +450,15 @@ async function handleCopySelect(key: string) {
   top: 0;
   z-index: 1;
   padding-left: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .packet-items {
   overflow-y: auto;
   flex: 1;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.012), transparent 120px), var(--bg-primary);
+  background: linear-gradient(180deg, var(--surface-lift), transparent 120px), var(--bg-primary);
   position: relative;
+  outline: none;
 }
 
 .packet-empty {
@@ -371,45 +471,10 @@ async function handleCopySelect(key: string) {
   font-size: 12px;
   pointer-events: none;
   background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(180deg, var(--grid-line) 1px, transparent 1px);
   background-size: 32px 32px;
   mask-image: radial-gradient(circle at center, black 0, transparent 72%);
-}
-
-.packet-item {
-  border-bottom: 1px solid var(--border-subtle);
-  transition: background var(--transition-fast);
-  cursor: pointer;
-  /* Virtualized rows have a fixed height; clip multi-line ANSI/UTF-8 content
-     so it cannot overlap the next absolutely-positioned row. */
-  overflow: hidden;
-}
-
-.packet-item:hover {
-  background-color: var(--bg-hover);
-}
-
-.packet-item.tx .direction {
-  color: var(--text-inverse);
-  background: var(--accent-green);
-}
-
-.packet-item.rx .direction {
-  color: #06111f;
-  background: var(--accent-blue);
-}
-
-.packet-item.tx {
-  border-left: 2px solid var(--accent-green);
-  padding-left: 8px;
-  background-image: linear-gradient(90deg, var(--accent-green-subtle), transparent 140px);
-}
-
-.packet-item.rx {
-  border-left: 2px solid var(--accent-blue);
-  padding-left: 8px;
-  background-image: linear-gradient(90deg, var(--accent-blue-subtle), transparent 140px);
 }
 
 .col-dir {
@@ -424,29 +489,11 @@ async function handleCopySelect(key: string) {
   font-size: 11px;
 }
 
-.direction {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 18px;
-  border-radius: var(--radius-full);
-  font-weight: var(--font-weight-bold);
-  line-height: 18px;
-}
-
 .col-data {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   letter-spacing: 0.3px;
-  /* Single-line cells fill the 22px track (no visual change); for wrapped
-     ANSI/UTF-8 content, top-align so the clipped row shows the first line. */
-  align-self: start;
-}
-
-.ansi-data {
-  white-space: pre-wrap;
-  word-break: break-all;
 }
 
 .col-mode {

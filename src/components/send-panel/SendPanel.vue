@@ -1,6 +1,6 @@
 <template>
   <div class="send-panel">
-    <div class="send-input-row">
+    <div class="send-input-row" :class="{ 'send-flash': showFlash }">
       <n-input
         :value="modelValue"
         type="textarea"
@@ -16,6 +16,7 @@
     <div class="send-actions">
       <div class="send-left">
         <n-checkbox v-model:checked="isHex" size="small" :disabled="looping">HEX</n-checkbox>
+        <span class="options-divider" aria-hidden="true"></span>
         <n-select
           v-model:value="lineEnding"
           :options="lineEndingOptions"
@@ -56,7 +57,13 @@
           </template>
           {{ looping ? '停止循环' : '循环发送' }}
         </n-button>
-        <n-button type="primary" size="small" @click="handleSend" :disabled="!canSend">
+        <n-button
+          type="primary"
+          size="small"
+          @click="handleSend"
+          :disabled="!canSend"
+          class="send-btn"
+        >
           <template #icon>
             <SendHorizontal class="icon-sm" />
           </template>
@@ -64,73 +71,79 @@
         </n-button>
       </div>
     </div>
-    <div class="quick-row">
-      <div class="quick-form">
-        <n-input
-          v-model:value="quickName"
-          size="tiny"
-          placeholder="快捷名称"
-          style="width: 110px"
-        />
-        <n-button size="tiny" @click="addQuickCommand" :disabled="!modelValue.trim()">
-          <template #icon>
-            <BookmarkPlus class="icon-sm" />
-          </template>
-          保存快捷
-        </n-button>
-      </div>
-      <div v-if="quickCommands.length > 0" class="quick-list">
-        <div
-          v-for="cmd in quickCommands"
-          :key="cmd.id"
-          class="quick-item"
-          role="button"
-          :tabindex="disabled ? -1 : 0"
-          :aria-label="`发送快捷命令 ${cmd.name}`"
-          :title="cmd.data"
-          @click="sendQuick(cmd)"
-          @keydown.enter="sendQuick(cmd)"
-          @keydown.space.prevent="sendQuick(cmd)"
-        >
-          <span class="history-tag">{{ cmd.isHex ? 'HEX' : 'TXT' }}</span>
-          <span>{{ cmd.name }}</span>
-          <button
-            class="quick-remove"
-            type="button"
-            @click.stop="emit('removeQuickCommand', cmd.id)"
-            title="删除快捷命令"
-          >
-            <X class="icon-sm" />
-          </button>
+    <div class="collapsible-section">
+      <button class="section-toggle" type="button" @click="quickExpanded = !quickExpanded">
+        <span class="toggle-label">
+          <BookmarkPlus class="icon-sm" />
+          快捷命令
+        </span>
+        <ChevronRight class="toggle-icon" :class="{ expanded: quickExpanded }" />
+      </button>
+      <div class="section-body" :class="{ collapsed: !quickExpanded }">
+        <div class="quick-row">
+          <div class="quick-form">
+            <n-input
+              v-model:value="quickName"
+              size="tiny"
+              placeholder="快捷名称"
+              style="width: 110px"
+            />
+            <n-button size="tiny" @click="addQuickCommand" :disabled="!modelValue.trim()">
+              <template #icon>
+                <BookmarkPlus class="icon-sm" />
+              </template>
+              保存快捷
+            </n-button>
+          </div>
+          <div v-if="quickCommands.length > 0" class="quick-list">
+            <div
+              v-for="cmd in quickCommands"
+              :key="cmd.id"
+              class="quick-item"
+              :title="cmd.data"
+              @click="sendQuick(cmd)"
+            >
+              <span class="history-tag">{{ cmd.isHex ? 'HEX' : 'TXT' }}</span>
+              <span>{{ cmd.name }}</span>
+              <button
+                class="quick-remove"
+                type="button"
+                @click.stop="emit('removeQuickCommand', cmd.id)"
+                title="删除快捷命令"
+              >
+                <X class="icon-sm" />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
-    <div v-if="history.length > 0" class="send-history">
-      <div class="history-header">
-        <span class="history-title">
+    <div v-if="history.length > 0" class="collapsible-section">
+      <button class="section-toggle" type="button" @click="historyExpanded = !historyExpanded">
+        <span class="toggle-label">
           <HistoryIcon class="icon-sm" />
           历史记录
         </span>
-        <button class="history-clear" type="button" @click="emit('clearHistory')">
-          <Trash2 class="icon-sm" />
-          清除
-        </button>
-      </div>
-      <div class="history-list">
-        <div
-          v-for="(item, i) in history"
-          :key="i"
-          class="history-item"
-          role="button"
-          :tabindex="disabled ? -1 : 0"
-          :aria-label="`重发 ${item.data}`"
-          @click="resend(item)"
-          @keydown.enter="resend(item)"
-          @keydown.space.prevent="resend(item)"
-          :title="item.data"
-        >
-          <span class="history-tag">{{ item.isHex ? 'HEX' : 'TXT' }}</span>
-          <span class="history-text">{{ truncate(item.data, 40) }}</span>
+        <div class="toggle-right">
+          <button class="history-clear" type="button" @click.stop="emit('clearHistory')">
+            <Trash2 class="icon-sm" />
+            清除
+          </button>
+          <ChevronRight class="toggle-icon" :class="{ expanded: historyExpanded }" />
+        </div>
+      </button>
+      <div class="section-body" :class="{ collapsed: !historyExpanded }">
+        <div class="history-list">
+          <div
+            v-for="(item, i) in history"
+            :key="i"
+            class="history-item"
+            @click="resend(item)"
+            :title="item.data"
+          >
+            <span class="history-tag">{{ item.isHex ? 'HEX' : 'TXT' }}</span>
+            <span class="history-text">{{ truncate(item.data, 40) }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -142,6 +155,7 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
 import {
   BookmarkPlus,
+  ChevronRight,
   History as HistoryIcon,
   Repeat2,
   SendHorizontal,
@@ -150,8 +164,7 @@ import {
   X,
 } from 'lucide-vue-next';
 import {
-  appendLineEnding,
-  computeSendByteCount,
+  encodeUtf8,
   isValidHex as checkValidHex,
   normalizeHex,
   parseHex,
@@ -194,15 +207,14 @@ const loopInterval = computed({
   get: () => appStore.loopIntervalMs,
   set: (value) => appStore.setLoopIntervalMs(value ?? 1000),
 });
-const appendChecksum = computed({
-  get: () => appStore.appendChecksum,
-  set: (value: 'none' | ChecksumType) => {
-    appStore.appendChecksum = value;
-  },
-});
+const appendChecksum = ref<'none' | ChecksumType>('none');
 const looping = ref(false);
 const quickName = ref('');
+const quickExpanded = ref(true);
+const historyExpanded = ref(false);
+const showFlash = ref(false);
 let loopTimer: ReturnType<typeof setInterval> | null = null;
+let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
 const lineEndingOptions = [
   { label: '无结尾', value: 'none' },
@@ -218,16 +230,18 @@ const isValidHex = computed(() => {
   return checkValidHex(props.modelValue);
 });
 
-const byteCount = computed(() =>
-  computeSendByteCount(props.modelValue, isHex.value, appendChecksum.value, lineEnding.value),
-);
+const byteCount = computed(() => {
+  if (!props.modelValue.trim()) return 0;
+  if (isHex.value) {
+    const cleaned = props.modelValue.replace(/[^0-9a-fA-F]/g, '');
+    return Math.floor(cleaned.length / 2);
+  }
+  return encodeUtf8(withLineEnding(props.modelValue)).length;
+});
 
 const canSend = computed(() => {
   if (props.disabled || !props.modelValue.trim()) return false;
   if (isHex.value && !isValidHex.value) return false;
-  // Disable (and block the loop from starting) when the payload exceeds the
-  // send limit — otherwise a loop would spam the "too large" error every tick.
-  if (byteCount.value > MAX_INPUT_SIZE) return false;
   return true;
 });
 
@@ -252,20 +266,24 @@ watch(
 
 onUnmounted(() => {
   stopLoop();
+  if (flashTimer) clearTimeout(flashTimer);
 });
 
 function withLineEnding(data: string): string {
   if (isHex.value) return data;
-  return appendLineEnding(data, lineEnding.value);
+  const endings: Record<LineEnding, string> = {
+    none: '',
+    CR: '\r',
+    LF: '\n',
+    CRLF: '\r\n',
+  };
+  return data + endings[lineEnding.value];
 }
 
 async function buildData(): Promise<string | null> {
   let data = props.modelValue;
 
-  // byteCount is byte-accurate (hex bytes incl. checksum, or UTF-8 bytes incl.
-  // line ending), matching what send() actually writes — checking the raw
-  // string length would falsely cap HEX at ~1/3 of the real limit.
-  if (byteCount.value > MAX_INPUT_SIZE) {
+  if (data.length > MAX_INPUT_SIZE) {
     message.error('输入数据过大，最大支持 1MB');
     return null;
   }
@@ -292,9 +310,18 @@ async function handleSend() {
   const ok = await props.onSend(data, isHex.value);
   if (ok) {
     if (!looping.value) updateInput('');
+    triggerFlash();
   } else {
     message.error('发送失败，请检查连接状态');
   }
+}
+
+function triggerFlash() {
+  showFlash.value = true;
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    showFlash.value = false;
+  }, 300);
 }
 
 function toggleLoop() {
@@ -363,7 +390,7 @@ function formatHexInput() {
   padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: var(--space-sm);
   background: var(--bg-secondary);
 }
 
@@ -372,34 +399,128 @@ function formatHexInput() {
   border-radius: var(--radius-lg);
   background: var(--bg-inset);
   padding: 1px;
+  position: relative;
+  overflow: hidden;
+  transition:
+    border-color var(--transition-normal),
+    box-shadow var(--transition-normal);
+}
+
+.send-input-row:focus-within {
+  border-color: var(--color-primary-muted);
+  box-shadow: var(--shadow-focus);
+}
+
+.send-input-row.send-flash::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--color-primary-subtle), transparent);
+  animation: send-flash 300ms ease;
+  pointer-events: none;
 }
 
 .send-actions {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-md);
   flex-wrap: wrap;
 }
 
 .send-left {
   display: flex;
-  gap: 7px;
+  gap: var(--space-sm);
   align-items: center;
   flex-wrap: wrap;
 }
 
+.options-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border-color);
+  flex-shrink: 0;
+}
+
 .send-right {
   display: flex;
-  gap: 8px;
+  gap: var(--space-sm);
   align-items: center;
   margin-left: auto;
+}
+
+.send-btn:active {
+  transform: scale(0.95);
+}
+
+.collapsible-section {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+.section-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  cursor: pointer;
+  margin-bottom: 6px;
+  transition: color var(--transition-fast);
+}
+
+.section-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toggle-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggle-icon {
+  width: 12px;
+  height: 12px;
+  color: var(--text-dim);
+  transition: transform var(--transition-normal);
+}
+
+.toggle-icon.expanded {
+  transform: rotate(90deg);
+}
+
+.section-body {
+  overflow: hidden;
+  max-height: 200px;
+  opacity: 1;
+  transition:
+    max-height var(--transition-slow),
+    opacity var(--transition-normal);
+}
+
+.section-body.collapsed {
+  max-height: 0;
+  opacity: 0;
 }
 
 .quick-row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--space-sm);
   min-height: 24px;
   flex-wrap: wrap;
 }
@@ -409,7 +530,7 @@ function formatHexInput() {
 .quick-item {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-xs);
 }
 
 .quick-list {
@@ -427,18 +548,14 @@ function formatHexInput() {
   color: var(--text-secondary);
   transition:
     border-color var(--transition-fast),
-    background var(--transition-fast);
+    background var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .quick-item:hover {
   border-color: var(--accent-green);
   background: var(--accent-green-subtle);
-}
-
-.quick-item:focus-visible,
-.history-item:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 1px;
+  transform: translateY(-1px);
 }
 
 .quick-remove {
@@ -456,7 +573,7 @@ function formatHexInput() {
 
 .quick-remove:hover {
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-hover);
 }
 
 .byte-count {
@@ -467,29 +584,6 @@ function formatHexInput() {
   background: var(--bg-tertiary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-full);
-}
-
-.send-history {
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 8px;
-}
-
-.history-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-
-.history-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0;
-  font-weight: 600;
 }
 
 .history-clear {
@@ -516,14 +610,13 @@ function formatHexInput() {
 .history-list {
   display: flex;
   gap: 4px;
-  overflow-y: auto;
+  overflow-x: auto;
   max-height: 64px;
   flex-wrap: wrap;
-  align-content: flex-start;
 }
 
 .history-list::-webkit-scrollbar {
-  width: 3px;
+  height: 3px;
 }
 
 .history-item {
@@ -543,12 +636,14 @@ function formatHexInput() {
   max-width: 200px;
   transition:
     border-color var(--transition-normal),
-    background var(--transition-normal);
+    background var(--transition-normal),
+    transform var(--transition-fast);
 }
 
 .history-item:hover {
   border-color: var(--accent-green);
   background: var(--accent-green-subtle);
+  transform: translateY(-1px);
 }
 
 .history-tag {

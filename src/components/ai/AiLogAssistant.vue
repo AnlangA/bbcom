@@ -227,7 +227,7 @@ function clearMessages() {
 }
 
 .message-list {
-  max-height: 128px;
+  max-height: 200px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -279,7 +279,7 @@ function clearMessages() {
   border-radius: var(--radius-lg);
   background: var(--bg-tertiary);
   box-shadow: var(--shadow-inset);
-  max-height: 220px;
+  max-height: 320px;
   overflow-y: auto;
 }
 

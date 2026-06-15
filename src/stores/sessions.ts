@@ -1,14 +1,15 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { computed, markRaw, ref } from 'vue';
 import type {
   AiChatMessage,
   AiModel,
-  LogAiContextMode,
-  SerialSession,
   DataFrame,
+  LogAiContextMode,
   SendHistoryEntry,
+  SerialSession,
 } from '../types';
-import { MAX_FRAMES, MAX_HISTORY } from '../types';
+import { MAX_HISTORY } from '../types';
+import { maxBufferFrames } from '../lib/buffer-config';
 import { nowMillis } from '../lib/time';
 
 const FRAME_TRIM_THRESHOLD = 500;
@@ -30,6 +31,8 @@ export const useSessionStore = defineStore('sessions', () => {
       portConfig,
       isConnected: false,
       frames: [],
+      pausedFrames: [],
+      capturePaused: false,
       txBytes: 0,
       rxBytes: 0,
       txFrames: 0,
@@ -77,17 +80,24 @@ export const useSessionStore = defineStore('sessions', () => {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return undefined;
 
-    const fullFrame: DataFrame = {
+    // Frames are immutable after creation; markRaw opts them (and their
+    // Uint8Array payload) out of deep reactivity, so Vue never builds per-byte
+    // proxy traps across up to maxBufferFrames entries — the dominant cost at
+    // high baud rates. The arrays themselves stay reactive (length changes
+    // still trigger updates); only the element contents are raw.
+    const fullFrame: DataFrame = markRaw({
       ...frame,
       id: crypto.randomUUID(),
       timestamp: nowMillis(),
-    };
+    });
 
-    session.frames.push(fullFrame);
-
-    if (session.frames.length > MAX_FRAMES + FRAME_TRIM_THRESHOLD) {
-      const trimCount = session.frames.length - MAX_FRAMES;
-      session.frames.splice(0, trimCount);
+    // While capture is paused, hold frames off-screen so the live view freezes
+    // without losing data; resuming flushes them back in order.
+    const max = maxBufferFrames.value;
+    const target = session.capturePaused ? session.pausedFrames : session.frames;
+    target.push(fullFrame);
+    if (target.length > max + FRAME_TRIM_THRESHOLD) {
+      target.splice(0, target.length - max);
     }
 
     if (frame.direction === 'TX') {
@@ -108,7 +118,7 @@ export const useSessionStore = defineStore('sessions', () => {
     if (connected) {
       if (!session.startTime) session.startTime = nowMillis();
     } else {
-      // Reset so the StatusBar duration reflects the *active* connection and
+      // Reset so the StatusBar duration reflects the active connection and
       // does not accumulate offline time across reconnects.
       session.startTime = null;
     }
@@ -118,10 +128,27 @@ export const useSessionStore = defineStore('sessions', () => {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.frames = [];
+    session.pausedFrames = [];
+    session.capturePaused = false;
     session.txBytes = 0;
     session.rxBytes = 0;
     session.txFrames = 0;
     session.rxFrames = 0;
+  }
+
+  function setCapturePaused(sessionId: string, paused: boolean) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session || session.capturePaused === paused) return;
+    session.capturePaused = paused;
+    if (!paused && session.pausedFrames.length > 0) {
+      // Flush the off-screen buffer back into the live view, preserving order.
+      const max = maxBufferFrames.value;
+      for (const held of session.pausedFrames) session.frames.push(held);
+      session.pausedFrames = [];
+      if (session.frames.length > max + FRAME_TRIM_THRESHOLD) {
+        session.frames.splice(0, session.frames.length - max);
+      }
+    }
   }
 
   function addSendHistory(sessionId: string, entry: SendHistoryEntry) {
@@ -199,17 +226,27 @@ export const useSessionStore = defineStore('sessions', () => {
   function addLogAiMessage(sessionId: string, message: Omit<AiChatMessage, 'id' | 'timestamp'>) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.logAiMessages.push({
-      ...message,
-      id: crypto.randomUUID(),
-      timestamp: Date.now(),
-    });
+    session.logAiMessages.push(
+      markRaw({
+        ...message,
+        id: crypto.randomUUID(),
+        timestamp: Date.now(),
+      }),
+    );
   }
 
   function clearLogAiMessages(sessionId: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.logAiMessages = [];
+  }
+
+  function reorderSessions(fromIndex: number, toIndex: number) {
+    if (fromIndex === toIndex) return;
+    if (fromIndex < 0 || fromIndex >= sessions.value.length) return;
+    if (toIndex < 0 || toIndex >= sessions.value.length) return;
+    const [moved] = sessions.value.splice(fromIndex, 1);
+    sessions.value.splice(toIndex, 0, moved);
   }
 
   return {
@@ -223,6 +260,7 @@ export const useSessionStore = defineStore('sessions', () => {
     addFrame,
     setConnected,
     clearFrames,
+    setCapturePaused,
     addSendHistory,
     clearSendHistory,
     setSendDraft,
@@ -235,5 +273,6 @@ export const useSessionStore = defineStore('sessions', () => {
     setLogAiFrameLimit,
     addLogAiMessage,
     clearLogAiMessages,
+    reorderSessions,
   };
 });

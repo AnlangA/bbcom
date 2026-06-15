@@ -1,14 +1,13 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
-import type { ChecksumType, DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
+import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
 import { loadJson, loadString, saveJson, saveString } from '../lib/storage';
 import { clearSecretString, loadSecretString, saveSecretString } from '../lib/secure-settings';
+import { maxBufferFrames, setMaxBufferFrames } from '../lib/buffer-config';
 
 const STORAGE_KEY = 'bbcom-app-settings';
 const AI_API_KEY_STORAGE_KEY = `${STORAGE_KEY}:ai-api-key`;
 const AI_API_KEY_SECRET_KEY = 'ai-api-key';
-
-export type AppendChecksum = 'none' | ChecksumType;
 
 export const useAppStore = defineStore('app', () => {
   const displayMode = ref<DisplayMode>('HEX');
@@ -19,15 +18,17 @@ export const useAppStore = defineStore('app', () => {
   const lineEnding = ref<LineEnding>('none');
   const sendAsHex = ref(false);
   const loopIntervalMs = ref(1000);
-  const appendChecksum = ref<AppendChecksum>('none');
   const ansiColorEnabled = ref(true);
-  const sidebarCollapsed = ref(false);
+  const autoReconnect = ref(false);
+  const theme = ref<'dark' | 'light'>('dark');
   const aiApiKey = ref('');
   const aiEnableCodingPlan = ref(false);
   const aiCommandDraft = ref('');
   const aiCommandSeq = ref(0);
   const pendingAiCommand = ref('');
   const aiApiKeyLoaded = ref(false);
+  const sidebarWidth = ref(292);
+  const sidebarCollapsed = ref(false);
   let loaded = false;
   let aiKeyLoadSeq = 0;
 
@@ -41,10 +42,13 @@ export const useAppStore = defineStore('app', () => {
       lineEnding: lineEnding.value,
       sendAsHex: sendAsHex.value,
       loopIntervalMs: loopIntervalMs.value,
-      appendChecksum: appendChecksum.value,
       ansiColorEnabled: ansiColorEnabled.value,
-      sidebarCollapsed: sidebarCollapsed.value,
       aiEnableCodingPlan: aiEnableCodingPlan.value,
+      sidebarWidth: sidebarWidth.value,
+      sidebarCollapsed: sidebarCollapsed.value,
+      maxBufferFrames: maxBufferFrames.value,
+      autoReconnect: autoReconnect.value,
+      theme: theme.value,
     });
     if (saved.displayMode) displayMode.value = saved.displayMode;
     if (typeof saved.autoScroll === 'boolean') autoScroll.value = saved.autoScroll;
@@ -54,13 +58,17 @@ export const useAppStore = defineStore('app', () => {
     if (saved.lineEnding) lineEnding.value = saved.lineEnding;
     if (typeof saved.sendAsHex === 'boolean') sendAsHex.value = saved.sendAsHex;
     if (typeof saved.loopIntervalMs === 'number') loopIntervalMs.value = saved.loopIntervalMs;
-    if (saved.appendChecksum) appendChecksum.value = saved.appendChecksum;
     if (typeof saved.ansiColorEnabled === 'boolean')
       ansiColorEnabled.value = saved.ansiColorEnabled;
-    if (typeof saved.sidebarCollapsed === 'boolean')
-      sidebarCollapsed.value = saved.sidebarCollapsed;
     if (typeof saved.aiEnableCodingPlan === 'boolean')
       aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
+    if (typeof saved.sidebarWidth === 'number')
+      sidebarWidth.value = Math.max(252, Math.min(340, saved.sidebarWidth));
+    if (typeof saved.sidebarCollapsed === 'boolean')
+      sidebarCollapsed.value = saved.sidebarCollapsed;
+    if (typeof saved.maxBufferFrames === 'number') setMaxBufferFrames(saved.maxBufferFrames);
+    if (typeof saved.autoReconnect === 'boolean') autoReconnect.value = saved.autoReconnect;
+    if (saved.theme === 'light') theme.value = 'light';
     aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
     void loadAiApiKey();
@@ -81,10 +89,13 @@ export const useAppStore = defineStore('app', () => {
         lineEnding: lineEnding.value,
         sendAsHex: sendAsHex.value,
         loopIntervalMs: loopIntervalMs.value,
-        appendChecksum: appendChecksum.value,
         ansiColorEnabled: ansiColorEnabled.value,
-        sidebarCollapsed: sidebarCollapsed.value,
         aiEnableCodingPlan: aiEnableCodingPlan.value,
+        sidebarWidth: sidebarWidth.value,
+        sidebarCollapsed: sidebarCollapsed.value,
+        maxBufferFrames: maxBufferFrames.value,
+        autoReconnect: autoReconnect.value,
+        theme: theme.value,
       });
     }, 300);
   }
@@ -99,10 +110,13 @@ export const useAppStore = defineStore('app', () => {
       lineEnding,
       sendAsHex,
       loopIntervalMs,
-      appendChecksum,
       ansiColorEnabled,
-      sidebarCollapsed,
       aiEnableCodingPlan,
+      sidebarWidth,
+      sidebarCollapsed,
+      maxBufferFrames,
+      autoReconnect,
+      theme,
     ],
     save,
   );
@@ -173,6 +187,14 @@ export const useAppStore = defineStore('app', () => {
     return command;
   }
 
+  function setSidebarWidth(width: number) {
+    sidebarWidth.value = Math.max(252, Math.min(340, Math.round(width)));
+  }
+
+  function toggleSidebarCollapsed() {
+    sidebarCollapsed.value = !sidebarCollapsed.value;
+  }
+
   async function loadAiApiKey() {
     const seq = (aiKeyLoadSeq += 1);
     aiApiKeyLoaded.value = false;
@@ -219,15 +241,18 @@ export const useAppStore = defineStore('app', () => {
     lineEnding,
     sendAsHex,
     loopIntervalMs,
-    appendChecksum,
     ansiColorEnabled,
-    sidebarCollapsed,
     aiApiKey,
     aiEnableCodingPlan,
+    maxBufferFrames,
+    autoReconnect,
+    theme,
     aiCommandDraft,
     aiCommandSeq,
     pendingAiCommand,
     aiApiKeyLoaded,
+    sidebarWidth,
+    sidebarCollapsed,
     setDisplayMode,
     toggleAutoScroll,
     toggleShowTimestamp,
@@ -239,8 +264,11 @@ export const useAppStore = defineStore('app', () => {
     setLoopIntervalMs,
     setAiApiKey,
     setAiEnableCodingPlan,
+    setMaxBufferFrames,
     applyAiCommand,
     setPendingAiCommand,
     consumePendingAiCommand,
+    setSidebarWidth,
+    toggleSidebarCollapsed,
   };
 });

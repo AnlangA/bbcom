@@ -1,8 +1,7 @@
 import { ref } from 'vue';
 import { save } from '@tauri-apps/plugin-dialog';
 import type { DataFrame, DisplayMode } from '../types';
-import { invokeExportData } from '../lib/ipc';
-import { logger } from '../lib/logger';
+import { getCommandErrorMessage, invokeExportData } from '../lib/ipc';
 import { resolveExportFormat, type ExportChoice } from '../lib/constants';
 
 const EXT_MAP: Record<ExportChoice, { name: string; ext: string }> = {
@@ -12,9 +11,8 @@ const EXT_MAP: Record<ExportChoice, { name: string; ext: string }> = {
   bin: { name: 'BIN', ext: 'bin' },
 };
 
-/** Distinguishes a user cancel from a real failure so callers don't surface a
- * spurious error when the user simply dismisses the save dialog. */
-export type ExportResult = 'success' | 'cancelled' | 'error';
+/** `ok:true` on success; `ok:false` with no `error` when the user cancelled the save dialog. */
+export type ExportResult = { ok: true } | { ok: false; error?: string };
 
 export function useExport() {
   const isExporting = ref(false);
@@ -35,17 +33,15 @@ export function useExport() {
           },
         ],
       });
-      if (!path) return 'cancelled';
+      if (!path) return { ok: false };
 
-      // The text export follows the selected display mode so the saved file
-      // matches the encoding the user is viewing (HEX → hex, ASCII/UTF-8 →
-      // decoded text). See resolveExportFormat.
       const format = resolveExportFormat(choice, displayMode);
       await invokeExportData(frames, format, path);
-      return 'success';
+      return { ok: true };
     } catch (e) {
-      logger.warn('export failed (choice=%s, displayMode=%s):', choice, displayMode, e);
-      return 'error';
+      // Surface the typed Rust error (path validation, IO, too-many-frames) instead
+      // of a generic toast. The serialized AppError is { type, details: { message } }.
+      return { ok: false, error: getCommandErrorMessage(e, '导出失败') };
     } finally {
       isExporting.value = false;
     }

@@ -6,10 +6,9 @@
           <Cable class="icon-sm" />
           串口选择
         </span>
-        <ChevronRight v-if="collapsed.port" class="toggle-icon" />
-        <ChevronDown v-else class="toggle-icon" />
+        <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.port }" />
       </button>
-      <div v-show="!collapsed.port">
+      <div class="section-body" :class="{ collapsed: collapsed.port }">
         <div class="port-row">
           <n-select
             v-model:value="selectedPort"
@@ -43,10 +42,9 @@
           <Settings2 class="icon-sm" />
           连接参数
         </span>
-        <ChevronRight v-if="collapsed.config" class="toggle-icon" />
-        <ChevronDown v-else class="toggle-icon" />
+        <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.config }" />
       </button>
-      <div v-show="!collapsed.config">
+      <div class="section-body" :class="{ collapsed: collapsed.config }">
         <div class="config-grid">
           <div class="config-item">
             <label>波特率</label>
@@ -71,6 +69,17 @@
               :options="flowControlOptions"
               size="small"
             />
+          </div>
+          <div class="config-item config-signals">
+            <label>信号</label>
+            <div class="signals">
+              <label class="signal-toggle"
+                ><n-switch v-model:value="config.dtr" size="small" /> DTR</label
+              >
+              <label class="signal-toggle"
+                ><n-switch v-model:value="config.rts" size="small" /> RTS</label
+              >
+            </div>
           </div>
         </div>
       </div>
@@ -98,10 +107,9 @@
           <Hash class="icon-sm" />
           校验和计算
         </span>
-        <ChevronRight v-if="collapsed.checksum" class="toggle-icon" />
-        <ChevronDown v-else class="toggle-icon" />
+        <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.checksum }" />
       </button>
-      <div v-show="!collapsed.checksum">
+      <div class="section-body" :class="{ collapsed: collapsed.checksum }">
         <div class="checksum-grid">
           <n-input
             v-model:value="checksumInput"
@@ -119,21 +127,12 @@
           <div class="checksum-actions">
             <n-select v-model:value="checksumAlgo" :options="checksumAlgoOptions" size="small" />
           </div>
-          <div
-            v-if="checksumResult"
-            class="checksum-result"
-            :class="{ error: isChecksumError }"
-            @click="copyChecksum"
-            :title="isChecksumError ? undefined : '点击复制'"
-          >
+          <div v-if="checksumResult" class="checksum-result" @click="copyChecksum" title="点击复制">
             <div>
               <span class="checksum-label">结果</span>
               <span class="checksum-algo">{{ checksumAlgoLabel }}</span>
             </div>
-            <span class="checksum-value-row">
-              <span class="checksum-value">{{ checksumResult }}</span>
-              <Copy v-if="!isChecksumError" class="icon-sm copy-icon" />
-            </span>
+            <span class="checksum-value">{{ checksumResult }}</span>
           </div>
         </div>
       </div>
@@ -143,24 +142,14 @@
 
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue';
-import { NSelect, NButton, NInput, useMessage } from 'naive-ui';
-import {
-  Cable,
-  ChevronDown,
-  ChevronRight,
-  Copy,
-  Hash,
-  Plus,
-  RefreshCw,
-  Settings2,
-} from 'lucide-vue-next';
+import { NSelect, NButton, NInput, NSwitch } from 'naive-ui';
+import { Cable, ChevronRight, Hash, Plus, RefreshCw, Settings2 } from 'lucide-vue-next';
 import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
-import { formatHex, hexByteCount, isValidHex, parseHex } from '../../lib/format';
+import { formatHex, isValidHex, parseHex } from '../../lib/format';
 import { calculateChecksum } from '../../lib/ipc';
-import { logger } from '../../lib/logger';
 import { checksumOptions } from '../../lib/checksum-constants';
 import {
   BAUD_RATES,
@@ -173,7 +162,6 @@ import type { ChecksumType } from '../../types';
 
 const serialStore = useSerialStore();
 const sessionStore = useSessionStore();
-const message = useMessage();
 const { createSession } = useSessionActions();
 const { ports, refresh } = usePortWatcher();
 const isRefreshing = ref(false);
@@ -225,11 +213,8 @@ const config = computed(() => serialStore.portConfig);
 
 async function refreshPorts() {
   isRefreshing.value = true;
-  try {
-    await refresh();
-  } finally {
-    isRefreshing.value = false;
-  }
+  await refresh();
+  isRefreshing.value = false;
 }
 
 function newSession() {
@@ -250,10 +235,7 @@ const flowControlOptions = FLOW_CONTROL_OPTIONS;
 const checksumInput = ref('');
 const checksumAlgo = ref<ChecksumType>('CHECKSUM');
 const checksumResult = ref('');
-const CHECKSUM_FAILED = '计算失败';
 let checksumTimer: ReturnType<typeof setTimeout> | null = null;
-
-const isChecksumError = computed(() => checksumResult.value === CHECKSUM_FAILED);
 
 const checksumAlgoOptions = checksumOptions;
 
@@ -262,7 +244,10 @@ const isValidHexInput = computed(() => {
   return isValidHex(checksumInput.value);
 });
 
-const checksumByteCount = computed(() => hexByteCount(checksumInput.value));
+const checksumByteCount = computed(() => {
+  const cleaned = checksumInput.value.replace(/[^0-9a-fA-F]/g, '');
+  return Math.floor(cleaned.length / 2);
+});
 
 const checksumAlgoLabel = computed(
   () =>
@@ -283,9 +268,8 @@ async function calcChecksum() {
   try {
     const res = await calculateChecksum(data, checksumAlgo.value);
     checksumResult.value = res.result;
-  } catch (e) {
-    logger.warn('checksum calculation failed:', e);
-    checksumResult.value = CHECKSUM_FAILED;
+  } catch {
+    checksumResult.value = '计算失败';
   }
 }
 
@@ -296,13 +280,11 @@ function normalizeChecksumInput() {
 }
 
 async function copyChecksum() {
-  if (!checksumResult.value || isChecksumError.value) return;
+  if (!checksumResult.value || checksumResult.value === '计算失败') return;
   try {
     await navigator.clipboard.writeText(checksumResult.value);
-    message.success('已复制');
-  } catch (e) {
-    logger.warn('clipboard write failed:', e);
-    message.error('复制失败');
+  } catch {
+    // ignore — clipboard may not be available in some environments
   }
 }
 </script>
@@ -319,7 +301,7 @@ async function copyChecksum() {
   padding: 10px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.018);
+  background: var(--surface-lift);
   box-shadow: var(--shadow-inset);
 }
 
@@ -346,6 +328,14 @@ async function copyChecksum() {
   color: var(--text-secondary);
 }
 
+.section-title:hover .toggle-icon {
+  transform: translateX(2px);
+}
+
+.section-title:hover .toggle-icon.expanded {
+  transform: translateX(-2px);
+}
+
 .section-heading {
   display: inline-flex;
   align-items: center;
@@ -357,6 +347,26 @@ async function copyChecksum() {
   height: 13px;
   color: var(--text-dim);
   transition: transform var(--transition-normal);
+}
+
+.toggle-icon.expanded {
+  transform: rotate(90deg);
+}
+
+.section-body {
+  overflow: hidden;
+  max-height: 500px;
+  opacity: 1;
+  transition:
+    max-height var(--transition-slow),
+    opacity var(--transition-normal),
+    margin-top var(--transition-normal);
+}
+
+.section-body.collapsed {
+  max-height: 0;
+  opacity: 0;
+  margin-top: -10px;
 }
 
 .port-row {
@@ -383,7 +393,7 @@ async function copyChecksum() {
 .empty-hint.warning {
   color: var(--accent-red);
   background: var(--accent-red-subtle);
-  border-color: rgba(244, 67, 54, 0.35);
+  border-color: var(--accent-red-border);
 }
 
 .config-grid {
@@ -409,6 +419,23 @@ async function copyChecksum() {
 
 .config-item .n-select {
   flex: 1;
+}
+
+.config-signals .signals {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.signal-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  cursor: pointer;
 }
 
 .checksum-grid {
@@ -445,34 +472,15 @@ async function copyChecksum() {
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: 13px;
+  cursor: copy;
   transition:
     border-color var(--transition-fast),
     background var(--transition-fast);
 }
 
-.checksum-result:not(.error) {
-  cursor: copy;
-}
-
-.checksum-result:not(.error):hover {
+.checksum-result:hover {
   border-color: var(--color-primary);
   background: rgba(61, 220, 151, 0.16);
-}
-
-.checksum-result.error {
-  background: var(--accent-red-subtle);
-  border-color: rgba(255, 107, 122, 0.4);
-  cursor: default;
-}
-
-.checksum-value-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.copy-icon {
-  color: var(--text-dim);
 }
 
 .checksum-label {
@@ -484,10 +492,6 @@ async function copyChecksum() {
   color: var(--accent-green);
   font-weight: 700;
   letter-spacing: 0.8px;
-}
-
-.checksum-result.error .checksum-value {
-  color: var(--accent-red);
 }
 
 .checksum-algo {

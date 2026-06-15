@@ -41,8 +41,6 @@ export const useSerialStore = defineStore('serial', () => {
     }, 300);
   }
 
-  // deep: portConfig is an object ref mutated in place by PortSelector's v-model
-  // (baudRate/dataBits/etc.); a shallow watch would miss those and skip persistence.
   watch([selectedPort, portConfig], save, { deep: true });
 
   function setSelectedPort(port: string) {

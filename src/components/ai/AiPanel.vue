@@ -90,10 +90,8 @@ async function toggleAlwaysOnTop() {
   padding: 10px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-xl);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 90px), var(--bg-secondary);
+  background: linear-gradient(180deg, var(--edge-highlight), transparent 90px), var(--bg-secondary);
   box-shadow: var(--shadow-lg), var(--shadow-inset);
-  backdrop-filter: blur(16px);
 }
 
 .ai-header {
@@ -124,7 +122,7 @@ async function toggleAlwaysOnTop() {
 }
 
 .drag-handle:hover {
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--surface-lift);
 }
 
 .title-group {
@@ -172,7 +170,7 @@ async function toggleAlwaysOnTop() {
 }
 
 :global(.ai-model-menu) {
-  max-height: 72px !important;
+  max-height: 200px !important;
   overflow-y: auto !important;
 }
 

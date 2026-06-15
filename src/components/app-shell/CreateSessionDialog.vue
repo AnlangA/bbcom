@@ -29,13 +29,20 @@
       <n-form-item label="流控">
         <n-select v-model:value="flowControl" :options="flowControlOptions" />
       </n-form-item>
+      <n-form-item class="form-full" label="信号控制">
+        <div class="signal-row">
+          <label class="signal-toggle"><n-switch v-model:value="dtr" size="small" /> DTR</label>
+          <label class="signal-toggle"><n-switch v-model:value="rts" size="small" /> RTS</label>
+          <span class="signal-hint">DTR/RTS 用于 Arduino 复位、ESP32 启动模式等</span>
+        </div>
+      </n-form-item>
     </n-form>
   </n-modal>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { NForm, NFormItem, NModal, NSelect } from 'naive-ui';
+import { NForm, NFormItem, NModal, NSelect, NSwitch } from 'naive-ui';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
@@ -77,6 +84,8 @@ const dataBits = ref<PortConfig['dataBits']>(8);
 const stopBits = ref<PortConfig['stopBits']>(1);
 const parity = ref<PortConfig['parity']>('none');
 const flowControl = ref<PortConfig['flowControl']>('none');
+const dtr = ref(false);
+const rts = ref(false);
 
 const usedPorts = computed(
   () =>
@@ -109,6 +118,8 @@ watch(
     stopBits.value = config.stopBits;
     parity.value = config.parity;
     flowControl.value = config.flowControl;
+    dtr.value = config.dtr;
+    rts.value = config.rts;
   },
   { immediate: true, deep: true },
 );
@@ -121,6 +132,8 @@ function createSession() {
     stopBits: stopBits.value,
     parity: parity.value,
     flowControl: flowControl.value,
+    dtr: dtr.value,
+    rts: rts.value,
   };
   serialStore.setPortConfig(config);
   createSessionFromConfig(portName.value, config);
@@ -140,6 +153,28 @@ function createSession() {
 
 .form-full {
   grid-column: 1 / -1;
+}
+
+.signal-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  flex-wrap: wrap;
+}
+
+.signal-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+
+.signal-hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-dim);
 }
 
 .session-form :deep(.n-form-item) {

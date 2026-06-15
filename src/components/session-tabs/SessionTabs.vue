@@ -1,19 +1,24 @@
 <template>
   <div class="session-tabs">
     <div class="tabs-header">
-      <div class="tabs-list" role="tablist" aria-label="串口会话">
+      <div class="tabs-list">
         <div
-          v-for="session in sessions"
+          v-for="(session, index) in sessions"
           :key="session.id"
           class="tab-item"
-          :class="{ active: session.id === activeId }"
-          role="tab"
-          tabindex="0"
-          :aria-selected="session.id === activeId"
-          :aria-label="tabTooltip(session)"
+          :class="{
+            active: session.id === activeId,
+            connected: session.isConnected,
+            dragging: dragIndex === index,
+            'drag-over': dragOverIndex === index,
+          }"
+          draggable="true"
           @click="switchSession(session.id)"
-          @keydown.enter="switchSession(session.id)"
-          @keydown.space.prevent="switchSession(session.id)"
+          @dragstart="onDragStart(index, $event)"
+          @dragover.prevent="onDragOver(index)"
+          @dragleave="onDragLeave"
+          @drop.prevent="onDrop(index)"
+          @dragend="onDragEnd"
           :title="tabTooltip(session)"
         >
           <span class="tab-status-dot" :class="{ connected: session.isConnected }"></span>
@@ -36,7 +41,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { Plus, X } from 'lucide-vue-next';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
@@ -51,6 +56,36 @@ const { requestCloseSession } = useSessionActions();
 
 const activeId = computed(() => sessionStore.activeSessionId ?? '');
 const sessions = computed(() => sessionStore.sessions);
+
+const dragIndex = ref<number | null>(null);
+const dragOverIndex = ref<number | null>(null);
+
+function onDragStart(index: number, e: DragEvent) {
+  dragIndex.value = index;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(index));
+  }
+}
+
+function onDragOver(index: number) {
+  dragOverIndex.value = index;
+}
+
+function onDragLeave() {
+  dragOverIndex.value = null;
+}
+
+function onDrop(toIndex: number) {
+  if (dragIndex.value !== null && dragIndex.value !== toIndex) {
+    sessionStore.reorderSessions(dragIndex.value, toIndex);
+  }
+}
+
+function onDragEnd() {
+  dragIndex.value = null;
+  dragOverIndex.value = null;
+}
 
 function closeSession(id: string) {
   requestCloseSession(id);
@@ -112,7 +147,8 @@ function tabTooltip(session: SerialSession): string {
   transition:
     background var(--transition-normal),
     color var(--transition-normal),
-    border-color var(--transition-normal);
+    border-color var(--transition-normal),
+    opacity var(--transition-fast);
   user-select: none;
   position: relative;
 }
@@ -122,16 +158,30 @@ function tabTooltip(session: SerialSession): string {
   color: var(--text-secondary);
 }
 
-.tab-item:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: -2px;
-}
-
 .tab-item.active {
   background: var(--bg-primary);
   color: var(--text-primary);
   border-color: var(--border-subtle);
   box-shadow: inset 0 2px 0 var(--color-primary);
+}
+
+.tab-item.connected {
+  border-left: 2px solid var(--accent-green);
+  background-image: linear-gradient(90deg, var(--accent-green-subtle), transparent 80px);
+}
+
+.tab-item.connected.active {
+  background-image:
+    linear-gradient(90deg, var(--accent-green-subtle), transparent 80px),
+    linear-gradient(180deg, var(--bg-primary), var(--bg-primary));
+}
+
+.tab-item.dragging {
+  opacity: 0.5;
+}
+
+.tab-item.drag-over {
+  border-left: 2px solid var(--color-primary);
 }
 
 .tab-port {
@@ -162,23 +212,25 @@ function tabTooltip(session: SerialSession): string {
   place-items: center;
   background: transparent;
   border: 0;
-  color: transparent;
+  color: var(--text-dim);
   cursor: pointer;
   padding: 0;
   border-radius: var(--radius-sm);
   margin-left: 2px;
   transition:
     color var(--transition-fast),
-    background var(--transition-fast);
+    background var(--transition-fast),
+    opacity var(--transition-fast);
 }
 
-.tab-item:hover .tab-close {
-  color: var(--text-muted);
+.tab-item:hover .tab-close,
+.tab-item.active .tab-close {
+  opacity: 1;
 }
 
 .tab-close:hover {
   color: var(--text-primary) !important;
-  background: rgba(255, 255, 255, 0.09);
+  background: var(--bg-hover);
 }
 
 .tab-add {
@@ -202,5 +254,6 @@ function tabTooltip(session: SerialSession): string {
   border-style: solid;
   color: var(--accent-green);
   background: var(--accent-green-subtle);
+  transform: scale(1.05);
 }
 </style>

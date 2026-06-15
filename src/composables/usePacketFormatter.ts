@@ -76,6 +76,10 @@ export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketForm
     return result;
   }
 
+  function stripAnsi(text: string): string {
+    return stripAnsiEscapes(text);
+  }
+
   function clearCaches() {
     formatCache.clear();
     hexSearchCache.clear();
@@ -90,6 +94,7 @@ export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketForm
     formatFrame,
     getHexSearchData,
     getTextSearchData,
+    stripAnsi,
     clearCaches,
   };
 }

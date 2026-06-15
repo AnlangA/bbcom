@@ -14,12 +14,20 @@ import type { PortConfig } from '../types';
 
 const MAX_RX_QUEUE_BYTES = MAX_INPUT_SIZE * 2;
 const MAX_RX_QUEUE_CHUNKS = 512;
+const RECONNECT_INTERVAL_MS = 1500;
+const MAX_RECONNECT_ATTEMPTS = 10;
 // Prefix used to recognize (and clear) the transient RX-overflow error so it
 // does not persist in the SessionView error pill after the buffer recovers.
 const RX_OVERFLOW_PREFIX = '接收缓冲区溢出';
 
 interface SerialConnectionOptions {
   onDisconnect?: () => void;
+  /** Fired once per connection when RX data is first dropped due to overflow. */
+  onOverflow?: (totalDroppedBytes: number) => void;
+  /** Polled at disconnect time so the toggle can change live. */
+  autoReconnect?: () => boolean;
+  onReconnecting?: () => void;
+  onReconnected?: () => void;
 }
 
 export function useSerialConnection(
@@ -35,21 +43,71 @@ export function useSerialConnection(
   const isConnecting = ref(false);
   const isConnected = ref(false);
   const error = ref<string | null>(null);
+  /** Cumulative RX bytes dropped due to queue overflow for this connection. */
+  const totalDroppedBytes = ref(0);
+  /** True while auto-reconnect is cycling through retry attempts. */
+  const reconnecting = ref(false);
 
   let dataQueue: Uint8Array[] = [];
   let totalQueueSize = 0;
   let droppedRxBytes = 0;
+  let overflowNotified = false;
   let rafId: number | null = null;
   let unlistenData: (() => void) | null = null;
   let unlistenDisconnect: (() => void) | null = null;
 
+  // Reconnect state
+  let intentionalClose = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectAttempts = 0;
+
+  /** Open the port, start listening, apply handshake lines, (re)register the data listener. */
+  async function openConnection() {
+    const p = new SerialPort({
+      path: portName,
+      baudRate: config.baudRate,
+      dataBits: mapDataBits(config.dataBits),
+      stopBits: mapStopBits(config.stopBits),
+      parity: mapParity(config.parity),
+      flowControl: mapFlowControl(config.flowControl),
+    });
+    await p.open();
+    port.value = p;
+    if (unlistenData) {
+      unlistenData();
+    }
+    // Register the data callback before starting the read pump. Tauri discards
+    // events that have no listener, so bytes arriving immediately on connect
+    // would otherwise be dropped in the startListening/listen gap.
+    unlistenData = await p.listen((data: string | number[] | Uint8Array) => {
+      const bytes =
+        data instanceof Uint8Array
+          ? data
+          : typeof data === 'string'
+            ? encodeUtf8(data)
+            : new Uint8Array(data as number[]);
+      enqueueReceivedBytes(bytes);
+    }, false);
+    await p.startListening();
+    // Apply DTR/RTS handshake levels — needed for Arduino auto-reset, ESP32
+    // boot-mode entry, modems, etc. Some drivers reject these writes; ignore
+    // so the connection itself still succeeds.
+    try {
+      await p.setDataTerminalReady(config.dtr);
+      await p.setRequestToSend(config.rts);
+    } catch {
+      // control-signal write unsupported on this driver — non-fatal
+    }
+  }
+
   async function start() {
     isConnecting.value = true;
     error.value = null;
-    // Tear down any leftover state from a previous connection (e.g. reconnect
-    // after an unexpected disconnect) so the old port's Tauri event listeners
-    // don't leak when we overwrite the references below, and stale unflushed
-    // RX data doesn't bleed into the new connection's first frame.
+    totalDroppedBytes.value = 0;
+    overflowNotified = false;
+    intentionalClose = false;
+    reconnecting.value = false;
+    stopReconnect();
     if (rafId) {
       cancelAnimationFrame(rafId);
       rafId = null;
@@ -57,66 +115,14 @@ export function useSerialConnection(
     dataQueue = [];
     totalQueueSize = 0;
     droppedRxBytes = 0;
-    if (unlistenData) {
-      unlistenData();
-      unlistenData = null;
-    }
-    if (unlistenDisconnect) {
-      unlistenDisconnect();
-      unlistenDisconnect = null;
-    }
-    if (port.value) {
-      const previous = port.value;
-      port.value = null;
-      try {
-        await previous.stopListening();
-        await previous.close();
-      } catch (e) {
-        logger.debug('serial previous-port cleanup failed for', portName, e);
-      }
-    }
-    let p: SerialPort | null = null;
+    await closePortSafely();
     try {
-      p = new SerialPort({
-        path: portName,
-        baudRate: config.baudRate,
-        dataBits: mapDataBits(config.dataBits),
-        stopBits: mapStopBits(config.stopBits),
-        parity: mapParity(config.parity),
-        flowControl: mapFlowControl(config.flowControl),
-      });
-      await p.open();
-      // Register the data callback BEFORE starting the read pump. Tauri
-      // discards events that have no listener, so bytes arriving the instant
-      // listening begins (e.g. a device that sends on connect) would otherwise
-      // be dropped during the gap between startListening and listen.
-      unlistenData = await p.listen((data: string | number[] | Uint8Array) => {
-        const bytes =
-          data instanceof Uint8Array
-            ? data
-            : typeof data === 'string'
-              ? encodeUtf8(data)
-              : new Uint8Array(data as number[]);
-
-        enqueueReceivedBytes(bytes);
-      }, false);
-      await p.startListening();
-      port.value = p;
+      await openConnection();
     } catch (e) {
-      // Roll back any partial registration so a failed connect leaves no leaks.
-      if (unlistenData) {
-        unlistenData();
-        unlistenData = null;
-      }
-      if (p) {
-        try {
-          await p.close();
-        } catch (closeErr) {
-          logger.debug('serial cleanup close failed for', portName, closeErr);
-        }
-      }
+      await closePortSafely();
       logger.warn('serial open failed for', portName, e);
       error.value = String(e);
+      isConnecting.value = false;
       return false;
     } finally {
       isConnecting.value = false;
@@ -125,16 +131,87 @@ export function useSerialConnection(
     isConnected.value = true;
     sessionStore.setConnected(sessionId, true);
 
+    // The disconnect event is a global per-port event — register it once and
+    // let it survive reconnects.
+    if (unlistenDisconnect) unlistenDisconnect();
     unlistenDisconnect = await listen(
       `plugin-serialplugin-disconnected-${escapeSerialPath(portName)}`,
-      () => {
-        isConnected.value = false;
-        sessionStore.setConnected(sessionId, false);
-        options?.onDisconnect?.();
-      },
+      onDisconnectEvent,
     );
 
     return true;
+  }
+
+  function onDisconnectEvent() {
+    if (intentionalClose) {
+      // Planned close via stop() — the caller already knows; just sync state.
+      isConnected.value = false;
+      sessionStore.setConnected(sessionId, false);
+      return;
+    }
+    // Unplanned disconnect (cable pulled, device reset, …)
+    isConnected.value = false;
+    sessionStore.setConnected(sessionId, false);
+    unlistenData = null;
+    port.value = null;
+
+    if (options?.autoReconnect?.()) {
+      startReconnect();
+    } else {
+      options?.onDisconnect?.();
+    }
+  }
+
+  function startReconnect() {
+    if (reconnecting.value || intentionalClose) return;
+    reconnecting.value = true;
+    reconnectAttempts = 0;
+    options?.onReconnecting?.();
+    scheduleReconnect();
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer || intentionalClose) return;
+    reconnectTimer = setTimeout(attemptReconnect, RECONNECT_INTERVAL_MS);
+  }
+
+  async function attemptReconnect() {
+    reconnectTimer = null;
+    if (intentionalClose) {
+      reconnecting.value = false;
+      return;
+    }
+    reconnectAttempts += 1;
+    if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+      reconnecting.value = false;
+      // Give up — treat as a normal disconnect so the UI reflects it.
+      options?.onDisconnect?.();
+      return;
+    }
+    try {
+      await openConnection();
+      if (intentionalClose) {
+        // The user disconnected while we were opening — close what we got.
+        await closePortSafely();
+        reconnecting.value = false;
+        return;
+      }
+      reconnecting.value = false;
+      isConnected.value = true;
+      error.value = null;
+      sessionStore.setConnected(sessionId, true);
+      options?.onReconnected?.();
+    } catch {
+      if (!intentionalClose) scheduleReconnect();
+    }
+  }
+
+  function stopReconnect() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    reconnecting.value = false;
   }
 
   function enqueueReceivedBytes(bytes: Uint8Array) {
@@ -146,12 +223,12 @@ export function useSerialConnection(
       const dropped = dataQueue.shift();
       if (!dropped) break;
       totalQueueSize -= dropped.length;
-      droppedRxBytes += dropped.length;
+      recordDrop(dropped.length);
     }
 
     if (bytes.length > MAX_RX_QUEUE_BYTES) {
       const retained = bytes.slice(bytes.length - MAX_RX_QUEUE_BYTES);
-      droppedRxBytes += bytes.length - retained.length;
+      recordDrop(bytes.length - retained.length);
       dataQueue.push(retained);
       totalQueueSize += retained.length;
     } else {
@@ -169,6 +246,18 @@ export function useSerialConnection(
 
     if (!rafId) {
       rafId = requestAnimationFrame(flushQueue);
+    }
+  }
+
+  function recordDrop(count: number) {
+    if (count <= 0) return;
+    droppedRxBytes += count;
+    totalDroppedBytes.value += count;
+    if (!overflowNotified) {
+      // Notify once per connection so silent data loss is at least surfaced
+      // once; the running total stays visible in the toolbar afterwards.
+      overflowNotified = true;
+      options?.onOverflow?.(totalDroppedBytes.value);
     }
   }
 
@@ -231,7 +320,29 @@ export function useSerialConnection(
     return true;
   }
 
+  async function closePortSafely() {
+    if (unlistenData) {
+      try {
+        unlistenData();
+      } catch {
+        // listener may already be gone after an unplanned disconnect
+      }
+      unlistenData = null;
+    }
+    if (port.value) {
+      try {
+        await port.value.stopListening();
+        await port.value.close();
+      } catch {
+        // ignore — port may already be closed
+      }
+      port.value = null;
+    }
+  }
+
   async function stop() {
+    intentionalClose = true;
+    stopReconnect();
     if (rafId) {
       cancelAnimationFrame(rafId);
       rafId = null;
@@ -239,40 +350,27 @@ export function useSerialConnection(
     dataQueue = [];
     totalQueueSize = 0;
     droppedRxBytes = 0;
-    // Clear any transient error (e.g. buffer-overflow) so a stale message does
-    // not linger in the SessionView error pill after disconnect.
     error.value = null;
-    if (unlistenData) {
-      unlistenData();
-      unlistenData = null;
-    }
+    await closePortSafely();
     if (unlistenDisconnect) {
       unlistenDisconnect();
       unlistenDisconnect = null;
-    }
-    if (port.value) {
-      try {
-        await port.value.stopListening();
-        await port.value.close();
-      } catch (e) {
-        // Closing an already-closed/disconnected port is expected; log at debug.
-        logger.debug('serial close ignored error for', portName, e);
-      }
-      port.value = null;
     }
     isConnected.value = false;
     sessionStore.setConnected(sessionId, false);
   }
 
   onUnmounted(() => {
-    stop();
+    void stop();
   });
 
   return {
     port,
     isConnecting,
     isConnected,
+    reconnecting,
     error,
+    totalDroppedBytes,
     start,
     send,
     stop,

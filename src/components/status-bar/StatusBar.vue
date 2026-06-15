@@ -139,6 +139,7 @@ const duration = computed(() => {
   color: var(--text-secondary);
   font-size: 11px;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   border-top: 1px solid var(--border-subtle);
   flex-shrink: 0;
   overflow-x: auto;
@@ -227,11 +228,12 @@ const duration = computed(() => {
 }
 
 .status-dot.connected {
-  background: var(--accent-green);
-  box-shadow: 0 0 0 3px var(--accent-green-subtle);
+  background: var(--color-success);
+  box-shadow: 0 0 0 3px var(--color-primary-subtle);
 }
 
 .status-dot.disconnected {
   background: var(--text-dim);
+  box-shadow: 0 0 0 3px var(--ring-muted);
 }
 </style>
