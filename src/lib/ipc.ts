@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { toRaw } from 'vue';
 import type { ChecksumAlgorithm, ExportFormat } from './constants';
 import type { DataFrame } from '../types';
 
@@ -38,7 +39,10 @@ export async function calculateChecksum(data: ArrayLike<number>, algorithm: Chec
 
 export async function invokeExportData(frames: DataFrame[], format: ExportFormat, path: string) {
   return invoke<void>('export_data', {
-    request: { frames, format, path },
+    // toRaw unwraps the reactive array proxy; frame elements are markRaw'd at
+    // creation, so the Tauri serializer walks raw typed arrays instead of
+    // recursing through per-byte proxies.
+    request: { frames: toRaw(frames), format, path },
   });
 }
 

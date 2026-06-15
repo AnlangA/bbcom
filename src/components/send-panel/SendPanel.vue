@@ -16,6 +16,7 @@
     <div class="send-actions">
       <div class="send-left">
         <n-checkbox v-model:checked="isHex" size="small" :disabled="looping">HEX</n-checkbox>
+        <span class="options-divider" aria-hidden="true"></span>
         <n-select
           v-model:value="lineEnding"
           :options="lineEndingOptions"
@@ -383,7 +384,7 @@ function formatHexInput() {
   padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: var(--space-sm);
   background: var(--bg-secondary);
 }
 
@@ -394,6 +395,14 @@ function formatHexInput() {
   padding: 1px;
   position: relative;
   overflow: hidden;
+  transition:
+    border-color var(--transition-normal),
+    box-shadow var(--transition-normal);
+}
+
+.send-input-row:focus-within {
+  border-color: var(--color-primary-muted);
+  box-shadow: var(--shadow-focus);
 }
 
 .send-input-row.send-flash::after {
@@ -409,20 +418,27 @@ function formatHexInput() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-md);
   flex-wrap: wrap;
 }
 
 .send-left {
   display: flex;
-  gap: 7px;
+  gap: var(--space-sm);
   align-items: center;
   flex-wrap: wrap;
 }
 
+.options-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border-color);
+  flex-shrink: 0;
+}
+
 .send-right {
   display: flex;
-  gap: 8px;
+  gap: var(--space-sm);
   align-items: center;
   margin-left: auto;
 }
@@ -498,7 +514,7 @@ function formatHexInput() {
 .quick-row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--space-sm);
   min-height: 24px;
   flex-wrap: wrap;
 }
@@ -508,7 +524,7 @@ function formatHexInput() {
 .quick-item {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-xs);
 }
 
 .quick-list {
@@ -551,7 +567,7 @@ function formatHexInput() {
 
 .quick-remove:hover {
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-hover);
 }
 
 .byte-count {

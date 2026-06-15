@@ -16,8 +16,11 @@
   --color-warning: #ffbf5f;
   --color-info: #60a5fa;
 
-  --color-tx: #57d68d;
-  --color-tx-subtle: rgba(87, 214, 141, 0.11);
+  /* Direction hues are deliberately distinct from the brand mint
+     (--color-primary/--color-success) so a transmitted row never reads as
+     "success/brand". TX = cool teal, RX = azure blue. */
+  --color-tx: #2dd4bf;
+  --color-tx-subtle: rgba(45, 212, 191, 0.12);
   --color-rx: #5aa9ff;
   --color-rx-subtle: rgba(90, 169, 255, 0.12);
 
@@ -31,6 +34,15 @@
   --bg-hover: rgba(255, 255, 255, 0.055);
   --bg-active: rgba(61, 220, 151, 0.14);
   --bg-selected: rgba(90, 169, 255, 0.12);
+
+  /* Theme-aware overlays — inverted by [data-theme='light'] below so the same
+     surfaces read correctly on either background. */
+  --surface-lift: rgba(255, 255, 255, 0.022);
+  --edge-highlight: rgba(255, 255, 255, 0.04);
+  --grid-line: rgba(255, 255, 255, 0.022);
+  --ring-muted: rgba(255, 255, 255, 0.04);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.24);
 
   /* Text */
   --text-primary: #eef3f7;
@@ -47,16 +59,19 @@
 
   /* Accents */
   --accent-green: var(--color-tx);
-  --accent-green-hover: #69e19d;
+  --accent-green-hover: #5ee8d8;
   --accent-green-subtle: var(--color-tx-subtle);
   --accent-blue: var(--color-rx);
+  --accent-blue-hover: #7cb9ff;
   --accent-blue-subtle: var(--color-rx-subtle);
   --accent-red: var(--color-error);
   --accent-red-subtle: rgba(255, 107, 122, 0.12);
+  --accent-red-border: rgba(255, 107, 122, 0.42);
   --accent-orange: #ff9f5a;
   --accent-orange-subtle: rgba(255, 159, 90, 0.12);
   --accent-amber: var(--color-warning);
   --accent-amber-subtle: rgba(255, 191, 95, 0.13);
+  --accent-amber-border: rgba(255, 191, 95, 0.42);
   --accent-violet: #a78bfa;
   --accent-violet-subtle: rgba(167, 139, 250, 0.13);
 
@@ -123,6 +138,61 @@
   --sidebar-width-max: 340px;
   --toolbar-height: 46px;
   --statusbar-height: 28px;
+}
+
+/*
+ * Light theme — applied via <html data-theme="light">. Only the surfaces,
+ * text, borders, shadows and overlays are inverted; brand/direction hues
+ * (mint, teal, azure) read well on both backgrounds so they are unchanged.
+ */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --color-primary-subtle: rgba(61, 220, 151, 0.16);
+  --color-primary-muted: rgba(61, 220, 151, 0.26);
+  --color-tx-subtle: rgba(45, 212, 191, 0.16);
+  --color-rx-subtle: rgba(90, 169, 255, 0.16);
+
+  --bg-app: #eef1f4;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f6f8fa;
+  --bg-tertiary: #eaeef2;
+  --bg-elevated: #ffffff;
+  --bg-inset: #e4e9ee;
+  --bg-hover: rgba(15, 22, 32, 0.05);
+  --bg-active: rgba(61, 220, 151, 0.16);
+  --bg-selected: rgba(90, 169, 255, 0.14);
+
+  --surface-lift: rgba(15, 22, 32, 0.022);
+  --edge-highlight: rgba(15, 22, 32, 0.03);
+  --grid-line: rgba(15, 22, 32, 0.05);
+  --ring-muted: rgba(15, 22, 32, 0.08);
+  --scrollbar-thumb: rgba(15, 22, 32, 0.16);
+  --scrollbar-thumb-hover: rgba(15, 22, 32, 0.26);
+
+  --text-primary: #0f1620;
+  --text-secondary: #303a45;
+  --text-muted: #5c6773;
+  --text-dim: #8a96a3;
+  --text-inverse: #ffffff;
+
+  --border-subtle: rgba(15, 22, 32, 0.07);
+  --border-color: rgba(15, 22, 32, 0.11);
+  --border-strong: rgba(15, 22, 32, 0.18);
+  --border-focus: rgba(61, 220, 151, 0.7);
+
+  --accent-red-subtle: rgba(205, 60, 75, 0.12);
+  --accent-red-border: rgba(205, 60, 75, 0.4);
+  --accent-amber-subtle: rgba(180, 120, 20, 0.14);
+  --accent-amber-border: rgba(180, 120, 20, 0.4);
+  --accent-orange-subtle: rgba(200, 105, 30, 0.14);
+  --accent-violet-subtle: rgba(120, 95, 220, 0.14);
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 32, 0.08);
+  --shadow-md: 0 8px 20px rgba(15, 23, 32, 0.1);
+  --shadow-lg: 0 18px 42px rgba(15, 23, 32, 0.14);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  --shadow-focus: 0 0 0 2px rgba(61, 220, 151, 0.24);
 }
 
 .text-primary {
@@ -204,10 +274,10 @@
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--scrollbar-thumb);
   border-radius: var(--radius-full);
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: var(--scrollbar-thumb-hover);
 }

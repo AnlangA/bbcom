@@ -70,6 +70,17 @@
               size="small"
             />
           </div>
+          <div class="config-item config-signals">
+            <label>信号</label>
+            <div class="signals">
+              <label class="signal-toggle"
+                ><n-switch v-model:value="config.dtr" size="small" /> DTR</label
+              >
+              <label class="signal-toggle"
+                ><n-switch v-model:value="config.rts" size="small" /> RTS</label
+              >
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -131,7 +142,7 @@
 
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue';
-import { NSelect, NButton, NInput } from 'naive-ui';
+import { NSelect, NButton, NInput, NSwitch } from 'naive-ui';
 import {
   Cable,
   ChevronRight,
@@ -297,7 +308,7 @@ async function copyChecksum() {
   padding: 10px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.018);
+  background: var(--surface-lift);
   box-shadow: var(--shadow-inset);
 }
 
@@ -389,7 +400,7 @@ async function copyChecksum() {
 .empty-hint.warning {
   color: var(--accent-red);
   background: var(--accent-red-subtle);
-  border-color: rgba(244, 67, 54, 0.35);
+  border-color: var(--accent-red-border);
 }
 
 .config-grid {
@@ -415,6 +426,23 @@ async function copyChecksum() {
 
 .config-item .n-select {
   flex: 1;
+}
+
+.config-signals .signals {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.signal-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  cursor: pointer;
 }
 
 .checksum-grid {

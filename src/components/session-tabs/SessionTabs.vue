@@ -212,7 +212,6 @@ function tabTooltip(session: SerialSession): string {
   background: transparent;
   border: 0;
   color: var(--text-dim);
-  opacity: 0.5;
   cursor: pointer;
   padding: 0;
   border-radius: var(--radius-sm);
@@ -230,8 +229,7 @@ function tabTooltip(session: SerialSession): string {
 
 .tab-close:hover {
   color: var(--text-primary) !important;
-  background: rgba(255, 255, 255, 0.09);
-  opacity: 1;
+  background: var(--bg-hover);
 }
 
 .tab-add {

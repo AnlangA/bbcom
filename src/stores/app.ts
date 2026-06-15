@@ -3,6 +3,7 @@ import { ref, watch } from 'vue';
 import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
 import { loadJson, loadString, saveJson, saveString } from '../lib/storage';
 import { clearSecretString, loadSecretString, saveSecretString } from '../lib/secure-settings';
+import { maxBufferFrames, setMaxBufferFrames } from '../lib/buffer-config';
 
 const STORAGE_KEY = 'bbcom-app-settings';
 const AI_API_KEY_STORAGE_KEY = `${STORAGE_KEY}:ai-api-key`;
@@ -18,6 +19,8 @@ export const useAppStore = defineStore('app', () => {
   const sendAsHex = ref(false);
   const loopIntervalMs = ref(1000);
   const ansiColorEnabled = ref(true);
+  const autoReconnect = ref(false);
+  const theme = ref<'dark' | 'light'>('dark');
   const aiApiKey = ref('');
   const aiEnableCodingPlan = ref(false);
   const aiCommandDraft = ref('');
@@ -43,6 +46,9 @@ export const useAppStore = defineStore('app', () => {
       aiEnableCodingPlan: aiEnableCodingPlan.value,
       sidebarWidth: sidebarWidth.value,
       sidebarCollapsed: sidebarCollapsed.value,
+      maxBufferFrames: maxBufferFrames.value,
+      autoReconnect: autoReconnect.value,
+      theme: theme.value,
     });
     if (saved.displayMode) displayMode.value = saved.displayMode;
     if (typeof saved.autoScroll === 'boolean') autoScroll.value = saved.autoScroll;
@@ -60,6 +66,9 @@ export const useAppStore = defineStore('app', () => {
       sidebarWidth.value = Math.max(252, Math.min(340, saved.sidebarWidth));
     if (typeof saved.sidebarCollapsed === 'boolean')
       sidebarCollapsed.value = saved.sidebarCollapsed;
+    if (typeof saved.maxBufferFrames === 'number') setMaxBufferFrames(saved.maxBufferFrames);
+    if (typeof saved.autoReconnect === 'boolean') autoReconnect.value = saved.autoReconnect;
+    if (saved.theme === 'light') theme.value = 'light';
     aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
     void loadAiApiKey();
@@ -84,6 +93,9 @@ export const useAppStore = defineStore('app', () => {
         aiEnableCodingPlan: aiEnableCodingPlan.value,
         sidebarWidth: sidebarWidth.value,
         sidebarCollapsed: sidebarCollapsed.value,
+        maxBufferFrames: maxBufferFrames.value,
+        autoReconnect: autoReconnect.value,
+        theme: theme.value,
       });
     }, 300);
   }
@@ -102,6 +114,9 @@ export const useAppStore = defineStore('app', () => {
       aiEnableCodingPlan,
       sidebarWidth,
       sidebarCollapsed,
+      maxBufferFrames,
+      autoReconnect,
+      theme,
     ],
     save,
   );
@@ -229,6 +244,9 @@ export const useAppStore = defineStore('app', () => {
     ansiColorEnabled,
     aiApiKey,
     aiEnableCodingPlan,
+    maxBufferFrames,
+    autoReconnect,
+    theme,
     aiCommandDraft,
     aiCommandSeq,
     pendingAiCommand,
@@ -246,6 +264,7 @@ export const useAppStore = defineStore('app', () => {
     setLoopIntervalMs,
     setAiApiKey,
     setAiEnableCodingPlan,
+    setMaxBufferFrames,
     applyAiCommand,
     setPendingAiCommand,
     consumePendingAiCommand,

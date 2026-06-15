@@ -24,8 +24,8 @@ export interface PortConfig {
   stopBits: 1 | 2;
   parity: 'none' | 'odd' | 'even';
   flowControl: 'none' | 'software' | 'hardware';
-  dtr?: boolean;
-  rts?: boolean;
+  dtr: boolean;
+  rts: boolean;
 }
 
 // Send history
@@ -55,6 +55,9 @@ export interface SerialSession {
   portConfig: PortConfig;
   isConnected: boolean;
   frames: DataFrame[];
+  /** Frames received while capture is paused; flushed into `frames` on resume. */
+  pausedFrames: DataFrame[];
+  capturePaused: boolean;
   txBytes: number;
   rxBytes: number;
   txFrames: number;

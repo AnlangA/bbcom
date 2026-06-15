@@ -15,27 +15,41 @@
             <span class="brand-subtitle">Serial console</span>
           </span>
         </div>
-        <n-button
-          v-if="!appStore.sidebarCollapsed"
-          size="tiny"
-          :type="aiWindowVisible ? 'primary' : 'default'"
-          secondary
-          class="ai-toggle"
-          @click="toggleAiWindow"
-        >
-          <template #icon>
-            <Bot v-if="aiWindowVisible" class="icon-sm" />
-            <BotOff v-else class="icon-sm" />
-          </template>
-          {{ aiWindowVisible ? '关闭 AI' : '开启 AI' }}
-        </n-button>
+        <div class="sidebar-actions">
+          <n-button
+            v-if="!appStore.sidebarCollapsed"
+            size="tiny"
+            :type="aiWindowVisible ? 'primary' : 'default'"
+            secondary
+            class="ai-toggle"
+            :title="aiWindowVisible ? '关闭 AI' : '开启 AI'"
+            :aria-label="aiWindowVisible ? '关闭 AI' : '开启 AI'"
+            @click="toggleAiWindow"
+          >
+            <template #icon>
+              <Bot v-if="aiWindowVisible" class="icon-sm" />
+              <BotOff v-else class="icon-sm" />
+            </template>
+            <span class="action-label">{{ aiWindowVisible ? '关闭 AI' : '开启 AI' }}</span>
+          </n-button>
+          <n-button
+            size="tiny"
+            quaternary
+            class="settings-toggle"
+            title="设置"
+            aria-label="设置"
+            @click="showSettings = true"
+          >
+            <template #icon>
+              <Settings class="icon-sm" />
+            </template>
+          </n-button>
+        </div>
       </div>
       <template v-if="!appStore.sidebarCollapsed">
         <AiSettingsPanel v-if="aiWindowVisible" />
         <div class="sidebar-content">
           <PortSelector />
-        </div>
-      </template>
     </aside>
 
     <div
@@ -66,18 +80,20 @@
     </main>
 
     <CreateSessionDialog v-model:show="showCreateDialog" />
+    <SettingsModal v-model:show="showSettings" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue';
-import { NButton } from 'naive-ui';
-import { Bot, BotOff, Cable, PanelLeftClose, PanelLeftOpen, Zap } from 'lucide-vue-next';
+import { computed, onErrorCaptured, onUnmounted, ref } from 'vue';
+import { NButton, useMessage } from 'naive-ui';
+import { Bot, BotOff, Cable, PanelLeftClose, PanelLeftOpen, Settings, Zap } from 'lucide-vue-next';
 import PortSelector from '../port-selector/PortSelector.vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
 import SessionView from '../session/SessionView.vue';
 import StatusBar from '../status-bar/StatusBar.vue';
 import CreateSessionDialog from './CreateSessionDialog.vue';
+import SettingsModal from './SettingsModal.vue';
 import AiSettingsPanel from '../ai/AiSettingsPanel.vue';
 import { useAiWindowState } from '../../composables/useAiWindowState';
 import { useAppShortcuts } from '../../composables/useAppShortcuts';
@@ -93,6 +109,18 @@ const { visible: aiWindowVisible, toggle: toggleAiWindow } = useAiWindowState();
 const sessions = computed(() => sessionStore.sessions);
 const activeSession = computed(() => sessionStore.activeSession);
 const showCreateDialog = ref(false);
+const showSettings = ref(false);
+const message = useMessage();
+
+onErrorCaptured((err) => {
+  // Surface component render errors with a toast instead of a silent blank
+  // screen — critical for a desktop debugging tool where a blank window looks
+  // like a hang.
+  // eslint-disable-next-line no-console
+  console.error('[bbcom] component error:', err);
+  message.error(`界面渲染出错：${err instanceof Error ? err.message : String(err)}`);
+  return false;
+});
 
 const isDragging = ref(false);
 let startX = 0;
@@ -147,7 +175,7 @@ useAppShortcuts({
   width: 100vw;
   height: 100vh;
   display: flex;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 160px), var(--bg-app);
+  background: linear-gradient(180deg, var(--edge-highlight), transparent 160px), var(--bg-app);
 }
 
 .sidebar {
@@ -171,7 +199,7 @@ useAppShortcuts({
   min-height: 58px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent), var(--bg-secondary);
+  background: linear-gradient(180deg, var(--edge-highlight), transparent), var(--bg-secondary);
   flex-shrink: 0;
   display: flex;
   align-items: center;

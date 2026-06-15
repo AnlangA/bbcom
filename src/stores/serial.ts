@@ -41,7 +41,7 @@ export const useSerialStore = defineStore('serial', () => {
     }, 300);
   }
 
-  watch([selectedPort, portConfig], save);
+  watch([selectedPort, portConfig], save, { deep: true });
 
   function setSelectedPort(port: string) {
     selectedPort.value = port;

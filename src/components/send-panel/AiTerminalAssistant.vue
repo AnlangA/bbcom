@@ -182,7 +182,7 @@ function setTerminalModel(model: AiModel) {
   padding: 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.018);
+  background: var(--surface-lift);
   box-shadow: var(--shadow-inset);
 }
 
@@ -252,13 +252,13 @@ function setTerminalModel(model: AiModel) {
 }
 
 .risk-dangerous {
-  border-color: rgba(255, 107, 122, 0.45);
-  background: rgba(255, 107, 122, 0.08);
+  border-color: var(--accent-red-border);
+  background: var(--accent-red-subtle);
 }
 
 .risk-caution {
-  border-color: rgba(255, 191, 95, 0.45);
-  background: rgba(255, 191, 95, 0.07);
+  border-color: var(--accent-amber-border);
+  background: var(--accent-amber-subtle);
 }
 
 :global(.ai-model-menu) {

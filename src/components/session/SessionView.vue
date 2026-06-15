@@ -26,6 +26,20 @@
           </template>
           清空
         </n-button>
+        <n-button
+          v-if="session.isConnected"
+          size="small"
+          ghost
+          :type="session.capturePaused ? 'warning' : 'default'"
+          :title="session.capturePaused ? '继续捕获' : '暂停捕获（冻结视图，继续缓冲）'"
+          @click="togglePause"
+        >
+          <template #icon>
+            <Pause v-if="!session.capturePaused" class="icon-sm" />
+            <Play v-else class="icon-sm" />
+          </template>
+          {{ session.capturePaused ? '继续' : '暂停' }}
+        </n-button>
         <n-tag
           :type="session.isConnected ? 'success' : 'default'"
           size="small"
@@ -34,7 +48,23 @@
         >
           {{ session.isConnected ? '已连接' : '未连接' }}
         </n-tag>
+        <n-tag
+          v-if="serialState.reconnecting.value"
+          type="warning"
+          size="small"
+          round
+          :bordered="false"
+        >
+          重连中
+        </n-tag>
         <span v-if="serialState.error.value" class="error-hint">{{ serialState.error.value }}</span>
+        <span
+          v-if="serialState.totalDroppedBytes.value > 0"
+          class="drop-hint"
+          :title="`本次连接累计丢弃 ${serialState.totalDroppedBytes.value} 字节（接收速率超过处理能力）`"
+        >
+          丢弃 {{ formatBytes(serialState.totalDroppedBytes.value) }}
+        </span>
       </div>
       <div class="toolbar-right">
         <div class="toolbar-field">
@@ -48,54 +78,58 @@
             @update:value="appStore.setDisplayMode"
           />
         </div>
-        <div class="toolbar-toggles">
+        <div class="toggle-group" role="group" aria-label="显示选项">
           <n-button
+            class="toggle-btn"
             size="small"
             quaternary
-            @click="toggleAutoScroll"
             :type="appStore.autoScroll ? 'primary' : 'default'"
             title="自动滚动"
+            aria-label="自动滚动"
+            @click="toggleAutoScroll"
           >
             <template #icon>
               <ArrowDownUp class="icon-sm" />
             </template>
-            自动滚动
           </n-button>
           <n-button
+            class="toggle-btn"
             size="small"
             quaternary
-            @click="appStore.toggleAnsiColor"
             :type="appStore.ansiColorEnabled ? 'primary' : 'default'"
-            title="ANSI颜色渲染"
+            title="ANSI 颜色渲染"
+            aria-label="ANSI 颜色"
+            @click="appStore.toggleAnsiColor"
           >
             <template #icon>
               <Palette class="icon-sm" />
             </template>
-            颜色
           </n-button>
           <n-button
+            class="toggle-btn"
             size="small"
             quaternary
-            @click="toggleTimestamp"
             :type="appStore.showTimestamp ? 'primary' : 'default'"
-            title="显示时间"
+            title="显示时间戳"
+            aria-label="时间戳"
+            @click="toggleTimestamp"
           >
             <template #icon>
               <Clock class="icon-sm" />
             </template>
-            时间
           </n-button>
           <n-button
+            class="toggle-btn"
             size="small"
             quaternary
-            @click="toggleAutoLog"
             :type="session.autoLogEnabled ? 'primary' : 'default'"
-            title="接收自动记录"
+            title="标记自动记录"
+            aria-label="自动记录"
+            @click="toggleAutoLog"
           >
             <template #icon>
               <FileText class="icon-sm" />
             </template>
-            LOG
           </n-button>
         </div>
         <n-dropdown
@@ -146,6 +180,8 @@ import {
   Download,
   FileText,
   Palette,
+  Pause,
+  Play,
   Power,
   PowerOff,
   Trash2,
@@ -159,6 +195,7 @@ import { useExport } from '../../composables/useExport';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { useMessage } from 'naive-ui';
 import { EXPORT_OPTIONS, type ExportFormat } from '../../lib/constants';
+import { formatBytes } from '../../lib/format';
 import type { DisplayMode, SerialSession } from '../../types';
 
 const props = defineProps<{
@@ -177,6 +214,16 @@ const serialState = useSerialConnection(
   {
     onDisconnect: () => {
       message.warning('串口已断开');
+    },
+    onOverflow: (total) => {
+      message.warning(`接收缓冲区溢出，已丢弃约 ${formatBytes(total)} 数据（速率超过处理能力）`);
+    },
+    autoReconnect: () => appStore.autoReconnect,
+    onReconnecting: () => {
+      message.info('连接已断开，正在尝试重新连接…');
+    },
+    onReconnected: () => {
+      message.success('已重新连接');
     },
   },
 );
@@ -207,6 +254,10 @@ async function disconnect() {
 
 function clear() {
   requestClearFrames(props.session.id);
+}
+
+function togglePause() {
+  sessionStore.setCapturePaused(props.session.id, !props.session.capturePaused);
 }
 
 async function handleSend(data: string, isHex: boolean) {
@@ -250,11 +301,11 @@ function toggleAutoLog() {
 }
 
 async function handleExport(format: string) {
-  const ok = await exportData(props.session.frames, format as ExportFormat);
-  if (ok) {
+  const result = await exportData(props.session.frames, format as ExportFormat);
+  if (result.ok) {
     message.success('导出成功');
-  } else if (props.session.frames.length > 0) {
-    message.error('导出失败');
+  } else if (result.error) {
+    message.error(`导出失败：${result.error}`);
   }
 }
 </script>
@@ -297,11 +348,20 @@ async function handleExport(format: string) {
   min-width: 0;
 }
 
-.toolbar-field,
-.toolbar-toggles {
+.toolbar-field {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.toggle-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
 }
 
 .toolbar-field {
@@ -332,6 +392,16 @@ async function handleExport(format: string) {
   padding: 3px 7px;
   background: var(--accent-red-subtle);
   border: 1px solid rgba(255, 107, 122, 0.22);
+  border-radius: var(--radius-full);
+}
+
+.drop-hint {
+  color: var(--accent-amber);
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 3px 7px;
+  background: var(--accent-amber-subtle);
+  border: 1px solid var(--accent-amber-border);
   border-radius: var(--radius-full);
 }
 
