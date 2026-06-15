@@ -187,3 +187,49 @@ export function parseDelimiterHex(input: string): number[] {
   }
   return out;
 }
+
+const PRINTABLE_RE = /^[\x20-\x7e]$/;
+const HEX_NIBBLE = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
+
+/** Render a byte as a 2-char lowercase hex pair. */
+export function byteHex(byte: number): string {
+  return HEX_NIBBLE[(byte >> 4) & 0xf] + HEX_NIBBLE[byte & 0xf];
+}
+
+/** Render a byte as ASCII, using `.` for non-printable values (Docklight/YAT
+ * side-panel convention so the ASCII column stays aligned). */
+export function byteAscii(byte: number): string {
+  return PRINTABLE_RE.test(String.fromCharCode(byte)) ? String.fromCharCode(byte) : '.';
+}
+
+/** A classic hex-editor dump of a frame, grouped into rows of `bytesPerRow`
+ * bytes with an offset column, a spaced-hex column, and an ASCII column. Used
+ * by the parser's frame-detail view to show whole frames instead of just the
+ * truncated one-line hex. */
+export interface HexDumpRow {
+  offset: number;
+  hex: string;
+  ascii: string;
+}
+
+export function hexDump(data: Uint8Array, bytesPerRow = 16): HexDumpRow[] {
+  const rows: HexDumpRow[] = [];
+  for (let i = 0; i < data.length; i += bytesPerRow) {
+    const slice = data.subarray(i, Math.min(i + bytesPerRow, data.length));
+    const hex = Array.from(slice, byteHex).join(' ');
+    let ascii = '';
+    for (let j = 0; j < slice.length; j += 1) ascii += byteAscii(slice[j]);
+    rows.push({ offset: i, hex, ascii });
+  }
+  return rows;
+}
+
+/** Case-insensitive substring match against a frame's decoded text, used by the
+ * parser panel's search filter. Decoded with UTF-8 (lossy) so ASCII/UTF-8
+ * protocols both match; binary protocols fall back to no match (expected). */
+export function frameMatchesText(data: Uint8Array, needle: string): boolean {
+  const trimmed = needle.trim().toLowerCase();
+  if (trimmed.length === 0) return true;
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(data).toLowerCase();
+  return text.includes(trimmed);
+}

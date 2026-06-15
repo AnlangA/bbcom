@@ -66,3 +66,45 @@ test('every preset config is a valid ParserConfig shape (smoke)', () => {
     }
   }
 });
+
+test('the 2B-BE length-prefix preset reads a big-endian length + payload', () => {
+  const preset = findPreset('len-prefix-2b-be')!;
+  const parser = new ProtocolParser(preset.config);
+  // [0x00,0x03][A][B][C] => lengthValue=3, lengthAdjust=2 covers the 2-byte
+  // header, so total frame size = 5 and one 5-byte frame is emitted.
+  const bytes = new Uint8Array([0x00, 0x03, 0x41, 0x42, 0x43]);
+  const frames = parser.feed(bytes);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].data.length, 5);
+  // A short frame (only the header) is buffered, not emitted.
+  assert.equal(parser.feed(new Uint8Array([0x00, 0x02])).length, 0);
+});
+
+test('the 2B-LE length-prefix preset reads a little-endian length', () => {
+  const preset = findPreset('len-prefix-2b-le')!;
+  const parser = new ProtocolParser(preset.config);
+  // [0x03,0x00][A][B][C] => LE length 3 + adjust 2 = total 5; one frame.
+  const bytes = new Uint8Array([0x03, 0x00, 0x41, 0x42, 0x43]);
+  const frames = parser.feed(bytes);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].data.length, 5);
+});
+
+test('the NUL-delimited preset splits on the 0x00 terminator', () => {
+  const preset = findPreset('nul-delimited')!;
+  const parser = new ProtocolParser(preset.config);
+  const bytes = new Uint8Array([0x41, 0x42, 0x00, 0x43, 0x00]);
+  const frames = parser.feed(bytes);
+  assert.equal(frames.length, 2);
+  // includeDelimiter:false → terminator not in the frame payload.
+  assert.equal(frames[0].data.length, 2);
+});
+
+test('the SCPI-LF preset splits measurement lines on LF', () => {
+  const preset = findPreset('scpi-lf')!;
+  const parser = new ProtocolParser(preset.config);
+  const text = '+1.234E+00\n-9.870E-01\n';
+  const bytes = new Uint8Array(text.split('').map((c) => c.charCodeAt(0)));
+  const frames = parser.feed(bytes);
+  assert.equal(frames.length, 2);
+});

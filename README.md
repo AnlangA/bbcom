@@ -60,8 +60,10 @@
 - **Connection presets** — save and reuse named port profiles (baud/data/stop/parity/flow/DTR/RTS)
 - **BREAK signal** (250 ms) — one-click Arduino auto-reset / ESP32 bootloader entry
 - DTR/RTS handshake line control for boot-mode selection
-- **Waveform visualization** — parses numeric RX data (CSV/space/semicolon) and plots a live scrolling chart, Arduino Serial Plotter / serial-studio style
-- **Protocol parser** — reassembles the RX byte stream into discrete frames by delimiter (CRLF/custom hex), fixed length, or length-field header; copy any parsed frame as HEX. Includes preset templates for NMEA 0183, AT/modem, and length-prefixed binary
+- **Waveform visualization** — parses numeric RX data (CSV/space/semicolon) and plots a live scrolling chart, Arduino Serial Plotter / serial-studio style. Pause/resume, per-channel show/hide, min/max/avg stats, autoscale Y-axis labels, clear, and one-click CSV export
+- **Protocol parser** — reassembles the RX byte stream into discrete frames by delimiter (CRLF/custom hex), fixed length, or length-field header; click any frame for a hex+ASCII dump, filter frames by text, and see live frame/byte/throughput stats. Presets include NMEA 0183, AT/modem, SCPI/instrument, length-prefixed (1B/2B BE+LE), and NUL-delimited binary
+- **Tool tab bar** — Quick commands, Macros, Triggers, Highlights, and History share one compact horizontal tab strip with live count badges, replacing the stacked collapsible-tower layout
+- **View-mode switcher** — Terminal, Waveform, and Parser are mutually-exclusive views toggled from the toolbar (one click each), so they never stack and compete for terminal height
 - **Scripted triggers** — auto-send a configured response when the RX stream matches a text substring or hex byte sequence, with per-trigger cooldown to prevent loops
 - **Dark/Light theme** with a one-click sidebar toggle
 - **i18n** — English / 中文 UI with a persisted language preference

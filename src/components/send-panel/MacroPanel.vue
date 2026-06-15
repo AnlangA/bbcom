@@ -1,167 +1,141 @@
 <template>
-  <div class="collapsible-section">
-    <button class="section-toggle" type="button" @click="expanded = !expanded">
-      <span class="toggle-label">
-        <ListVideo class="icon-sm" />
-        {{ t('macro.title') }}
-      </span>
-      <div class="toggle-right">
-        <ChevronRight class="toggle-icon" :class="{ expanded }" />
-      </div>
-    </button>
-    <div class="section-body" :class="{ collapsed: !expanded }">
-      <!-- Saved macros -->
-      <div v-if="macros.length > 0" class="macro-list">
-        <div
-          v-for="macro in macros"
-          :key="macro.id"
-          class="macro-item"
-          :class="{ running: runningMacroId === macro.id }"
-        >
-          <div class="macro-head" :title="macroSummary(macro)">
-            <span class="macro-name" @click="runMacro(macro)">{{ macro.name }}</span>
-            <span class="macro-meta">{{ t('macro.steps', { count: macro.steps.length }) }}</span>
-            <button
-              class="macro-run"
-              type="button"
-              :disabled="disabled || (runningMacroId === macro.id && runningMacroId !== null)"
-              :title="runningMacroId === macro.id ? t('macro.running') : t('macro.run')"
-              @click="runMacro(macro)"
-            >
-              <Play v-if="runningMacroId !== macro.id" class="icon-sm" />
-              <Square v-else class="icon-sm" />
-            </button>
-            <button
-              class="macro-edit"
-              type="button"
-              :disabled="runningMacroId !== null"
-              :title="t('common.edit')"
-              @click="startEdit(macro)"
-            >
-              <Pencil class="icon-sm" />
-            </button>
-            <button
-              class="macro-remove"
-              type="button"
-              :disabled="runningMacroId !== null"
-              :title="t('common.delete')"
-              @click="remove(macro.id)"
-            >
-              <X class="icon-sm" />
-            </button>
-          </div>
+  <div class="macro-panel">
+    <!-- Saved macros -->
+    <div v-if="macros.length > 0" class="macro-list">
+      <div
+        v-for="macro in macros"
+        :key="macro.id"
+        class="macro-item"
+        :class="{ running: runningMacroId === macro.id }"
+      >
+        <div class="macro-head" :title="macroSummary(macro)">
+          <span class="macro-name" @click="runMacro(macro)">{{ macro.name }}</span>
+          <span class="macro-meta">{{ t('macro.steps', { count: macro.steps.length }) }}</span>
+          <button
+            class="macro-run"
+            type="button"
+            :disabled="disabled || (runningMacroId === macro.id && runningMacroId !== null)"
+            :title="runningMacroId === macro.id ? t('macro.running') : t('macro.run')"
+            @click="runMacro(macro)"
+          >
+            <Play v-if="runningMacroId !== macro.id" class="icon-sm" />
+            <Square v-else class="icon-sm" />
+          </button>
+          <button
+            class="macro-edit"
+            type="button"
+            :disabled="runningMacroId !== null"
+            :title="t('common.edit')"
+            @click="startEdit(macro)"
+          >
+            <Pencil class="icon-sm" />
+          </button>
+          <button
+            class="macro-remove"
+            type="button"
+            :disabled="runningMacroId !== null"
+            :title="t('common.delete')"
+            @click="remove(macro.id)"
+          >
+            <X class="icon-sm" />
+          </button>
         </div>
       </div>
-      <div class="macro-library-actions">
-        <button
-          class="lib-btn"
-          type="button"
-          :disabled="macros.length === 0"
-          :title="t('macro.exportTitle')"
-          @click="exportLibrary"
-        >
-          <Download class="icon-sm" />
-          {{ t('macro.export') }}
-        </button>
-        <button
-          class="lib-btn"
-          type="button"
-          :title="t('macro.importTitle')"
-          @click="importLibrary"
-        >
-          <Upload class="icon-sm" />
-          {{ t('macro.import') }}
-        </button>
-        <input
-          ref="fileInput"
-          type="file"
-          accept=".json,application/json"
-          class="hidden-file-input"
-          @change="onFilePicked"
-        />
-      </div>
-
-      <!-- New / edit form -->
-      <div v-if="editing" class="macro-form">
-        <div class="macro-form-head">
-          <n-input
-            v-model:value="draft.name"
-            size="tiny"
-            :placeholder="t('macro.namePlaceholder')"
-            style="width: 140px"
-          />
-          <n-button size="tiny" quaternary @click="addStep" :title="t('macro.addStep')">
-            <template #icon>
-              <Plus class="icon-sm" />
-            </template>
-            {{ t('macro.step') }}
-          </n-button>
-        </div>
-        <div class="step-list">
-          <div v-for="(step, i) in draft.steps" :key="i" class="step-row">
-            <span class="step-idx">{{ i + 1 }}</span>
-            <n-checkbox v-model:checked="step.isHex" size="small" :title="t('macro.hexMode')"
-              >HEX</n-checkbox
-            >
-            <n-input
-              v-model:value="step.data"
-              size="tiny"
-              :placeholder="step.isHex ? 'AA BB CC' : t('macro.textPlaceholder')"
-              style="flex: 1"
-            />
-            <n-input-number
-              v-model:value="step.delayMs"
-              size="tiny"
-              :min="0"
-              :max="3600000"
-              :step="100"
-              style="width: 104px"
-              :title="t('macro.delayTitle')"
-            >
-              <template #suffix>ms</template>
-            </n-input-number>
-            <button
-              class="step-remove"
-              type="button"
-              :title="t('macro.deleteStep')"
-              @click="removeStep(i)"
-            >
-              <X class="icon-sm" />
-            </button>
-          </div>
-          <div v-if="draft.steps.length === 0" class="step-empty">
-            {{ t('macro.emptySteps') }}
-          </div>
-        </div>
-        <div class="macro-form-actions">
-          <n-button size="tiny" @click="cancelEdit">{{ t('common.cancel') }}</n-button>
-          <n-button size="tiny" type="primary" :disabled="!canSave" @click="save">
-            {{ editingId ? t('common.update') : t('common.save') }}
-          </n-button>
-        </div>
-      </div>
-      <button v-else class="macro-add" type="button" :disabled="disabled" @click="startCreate">
-        <Plus class="icon-sm" />
-        {{ t('macro.new') }}
-      </button>
     </div>
+    <div class="macro-library-actions">
+      <button
+        class="lib-btn"
+        type="button"
+        :disabled="macros.length === 0"
+        :title="t('macro.exportTitle')"
+        @click="exportLibrary"
+      >
+        <Download class="icon-sm" />
+        {{ t('macro.export') }}
+      </button>
+      <button class="lib-btn" type="button" :title="t('macro.importTitle')" @click="importLibrary">
+        <Upload class="icon-sm" />
+        {{ t('macro.import') }}
+      </button>
+      <input
+        ref="fileInput"
+        type="file"
+        accept=".json,application/json"
+        class="hidden-file-input"
+        @change="onFilePicked"
+      />
+    </div>
+
+    <!-- New / edit form -->
+    <div v-if="editing" class="macro-form">
+      <div class="macro-form-head">
+        <n-input
+          v-model:value="draft.name"
+          size="tiny"
+          :placeholder="t('macro.namePlaceholder')"
+          style="width: 140px"
+        />
+        <n-button size="tiny" quaternary @click="addStep" :title="t('macro.addStep')">
+          <template #icon>
+            <Plus class="icon-sm" />
+          </template>
+          {{ t('macro.step') }}
+        </n-button>
+      </div>
+      <div class="step-list">
+        <div v-for="(step, i) in draft.steps" :key="i" class="step-row">
+          <span class="step-idx">{{ i + 1 }}</span>
+          <n-checkbox v-model:checked="step.isHex" size="small" :title="t('macro.hexMode')">
+            HEX
+          </n-checkbox>
+          <n-input
+            v-model:value="step.data"
+            size="tiny"
+            :placeholder="step.isHex ? 'AA BB CC' : t('macro.textPlaceholder')"
+            style="flex: 1"
+          />
+          <n-input-number
+            v-model:value="step.delayMs"
+            size="tiny"
+            :min="0"
+            :max="3600000"
+            :step="100"
+            style="width: 104px"
+            :title="t('macro.delayTitle')"
+          >
+            <template #suffix>ms</template>
+          </n-input-number>
+          <button
+            class="step-remove"
+            type="button"
+            :title="t('macro.deleteStep')"
+            @click="removeStep(i)"
+          >
+            <X class="icon-sm" />
+          </button>
+        </div>
+        <div v-if="draft.steps.length === 0" class="step-empty">
+          {{ t('macro.emptySteps') }}
+        </div>
+      </div>
+      <div class="macro-form-actions">
+        <n-button size="tiny" @click="cancelEdit">{{ t('common.cancel') }}</n-button>
+        <n-button size="tiny" type="primary" :disabled="!canSave" @click="save">
+          {{ editingId ? t('common.update') : t('common.save') }}
+        </n-button>
+      </div>
+    </div>
+    <button v-else class="macro-add" type="button" :disabled="disabled" @click="startCreate">
+      <Plus class="icon-sm" />
+      {{ t('macro.new') }}
+    </button>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, shallowReactive } from 'vue';
 import { NInput, NButton, NCheckbox, NInputNumber, useMessage } from 'naive-ui';
-import {
-  ChevronRight,
-  Download,
-  ListVideo,
-  Pencil,
-  Play,
-  Plus,
-  Square,
-  Upload,
-  X,
-} from 'lucide-vue-next';
+import { Download, Pencil, Play, Plus, Square, Upload, X } from 'lucide-vue-next';
 import { useSessionStore } from '../../stores/sessions';
 import { useMacroRunner, type MacroRunResult } from '../../composables/useMacroRunner';
 import { defaultExportFilename, exportMacros, importMacros } from '../../lib/macro-library';
@@ -181,8 +155,6 @@ const message = useMessage();
 const macros = computed(
   () => sessionStore.sessions.find((s) => s.id === props.sessionId)?.macros ?? [],
 );
-
-const expanded = ref(true);
 
 // --- runner ---
 const runner = useMacroRunner({ send: props.send });
@@ -361,75 +333,16 @@ function macroSummary(macro: Macro): string {
 </script>
 
 <style scoped>
-.collapsible-section {
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 8px;
-}
-
-.section-toggle {
-  width: 100%;
+.macro-panel {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0;
-  cursor: pointer;
-  margin-bottom: 6px;
-  transition: color var(--transition-fast);
-}
-
-.section-toggle:hover {
-  color: var(--text-secondary);
-}
-
-.toggle-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.toggle-right {
-  display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-}
-
-.toggle-icon {
-  width: 12px;
-  height: 12px;
-  color: var(--text-dim);
-  transition: transform var(--transition-normal);
-}
-
-.toggle-icon.expanded {
-  transform: rotate(90deg);
-}
-
-.section-body {
-  overflow: hidden;
-  max-height: 520px;
-  opacity: 1;
-  transition:
-    max-height var(--transition-slow),
-    opacity var(--transition-normal);
-}
-
-.section-body.collapsed {
-  max-height: 0;
-  opacity: 0;
 }
 
 .macro-list {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  margin-bottom: 8px;
 }
 
 .macro-item {

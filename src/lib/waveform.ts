@@ -50,6 +50,39 @@ export interface WaveformChannel {
   latest: number | null;
 }
 
+/** Per-channel statistics computed across the live buffer. Cheap (O(n·c)) and
+ * re-derived on demand — the buffer is bounded by CAPACITY. */
+export interface ChannelStats {
+  min: number;
+  max: number;
+  mean: number;
+}
+
+export function channelStats(buf: WaveformBuffer, channelCount: number): ChannelStats[] {
+  const out: ChannelStats[] = [];
+  const n = buf.samples.length;
+  for (let c = 0; c < channelCount; c += 1) {
+    let min = Infinity;
+    let max = -Infinity;
+    let sum = 0;
+    let count = 0;
+    for (let i = 0; i < n; i += 1) {
+      const v = buf.samples[i][c];
+      if (v === undefined || !Number.isFinite(v)) continue;
+      if (v < min) min = v;
+      if (v > max) max = v;
+      sum += v;
+      count += 1;
+    }
+    if (count === 0 || !Number.isFinite(min) || !Number.isFinite(max)) {
+      out.push({ min: 0, max: 0, mean: 0 });
+    } else {
+      out.push({ min, max, mean: sum / count });
+    }
+  }
+  return out;
+}
+
 /** A bounded ring buffer of per-channel samples, newest last. */
 export interface WaveformBuffer {
   samples: number[][];

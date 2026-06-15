@@ -110,13 +110,64 @@ const LEN_PREFIX_2B_LE: ParserPreset = {
   },
 };
 
+/**
+ * SCPI instruments respond with LF-terminated lines, e.g.
+ *   +1.23450000E+00\n
+ * The same shape is also used by many multimeters / power supplies / DSOs.
+ */
+const SCPI_LF: ParserPreset = {
+  id: 'scpi-lf',
+  name: 'SCPI / instrument (LF)',
+  description: 'SCPI measurement lines terminated by LF',
+  config: {
+    kind: 'delimiter',
+    delimiter: [0x0a],
+    includeDelimiter: false,
+  },
+};
+
+/**
+ * NUL-delimited binary frames (0x00). Common in embedded debug links where a
+ * text delimiter (CR/LF) could appear inside binary payloads.
+ */
+const NUL_DELIMITED: ParserPreset = {
+  id: 'nul-delimited',
+  name: 'NUL-delimited (0x00)',
+  description: 'Binary frames terminated by a NUL byte',
+  config: {
+    kind: 'delimiter',
+    delimiter: [0x00],
+    includeDelimiter: false,
+  },
+};
+
+/**
+ * A 2-byte big-endian length prefix at offset 0 — the common shape for many
+ * TCP-style framing schemes reused over serial (lengthValue = payload length).
+ */
+const LEN_PREFIX_2B_BE: ParserPreset = {
+  id: 'len-prefix-2b-be',
+  name: 'Length-prefixed (2B BE)',
+  description: '2-byte big-endian length prefix + payload',
+  config: {
+    kind: 'length',
+    lengthOffset: 0,
+    lengthSize: 2,
+    bigEndian: true,
+    lengthAdjust: 2,
+  },
+};
+
 export const PARSER_PRESETS: ParserPreset[] = [
   AT_RESPONSE,
   TEXT_LF,
+  SCPI_LF,
   NMEA,
   MODBUS_FIXED_8,
   LEN_PREFIX_1B,
+  LEN_PREFIX_2B_BE,
   LEN_PREFIX_2B_LE,
+  NUL_DELIMITED,
 ];
 
 /** Look up a preset by id, or null if unknown. */

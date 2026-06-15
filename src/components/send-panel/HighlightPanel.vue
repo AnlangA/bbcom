@@ -1,125 +1,110 @@
 <template>
-  <div class="collapsible-section">
-    <button class="section-toggle" type="button" @click="expanded = !expanded">
-      <span class="toggle-label">
-        <Highlighter class="icon-sm" />
-        {{ t('highlight.title') }}
-      </span>
-      <div class="toggle-right">
-        <span v-if="enabledCount > 0" class="badge">
-          {{ t('highlight.active', { count: enabledCount }) }}
-        </span>
-        <ChevronRight class="toggle-icon" :class="{ expanded }" />
-      </div>
-    </button>
-
-    <div class="section-body" :class="{ collapsed: !expanded }">
-      <div v-if="highlights.length > 0" class="highlight-list">
-        <div v-for="rule in highlights" :key="rule.id" class="highlight-item">
-          <label class="highlight-enable">
-            <n-checkbox
-              :checked="rule.enabled"
-              size="small"
-              @update:checked="(value: boolean) => toggleEnabled(rule.id, value)"
-            />
-          </label>
-          <div class="highlight-swatch" :class="`highlight-${rule.color}`"></div>
-          <div class="highlight-info" :title="summary(rule)">
-            <span class="highlight-name">{{ rule.name }}</span>
-            <span class="highlight-detail">
-              <span class="tag">{{ rule.direction }}</span>
-              <span class="tag">{{ rule.matchMode === 'hex' ? 'HEX' : 'TXT' }}</span>
-              <code class="pat">{{ rule.pattern }}</code>
-            </span>
-          </div>
-          <button
-            class="highlight-edit"
-            type="button"
-            :title="t('common.edit')"
-            @click="startEdit(rule)"
-          >
-            <Pencil class="icon-sm" />
-          </button>
-          <button
-            class="highlight-remove"
-            type="button"
-            :title="t('common.delete')"
-            @click="remove(rule.id)"
-          >
-            <X class="icon-sm" />
-          </button>
-        </div>
-      </div>
-      <div v-else-if="!editing" class="highlight-empty">{{ t('highlight.empty') }}</div>
-
-      <div v-if="editing" class="highlight-form">
-        <n-input
-          v-model:value="draft.name"
-          size="tiny"
-          :placeholder="t('highlight.namePlaceholder')"
-          style="width: 100%"
-        />
-        <div class="form-row">
-          <span class="field-label">{{ t('highlight.match') }}</span>
-          <n-button-group size="tiny">
-            <n-button
-              :type="draft.matchMode === 'text' ? 'primary' : 'default'"
-              @click="draft.matchMode = 'text'"
-              >TXT</n-button
-            >
-            <n-button
-              :type="draft.matchMode === 'hex' ? 'primary' : 'default'"
-              @click="draft.matchMode = 'hex'"
-              >HEX</n-button
-            >
-          </n-button-group>
-          <n-input
-            v-model:value="draft.pattern"
-            size="tiny"
-            :placeholder="
-              draft.matchMode === 'hex'
-                ? t('highlight.patternPlaceholder.hex')
-                : t('highlight.patternPlaceholder.text')
-            "
-            style="flex: 1"
+  <div class="highlight-panel">
+    <div v-if="highlights.length > 0" class="highlight-list">
+      <div v-for="rule in highlights" :key="rule.id" class="highlight-item">
+        <label class="highlight-enable">
+          <n-checkbox
+            :checked="rule.enabled"
+            size="small"
+            @update:checked="(value: boolean) => toggleEnabled(rule.id, value)"
           />
+        </label>
+        <div class="highlight-swatch" :class="`highlight-${rule.color}`"></div>
+        <div class="highlight-info" :title="summary(rule)">
+          <span class="highlight-name">{{ rule.name }}</span>
+          <span class="highlight-detail">
+            <span class="tag">{{ rule.direction }}</span>
+            <span class="tag">{{ rule.matchMode === 'hex' ? 'HEX' : 'TXT' }}</span>
+            <code class="pat">{{ rule.pattern }}</code>
+          </span>
         </div>
-        <div class="form-row">
-          <span class="field-label">{{ t('highlight.direction') }}</span>
-          <n-select
-            v-model:value="draft.direction"
-            :options="directionOptions"
-            size="tiny"
-            style="width: 86px"
-          />
-          <span class="field-label">{{ t('highlight.color') }}</span>
-          <n-select
-            v-model:value="draft.color"
-            :options="colorOptions"
-            size="tiny"
-            style="width: 112px"
-          />
-        </div>
-        <div class="form-actions">
-          <n-button size="tiny" @click="cancelEdit">{{ t('common.cancel') }}</n-button>
-          <n-button size="tiny" type="primary" :disabled="!canSave" @click="save">
-            {{ editingId ? t('common.update') : t('common.save') }}
-          </n-button>
-        </div>
+        <button
+          class="highlight-edit"
+          type="button"
+          :title="t('common.edit')"
+          @click="startEdit(rule)"
+        >
+          <Pencil class="icon-sm" />
+        </button>
+        <button
+          class="highlight-remove"
+          type="button"
+          :title="t('common.delete')"
+          @click="remove(rule.id)"
+        >
+          <X class="icon-sm" />
+        </button>
       </div>
-
-      <button v-else class="highlight-add" type="button" @click="startCreate">
-        <Plus class="icon-sm" />
-        {{ t('highlight.new') }}
-      </button>
     </div>
+    <div v-else-if="!editing" class="highlight-empty">{{ t('highlight.empty') }}</div>
+
+    <div v-if="editing" class="highlight-form">
+      <n-input
+        v-model:value="draft.name"
+        size="tiny"
+        :placeholder="t('highlight.namePlaceholder')"
+        style="width: 100%"
+      />
+      <div class="form-row">
+        <span class="field-label">{{ t('highlight.match') }}</span>
+        <n-button-group size="tiny">
+          <n-button
+            :type="draft.matchMode === 'text' ? 'primary' : 'default'"
+            @click="draft.matchMode = 'text'"
+            >TXT</n-button
+          >
+          <n-button
+            :type="draft.matchMode === 'hex' ? 'primary' : 'default'"
+            @click="draft.matchMode = 'hex'"
+            >HEX</n-button
+          >
+        </n-button-group>
+        <n-input
+          v-model:value="draft.pattern"
+          size="tiny"
+          :placeholder="
+            draft.matchMode === 'hex'
+              ? t('highlight.patternPlaceholder.hex')
+              : t('highlight.patternPlaceholder.text')
+          "
+          style="flex: 1"
+        />
+      </div>
+      <div class="form-row">
+        <span class="field-label">{{ t('highlight.direction') }}</span>
+        <n-select
+          v-model:value="draft.direction"
+          :options="directionOptions"
+          size="tiny"
+          style="width: 86px"
+        />
+        <span class="field-label">{{ t('highlight.color') }}</span>
+        <n-select
+          v-model:value="draft.color"
+          :options="colorOptions"
+          size="tiny"
+          style="width: 112px"
+        />
+      </div>
+      <div class="form-actions">
+        <n-button size="tiny" @click="cancelEdit">{{ t('common.cancel') }}</n-button>
+        <n-button size="tiny" type="primary" :disabled="!canSave" @click="save">
+          {{ editingId ? t('common.update') : t('common.save') }}
+        </n-button>
+      </div>
+    </div>
+
+    <button v-else class="highlight-add" type="button" @click="startCreate">
+      <Plus class="icon-sm" />
+      {{ t('highlight.new') }}
+    </button>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, shallowReactive } from 'vue';
 import { NButton, NButtonGroup, NCheckbox, NInput, NSelect } from 'naive-ui';
-import { ChevronRight, Highlighter, Pencil, Plus, X } from 'lucide-vue-next';
+import { Pencil, Plus, X } from 'lucide-vue-next';
 import { useSessionStore } from '../../stores/sessions';
 import { HIGHLIGHT_COLORS } from '../../lib/highlights';
 import { t } from '../../lib/i18n';
@@ -138,8 +123,6 @@ const sessionStore = useSessionStore();
 const highlights = computed(
   () => sessionStore.sessions.find((s) => s.id === props.sessionId)?.highlights ?? [],
 );
-const enabledCount = computed(() => highlights.value.filter((rule) => rule.enabled).length);
-const expanded = ref(false);
 
 interface Draft {
   name: string;
@@ -236,35 +219,12 @@ function summary(rule: HighlightRule): string {
 </script>
 
 <style scoped>
-.collapsible-section {
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 8px;
-}
-
-.section-toggle {
-  width: 100%;
+.highlight-panel {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0;
-  cursor: pointer;
-  margin-bottom: 6px;
-  transition: color var(--transition-fast);
+  flex-direction: column;
+  gap: 8px;
 }
 
-.section-toggle:hover {
-  color: var(--text-secondary);
-}
-
-.toggle-label,
-.toggle-right,
 .highlight-item,
 .highlight-detail,
 .form-row,
@@ -274,53 +234,10 @@ function summary(rule: HighlightRule): string {
   align-items: center;
 }
 
-.toggle-label {
-  gap: 6px;
-}
-
-.toggle-right {
-  gap: 8px;
-}
-
-.badge {
-  color: var(--color-primary);
-  font-size: 9px;
-  background: var(--color-primary-subtle);
-  padding: 1px 6px;
-  border-radius: var(--radius-full);
-  letter-spacing: 0;
-}
-
-.toggle-icon {
-  width: 12px;
-  height: 12px;
-  color: var(--text-dim);
-  transition: transform var(--transition-normal);
-}
-
-.toggle-icon.expanded {
-  transform: rotate(90deg);
-}
-
-.section-body {
-  overflow: hidden;
-  max-height: 560px;
-  opacity: 1;
-  transition:
-    max-height var(--transition-slow),
-    opacity var(--transition-normal);
-}
-
-.section-body.collapsed {
-  max-height: 0;
-  opacity: 0;
-}
-
 .highlight-list {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  margin-bottom: 8px;
 }
 
 .highlight-item {

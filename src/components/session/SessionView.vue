@@ -126,23 +126,23 @@
             class="toggle-btn"
             size="small"
             quaternary
-            :type="appStore.ansiColorEnabled ? 'primary' : 'default'"
-            :title="t('toolbar.ansiColor.render')"
-            :aria-label="t('toolbar.ansiColor')"
-            @click="appStore.toggleAnsiColor"
+            :type="viewMode === 'terminal' ? 'primary' : 'default'"
+            :title="t('toolbar.terminal')"
+            :aria-label="t('toolbar.terminal')"
+            @click="viewMode = 'terminal'"
           >
             <template #icon>
-              <Palette class="icon-sm" />
+              <TerminalSquare class="icon-sm" />
             </template>
           </n-button>
           <n-button
             class="toggle-btn"
             size="small"
             quaternary
-            :type="showWaveform ? 'primary' : 'default'"
+            :type="viewMode === 'waveform' ? 'primary' : 'default'"
             :title="t('toolbar.waveform.title')"
             :aria-label="t('toolbar.waveform')"
-            @click="showWaveform = !showWaveform"
+            @click="viewMode = 'waveform'"
           >
             <template #icon>
               <LineChart class="icon-sm" />
@@ -152,13 +152,26 @@
             class="toggle-btn"
             size="small"
             quaternary
-            :type="showParser ? 'primary' : 'default'"
+            :type="viewMode === 'parser' ? 'primary' : 'default'"
             :title="t('toolbar.parser.title')"
             :aria-label="t('toolbar.parser')"
-            @click="showParser = !showParser"
+            @click="viewMode = 'parser'"
           >
             <template #icon>
               <Binary class="icon-sm" />
+            </template>
+          </n-button>
+          <n-button
+            class="toggle-btn"
+            size="small"
+            quaternary
+            :type="appStore.ansiColorEnabled ? 'primary' : 'default'"
+            :title="t('toolbar.ansiColor.render')"
+            :aria-label="t('toolbar.ansiColor')"
+            @click="appStore.toggleAnsiColor"
+          >
+            <template #icon>
+              <Palette class="icon-sm" />
             </template>
           </n-button>
           <n-button
@@ -213,14 +226,20 @@
       </div>
     </div>
     <div class="display-area">
-      <WaveformPanel v-if="showWaveform" :frames="session.frames" direction="RX" />
+      <!--
+        View-mode switcher: only one of terminal / waveform / parser renders at
+        a time, so they never stack and compete for vertical space. The terminal
+        stays mounted (cheap to keep alive) while waveform/parser swap in only
+        when selected, keeping the default view dense.
+      -->
+      <WaveformPanel v-if="viewMode === 'waveform'" :frames="session.frames" direction="RX" />
       <ParserPanel
-        v-if="showParser"
+        v-else-if="viewMode === 'parser'"
         :session-id="session.id"
         :frames="session.frames"
-        @close="showParser = false"
+        @close="viewMode = 'terminal'"
       />
-      <DataPacketList :frames="session.frames" :highlights="session.highlights" />
+      <DataPacketList v-else :frames="session.frames" :highlights="session.highlights" />
     </div>
     <div class="send-area">
       <SendPanel
@@ -252,6 +271,7 @@ import {
   Palette,
   Pause,
   Play,
+  TerminalSquare,
   Power,
   PowerOff,
   Trash2,
@@ -369,12 +389,10 @@ useSessionShortcuts({
 });
 
 const sendingBreak = ref(false);
-// Waveform overlay — toggled from the toolbar. Off by default so it only parses
-// RX data when the user wants a plot, keeping the default terminal view dense.
-const showWaveform = ref(false);
-// Protocol parser overlay — splits the RX byte stream into discrete frames per
-// a delimiter / fixed-length / length-field template.
-const showParser = ref(false);
+// Single view-mode switcher for the display area: terminal (default, dense),
+// waveform (live RX plot), or parser (frame reassembly). Only the selected view
+// renders, so they never stack and compete for vertical space.
+const viewMode = ref<'terminal' | 'waveform' | 'parser'>('terminal');
 async function handleSendBreak() {
   sendingBreak.value = true;
   const ok = await serialState.sendBreak();

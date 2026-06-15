@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ProtocolParser,
+  byteAscii,
+  byteHex,
+  frameMatchesText,
+  hexDump,
   indexOfSubarray,
   parseDelimiterHex,
   type ParserConfig,
@@ -141,4 +145,50 @@ test('delimiter parser buffers indefinitely without a match (no crash)', () => {
   const out = p.feed(bytes('no terminator here'));
   assert.equal(out.length, 0);
   assert.ok(p.pending > 0);
+});
+
+test('byteHex renders two-char lowercase hex', () => {
+  assert.equal(byteHex(0), '00');
+  assert.equal(byteHex(255), 'ff');
+  assert.equal(byteHex(0xab), 'ab');
+});
+
+test('byteAscii renders printable chars and dots for control bytes', () => {
+  assert.equal(byteAscii(0x41), 'A');
+  assert.equal(byteAscii(0x30), '0');
+  assert.equal(byteAscii(0x00), '.');
+  assert.equal(byteAscii(0x7f), '.');
+  assert.equal(byteAscii(0x1b), '.'); // ESC
+});
+
+test('hexDump groups bytes into offset/hex/ascii rows', () => {
+  const data = new Uint8Array([0x41, 0x42, 0x00, 0x43]);
+  const rows = hexDump(data, 16);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].offset, 0);
+  assert.equal(rows[0].hex, '41 42 00 43');
+  assert.equal(rows[0].ascii, 'AB.C');
+});
+
+test('hexDump wraps across multiple rows at the requested width', () => {
+  const data = new Uint8Array([1, 2, 3, 4, 5]);
+  const rows = hexDump(data, 2);
+  assert.equal(rows.length, 3);
+  assert.deepEqual(
+    rows.map((r) => r.hex),
+    ['01 02', '03 04', '05'],
+  );
+  assert.deepEqual(
+    rows.map((r) => r.offset),
+    [0, 2, 4],
+  );
+});
+
+test('frameMatchesText is case-insensitive and ignores surrounding spaces', () => {
+  const data = bytes('OK 200');
+  assert.ok(frameMatchesText(data, 'ok'));
+  assert.ok(frameMatchesText(data, '  OK  '));
+  assert.ok(!frameMatchesText(data, 'ERROR'));
+  // Empty needle matches everything (no filter).
+  assert.ok(frameMatchesText(data, ''));
 });

@@ -1,129 +1,115 @@
 <template>
-  <div class="collapsible-section">
-    <button class="section-toggle" type="button" @click="expanded = !expanded">
-      <span class="toggle-label">
-        <Zap class="icon-sm" />
-        {{ t('trigger.title') }}
-      </span>
-      <div class="toggle-right">
-        <span v-if="enabledCount > 0" class="badge">
-          {{ t('trigger.active', { count: enabledCount }) }}
-        </span>
-        <ChevronRight class="toggle-icon" :class="{ expanded }" />
-      </div>
-    </button>
-    <div class="section-body" :class="{ collapsed: !expanded }">
-      <!-- Saved triggers -->
-      <div v-if="triggers.length > 0" class="trigger-list">
-        <div v-for="trigger in triggers" :key="trigger.id" class="trigger-item">
-          <label class="trigger-enable">
-            <n-checkbox
-              :checked="trigger.enabled"
-              size="small"
-              @update:checked="(v: boolean) => toggleEnabled(trigger.id, v)"
-            />
-          </label>
-          <div class="trigger-info" :title="summary(trigger)">
-            <span class="trigger-name">{{ trigger.name }}</span>
-            <span class="trigger-detail">
-              <span class="tag">{{ trigger.matchMode === 'hex' ? 'HEX' : 'TXT' }}</span>
-              <code class="pat">{{ trigger.pattern || '—' }}</code>
-              <ArrowRight class="arrow" />
-              <span class="tag">{{ trigger.responseIsHex ? 'HEX' : 'TXT' }}</span>
-              <code class="pat">{{ trigger.response || '—' }}</code>
-            </span>
-          </div>
-          <button
-            class="trigger-edit"
-            type="button"
-            :title="t('common.edit')"
-            @click="startEdit(trigger)"
-          >
-            <Pencil class="icon-sm" />
-          </button>
-          <button
-            class="trigger-remove"
-            type="button"
-            :title="t('common.delete')"
-            @click="remove(trigger.id)"
-          >
-            <X class="icon-sm" />
-          </button>
-        </div>
-      </div>
-
-      <!-- New / edit form -->
-      <div v-if="editing" class="trigger-form">
-        <n-input
-          v-model:value="draft.name"
-          size="tiny"
-          :placeholder="t('trigger.namePlaceholder')"
-          style="width: 100%"
-        />
-        <div class="form-row">
-          <span class="field-label">{{ t('trigger.match') }}</span>
-          <n-button-group size="tiny">
-            <n-button
-              :type="draft.matchMode === 'text' ? 'primary' : 'default'"
-              @click="draft.matchMode = 'text'"
-              >TXT</n-button
-            >
-            <n-button
-              :type="draft.matchMode === 'hex' ? 'primary' : 'default'"
-              @click="draft.matchMode = 'hex'"
-              >HEX</n-button
-            >
-          </n-button-group>
-          <n-input
-            v-model:value="draft.pattern"
-            size="tiny"
-            :placeholder="draft.matchMode === 'hex' ? 'AA BB' : 'login:'"
-            style="flex: 1"
+  <div class="trigger-panel">
+    <!-- Saved triggers -->
+    <div v-if="triggers.length > 0" class="trigger-list">
+      <div v-for="trigger in triggers" :key="trigger.id" class="trigger-item">
+        <label class="trigger-enable">
+          <n-checkbox
+            :checked="trigger.enabled"
+            size="small"
+            @update:checked="(v: boolean) => toggleEnabled(trigger.id, v)"
           />
+        </label>
+        <div class="trigger-info" :title="summary(trigger)">
+          <span class="trigger-name">{{ trigger.name }}</span>
+          <span class="trigger-detail">
+            <span class="tag">{{ trigger.matchMode === 'hex' ? 'HEX' : 'TXT' }}</span>
+            <code class="pat">{{ trigger.pattern || '—' }}</code>
+            <ArrowRight class="arrow" />
+            <span class="tag">{{ trigger.responseIsHex ? 'HEX' : 'TXT' }}</span>
+            <code class="pat">{{ trigger.response || '—' }}</code>
+          </span>
         </div>
-        <div class="form-row">
-          <span class="field-label">{{ t('trigger.response') }}</span>
-          <n-checkbox v-model:checked="draft.responseIsHex" size="small">HEX</n-checkbox>
-          <n-input
-            v-model:value="draft.response"
-            size="tiny"
-            :placeholder="draft.responseIsHex ? 'CC DD' : 'root\\r\\n'"
-            style="flex: 1"
-          />
-        </div>
-        <div class="form-row">
-          <span class="field-label">{{ t('trigger.cooldown') }}</span>
-          <n-input-number
-            v-model:value="draft.cooldownMs"
-            size="tiny"
-            :min="0"
-            :max="60000"
-            :step="100"
-            style="width: 130px"
-          >
-            <template #suffix>ms</template>
-          </n-input-number>
-          <span class="field-hint">{{ t('trigger.cooldownHint') }}</span>
-        </div>
-        <div class="form-actions">
-          <n-button size="tiny" @click="cancelEdit">{{ t('common.cancel') }}</n-button>
-          <n-button size="tiny" type="primary" :disabled="!canSave" @click="save">
-            {{ editingId ? t('common.update') : t('common.save') }}
-          </n-button>
-        </div>
+        <button
+          class="trigger-edit"
+          type="button"
+          :title="t('common.edit')"
+          @click="startEdit(trigger)"
+        >
+          <Pencil class="icon-sm" />
+        </button>
+        <button
+          class="trigger-remove"
+          type="button"
+          :title="t('common.delete')"
+          @click="remove(trigger.id)"
+        >
+          <X class="icon-sm" />
+        </button>
       </div>
-      <button v-else class="trigger-add" type="button" @click="startCreate">
-        <Plus class="icon-sm" />
-        {{ t('trigger.new') }}
-      </button>
     </div>
+
+    <!-- New / edit form -->
+    <div v-if="editing" class="trigger-form">
+      <n-input
+        v-model:value="draft.name"
+        size="tiny"
+        :placeholder="t('trigger.namePlaceholder')"
+        style="width: 100%"
+      />
+      <div class="form-row">
+        <span class="field-label">{{ t('trigger.match') }}</span>
+        <n-button-group size="tiny">
+          <n-button
+            :type="draft.matchMode === 'text' ? 'primary' : 'default'"
+            @click="draft.matchMode = 'text'"
+            >TXT</n-button
+          >
+          <n-button
+            :type="draft.matchMode === 'hex' ? 'primary' : 'default'"
+            @click="draft.matchMode = 'hex'"
+            >HEX</n-button
+          >
+        </n-button-group>
+        <n-input
+          v-model:value="draft.pattern"
+          size="tiny"
+          :placeholder="draft.matchMode === 'hex' ? 'AA BB' : 'login:'"
+          style="flex: 1"
+        />
+      </div>
+      <div class="form-row">
+        <span class="field-label">{{ t('trigger.response') }}</span>
+        <n-checkbox v-model:checked="draft.responseIsHex" size="small">HEX</n-checkbox>
+        <n-input
+          v-model:value="draft.response"
+          size="tiny"
+          :placeholder="draft.responseIsHex ? 'CC DD' : 'root\\r\\n'"
+          style="flex: 1"
+        />
+      </div>
+      <div class="form-row">
+        <span class="field-label">{{ t('trigger.cooldown') }}</span>
+        <n-input-number
+          v-model:value="draft.cooldownMs"
+          size="tiny"
+          :min="0"
+          :max="60000"
+          :step="100"
+          style="width: 130px"
+        >
+          <template #suffix>ms</template>
+        </n-input-number>
+        <span class="field-hint">{{ t('trigger.cooldownHint') }}</span>
+      </div>
+      <div class="form-actions">
+        <n-button size="tiny" @click="cancelEdit">{{ t('common.cancel') }}</n-button>
+        <n-button size="tiny" type="primary" :disabled="!canSave" @click="save">
+          {{ editingId ? t('common.update') : t('common.save') }}
+        </n-button>
+      </div>
+    </div>
+    <button v-else class="trigger-add" type="button" @click="startCreate">
+      <Plus class="icon-sm" />
+      {{ t('trigger.new') }}
+    </button>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, shallowReactive } from 'vue';
 import { NInput, NButton, NButtonGroup, NCheckbox, NInputNumber } from 'naive-ui';
-import { ArrowRight, ChevronRight, Pencil, Plus, X, Zap } from 'lucide-vue-next';
+import { ArrowRight, Pencil, Plus, X } from 'lucide-vue-next';
 import { useSessionStore } from '../../stores/sessions';
 import { t } from '../../lib/i18n';
 import type { Trigger, TriggerMatchMode } from '../../types';
@@ -137,9 +123,6 @@ const sessionStore = useSessionStore();
 const triggers = computed(
   () => sessionStore.sessions.find((s) => s.id === props.sessionId)?.triggers ?? [],
 );
-const enabledCount = computed(() => triggers.value.filter((t) => t.enabled).length);
-
-const expanded = ref(false);
 
 // --- draft / edit ---
 interface Draft {
@@ -239,84 +222,16 @@ function triggerCooldownSummary(ms: number): string {
 </script>
 
 <style scoped>
-.collapsible-section {
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 8px;
-}
-
-.section-toggle {
-  width: 100%;
+.trigger-panel {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0;
-  cursor: pointer;
-  margin-bottom: 6px;
-  transition: color var(--transition-fast);
-}
-
-.section-toggle:hover {
-  color: var(--text-secondary);
-}
-
-.toggle-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.toggle-right {
-  display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-}
-
-.badge {
-  color: var(--color-primary);
-  font-size: 9px;
-  background: var(--color-primary-subtle);
-  padding: 1px 6px;
-  border-radius: var(--radius-full);
-  letter-spacing: 0;
-}
-
-.toggle-icon {
-  width: 12px;
-  height: 12px;
-  color: var(--text-dim);
-  transition: transform var(--transition-normal);
-}
-
-.toggle-icon.expanded {
-  transform: rotate(90deg);
-}
-
-.section-body {
-  overflow: hidden;
-  max-height: 560px;
-  opacity: 1;
-  transition:
-    max-height var(--transition-slow),
-    opacity var(--transition-normal);
-}
-
-.section-body.collapsed {
-  max-height: 0;
-  opacity: 0;
 }
 
 .trigger-list {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  margin-bottom: 8px;
 }
 
 .trigger-item {
