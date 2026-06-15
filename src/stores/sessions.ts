@@ -11,11 +11,16 @@ import type {
   HighlightRule,
   LogAiContextMode,
   Macro,
+  ModbusFunctionCode,
+  ModbusMasterConfig,
+  ModbusRegister,
+  ModbusValueType,
   PortConfig,
   SendHistoryEntry,
   SessionParserState,
   SerialSession,
   Trigger,
+  WaveformSourceMode,
 } from '../types';
 import type { ParserConfig } from '../lib/protocol-parser';
 import { MAX_HISTORY } from '../types';
@@ -52,6 +57,27 @@ const DEFAULT_PARSER_STATE: SessionParserState = {
   presetId: 'at-crlf',
 };
 
+const DEFAULT_MODBUS_CONFIG: ModbusMasterConfig = {
+  transport: 'rtu',
+  tableMode: 'read',
+  enabled: false,
+  pollIntervalMs: 1000,
+  timeoutMs: 500,
+};
+
+const MODBUS_VALUE_TYPES: ReadonlySet<ModbusValueType> = new Set([
+  'bool',
+  'uint16',
+  'int16',
+  'uint32-be',
+  'int32-be',
+  'float32-be',
+]);
+
+const MODBUS_FUNCTION_CODES: ReadonlySet<ModbusFunctionCode> = new Set([
+  0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+]);
+
 interface PersistedFrame {
   id: string;
   direction: Direction;
@@ -71,6 +97,9 @@ interface PersistedSession {
   triggers: Trigger[];
   highlights: HighlightRule[];
   parserState: SessionParserState;
+  modbusRegisters: ModbusRegister[];
+  modbusConfig: ModbusMasterConfig;
+  waveformSourceMode: WaveformSourceMode;
   terminalAiModel: AiModel;
   logAiModel: AiModel;
   logAiContextMode: LogAiContextMode;
@@ -178,6 +207,9 @@ function createSessionRecord(
     triggers: [],
     highlights: [],
     parserState: cloneParserState(DEFAULT_PARSER_STATE),
+    modbusRegisters: [],
+    modbusConfig: { ...DEFAULT_MODBUS_CONFIG },
+    waveformSourceMode: 'text',
     autoLogEnabled: false,
     logPath: null,
     terminalAiModel: 'glm-4.5-air',
@@ -378,6 +410,106 @@ function normalizeLogContextMode(raw: unknown): LogAiContextMode {
   return raw === 'latest-n-frames' || raw === 'full-capped' ? raw : 'latest-10k';
 }
 
+/** Validate a Modbus FC into the supported family, else default to read-holding (03). */
+function normalizeModbusFc(raw: unknown): ModbusFunctionCode {
+  return MODBUS_FUNCTION_CODES.has(raw as ModbusFunctionCode) ? (raw as ModbusFunctionCode) : 0x03;
+}
+
+/** Validate a value-type string into the supported set, else default to uint16. */
+function normalizeModbusType(raw: unknown): ModbusValueType {
+  return MODBUS_VALUE_TYPES.has(raw as ModbusValueType) ? (raw as ModbusValueType) : 'uint16';
+}
+
+/**
+ * Hydrate the register table from persisted storage. Runtime-only fields
+ * (value/valueTs) are dropped — a reloaded session starts with no live values
+ * until the master polls again. The same normalizer covers the snapshot import
+ * path (which DOES carry values), so values are preserved when present.
+ */
+function normalizeModbusRegisters(raw: unknown): ModbusRegister[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (item): item is Record<string, unknown> =>
+        !!item && typeof item === 'object',
+    )
+    .map((reg) => ({
+      id: typeof reg.id === 'string' ? reg.id : crypto.randomUUID(),
+      name: typeof reg.name === 'string' ? reg.name : 'Register',
+      slaveAddress:
+        typeof reg.slaveAddress === 'number' && Number.isFinite(reg.slaveAddress)
+          ? Math.max(0, Math.min(247, Math.floor(reg.slaveAddress)))
+          : 1,
+      functionCode: normalizeModbusFc(reg.functionCode),
+      address:
+        typeof reg.address === 'number' && Number.isFinite(reg.address)
+          ? Math.max(0, Math.min(0xffff, Math.floor(reg.address)))
+          : 0,
+      type: normalizeModbusType(reg.type),
+      unit: typeof reg.unit === 'string' ? reg.unit : undefined,
+      waveformChannel:
+        typeof reg.waveformChannel === 'number' &&
+        Number.isInteger(reg.waveformChannel) &&
+        reg.waveformChannel >= 0 &&
+        reg.waveformChannel <= 7
+          ? reg.waveformChannel
+          : null,
+      // value/valueTs are runtime-only and intentionally accepted but not required.
+      value:
+        typeof reg.value === 'number' && Number.isFinite(reg.value) ? reg.value : null,
+      valueTs:
+        typeof reg.valueTs === 'number' && Number.isFinite(reg.valueTs) ? reg.valueTs : null,
+    }));
+}
+
+function cloneModbusConfig(cfg: ModbusMasterConfig): ModbusMasterConfig {
+  return {
+    transport: cfg.transport === 'pdu' ? 'pdu' : 'rtu',
+    tableMode: cfg.tableMode === 'send' ? 'send' : 'read',
+    enabled: cfg.enabled === true,
+    pollIntervalMs: Math.max(100, Math.min(10_000, Math.floor(cfg.pollIntervalMs || 1000))),
+    timeoutMs: Math.max(50, Math.min(5_000, Math.floor(cfg.timeoutMs || 500))),
+  };
+}
+
+function normalizeModbusConfig(raw: unknown): ModbusMasterConfig {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_MODBUS_CONFIG };
+  const cfg = raw as Partial<ModbusMasterConfig>;
+  return cloneModbusConfig({
+    transport: cfg.transport === 'pdu' ? 'pdu' : 'rtu',
+    tableMode: cfg.tableMode === 'send' ? 'send' : 'read',
+    enabled: cfg.enabled === true,
+    pollIntervalMs:
+      typeof cfg.pollIntervalMs === 'number' && Number.isFinite(cfg.pollIntervalMs)
+        ? cfg.pollIntervalMs
+        : 1000,
+    timeoutMs:
+      typeof cfg.timeoutMs === 'number' && Number.isFinite(cfg.timeoutMs)
+        ? cfg.timeoutMs
+        : 500,
+  });
+}
+
+function normalizeWaveformSourceMode(raw: unknown): WaveformSourceMode {
+  return raw === 'register' ? 'register' : 'text';
+}
+
+/** Strip runtime-only value/valueTs before persisting (they are not restored). */
+function persistableModbusRegisters(regs: ModbusRegister[]): ModbusRegister[] {
+  return regs.map((reg) => ({
+    id: reg.id,
+    name: reg.name,
+    slaveAddress: reg.slaveAddress,
+    functionCode: reg.functionCode,
+    address: reg.address,
+    type: reg.type,
+    unit: reg.unit,
+    waveformChannel: reg.waveformChannel,
+    value: null,
+    valueTs: null,
+  }));
+}
+
 export const useSessionStore = defineStore('sessions', () => {
   const sessions = ref<SerialSession[]>([]);
   const activeSessionId = ref<string | null>(null);
@@ -437,6 +569,9 @@ export const useSessionStore = defineStore('sessions', () => {
         triggers: normalizeTriggers(saved.triggers),
         highlights: normalizeHighlights(saved.highlights),
         parserState: normalizeParserState(saved.parserState),
+        modbusRegisters: normalizeModbusRegisters(saved.modbusRegisters),
+        modbusConfig: normalizeModbusConfig(saved.modbusConfig),
+        waveformSourceMode: normalizeWaveformSourceMode(saved.waveformSourceMode),
         terminalAiModel: normalizeAiModel(saved.terminalAiModel),
         logAiModel: normalizeAiModel(saved.logAiModel),
         logAiContextMode: normalizeLogContextMode(saved.logAiContextMode),
@@ -466,6 +601,9 @@ export const useSessionStore = defineStore('sessions', () => {
           triggers: session.triggers,
           highlights: session.highlights,
           parserState: cloneParserState(session.parserState),
+          modbusRegisters: persistableModbusRegisters(session.modbusRegisters),
+          modbusConfig: cloneModbusConfig(session.modbusConfig),
+          waveformSourceMode: session.waveformSourceMode,
           terminalAiModel: session.terminalAiModel,
           logAiModel: session.logAiModel,
           logAiContextMode: session.logAiContextMode,
@@ -747,6 +885,86 @@ export const useSessionStore = defineStore('sessions', () => {
     schedulePersist();
   }
 
+  function addModbusRegister(
+    sessionId: string,
+    reg: Omit<ModbusRegister, 'id' | 'value' | 'valueTs'>,
+  ): string | undefined {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return undefined;
+    const id = crypto.randomUUID();
+    session.modbusRegisters.push({ ...reg, id, value: null, valueTs: null });
+    schedulePersist();
+    return id;
+  }
+
+  function updateModbusRegister(
+    sessionId: string,
+    regId: string,
+    patch: Partial<Omit<ModbusRegister, 'id'>>,
+  ) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    const idx = session.modbusRegisters.findIndex((r) => r.id === regId);
+    if (idx === -1) return;
+    session.modbusRegisters[idx] = { ...session.modbusRegisters[idx], ...patch };
+    schedulePersist();
+  }
+
+  function removeModbusRegister(sessionId: string, regId: string) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.modbusRegisters = session.modbusRegisters.filter((r) => r.id !== regId);
+    schedulePersist();
+  }
+
+  /**
+   * Bulk-replace the register table. Used by "load .bbreg" snapshot import and
+   * by tests. Skips persistence when the caller is only updating runtime values
+   * (value/valueTs) via {@link setModbusRegisterValues}.
+   */
+  function setModbusRegisters(sessionId: string, regs: ModbusRegister[]) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.modbusRegisters = regs;
+    schedulePersist();
+  }
+
+  /**
+   * Apply a batch of decoded values to the register table (keyed by row id) as a
+   * single reactive write — the poll loop calls this once per tick with every
+   * register it read, so the table repaints once instead of per-register.
+   * Runtime-only → does not schedule persistence.
+   */
+  function setModbusRegisterValues(
+    sessionId: string,
+    values: Array<{ id: string; value: number; valueTs: number }>,
+  ) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    if (values.length === 0) return;
+    const byId = new Map(values.map((v) => [v.id, v]));
+    // Build a fresh array so Vue detects the change in one shot.
+    session.modbusRegisters = session.modbusRegisters.map((reg) => {
+      const hit = byId.get(reg.id);
+      if (!hit) return reg;
+      return { ...reg, value: hit.value, valueTs: hit.valueTs };
+    });
+  }
+
+  function setModbusConfig(sessionId: string, patch: Partial<ModbusMasterConfig>) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.modbusConfig = cloneModbusConfig({ ...session.modbusConfig, ...patch });
+    schedulePersist();
+  }
+
+  function setWaveformSourceMode(sessionId: string, mode: WaveformSourceMode) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.waveformSourceMode = mode;
+    schedulePersist();
+  }
+
   /** Enable auto-logging to `path`, or disable it when `path` is null. Sets
    * logPath and autoLogEnabled together so they can never disagree. */
   function setAutoLogTarget(sessionId: string, path: string | null) {
@@ -843,6 +1061,13 @@ export const useSessionStore = defineStore('sessions', () => {
     updateHighlight,
     removeHighlight,
     setParserState,
+    addModbusRegister,
+    updateModbusRegister,
+    removeModbusRegister,
+    setModbusRegisters,
+    setModbusRegisterValues,
+    setModbusConfig,
+    setWaveformSourceMode,
     setAutoLogTarget,
     setTerminalAiModel,
     setLogAiModel,

@@ -99,6 +99,75 @@ export interface SessionParserState {
   presetId: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Modbus register model + master config.
+//
+// A register row is the user-facing unit in the register table. Its
+// `functionCode` selects the FC family (read coil/input, read/write holding
+// reg, …); the master composes wire requests from rows, automatically batching
+// contiguous rows into multi-register/multi-coil requests (FC0F/FC10) and
+// falling back to single requests (FC05/06) when a row is alone or discontiguous.
+// `value` is dual-purpose: in READ mode it holds the latest decoded sample
+// (runtime only — never persisted); in SEND mode it holds the value to write.
+// ---------------------------------------------------------------------------
+
+/** Register/coil value encoding. 32-bit types span two 16-bit registers. */
+export type ModbusValueType =
+  | 'bool'
+  | 'uint16'
+  | 'int16'
+  | 'uint32-be'
+  | 'int32-be'
+  | 'float32-be';
+
+/**
+ * Function-code family a row belongs to. Stored as the family's single-read or
+ * single-write FC; the master picks the multiple variant (0F/10) when batching.
+ * - 01 read coils (bit, ro)   02 read discrete inputs (bit, ro)
+ * - 03 read holding regs (word, rw reads)   04 read input regs (word, ro)
+ * - 05 write single coil (bit)   06 write single register (word)
+ */
+export type ModbusFunctionCode = 0x01 | 0x02 | 0x03 | 0x04 | 0x05 | 0x06;
+
+/** Access class derived from the FC family — drives UI enablement. */
+export type ModbusAccess = 'bit-ro' | 'bit-rw' | 'word-ro' | 'word-rw';
+
+/** A register table row. Persisted per-session like triggers/highlights. */
+export interface ModbusRegister {
+  id: string;
+  name: string;
+  /** Slave address 1..247 (0 = broadcast for writes). */
+  slaveAddress: number;
+  functionCode: ModbusFunctionCode;
+  /** Starting register/coil address 0..65535. */
+  address: number;
+  type: ModbusValueType;
+  /** Physical unit label (°C, V, …) — cosmetic. */
+  unit?: string;
+  /** Waveform channel 0..7 this row plots, or null. */
+  waveformChannel: number | null;
+  /** READ: latest decoded value. SEND: value to write. Runtime-only. */
+  value: number | null;
+  valueTs: number | null;
+}
+
+/** Per-session Modbus master settings + table mode. Persisted (minus row values). */
+export interface ModbusMasterConfig {
+  /** 'rtu' = addr+PDU+CRC; 'pdu' = raw PDU bytes (TCP-style gateway). */
+  transport: 'rtu' | 'pdu';
+  /** READ polls rows live; SEND makes the Value column editable for writing. */
+  tableMode: 'read' | 'send';
+  /** Master polling enabled. In SEND mode this only affects background polling. */
+  enabled: boolean;
+  /** Poll interval in ms (100..10000). */
+  pollIntervalMs: number;
+  /** Per-request response timeout in ms. */
+  timeoutMs: number;
+}
+
+/** How the waveform sources its samples: free-text RX parsing or Modbus regs. */
+export type WaveformSourceMode = 'text' | 'register';
+
 export interface AiChatMessage {
   id: string;
   role: AiRole;
@@ -128,6 +197,11 @@ export interface SerialSession {
   triggers: Trigger[];
   highlights: HighlightRule[];
   parserState: SessionParserState;
+  /** Modbus register table + master config. */
+  modbusRegisters: ModbusRegister[];
+  modbusConfig: ModbusMasterConfig;
+  /** Waveform sample source: free-text RX parsing ('text') or registers ('register'). */
+  waveformSourceMode: WaveformSourceMode;
   autoLogEnabled: boolean;
   /** Target file path for auto-logging, or null when disabled. Kept in sync
    * with autoLogEnabled via sessionStore.setAutoLogTarget. Runtime-only — not

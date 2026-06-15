@@ -72,6 +72,12 @@ export function useSerialConnection(
   // microtask and serializes strictly in call order.
   let writeChain: Promise<boolean> = Promise.resolve(true);
 
+  // Raw-bytes observers: protocol engines (e.g. the Modbus master) need
+  // byte-accurate RX *before* the RAF coalesces chunks into display frames,
+  // because they must verify CRCs and correlate responses to their own
+  // requests. Each observer receives the exact bytes the plugin delivered.
+  const rawByteObservers = new Set<(bytes: Uint8Array) => void>();
+
   /** Open the port, start listening, apply handshake lines, (re)register the data listener. */
   async function openConnection() {
     const p = new SerialPort({
@@ -230,6 +236,12 @@ export function useSerialConnection(
   }
 
   function enqueueReceivedBytes(bytes: Uint8Array) {
+    // Notify raw-bytes observers first — they need the exact chunk (incl. CRC
+    // tails and inter-chunk boundaries) before any queue trimming/coalescing.
+    if (rawByteObservers.size > 0 && bytes.length > 0) {
+      for (const obs of rawByteObservers) obs(bytes);
+    }
+
     while (
       dataQueue.length > 0 &&
       (totalQueueSize + bytes.length > MAX_RX_QUEUE_BYTES ||
@@ -353,6 +365,46 @@ export function useSerialConnection(
   }
 
   /**
+   * Send a pre-built binary payload (e.g. a Modbus RTU frame) through the same
+   * serialized write path as {@link send}. This is the safe TX entry point for
+   * protocol engines that must emit raw bytes without a hex/text round-trip and
+   * must not overlap cyclic sends, triggers, or quick commands.
+   */
+  async function sendBytes(payload: Uint8Array): Promise<boolean> {
+    if (payload.length === 0) return false;
+    const result = writeChain.then(() => doSendBytes(payload));
+    writeChain = result.catch(() => true);
+    return result;
+  }
+
+  async function doSendBytes(payload: Uint8Array): Promise<boolean> {
+    if (!port.value) return false;
+    if (payload.length > MAX_INPUT_SIZE) return false;
+    try {
+      await port.value.writeBinary(payload);
+    } catch (e) {
+      logger.warn('serial writeBinary failed on', portName, e);
+      return false;
+    }
+    const txFrame = addFrame({ direction: 'TX', data: payload });
+    if (txFrame) appendFrame(sessionId, txFrame);
+    return true;
+  }
+
+  /**
+   * Subscribe to raw RX bytes (each chunk as delivered by the plugin, before
+   * RAF coalescing). Returns an unlisten function. Protocol engines use this to
+   * verify CRCs and correlate responses to their own requests; UI code should
+   * use {@link SerialConnectionOptions.onRxFrame} for completed display frames.
+   */
+  function rawBytes(cb: (bytes: Uint8Array) => void): () => void {
+    rawByteObservers.add(cb);
+    return () => {
+      rawByteObservers.delete(cb);
+    };
+  }
+
+  /**
    * Pulse the serial BREAK line (line held to SPACE) for ~250ms. Required for
    * Arduino auto-reset into the bootloader and for forcing ESP32/ESP8266 into
    * download mode (often combined with DTR/RTS). Idempotent: a second call
@@ -432,7 +484,9 @@ export function useSerialConnection(
     totalDroppedBytes,
     start,
     send,
+    sendBytes,
     sendBreak,
+    rawBytes,
     stop,
   };
 }

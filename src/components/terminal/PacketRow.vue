@@ -75,6 +75,7 @@ function onContextMenu(ev: MouseEvent) {
     background-color var(--transition-fast),
     border-left-color var(--transition-fast);
   cursor: context-menu;
+  overflow: hidden;
 }
 
 .packet-item:hover {
@@ -175,8 +176,8 @@ function onContextMenu(ev: MouseEvent) {
 }
 
 .ansi-data {
-  white-space: pre-wrap;
-  word-break: break-all;
+  white-space: nowrap;
+  word-break: normal;
   font-variant-numeric: normal;
 }
 
