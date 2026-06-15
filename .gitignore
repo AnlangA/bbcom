@@ -21,3 +21,4 @@ src-tauri/gen
 .factory
 .mimocode
 .pnpm-store
+.codex
