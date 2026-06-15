@@ -11,6 +11,17 @@
     <div class="settings-body">
       <section class="settings-section">
         <div class="section-head">
+          <span class="section-title">外观</span>
+          <span class="section-desc">切换深色 / 浅色主题（重启后保留）。</span>
+        </div>
+        <div class="section-row">
+          <n-switch :value="appStore.theme === 'light'" size="small" @update:value="setTheme" />
+          <span class="row-label">浅色模式</span>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="section-head">
           <span class="section-title">捕获缓冲</span>
           <span class="section-desc">每个会话保留的最大帧数，超出后自动丢弃最旧的数据。</span>
         </div>
@@ -104,6 +115,10 @@ function onBufferChange(value: number | null) {
 
 function resetBuffer() {
   appStore.setMaxBufferFrames(MAX_FRAMES);
+}
+
+function setTheme(light: boolean) {
+  appStore.theme = light ? 'light' : 'dark';
 }
 
 function close() {

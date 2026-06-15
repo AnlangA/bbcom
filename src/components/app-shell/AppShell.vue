@@ -141,7 +141,7 @@ useAppShortcuts({
   width: 100vw;
   height: 100vh;
   display: flex;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 160px), var(--bg-app);
+  background: linear-gradient(180deg, var(--edge-highlight), transparent 160px), var(--bg-app);
 }
 
 .sidebar {
@@ -170,7 +170,7 @@ useAppShortcuts({
   min-height: 58px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent), var(--bg-secondary);
+  background: linear-gradient(180deg, var(--edge-highlight), transparent), var(--bg-secondary);
   flex-shrink: 0;
   display: flex;
   align-items: center;

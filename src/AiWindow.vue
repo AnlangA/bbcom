@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider :theme="darkTheme" :theme-overrides="themeOverrides">
+  <n-config-provider :theme="naiveTheme" :theme-overrides="activeOverrides">
     <n-message-provider>
       <div ref="contentEl" class="ai-window-content">
         <AiPanel />
@@ -9,12 +9,26 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, onErrorCaptured, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, onErrorCaptured, ref, watch } from 'vue';
 import { darkTheme, NConfigProvider, NMessageProvider } from 'naive-ui';
 import { emit } from '@tauri-apps/api/event';
 import { resizeAiWindow } from './lib/ipc';
 import AiPanel from './components/ai/AiPanel.vue';
-import { themeOverrides } from './styles/naive-theme';
+import { useAppStore } from './stores/app';
+import { lightThemeOverrides, themeOverrides } from './styles/naive-theme';
+
+const appStore = useAppStore();
+const naiveTheme = computed(() => (appStore.theme === 'light' ? null : darkTheme));
+const activeOverrides = computed(() =>
+  appStore.theme === 'light' ? lightThemeOverrides : themeOverrides,
+);
+watch(
+  () => appStore.theme,
+  (theme) => {
+    document.documentElement.setAttribute('data-theme', theme);
+  },
+  { immediate: true },
+);
 
 onErrorCaptured((err, _instance, info) => {
   // Surface AI-window render errors to the console instead of failing silently

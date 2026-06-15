@@ -312,7 +312,7 @@ async function copyChecksum() {
   padding: 10px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.018);
+  background: var(--surface-lift);
   box-shadow: var(--shadow-inset);
 }
 

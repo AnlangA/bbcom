@@ -389,7 +389,7 @@ async function handleCopySelect(key: string) {
   overflow-y: auto;
   flex: 1;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.012), transparent 120px), var(--bg-primary);
+    linear-gradient(180deg, var(--surface-lift), transparent 120px), var(--bg-primary);
   position: relative;
 }
 
@@ -403,8 +403,8 @@ async function handleCopySelect(key: string) {
   font-size: 12px;
   pointer-events: none;
   background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(180deg, var(--grid-line) 1px, transparent 1px);
   background-size: 32px 32px;
   mask-image: radial-gradient(circle at center, black 0, transparent 72%);
 }

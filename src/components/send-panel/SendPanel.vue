@@ -455,7 +455,7 @@ function formatHexInput() {
 
 .quick-remove:hover {
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-hover);
 }
 
 .byte-count {

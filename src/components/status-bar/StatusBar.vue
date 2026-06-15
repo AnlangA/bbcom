@@ -237,6 +237,6 @@ const duration = computed(() => {
 
 .status-dot.disconnected {
   background: var(--text-dim);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.04);
+  box-shadow: 0 0 0 3px var(--ring-muted);
 }
 </style>

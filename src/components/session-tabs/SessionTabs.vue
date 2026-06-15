@@ -167,7 +167,7 @@ function tabTooltip(session: SerialSession): string {
 
 .tab-close:hover {
   color: var(--text-primary) !important;
-  background: rgba(255, 255, 255, 0.09);
+  background: var(--bg-hover);
 }
 
 .tab-add {

@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider :theme="darkTheme" :theme-overrides="themeOverrides">
+  <n-config-provider :theme="naiveTheme" :theme-overrides="activeOverrides">
     <n-message-provider>
       <AppShell />
     </n-message-provider>
@@ -7,11 +7,27 @@
 </template>
 
 <script setup lang="ts">
-import { onErrorCaptured } from 'vue';
+import { computed, onErrorCaptured, watch } from 'vue';
 import { darkTheme, NConfigProvider, NMessageProvider } from 'naive-ui';
 import AppShell from './components/app-shell/AppShell.vue';
 import { useAiSessionBridge } from './composables/useAiSessionBridge';
-import { themeOverrides } from './styles/naive-theme';
+import { useAppStore } from './stores/app';
+import { lightThemeOverrides, themeOverrides } from './styles/naive-theme';
+
+const appStore = useAppStore();
+const naiveTheme = computed(() => (appStore.theme === 'light' ? null : darkTheme));
+const activeOverrides = computed(() =>
+  appStore.theme === 'light' ? lightThemeOverrides : themeOverrides,
+);
+
+// Reflect the theme onto <html data-theme> so the CSS variable palettes swap.
+watch(
+  () => appStore.theme,
+  (theme) => {
+    document.documentElement.setAttribute('data-theme', theme);
+  },
+  { immediate: true },
+);
 
 useAiSessionBridge();
 
