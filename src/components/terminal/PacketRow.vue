@@ -9,8 +9,13 @@
       <span class="direction-badge" :class="directionClass">{{ frame.direction }}</span>
     </span>
     <span v-if="showTimestamp" class="col-time">{{ timestamp }}</span>
-    <span v-if="useHtml" class="col-data data ansi-data" v-html="formatted"></span>
-    <span v-else class="col-data data">{{ formatted }}</span>
+    <span
+      v-if="useHtml"
+      class="col-data data ansi-data"
+      v-html="formatted"
+      :title="formatted.length > 240 ? formatted.slice(0, 240) + '…' : undefined"
+    ></span>
+    <span v-else class="col-data data" :title="formatted.length > 240 ? formatted.slice(0, 240) + '…' : undefined">{{ formatted }}</span>
     <span class="col-mode">{{ displayLabel }}</span>
   </div>
 </template>
