@@ -48,6 +48,15 @@
         >
           {{ session.isConnected ? '已连接' : '未连接' }}
         </n-tag>
+        <n-tag
+          v-if="serialState.reconnecting.value"
+          type="warning"
+          size="small"
+          round
+          :bordered="false"
+        >
+          重连中
+        </n-tag>
         <span v-if="serialState.error.value" class="error-hint">{{ serialState.error.value }}</span>
         <span
           v-if="serialState.totalDroppedBytes.value > 0"
@@ -208,6 +217,13 @@ const serialState = useSerialConnection(
     },
     onOverflow: (total) => {
       message.warning(`接收缓冲区溢出，已丢弃约 ${formatBytes(total)} 数据（速率超过处理能力）`);
+    },
+    autoReconnect: () => appStore.autoReconnect,
+    onReconnecting: () => {
+      message.info('连接已断开，正在尝试重新连接…');
+    },
+    onReconnected: () => {
+      message.success('已重新连接');
     },
   },
 );

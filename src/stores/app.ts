@@ -19,6 +19,7 @@ export const useAppStore = defineStore('app', () => {
   const sendAsHex = ref(false);
   const loopIntervalMs = ref(1000);
   const ansiColorEnabled = ref(true);
+  const autoReconnect = ref(false);
   const aiApiKey = ref('');
   const aiEnableCodingPlan = ref(false);
   const aiCommandDraft = ref('');
@@ -41,6 +42,7 @@ export const useAppStore = defineStore('app', () => {
       ansiColorEnabled: ansiColorEnabled.value,
       aiEnableCodingPlan: aiEnableCodingPlan.value,
       maxBufferFrames: maxBufferFrames.value,
+      autoReconnect: autoReconnect.value,
     });
     if (saved.displayMode) displayMode.value = saved.displayMode;
     if (typeof saved.autoScroll === 'boolean') autoScroll.value = saved.autoScroll;
@@ -55,6 +57,7 @@ export const useAppStore = defineStore('app', () => {
     if (typeof saved.aiEnableCodingPlan === 'boolean')
       aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
     if (typeof saved.maxBufferFrames === 'number') setMaxBufferFrames(saved.maxBufferFrames);
+    if (typeof saved.autoReconnect === 'boolean') autoReconnect.value = saved.autoReconnect;
     aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
     void loadAiApiKey();
@@ -77,6 +80,8 @@ export const useAppStore = defineStore('app', () => {
         loopIntervalMs: loopIntervalMs.value,
         ansiColorEnabled: ansiColorEnabled.value,
         aiEnableCodingPlan: aiEnableCodingPlan.value,
+        maxBufferFrames: maxBufferFrames.value,
+        autoReconnect: autoReconnect.value,
       });
     }, 300);
   }
@@ -94,6 +99,7 @@ export const useAppStore = defineStore('app', () => {
       ansiColorEnabled,
       aiEnableCodingPlan,
       maxBufferFrames,
+      autoReconnect,
     ],
     save,
   );
@@ -214,6 +220,7 @@ export const useAppStore = defineStore('app', () => {
     aiApiKey,
     aiEnableCodingPlan,
     maxBufferFrames,
+    autoReconnect,
     aiCommandDraft,
     aiCommandSeq,
     pendingAiCommand,

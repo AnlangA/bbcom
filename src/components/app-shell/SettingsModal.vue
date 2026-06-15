@@ -32,6 +32,17 @@
 
       <section class="settings-section">
         <div class="section-head">
+          <span class="section-title">连接</span>
+          <span class="section-desc">串口意外断开（拔线、设备复位）时自动尝试重新连接，最多 10 次。</span>
+        </div>
+        <div class="section-row">
+          <n-switch v-model:checked="appStore.autoReconnect" size="small" />
+          <span class="row-label">自动重连</span>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="section-head">
           <span class="section-title">关于</span>
         </div>
         <dl class="about-grid">
@@ -72,7 +83,7 @@
 </template>
 
 <script setup lang="ts">
-import { NModal, NInputNumber, NButton } from 'naive-ui';
+import { NModal, NInputNumber, NButton, NSwitch } from 'naive-ui';
 import { useAppStore } from '../../stores/app';
 import { APP_VERSION } from '../../lib/version';
 import { MAX_FRAMES } from '../../types';
@@ -136,6 +147,11 @@ function close() {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+}
+
+.row-label {
+  font-size: var(--font-size-base);
+  color: var(--text-secondary);
 }
 
 .about-grid {
