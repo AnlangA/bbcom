@@ -1,19 +1,30 @@
 use crate::models::errors::AppError;
+use std::fmt::Write;
 
 pub fn format_hex(data: &[u8]) -> String {
-    let encoded = hex::encode_upper(data);
-    let mut s = String::with_capacity(encoded.len() + data.len().saturating_sub(1));
-    for (i, chunk) in encoded.as_bytes().chunks(2).enumerate() {
+    if data.is_empty() {
+        return String::new();
+    }
+    let mut s = String::with_capacity(data.len() * 3);
+    for (i, &byte) in data.iter().enumerate() {
         if i > 0 {
             s.push(' ');
         }
-        s.push(chunk[0] as char);
-        s.push(chunk[1] as char);
+        write!(s, "{:02X}", byte).unwrap();
     }
     s
 }
 
 pub fn parse_hex(input: &str) -> Result<Vec<u8>, AppError> {
+    // Only whitespace separators are allowed between hex pairs; any other non-hex char is an error.
+    for (i, c) in input.char_indices() {
+        if !c.is_ascii_hexdigit() && !c.is_ascii_whitespace() {
+            return Err(AppError::InvalidHex {
+                message: format!("invalid character '{}' at position {}", c, i),
+                position: Some(i),
+            });
+        }
+    }
     let cleaned: String = input.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     if cleaned.is_empty() {
         return Ok(Vec::new());
@@ -45,6 +56,11 @@ mod tests {
     }
 
     #[test]
+    fn test_format_hex_single_byte() {
+        assert_eq!(format_hex(&[0x0F]), "0F");
+    }
+
+    #[test]
     fn test_parse_hex() {
         assert_eq!(parse_hex("AA BB CC").unwrap(), vec![0xAA, 0xBB, 0xCC]);
         assert_eq!(parse_hex("AABBCC").unwrap(), vec![0xAA, 0xBB, 0xCC]);
@@ -54,6 +70,13 @@ mod tests {
     #[test]
     fn test_parse_hex_invalid() {
         assert!(parse_hex("AABBCCD").is_err());
+    }
+
+    #[test]
+    fn test_parse_hex_invalid_chars() {
+        assert!(parse_hex("GG").is_err());
+        assert!(parse_hex("AA,BB").is_err());
+        assert!(parse_hex("0x1A").is_err());
     }
 
     #[test]

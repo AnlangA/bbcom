@@ -14,6 +14,8 @@ export const useSerialStore = defineStore('serial', () => {
     stopBits: 1,
     parity: 'none',
     flowControl: 'none',
+    dtr: false,
+    rts: false,
   });
   let loaded = false;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -39,7 +41,7 @@ export const useSerialStore = defineStore('serial', () => {
     }, 300);
   }
 
-  watch([selectedPort, portConfig], save, { deep: true });
+  watch([selectedPort, portConfig], save);
 
   function setSelectedPort(port: string) {
     selectedPort.value = port;

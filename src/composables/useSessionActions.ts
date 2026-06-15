@@ -4,7 +4,14 @@ import { useSerialStore } from '../stores/serial';
 import { useAppStore } from '../stores/app';
 import type { PortConfig } from '../types';
 
-const { dialog } = createDiscreteApi(['dialog']);
+let dialogInstance: ReturnType<typeof createDiscreteApi>['dialog'] | null = null;
+
+function getDialog() {
+  if (!dialogInstance) {
+    dialogInstance = createDiscreteApi(['dialog']).dialog;
+  }
+  return dialogInstance;
+}
 
 export function useSessionActions() {
   const sessionStore = useSessionStore();
@@ -31,7 +38,7 @@ export function useSessionActions() {
       return;
     }
 
-    dialog.warning({
+    getDialog().warning({
       title: '关闭连接中的会话',
       content: `会话 ${session.portName} 正在连接中，确定要关闭吗？`,
       positiveText: '关闭',
@@ -46,7 +53,7 @@ export function useSessionActions() {
     const session = sessionStore.sessions.find((s) => s.id === sessionId);
     if (!session || session.frames.length === 0) return;
 
-    dialog.warning({
+    getDialog().warning({
       title: '清空数据',
       content: '确定要清空所有数据吗？此操作不可恢复。',
       positiveText: '清空',

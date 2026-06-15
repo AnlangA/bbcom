@@ -16,8 +16,8 @@ function frame(text: string): DataFrame {
 
 test('formats and parses hex values', () => {
   assert.equal(formatHex(new Uint8Array([0, 10, 255])), '00 0A FF');
-  assert.deepEqual(parseHex('00 0a ff'), [0, 10, 255]);
-  assert.deepEqual(parseHex('00,0A,FF'), [0, 10, 255]);
+  assert.deepEqual(Array.from(parseHex('00 0a ff')), [0, 10, 255]);
+  assert.deepEqual(Array.from(parseHex('00,0A,FF')), [0, 10, 255]);
   assert.equal(isValidHex('AA BB CC'), true);
   assert.equal(isValidHex('AA B'), false);
 });

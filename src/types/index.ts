@@ -13,7 +13,7 @@ export type LogAiContextMode = 'latest-10k' | 'latest-n-frames' | 'full-capped';
 export interface DataFrame {
   id: string;
   direction: Direction;
-  timestamp: string;
+  timestamp: number;
   data: Uint8Array;
 }
 
@@ -24,6 +24,8 @@ export interface PortConfig {
   stopBits: 1 | 2;
   parity: 'none' | 'odd' | 'even';
   flowControl: 'none' | 'software' | 'hardware';
+  dtr?: boolean;
+  rts?: boolean;
 }
 
 // Send history

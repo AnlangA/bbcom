@@ -3,6 +3,7 @@ pub mod export;
 pub mod models;
 pub mod utils;
 
+use commands::ai::AI_WINDOW_LABEL;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -16,9 +17,13 @@ pub fn run() {
 
     let result = tauri::Builder::default()
         .setup(|app| {
+            #[cfg(feature = "devtools")]
+            {
+                app.get_webview_window("main").map(|w| w.open_devtools());
+            }
             WebviewWindowBuilder::new(
                 app,
-                "ai-assistant",
+                AI_WINDOW_LABEL,
                 WebviewUrl::App("index.html?window=ai".into()),
             )
             .title("AI 终端助手")
@@ -31,7 +36,8 @@ pub fn run() {
             .always_on_top(true)
             .visible(false)
             .build()?;
-            if let Some(window) = app.get_webview_window("ai-assistant") {
+
+            if let Some(window) = app.get_webview_window(AI_WINDOW_LABEL) {
                 let app_handle = app.handle().clone();
                 let window_for_event = window.clone();
                 window.on_window_event(move |event| {
@@ -49,9 +55,10 @@ pub fn run() {
             }
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
+                let app_handle2 = app.handle().clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { .. } = event {
-                        if let Some(ai_window) = app_handle.get_webview_window("ai-assistant") {
+                        if let Some(ai_window) = app_handle2.get_webview_window(AI_WINDOW_LABEL) {
                             if let Err(e) = ai_window.close() {
                                 tracing::warn!("failed to close AI window on exit: {e}");
                             }

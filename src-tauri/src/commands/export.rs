@@ -4,6 +4,8 @@ use crate::models::errors::AppError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+const MAX_EXPORT_FRAMES: usize = 100_000;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExportFormat {
@@ -24,6 +26,13 @@ pub struct ExportRequest {
 
 #[tauri::command]
 pub async fn export_data(request: ExportRequest) -> Result<(), AppError> {
+    if request.frames.len() > MAX_EXPORT_FRAMES {
+        return Err(AppError::ValidationError {
+            message: format!("too many frames: {} (max {})", request.frames.len(), MAX_EXPORT_FRAMES),
+            field: "frames".to_string(),
+        });
+    }
+
     validate_export_path(&request.path, request.format)?;
     formatter::export(&request.frames, &request.format, &request.path).await
 }

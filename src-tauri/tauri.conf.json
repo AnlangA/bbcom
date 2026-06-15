@@ -1,13 +1,15 @@
 {
   "$schema": "https://schema.tauri.app/config/2.0.0",
   "productName": "bbcom",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.bbcom.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
     "devUrl": "http://localhost:5173",
-    "frontendDist": "../dist"
+    "frontendDist": "../dist",
+    "beforeDevCommand": "pnpm run dev",
+    "beforeBuildCommand": "pnpm run build"
   },
   "app": {
     "windows": [
@@ -24,6 +26,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": "all",
+    "icon": [
+      "icons/1024x1024.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
   }
 }

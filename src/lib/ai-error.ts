@@ -1,13 +1,15 @@
-export interface CommandErrorDetails {
-  message?: string;
-}
-
 export function getAiErrorMessage(error: unknown, fallback: string): string {
   if (typeof error === 'string') return error;
   if (!error || typeof error !== 'object') return fallback;
-  const record = error as Record<string, unknown>;
-  const details = record.details as CommandErrorDetails | undefined;
-  if (details?.message) return details.message;
-  if (typeof record.message === 'string') return record.message;
+
+  const obj = error as Record<string, unknown>;
+
+  if (obj.details && typeof obj.details === 'object') {
+    const details = obj.details as Record<string, unknown>;
+    if (typeof details.message === 'string' && details.message) return details.message;
+  }
+
+  if (typeof obj.message === 'string') return obj.message;
+
   return fallback;
 }

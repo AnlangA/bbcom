@@ -1,6 +1,9 @@
 packages:
   - .
 
+verifyDepsBeforeRun: false
+confirmModulesPurge: false
+
 allowBuilds:
   esbuild: true
   vue-demi: true

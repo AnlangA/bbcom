@@ -75,8 +75,8 @@ export const useSessionStore = defineStore('sessions', () => {
     session.frames.push(fullFrame);
 
     if (session.frames.length > MAX_FRAMES + FRAME_TRIM_THRESHOLD) {
-      const trimmed = session.frames.slice(-MAX_FRAMES);
-      session.frames = trimmed;
+      const trimCount = session.frames.length - MAX_FRAMES;
+      session.frames.splice(0, trimCount);
     }
 
     if (frame.direction === 'TX') {

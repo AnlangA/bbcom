@@ -101,7 +101,7 @@
         >
           <span class="col-dir direction">{{ visibleFrames[row.index].direction }}</span>
           <span v-if="appStore.showTimestamp" class="col-time timestamp">{{
-            visibleFrames[row.index].timestamp
+            formatTimestamp(visibleFrames[row.index].timestamp)
           }}</span>
           <span
             v-if="appStore.displayMode !== 'HEX' && appStore.ansiColorEnabled"
@@ -130,7 +130,7 @@ import { computed, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, NSelect, useMessage } from 'naive-ui';
 import { Copy, Search } from 'lucide-vue-next';
 import { useAppStore } from '../../stores/app';
-import { formatHex, formatUtf8, formatAscii } from '../../lib/format';
+import { formatHex, formatUtf8, formatAscii, formatTimestamp } from '../../lib/format';
 import { usePacketFilter } from '../../composables/usePacketFilter';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
 import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
@@ -293,7 +293,7 @@ async function handleCtxSelect(key: string) {
       text = stripAnsi(formatAscii(ctxFrame.data));
       break;
     case 'row':
-      text = `[${ctxFrame.timestamp}] ${ctxFrame.direction} | ${formatFrame(ctxFrame)}`;
+      text = `[${formatTimestamp(ctxFrame.timestamp)}] ${ctxFrame.direction} | ${formatFrame(ctxFrame)}`;
       break;
   }
 
@@ -316,7 +316,7 @@ async function handleCopySelect(key: string) {
   const text = frames
     .map((frame) => {
       const data = asHex ? formatHex(frame.data) : formatUtf8(frame.data);
-      return `[${frame.timestamp}] ${frame.direction} | ${data}`;
+      return `[${formatTimestamp(frame.timestamp)}] ${frame.direction} | ${data}`;
     })
     .join('\n');
   try {

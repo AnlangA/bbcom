@@ -4,20 +4,25 @@ import type { DataFrame } from '../types';
 import { invokeExportData } from '../lib/ipc';
 import type { ExportFormat } from '../lib/constants';
 
+const EXT_MAP: Record<string, { name: string; ext: string }> = {
+  'txt-hex': { name: 'TXT', ext: 'txt' },
+  'txt-ascii': { name: 'TXT', ext: 'txt' },
+  csv: { name: 'CSV', ext: 'csv' },
+  jsonl: { name: 'JSONL', ext: 'jsonl' },
+  bin: { name: 'BIN', ext: 'bin' },
+};
+
+function getExportFilter(format: string): { name: string; ext: string } {
+  return EXT_MAP[format] ?? { name: format.toUpperCase(), ext: format };
+}
+
 export function useExport() {
   const isExporting = ref(false);
 
   async function exportData(frames: DataFrame[], format: ExportFormat) {
     isExporting.value = true;
     try {
-      const extMap: Record<string, { name: string; ext: string }> = {
-        'txt-hex': { name: 'TXT', ext: 'txt' },
-        'txt-ascii': { name: 'TXT', ext: 'txt' },
-        csv: { name: 'CSV', ext: 'csv' },
-        jsonl: { name: 'JSONL', ext: 'jsonl' },
-        bin: { name: 'BIN', ext: 'bin' },
-      };
-      const filter = extMap[format] ?? { name: format.toUpperCase(), ext: format };
+      const filter = getExportFilter(format);
       const path = await save({
         filters: [
           {

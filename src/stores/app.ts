@@ -29,7 +29,7 @@ export const useAppStore = defineStore('app', () => {
   let loaded = false;
   let aiKeyLoadSeq = 0;
 
-  function load() {
+  async function load() {
     const saved = loadJson(STORAGE_KEY, {
       displayMode: displayMode.value,
       autoScroll: autoScroll.value,

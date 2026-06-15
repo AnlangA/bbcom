@@ -1,4 +1,9 @@
-use crc::{CRC_8_SMBUS, CRC_16_IBM_SDLC, CRC_32_ISO_HDLC, Crc};
+use crc::{Crc, CRC_16_IBM_SDLC, CRC_32_ISO_HDLC, CRC_8_SMBUS};
+use std::sync::LazyLock;
+
+static CRC8: LazyLock<Crc<u8>> = LazyLock::new(|| Crc::<u8>::new(&CRC_8_SMBUS));
+static CRC16: LazyLock<Crc<u16>> = LazyLock::new(|| Crc::<u16>::new(&CRC_16_IBM_SDLC));
+static CRC32: LazyLock<Crc<u32>> = LazyLock::new(|| Crc::<u32>::new(&CRC_32_ISO_HDLC));
 
 pub fn calculate_checksum(data: &[u8]) -> String {
     let sum: u32 = data.iter().map(|&b| b as u32).sum();
@@ -6,18 +11,15 @@ pub fn calculate_checksum(data: &[u8]) -> String {
 }
 
 pub fn calculate_crc8(data: &[u8]) -> String {
-    let crc = Crc::<u8>::new(&CRC_8_SMBUS);
-    format!("{:02X}", crc.checksum(data))
+    format!("{:02X}", CRC8.checksum(data))
 }
 
 pub fn calculate_crc16(data: &[u8]) -> String {
-    let crc = Crc::<u16>::new(&CRC_16_IBM_SDLC);
-    format!("{:04X}", crc.checksum(data))
+    format!("{:04X}", CRC16.checksum(data))
 }
 
 pub fn calculate_crc32(data: &[u8]) -> String {
-    let crc = Crc::<u32>::new(&CRC_32_ISO_HDLC);
-    format!("{:08X}", crc.checksum(data))
+    format!("{:08X}", CRC32.checksum(data))
 }
 
 #[cfg(test)]

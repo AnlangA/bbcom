@@ -30,9 +30,9 @@ export interface AppCommandErrorDetails {
   path?: string;
 }
 
-export async function calculateChecksum(data: number[], algorithm: ChecksumAlgorithm) {
+export async function calculateChecksum(data: ArrayLike<number>, algorithm: ChecksumAlgorithm) {
   return invoke<{ result: string }>('calculate_checksum', {
-    request: { data, algorithm },
+    request: { data: Array.from(data), algorithm },
   });
 }
 
