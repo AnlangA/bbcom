@@ -12,13 +12,6 @@
             <PanelLeftClose v-if="!appStore.sidebarCollapsed" class="icon" />
             <PanelLeftOpen v-else class="icon" />
           </button>
-          <span class="brand-mark">
-            <Zap class="icon-lg" />
-          </span>
-          <span v-if="!appStore.sidebarCollapsed" class="brand-copy">
-            <span class="brand-title">bbcom</span>
-            <span class="brand-subtitle">{{ t('app.subtitle') }}</span>
-          </span>
         </div>
         <div class="sidebar-actions">
           <n-button
@@ -151,7 +144,6 @@ import {
   Plus,
   Settings,
   Sun,
-  Zap,
 } from 'lucide-vue-next';
 import PortSelector from '../port-selector/PortSelector.vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
@@ -345,56 +337,6 @@ useAppShortcuts({
   height: 34px;
 }
 
-.brand-mark {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  color: var(--color-primary);
-  background: var(--color-primary-subtle);
-  border: 1px solid var(--color-primary-muted);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-inset);
-  transition: transform var(--transition-normal);
-}
-
-.brand-mark:hover {
-  transform: rotate(12deg);
-}
-
-.sidebar.collapsed .brand-mark {
-  display: none;
-}
-
-.brand-copy {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.brand-title {
-  font-size: 15px;
-  font-weight: var(--font-weight-bold);
-  color: var(--text-primary);
-  line-height: var(--line-height-tight);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.brand-subtitle {
-  color: var(--text-dim);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--line-height-tight);
-  text-transform: uppercase;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .ai-toggle {
   flex-shrink: 0;
 }
@@ -584,10 +526,6 @@ useAppShortcuts({
 @media (max-width: 760px) {
   .sidebar {
     max-width: 252px;
-  }
-
-  .brand-copy {
-    display: none;
   }
 }
 </style>
