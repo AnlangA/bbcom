@@ -33,10 +33,6 @@
         <div v-if="missingActivePorts.length > 0" class="empty-hint warning">
           {{ t('serial.disconnectedPorts', { ports: missingActivePorts.join(', ') }) }}
         </div>
-        <div v-if="selectedPort" class="port-meta">
-          <span class="port-name">{{ selectedPort }}</span>
-          <span>{{ config.baudRate }} bps</span>
-        </div>
         <div class="port-action">
           <n-button size="small" block @click="newSession" :disabled="!selectedPort" type="primary">
             <template #icon>
@@ -407,7 +403,9 @@ async function copyChecksum() {
 
 .section-body {
   overflow: hidden;
-  max-height: 500px;
+  /* Generous ceiling so the params section (6 rows + summary chips) never
+     gets clipped at small window heights or larger zoom levels. */
+  max-height: 640px;
   opacity: 1;
   transition:
     max-height var(--transition-slow),
@@ -446,24 +444,6 @@ async function copyChecksum() {
   color: var(--accent-red);
   background: var(--accent-red-subtle);
   border-color: var(--accent-red-border);
-}
-
-.port-meta {
-  margin-top: 8px;
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  min-width: 0;
-}
-
-.port-name {
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .port-action {

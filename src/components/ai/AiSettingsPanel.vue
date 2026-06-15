@@ -82,8 +82,11 @@ async function saveApiKey() {
 }
 
 .ai-settings.compact {
-  margin: 8px 0 2px;
-  padding: 9px;
+  /* Sit inside the sidebar the same way PortSelector's .section cards do:
+     matching side padding + gap so the AI panel reads as a peer section rather
+     than a detached slab bolted onto the header. */
+  margin: 6px;
+  padding: 10px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   background: var(--surface-lift);

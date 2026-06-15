@@ -35,9 +35,6 @@
               <Bot v-if="aiWindowVisible" class="icon-sm" />
               <BotOff v-else class="icon-sm" />
             </template>
-            <span class="action-label">{{
-              aiWindowVisible ? t('sidebar.ai.on') : t('sidebar.ai.off')
-            }}</span>
           </n-button>
           <n-button
             size="tiny"
@@ -88,15 +85,19 @@
           </n-button>
         </div>
       </div>
-      <template v-if="!appStore.sidebarCollapsed">
-        <AiSettingsPanel v-if="aiWindowVisible" />
+      <div class="sidebar-body" :class="{ hidden: appStore.sidebarCollapsed }">
+        <AiSettingsPanel v-if="aiWindowVisible" compact />
         <div class="sidebar-content">
           <PortSelector />
         </div>
-      </template>
+      </div>
     </aside>
 
-    <div class="resize-handle" :class="{ dragging: isDragging }" @mousedown="startResize"></div>
+    <div
+      class="resize-handle"
+      :class="{ dragging: isDragging, disabled: appStore.sidebarCollapsed }"
+      @mousedown="startResize"
+    ></div>
 
     <main class="main">
       <SessionTabs @create="showCreateDialog = true" />
@@ -288,10 +289,16 @@ useAppShortcuts({
 }
 
 .sidebar.collapsed .sidebar-header {
-  padding: 12px 7px;
+  /* When collapsed the brand + toolbar stack vertically; allow the header to
+     grow with its contents instead of clipping the stacked action buttons
+     (the sidebar has overflow:hidden, so a fixed min-height would crop them). */
+  min-height: 0;
+  padding: 10px 7px;
   flex-direction: column;
   justify-content: flex-start;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
+  overflow-y: auto;
 }
 
 .app-brand {
@@ -299,11 +306,16 @@ useAppShortcuts({
   align-items: center;
   gap: 11px;
   min-width: 0;
+  /* The brand is the flexible side of the header: it shrinks first so the
+     fixed-width action buttons on the right can never be squeezed into
+     overlapping it. */
+  flex: 1 1 auto;
 }
 
 .sidebar.collapsed .app-brand {
   flex-direction: column;
   gap: 6px;
+  flex: 0 0 auto;
 }
 
 .collapse-btn {
@@ -359,6 +371,7 @@ useAppShortcuts({
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow: hidden;
 }
 
 .brand-title {
@@ -367,6 +380,8 @@ useAppShortcuts({
   color: var(--text-primary);
   line-height: var(--line-height-tight);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .brand-subtitle {
@@ -375,6 +390,9 @@ useAppShortcuts({
   font-weight: var(--font-weight-semibold);
   line-height: var(--line-height-tight);
   text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ai-toggle {
@@ -385,21 +403,51 @@ useAppShortcuts({
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 2px;
-  min-width: 0;
+  /* Pin the action cluster: these icon buttons are fixed-size and must never
+     be flex-compressed, otherwise they collide/overlap the brand on narrow
+     sidebar widths (the sidebar can be as little as 252px wide). */
+  flex: 0 0 auto;
+  gap: 4px;
 }
 
 .sidebar.collapsed .sidebar-actions {
   flex-direction: column;
   justify-content: flex-start;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
   width: 100%;
+}
+
+/* In the collapsed rail, give the icon-only toggles a consistent square hit
+   target and keep them visually centered. */
+.sidebar.collapsed .sidebar-actions :deep(.n-button) {
+  --n-size-tiny: 30px;
 }
 
 .sidebar-content {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+/* Wraps AiSettingsPanel + PortSelector so the whole lower region fades/slides
+   out together with the width animation when collapsing, instead of being
+   yanked by v-if mid-transition (which flashed empty space). */
+.sidebar-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition:
+    opacity var(--transition-normal),
+    transform var(--transition-normal);
+}
+
+.sidebar-body.hidden {
+  opacity: 0;
+  transform: translateX(-6px);
+  pointer-events: none;
 }
 
 .resize-handle {
@@ -409,12 +457,24 @@ useAppShortcuts({
   flex-shrink: 0;
   position: relative;
   z-index: 10;
-  transition: background var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    opacity var(--transition-fast),
+    width var(--transition-slow);
 }
 
 .resize-handle:hover,
 .resize-handle.dragging {
   background: var(--color-primary);
+}
+
+/* When the sidebar is collapsed the handle is inert and visually removed so
+   it neither steals pointer events nor shows a misleading resize cursor. */
+.resize-handle.disabled {
+  width: 0;
+  cursor: default;
+  pointer-events: none;
+  opacity: 0;
 }
 
 .main {
