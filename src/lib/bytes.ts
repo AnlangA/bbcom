@@ -6,12 +6,15 @@
  * reset its own size accumulator — which is exactly the flush-then-reset
  * ordering used by the RX batching path.
  */
-export function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
+export function concatUint8Arrays(chunks: Uint8Array[], totalLength?: number): Uint8Array {
   if (chunks.length === 0) return new Uint8Array(0);
   if (chunks.length === 1) return chunks[0];
 
-  let total = 0;
-  for (const chunk of chunks) total += chunk.length;
+  let total = totalLength;
+  if (total === undefined) {
+    total = 0;
+    for (const chunk of chunks) total += chunk.length;
+  }
 
   const merged = new Uint8Array(total);
   let offset = 0;

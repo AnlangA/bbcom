@@ -4,6 +4,7 @@ import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../typ
 import { loadJson, loadString, saveJson, saveString } from '../lib/storage';
 import { clearSecretString, loadSecretString, saveSecretString } from '../lib/secure-settings';
 import { maxBufferFrames, setMaxBufferFrames } from '../lib/buffer-config';
+import { locale, setLocale } from '../lib/i18n';
 
 const STORAGE_KEY = 'bbcom-app-settings';
 const AI_API_KEY_STORAGE_KEY = `${STORAGE_KEY}:ai-api-key`;
@@ -32,43 +33,167 @@ export const useAppStore = defineStore('app', () => {
   let loaded = false;
   let aiKeyLoadSeq = 0;
 
+  // Single source of truth for every persisted (non-secret) setting.
+  //
+  // Each descriptor owns its storage key, the reactive ref it binds to, a
+  // `validate(raw) -> boolean` predicate (matches the per-field `typeof`/truthy
+  // guards the hand-written load() used), and an `apply(raw)` that assigns the
+  // (already-validated) value back into the ref — including any clamping or
+  // special routing (sidebarWidth bounds, maxBufferFrames via its setter).
+  // load(), save(), and the persistence watch all iterate this one table, so a
+  // new setting is a one-line append instead of three synchronized edits.
+  interface PersistedSetting {
+    key: string;
+    ref: ReturnType<typeof ref>;
+    validate: (raw: unknown) => boolean;
+    apply: (raw: unknown) => void;
+  }
+
+  const SIDEBAR_WIDTH_MIN = 252;
+  const SIDEBAR_WIDTH_MAX = 340;
+
+  const persistedSettings: PersistedSetting[] = [
+    {
+      key: 'displayMode',
+      ref: displayMode,
+      validate: (raw) => Boolean(raw),
+      apply: (raw) => {
+        displayMode.value = raw as DisplayMode;
+      },
+    },
+    {
+      key: 'autoScroll',
+      ref: autoScroll,
+      validate: (raw) => typeof raw === 'boolean',
+      apply: (raw) => {
+        autoScroll.value = raw as boolean;
+      },
+    },
+    {
+      key: 'showTimestamp',
+      ref: showTimestamp,
+      validate: (raw) => typeof raw === 'boolean',
+      apply: (raw) => {
+        showTimestamp.value = raw as boolean;
+      },
+    },
+    {
+      key: 'searchMode',
+      ref: searchMode,
+      validate: (raw) => Boolean(raw),
+      apply: (raw) => {
+        searchMode.value = raw as SearchMode;
+      },
+    },
+    {
+      key: 'packetViewMode',
+      ref: packetViewMode,
+      validate: (raw) => Boolean(raw),
+      apply: (raw) => {
+        packetViewMode.value = raw as PacketViewMode;
+      },
+    },
+    {
+      key: 'lineEnding',
+      ref: lineEnding,
+      validate: (raw) => Boolean(raw),
+      apply: (raw) => {
+        lineEnding.value = raw as LineEnding;
+      },
+    },
+    {
+      key: 'sendAsHex',
+      ref: sendAsHex,
+      validate: (raw) => typeof raw === 'boolean',
+      apply: (raw) => {
+        sendAsHex.value = raw as boolean;
+      },
+    },
+    {
+      key: 'loopIntervalMs',
+      ref: loopIntervalMs,
+      validate: (raw) => typeof raw === 'number',
+      apply: (raw) => {
+        loopIntervalMs.value = raw as number;
+      },
+    },
+    {
+      key: 'ansiColorEnabled',
+      ref: ansiColorEnabled,
+      validate: (raw) => typeof raw === 'boolean',
+      apply: (raw) => {
+        ansiColorEnabled.value = raw as boolean;
+      },
+    },
+    {
+      key: 'aiEnableCodingPlan',
+      ref: aiEnableCodingPlan,
+      validate: (raw) => typeof raw === 'boolean',
+      apply: (raw) => {
+        aiEnableCodingPlan.value = raw as boolean;
+      },
+    },
+    {
+      key: 'sidebarWidth',
+      ref: sidebarWidth,
+      validate: (raw) => typeof raw === 'number',
+      apply: (raw) => {
+        sidebarWidth.value = Math.max(
+          SIDEBAR_WIDTH_MIN,
+          Math.min(SIDEBAR_WIDTH_MAX, raw as number),
+        );
+      },
+    },
+    {
+      key: 'sidebarCollapsed',
+      ref: sidebarCollapsed,
+      validate: (raw) => typeof raw === 'boolean',
+      apply: (raw) => {
+        sidebarCollapsed.value = raw as boolean;
+      },
+    },
+    {
+      key: 'maxBufferFrames',
+      ref: maxBufferFrames,
+      validate: (raw) => typeof raw === 'number',
+      apply: (raw) => setMaxBufferFrames(raw as number),
+    },
+    {
+      key: 'autoReconnect',
+      ref: autoReconnect,
+      validate: (raw) => typeof raw === 'boolean',
+      apply: (raw) => {
+        autoReconnect.value = raw as boolean;
+      },
+    },
+    {
+      key: 'theme',
+      ref: theme,
+      validate: (raw) => raw === 'light' || raw === 'dark',
+      apply: (raw) => {
+        theme.value = raw as 'dark' | 'light';
+      },
+    },
+    {
+      key: 'locale',
+      // The i18n locale ref (reactive). Persisted as 'en' or 'zh'; defaults to 'zh'.
+      ref: locale,
+      validate: (raw) => raw === 'en' || raw === 'zh',
+      apply: (raw) => {
+        locale.value = raw as 'en' | 'zh';
+      },
+    },
+  ];
+
   async function load() {
-    const saved = loadJson(STORAGE_KEY, {
-      displayMode: displayMode.value,
-      autoScroll: autoScroll.value,
-      showTimestamp: showTimestamp.value,
-      searchMode: searchMode.value,
-      packetViewMode: packetViewMode.value,
-      lineEnding: lineEnding.value,
-      sendAsHex: sendAsHex.value,
-      loopIntervalMs: loopIntervalMs.value,
-      ansiColorEnabled: ansiColorEnabled.value,
-      aiEnableCodingPlan: aiEnableCodingPlan.value,
-      sidebarWidth: sidebarWidth.value,
-      sidebarCollapsed: sidebarCollapsed.value,
-      maxBufferFrames: maxBufferFrames.value,
-      autoReconnect: autoReconnect.value,
-      theme: theme.value,
-    });
-    if (saved.displayMode) displayMode.value = saved.displayMode;
-    if (typeof saved.autoScroll === 'boolean') autoScroll.value = saved.autoScroll;
-    if (typeof saved.showTimestamp === 'boolean') showTimestamp.value = saved.showTimestamp;
-    if (saved.searchMode) searchMode.value = saved.searchMode;
-    if (saved.packetViewMode) packetViewMode.value = saved.packetViewMode;
-    if (saved.lineEnding) lineEnding.value = saved.lineEnding;
-    if (typeof saved.sendAsHex === 'boolean') sendAsHex.value = saved.sendAsHex;
-    if (typeof saved.loopIntervalMs === 'number') loopIntervalMs.value = saved.loopIntervalMs;
-    if (typeof saved.ansiColorEnabled === 'boolean')
-      ansiColorEnabled.value = saved.ansiColorEnabled;
-    if (typeof saved.aiEnableCodingPlan === 'boolean')
-      aiEnableCodingPlan.value = saved.aiEnableCodingPlan;
-    if (typeof saved.sidebarWidth === 'number')
-      sidebarWidth.value = Math.max(252, Math.min(340, saved.sidebarWidth));
-    if (typeof saved.sidebarCollapsed === 'boolean')
-      sidebarCollapsed.value = saved.sidebarCollapsed;
-    if (typeof saved.maxBufferFrames === 'number') setMaxBufferFrames(saved.maxBufferFrames);
-    if (typeof saved.autoReconnect === 'boolean') autoReconnect.value = saved.autoReconnect;
-    if (saved.theme === 'light') theme.value = 'light';
+    const defaults: Record<string, unknown> = {};
+    for (const s of persistedSettings) defaults[s.key] = s.ref.value;
+
+    const saved = loadJson(STORAGE_KEY, defaults);
+    for (const s of persistedSettings) {
+      const raw = (saved as Record<string, unknown>)[s.key];
+      if (s.validate(raw)) s.apply(raw);
+    }
     aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
     void loadAiApiKey();
@@ -80,44 +205,14 @@ export const useAppStore = defineStore('app', () => {
     if (!loaded) return;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      saveJson(STORAGE_KEY, {
-        displayMode: displayMode.value,
-        autoScroll: autoScroll.value,
-        showTimestamp: showTimestamp.value,
-        searchMode: searchMode.value,
-        packetViewMode: packetViewMode.value,
-        lineEnding: lineEnding.value,
-        sendAsHex: sendAsHex.value,
-        loopIntervalMs: loopIntervalMs.value,
-        ansiColorEnabled: ansiColorEnabled.value,
-        aiEnableCodingPlan: aiEnableCodingPlan.value,
-        sidebarWidth: sidebarWidth.value,
-        sidebarCollapsed: sidebarCollapsed.value,
-        maxBufferFrames: maxBufferFrames.value,
-        autoReconnect: autoReconnect.value,
-        theme: theme.value,
-      });
+      const payload: Record<string, unknown> = {};
+      for (const s of persistedSettings) payload[s.key] = s.ref.value;
+      saveJson(STORAGE_KEY, payload);
     }, 300);
   }
 
   watch(
-    [
-      displayMode,
-      autoScroll,
-      showTimestamp,
-      searchMode,
-      packetViewMode,
-      lineEnding,
-      sendAsHex,
-      loopIntervalMs,
-      ansiColorEnabled,
-      aiEnableCodingPlan,
-      sidebarWidth,
-      sidebarCollapsed,
-      maxBufferFrames,
-      autoReconnect,
-      theme,
-    ],
+    persistedSettings.map((s) => s.ref),
     save,
   );
 
@@ -170,6 +265,10 @@ export const useAppStore = defineStore('app', () => {
 
   function setAiEnableCodingPlan(value: boolean) {
     aiEnableCodingPlan.value = value;
+  }
+
+  function setTheme(value: 'dark' | 'light') {
+    theme.value = value;
   }
 
   function applyAiCommand(command: string) {
@@ -247,6 +346,7 @@ export const useAppStore = defineStore('app', () => {
     maxBufferFrames,
     autoReconnect,
     theme,
+    locale,
     aiCommandDraft,
     aiCommandSeq,
     pendingAiCommand,
@@ -264,7 +364,9 @@ export const useAppStore = defineStore('app', () => {
     setLoopIntervalMs,
     setAiApiKey,
     setAiEnableCodingPlan,
+    setTheme,
     setMaxBufferFrames,
+    setLocale,
     applyAiCommand,
     setPendingAiCommand,
     consumePendingAiCommand,

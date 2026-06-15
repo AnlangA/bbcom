@@ -3,9 +3,11 @@
     <button class="settings-toggle" type="button" @click="expanded = !expanded">
       <span class="settings-title">
         <Settings2 class="icon-sm" />
-        AI 设置
+        {{ t('ai.settings') }}
       </span>
-      <span class="settings-state">{{ appStore.aiApiKey ? '已配置' : '未配置' }}</span>
+      <span class="settings-state">{{
+        appStore.aiApiKey ? t('ai.configured') : t('ai.notConfigured')
+      }}</span>
     </button>
     <div v-if="expanded" class="settings-body">
       <n-input
@@ -26,7 +28,7 @@
           <template #icon>
             <KeyRound class="icon-sm" />
           </template>
-          保存 Key
+          {{ t('ai.saveKey') }}
         </n-button>
       </div>
     </div>
@@ -38,6 +40,7 @@ import { ref, watch } from 'vue';
 import { NButton, NInput, NSwitch, useMessage } from 'naive-ui';
 import { KeyRound, Settings2 } from 'lucide-vue-next';
 import { useAppStore } from '../../stores/app';
+import { t } from '../../lib/i18n';
 
 defineProps<{
   compact?: boolean;
@@ -61,9 +64,9 @@ async function saveApiKey() {
   try {
     const ok = await appStore.setAiApiKey(apiKeyDraft.value.trim());
     if (ok) {
-      message.success(apiKeyDraft.value.trim() ? 'AI Key 已保存到本地设置' : 'AI Key 已清除');
+      message.success(apiKeyDraft.value.trim() ? t('ai.keySaved') : t('ai.keyCleared'));
     } else {
-      message.error('AI Key 保存失败');
+      message.error(t('ai.keySaveFailed'));
     }
   } finally {
     saving.value = false;

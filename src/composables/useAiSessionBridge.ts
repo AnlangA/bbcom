@@ -2,6 +2,7 @@ import { computed, onMounted, onUnmounted, watch } from 'vue';
 import { emit, listen } from '@tauri-apps/api/event';
 import { useSessionStore } from '../stores/sessions';
 import { useAppStore } from '../stores/app';
+import { logger } from '../lib/logger';
 import type { AiChatMessage, AiModel, LogAiContextMode } from '../types';
 
 interface AiCommandApplyEvent {
@@ -21,26 +22,34 @@ export function useAiSessionBridge() {
   const unlisteners: Array<() => void> = [];
 
   async function sendSnapshot() {
-    await emit('ai-session-snapshot', { session: session.value });
+    try {
+      await emit('ai-session-snapshot', { session: session.value });
+    } catch (e) {
+      logger.debug('ai-session snapshot bridge unavailable:', e);
+    }
   }
 
   onMounted(async () => {
-    unlisteners.push(
-      await listen('ai-session-snapshot-request', () => {
-        void sendSnapshot();
-      }),
-    );
-    unlisteners.push(
-      await listen<AiCommandApplyEvent>('ai-command-apply', (event) => {
-        appStore.applyAiCommand(event.payload.command);
-      }),
-    );
-    unlisteners.push(
-      await listen<AiSessionUpdateEvent>('ai-session-update', (event) => {
-        applyUpdate(event.payload);
-        void sendSnapshot();
-      }),
-    );
+    try {
+      unlisteners.push(
+        await listen('ai-session-snapshot-request', () => {
+          void sendSnapshot();
+        }),
+      );
+      unlisteners.push(
+        await listen<AiCommandApplyEvent>('ai-command-apply', (event) => {
+          appStore.applyAiCommand(event.payload.command);
+        }),
+      );
+      unlisteners.push(
+        await listen<AiSessionUpdateEvent>('ai-session-update', (event) => {
+          applyUpdate(event.payload);
+          void sendSnapshot();
+        }),
+      );
+    } catch (e) {
+      logger.debug('ai-session event bridge unavailable:', e);
+    }
     await sendSnapshot();
   });
 

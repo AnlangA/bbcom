@@ -1,0 +1,144 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  ProtocolParser,
+  indexOfSubarray,
+  parseDelimiterHex,
+  type ParserConfig,
+} from '../../src/lib/protocol-parser.ts';
+
+function bytes(s: string): Uint8Array {
+  return new Uint8Array(s.split('').map((c) => c.charCodeAt(0)));
+}
+
+test('indexOfSubarray finds a subsequence and -1 when absent', () => {
+  assert.equal(indexOfSubarray([1, 2, 3, 4], [2, 3]), 1);
+  assert.equal(indexOfSubarray([1, 2, 3, 4], [3, 2]), -1);
+  assert.equal(indexOfSubarray([1, 2, 3], []), 0);
+  assert.equal(indexOfSubarray([1], [1, 2]), -1);
+});
+
+test('parseDelimiterHex parses spaced and unspaced hex', () => {
+  assert.deepEqual(parseDelimiterHex('0D 0A'), [0x0d, 0x0a]);
+  assert.deepEqual(parseDelimiterHex('0d0a'), [0x0d, 0x0a]);
+  assert.deepEqual(parseDelimiterHex('AA BB CC'), [0xaa, 0xbb, 0xcc]);
+  assert.deepEqual(parseDelimiterHex('xyz'), []);
+});
+
+test('delimiter parser splits a stream on CRLF', () => {
+  const cfg: ParserConfig = {
+    kind: 'delimiter',
+    delimiter: [0x0d, 0x0a],
+    includeDelimiter: false,
+  };
+  const p = new ProtocolParser(cfg);
+  // First read contains a partial line + a complete one.
+  const a = p.feed(bytes('hello\r\nwor'));
+  assert.equal(a.length, 1);
+  assert.equal(new TextDecoder().decode(a[0].data), 'hello');
+  // Second read completes the second line.
+  const b = p.feed(bytes('ld\r\n'));
+  assert.equal(b.length, 1);
+  assert.equal(new TextDecoder().decode(b[0].data), 'world');
+});
+
+test('delimiter includeDelimiter keeps the terminator in the frame', () => {
+  const cfg: ParserConfig = {
+    kind: 'delimiter',
+    delimiter: [0x0a],
+    includeDelimiter: true,
+  };
+  const p = new ProtocolParser(cfg);
+  const out = p.feed(bytes('ab\ncd\n'));
+  assert.equal(out.length, 2);
+  assert.equal(new TextDecoder().decode(out[0].data), 'ab\n');
+  assert.equal(new TextDecoder().decode(out[1].data), 'cd\n');
+});
+
+test('fixed-size parser emits exactly N bytes per frame', () => {
+  const cfg: ParserConfig = { kind: 'fixed', frameSize: 3 };
+  const p = new ProtocolParser(cfg);
+  const out = p.feed(new Uint8Array([1, 2, 3, 4, 5, 6, 7]));
+  assert.equal(out.length, 2, 'two complete 3-byte frames');
+  assert.deepEqual(Array.from(out[0].data), [1, 2, 3]);
+  assert.deepEqual(Array.from(out[1].data), [4, 5, 6]);
+  assert.equal(p.pending, 1, 'one leftover byte buffered');
+});
+
+test('length-based parser reads a 1-byte length prefix (big-endian)', () => {
+  // Frame: [len=4][payload 4 bytes]. lengthAdjust = 1 (the length byte itself).
+  const cfg: ParserConfig = {
+    kind: 'length',
+    lengthOffset: 0,
+    lengthSize: 1,
+    bigEndian: true,
+    lengthAdjust: 1,
+  };
+  const p = new ProtocolParser(cfg);
+  // Partial: only the length byte arrives first.
+  const a = p.feed(new Uint8Array([4]));
+  assert.equal(a.length, 0, 'no complete frame yet');
+  const b = p.feed(new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]));
+  assert.equal(b.length, 1);
+  assert.deepEqual(Array.from(b[0].data), [4, 0xaa, 0xbb, 0xcc, 0xdd]);
+});
+
+test('length-based parser reads a 2-byte little-endian length', () => {
+  // lengthValue=0x0100 little-endian = [0x00, 0x01]; payload 256 bytes is a lot,
+  // so use lengthAdjust so total is small. Use lengthValue=5, LE = [0x05, 0x00],
+  // lengthAdjust=2 (offset 0 + size 2) => total frame = 5 + 2 = 7 bytes.
+  const cfg: ParserConfig = {
+    kind: 'length',
+    lengthOffset: 0,
+    lengthSize: 2,
+    bigEndian: false,
+    lengthAdjust: 2,
+  };
+  const p = new ProtocolParser(cfg);
+  const payload = new Uint8Array([0x05, 0x00, 1, 2, 3, 4, 5]);
+  const out = p.feed(payload);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].data.length, 7);
+  assert.deepEqual(Array.from(out[0].data), [0x05, 0x00, 1, 2, 3, 4, 5]);
+});
+
+test('length-based parser resyncs on an implausible length (drops 1 byte)', () => {
+  // lengthValue=0 at offset 0 => total = 0 + 1 (adjust) = 1; that's fine.
+  // Use a huge lengthValue to trigger the resync path: 0xFF => total=256, fine.
+  // To force implausible, use lengthValue that overflows 1MB: need 4-byte field.
+  const cfg: ParserConfig = {
+    kind: 'length',
+    lengthOffset: 0,
+    lengthSize: 4,
+    bigEndian: true,
+    lengthAdjust: 4,
+  };
+  const p = new ProtocolParser(cfg);
+  // 0x00100000 = 1048576 > 1MB boundary => implausible, drop 1 byte, resync.
+  const bogus = new Uint8Array([0x00, 0x10, 0x00, 0x00]);
+  const out = p.feed(bogus);
+  assert.equal(out.length, 0, 'no frame emitted for implausible length');
+  // After dropping 1 byte, only 3 bytes remain — not enough for a 4-byte header.
+  assert.equal(p.pending, 3);
+});
+
+test('reset clears the partial buffer', () => {
+  const cfg: ParserConfig = { kind: 'fixed', frameSize: 5 };
+  const p = new ProtocolParser(cfg);
+  p.feed(new Uint8Array([1, 2, 3]));
+  assert.equal(p.pending, 3);
+  p.reset();
+  assert.equal(p.pending, 0);
+});
+
+test('delimiter parser buffers indefinitely without a match (no crash)', () => {
+  const cfg: ParserConfig = {
+    kind: 'delimiter',
+    delimiter: [0x00],
+    includeDelimiter: false,
+  };
+  const p = new ProtocolParser(cfg);
+  const out = p.feed(bytes('no terminator here'));
+  assert.equal(out.length, 0);
+  assert.ok(p.pending > 0);
+});

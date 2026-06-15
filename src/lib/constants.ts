@@ -24,15 +24,15 @@ export const STOP_BITS_OPTIONS = [
 ];
 
 export const PARITY_OPTIONS = [
-  { label: '无', value: 'none' },
-  { label: '奇校验', value: 'odd' },
-  { label: '偶校验', value: 'even' },
+  { label: 'None', value: 'none' },
+  { label: 'Odd', value: 'odd' },
+  { label: 'Even', value: 'even' },
 ];
 
 export const FLOW_CONTROL_OPTIONS = [
-  { label: '无', value: 'none' },
-  { label: '硬件', value: 'hardware' },
-  { label: '软件', value: 'software' },
+  { label: 'None', value: 'none' },
+  { label: 'Hardware', value: 'hardware' },
+  { label: 'Software', value: 'software' },
 ];
 
 // Wire formats the Rust backend deserializes (commands::export::ExportFormat).
@@ -56,10 +56,10 @@ export type ExportFormat = (typeof EXPORT_FORMATS)[keyof typeof EXPORT_FORMATS];
 export type ExportChoice = 'txt' | 'csv' | 'jsonl' | 'bin';
 
 export const EXPORT_OPTIONS: { label: string; key: ExportChoice }[] = [
-  { label: '导出为 TXT（按显示格式）', key: 'txt' },
-  { label: '导出为 CSV', key: 'csv' },
-  { label: '导出为 JSON Lines', key: 'jsonl' },
-  { label: '导出为 BIN', key: 'bin' },
+  { label: 'Export TXT (current display format)', key: 'txt' },
+  { label: 'Export CSV', key: 'csv' },
+  { label: 'Export JSON Lines', key: 'jsonl' },
+  { label: 'Export BIN', key: 'bin' },
 ];
 
 /**

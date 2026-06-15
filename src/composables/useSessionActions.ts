@@ -2,6 +2,7 @@ import { createDiscreteApi } from 'naive-ui';
 import { useSessionStore } from '../stores/sessions';
 import { useSerialStore } from '../stores/serial';
 import { useAppStore } from '../stores/app';
+import { t } from '../lib/i18n';
 import type { PortConfig } from '../types';
 
 let dialogInstance: ReturnType<typeof createDiscreteApi>['dialog'] | null = null;
@@ -39,10 +40,10 @@ export function useSessionActions() {
     }
 
     getDialog().warning({
-      title: '关闭连接中的会话',
-      content: `会话 ${session.portName} 正在连接中，确定要关闭吗？`,
-      positiveText: '关闭',
-      negativeText: '取消',
+      title: t('dialog.closeConnectedTitle'),
+      content: t('dialog.closeConnectedContent', { port: session.portName }),
+      positiveText: t('common.close'),
+      negativeText: t('common.cancel'),
       onPositiveClick: () => {
         void sessionStore.removeSession(id);
       },
@@ -54,10 +55,10 @@ export function useSessionActions() {
     if (!session || session.frames.length === 0) return;
 
     getDialog().warning({
-      title: '清空数据',
-      content: '确定要清空所有数据吗？此操作不可恢复。',
-      positiveText: '清空',
-      negativeText: '取消',
+      title: t('dialog.clearDataTitle'),
+      content: t('dialog.clearDataContent'),
+      positiveText: t('common.clear'),
+      negativeText: t('common.cancel'),
       onPositiveClick: () => {
         sessionStore.clearFrames(sessionId);
       },

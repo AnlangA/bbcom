@@ -2,47 +2,94 @@
   <n-modal
     :show="show"
     preset="dialog"
-    title="新建会话 (Ctrl+N)"
-    positive-text="确定"
-    negative-text="取消"
+    :title="t('create.title')"
+    :positive-text="t('create.confirm')"
+    :negative-text="t('common.cancel')"
     :style="{ width: '460px' }"
     @update:show="emit('update:show', $event)"
     @positive-click="createSession"
     @negative-click="emit('update:show', false)"
   >
     <n-form class="session-form" label-placement="top">
-      <n-form-item class="form-full" label="串口">
-        <n-select v-model:value="portName" :options="portOptions" placeholder="选择可用串口" />
+      <n-form-item class="form-full" :label="t('create.port')">
+        <n-select
+          v-model:value="portName"
+          :options="portOptions"
+          :placeholder="t('create.portPlaceholder')"
+        />
       </n-form-item>
-      <n-form-item label="波特率">
+      <n-form-item class="form-full preset-row" :label="t('create.preset')">
+        <n-select
+          v-model:value="selectedPresetId"
+          :options="presetOptions"
+          :placeholder="t('create.presetPlaceholder')"
+          size="small"
+          clearable
+          @update:value="applyPreset"
+        />
+        <n-button
+          size="small"
+          quaternary
+          :disabled="!canSavePreset"
+          @click="openSavePreset"
+          :title="t('create.savePresetTitle')"
+        >
+          <template #icon><BookmarkPlus class="icon-sm" /></template>
+        </n-button>
+        <n-button
+          size="small"
+          quaternary
+          :disabled="!selectedPresetId"
+          @click="deletePreset"
+          :title="t('create.deletePresetTitle')"
+        >
+          <template #icon><Trash2 class="icon-sm" /></template>
+        </n-button>
+      </n-form-item>
+      <n-form-item :label="t('serial.baudRate')">
         <n-select v-model:value="baudRate" :options="baudRateOptions" />
       </n-form-item>
-      <n-form-item label="数据位">
+      <n-form-item :label="t('serial.dataBits')">
         <n-select v-model:value="dataBits" :options="dataBitsOptions" />
       </n-form-item>
-      <n-form-item label="停止位">
+      <n-form-item :label="t('serial.stopBits')">
         <n-select v-model:value="stopBits" :options="stopBitsOptions" />
       </n-form-item>
-      <n-form-item label="校验位">
+      <n-form-item :label="t('serial.parity')">
         <n-select v-model:value="parity" :options="parityOptions" />
       </n-form-item>
-      <n-form-item label="流控">
+      <n-form-item :label="t('serial.flowControl')">
         <n-select v-model:value="flowControl" :options="flowControlOptions" />
       </n-form-item>
-      <n-form-item class="form-full" label="信号控制">
+      <n-form-item class="form-full" :label="t('serial.signalControl')">
         <div class="signal-row">
           <label class="signal-toggle"><n-switch v-model:value="dtr" size="small" /> DTR</label>
           <label class="signal-toggle"><n-switch v-model:value="rts" size="small" /> RTS</label>
-          <span class="signal-hint">DTR/RTS 用于 Arduino 复位、ESP32 启动模式等</span>
+          <span class="signal-hint">{{ t('serial.signalHint') }}</span>
         </div>
       </n-form-item>
     </n-form>
+  </n-modal>
+  <!-- Lightweight inline prompt for naming a new preset (avoids pulling another
+       naive-ui component; reuses a small dialog). -->
+  <n-modal
+    :show="namingPreset"
+    preset="dialog"
+    :title="t('create.savePresetDialog')"
+    :positive-text="t('common.save')"
+    :negative-text="t('common.cancel')"
+    :style="{ width: '380px' }"
+    @positive-click="confirmSavePreset"
+    @negative-click="namingPreset = false"
+  >
+    <n-input v-model:value="presetName" :placeholder="t('create.presetNamePlaceholder')" />
   </n-modal>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { NForm, NFormItem, NModal, NSelect, NSwitch } from 'naive-ui';
+import { NForm, NFormItem, NModal, NSelect, NSwitch, NInput, NButton } from 'naive-ui';
+import { BookmarkPlus, Trash2 } from 'lucide-vue-next';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
@@ -53,6 +100,14 @@ import {
   PARITY_OPTIONS,
   STOP_BITS_OPTIONS,
 } from '../../lib/constants';
+import {
+  addPreset,
+  describeConfig,
+  loadPresets,
+  removePreset,
+  type ConnectionPreset,
+} from '../../lib/connection-presets';
+import { t } from '../../lib/i18n';
 import type { PortConfig } from '../../types';
 
 const props = defineProps<{
@@ -98,7 +153,7 @@ const usedPorts = computed(
 
 const portOptions = computed(() =>
   serialStore.availablePorts.map((port) => ({
-    label: usedPorts.value.has(port) ? `${port} (使用中)` : port,
+    label: usedPorts.value.has(port) ? `${port} (${t('serial.inUse')})` : port,
     value: port,
     disabled: usedPorts.value.has(port),
   })),
@@ -107,8 +162,18 @@ const portOptions = computed(() =>
 const baudRateOptions = BAUD_RATES;
 const dataBitsOptions = DATA_BITS_OPTIONS;
 const stopBitsOptions = STOP_BITS_OPTIONS;
-const parityOptions = PARITY_OPTIONS;
-const flowControlOptions = FLOW_CONTROL_OPTIONS;
+const parityOptions = computed(() =>
+  PARITY_OPTIONS.map((option) => ({
+    ...option,
+    label: t(`serial.parity.${option.value}`),
+  })),
+);
+const flowControlOptions = computed(() =>
+  FLOW_CONTROL_OPTIONS.map((option) => ({
+    ...option,
+    label: t(`serial.flow.${option.value}`),
+  })),
+);
 
 watch(
   () => serialStore.portConfig,
@@ -141,6 +206,61 @@ function createSession() {
   emit('update:show', false);
   return true;
 }
+
+// --- Connection presets: save/apply/delete named port-config profiles ---
+const presets = ref<ConnectionPreset[]>(loadPresets());
+const selectedPresetId = ref<string | null>(null);
+const namingPreset = ref(false);
+const presetName = ref('');
+
+const presetOptions = computed(() =>
+  presets.value.map((p) => ({ label: `${p.name} (${describeConfig(p.config)})`, value: p.id })),
+);
+
+const canSavePreset = computed(() => baudRate.value > 0);
+
+function applyPreset(id: string | null) {
+  if (!id) return;
+  const preset = presets.value.find((p) => p.id === id);
+  if (!preset) return;
+  const c = preset.config;
+  baudRate.value = c.baudRate;
+  dataBits.value = c.dataBits;
+  stopBits.value = c.stopBits;
+  parity.value = c.parity;
+  flowControl.value = c.flowControl;
+  dtr.value = c.dtr;
+  rts.value = c.rts;
+}
+
+function openSavePreset() {
+  presetName.value = describeConfig(currentConfig());
+  namingPreset.value = true;
+}
+
+function confirmSavePreset() {
+  presets.value = addPreset(presets.value, presetName.value, currentConfig());
+  namingPreset.value = false;
+  presetName.value = '';
+}
+
+function deletePreset() {
+  if (!selectedPresetId.value) return;
+  presets.value = removePreset(presets.value, selectedPresetId.value);
+  selectedPresetId.value = null;
+}
+
+function currentConfig(): PortConfig {
+  return {
+    baudRate: baudRate.value,
+    dataBits: dataBits.value,
+    stopBits: stopBits.value,
+    parity: parity.value,
+    flowControl: flowControl.value,
+    dtr: dtr.value,
+    rts: rts.value,
+  };
+}
 </script>
 
 <style scoped>
@@ -153,6 +273,12 @@ function createSession() {
 
 .form-full {
   grid-column: 1 / -1;
+}
+
+.preset-row :deep(.n-form-item-content) {
+  display: flex;
+  gap: 4px;
+  align-items: center;
 }
 
 .signal-row {

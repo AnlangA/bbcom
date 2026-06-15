@@ -4,7 +4,7 @@
       <n-input
         :value="modelValue"
         type="textarea"
-        :placeholder="isHex ? '输入 HEX (如: AA BB CC DD)' : '输入文本内容'"
+        :placeholder="isHex ? t('send.placeholder.hex') : t('send.placeholder.text')"
         :autosize="{ minRows: 2, maxRows: 4 }"
         :disabled="disabled"
         :status="isHex && modelValue && !isValidHex ? 'error' : undefined"
@@ -44,7 +44,7 @@
         </n-input-number>
       </div>
       <div class="send-right">
-        <span v-if="modelValue" class="byte-count">{{ byteCount }} 字节</span>
+        <span v-if="modelValue" class="byte-count">{{ byteCount }} {{ t('send.bytes') }}</span>
         <n-button
           size="small"
           @click="toggleLoop"
@@ -55,7 +55,7 @@
             <SquareStop v-if="looping" class="icon-sm" />
             <Repeat2 v-else class="icon-sm" />
           </template>
-          {{ looping ? '停止循环' : '循环发送' }}
+          {{ looping ? t('send.loopStop') : t('send.loop') }}
         </n-button>
         <n-button
           type="primary"
@@ -67,7 +67,7 @@
           <template #icon>
             <SendHorizontal class="icon-sm" />
           </template>
-          发送
+          {{ t('send.button') }}
         </n-button>
       </div>
     </div>
@@ -75,7 +75,7 @@
       <button class="section-toggle" type="button" @click="quickExpanded = !quickExpanded">
         <span class="toggle-label">
           <BookmarkPlus class="icon-sm" />
-          快捷命令
+          {{ t('send.quickCommands') }}
         </span>
         <ChevronRight class="toggle-icon" :class="{ expanded: quickExpanded }" />
       </button>
@@ -85,14 +85,14 @@
             <n-input
               v-model:value="quickName"
               size="tiny"
-              placeholder="快捷名称"
+              :placeholder="t('send.quickName')"
               style="width: 110px"
             />
             <n-button size="tiny" @click="addQuickCommand" :disabled="!modelValue.trim()">
               <template #icon>
                 <BookmarkPlus class="icon-sm" />
               </template>
-              保存快捷
+              {{ t('send.saveQuick') }}
             </n-button>
           </div>
           <div v-if="quickCommands.length > 0" class="quick-list">
@@ -109,7 +109,7 @@
                 class="quick-remove"
                 type="button"
                 @click.stop="emit('removeQuickCommand', cmd.id)"
-                title="删除快捷命令"
+                :title="t('send.deleteQuick')"
               >
                 <X class="icon-sm" />
               </button>
@@ -118,16 +118,19 @@
         </div>
       </div>
     </div>
+    <MacroPanel v-if="sessionId" :session-id="sessionId" :send="onSend" :disabled="disabled" />
+    <TriggerPanel v-if="sessionId" :session-id="sessionId" />
+    <HighlightPanel v-if="sessionId" :session-id="sessionId" />
     <div v-if="history.length > 0" class="collapsible-section">
       <button class="section-toggle" type="button" @click="historyExpanded = !historyExpanded">
         <span class="toggle-label">
           <HistoryIcon class="icon-sm" />
-          历史记录
+          {{ t('send.history') }}
         </span>
         <div class="toggle-right">
           <button class="history-clear" type="button" @click.stop="emit('clearHistory')">
             <Trash2 class="icon-sm" />
-            清除
+            {{ t('send.clearHistory') }}
           </button>
           <ChevronRight class="toggle-icon" :class="{ expanded: historyExpanded }" />
         </div>
@@ -175,7 +178,11 @@ import { MAX_INPUT_SIZE } from '../../types';
 import { useAppStore } from '../../stores/app';
 import { useSessionStore } from '../../stores/sessions';
 import { calculateChecksum } from '../../lib/ipc';
+import { t } from '../../lib/i18n';
 import type { ChecksumType, LineEnding, QuickCommand, SendHistoryEntry } from '../../types';
+import MacroPanel from './MacroPanel.vue';
+import TriggerPanel from './TriggerPanel.vue';
+import HighlightPanel from './HighlightPanel.vue';
 
 const props = defineProps<{
   onSend: (data: string, isHex: boolean) => Promise<boolean>;
@@ -183,6 +190,7 @@ const props = defineProps<{
   disabled?: boolean;
   history: SendHistoryEntry[];
   quickCommands: QuickCommand[];
+  sessionId?: string;
 }>();
 
 const emit = defineEmits<{
@@ -216,14 +224,24 @@ const showFlash = ref(false);
 let loopTimer: ReturnType<typeof setInterval> | null = null;
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
-const lineEndingOptions = [
-  { label: '无结尾', value: 'none' },
+const lineEndingOptions = computed(() => [
+  { label: t('send.lineEnding.none'), value: 'none' },
   { label: 'CR', value: 'CR' },
   { label: 'LF', value: 'LF' },
   { label: 'CRLF', value: 'CRLF' },
-];
+]);
 
-const checksumOptions = checksumAlgoOptionsWithNone;
+const checksumOptions = computed(() =>
+  checksumAlgoOptionsWithNone.map((option) => ({
+    ...option,
+    label:
+      option.value === 'none'
+        ? t('checksum.none')
+        : option.value === 'CHECKSUM'
+          ? t('checksum.checksum')
+          : option.label,
+  })),
+);
 
 const isValidHex = computed(() => {
   if (!isHex.value || !props.modelValue.trim()) return true;
@@ -284,7 +302,7 @@ async function buildData(): Promise<string | null> {
   let data = props.modelValue;
 
   if (data.length > MAX_INPUT_SIZE) {
-    message.error('输入数据过大，最大支持 1MB');
+    message.error(t('send.error.tooLarge'));
     return null;
   }
 
@@ -294,7 +312,7 @@ async function buildData(): Promise<string | null> {
       const res = await calculateChecksum(payload, appendChecksum.value);
       data = data + ' ' + res.result;
     } catch {
-      message.warning('校验和计算失败，将发送原始数据');
+      message.warning(t('send.error.checksumFailed'));
     }
   } else if (!isHex.value) {
     data = withLineEnding(data);
@@ -312,7 +330,7 @@ async function handleSend() {
     if (!looping.value) updateInput('');
     triggerFlash();
   } else {
-    message.error('发送失败，请检查连接状态');
+    message.error(t('send.error.failed'));
   }
 }
 
@@ -351,7 +369,7 @@ function resend(item: SendHistoryEntry) {
   if (props.disabled) return;
   props.onSend(item.data, item.isHex).then((ok) => {
     if (!ok) {
-      message.error('重发失败，请检查连接状态');
+      message.error(t('send.error.resendFailed'));
     }
   });
 }
@@ -365,7 +383,7 @@ function addQuickCommand() {
 function sendQuick(command: QuickCommand) {
   if (props.disabled) return;
   props.onSend(command.data, command.isHex).then((ok) => {
-    if (!ok) message.error('快捷发送失败，请检查连接状态');
+    if (!ok) message.error(t('send.error.quickFailed'));
   });
 }
 

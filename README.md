@@ -51,15 +51,27 @@
 - Real-time serial data TX/RX with **HEX / ASCII / UTF-8 / ANSI** display modes
 - Full serial parameter configuration: baud rate (9600 ~ 921600), data bits, stop bits, parity, flow control
 - Multi-session management — connect and monitor multiple ports independently
+- Recent session captures auto-restore across app restarts (ports stay disconnected until you reconnect)
 - Hot-plug detection with automatic device list refresh
 - Millisecond-precision timestamps, per-frame and merged view modes
 - Cyclic sending with customizable interval (50 ms ~ 1 h)
+- **Sequenced macros** with per-step delays — scripted device bring-up (boot commands with wait-for-boot gaps), à la CoolTerm/TeraTerm
+- **Macro library import/export** (JSON) — share scripted sequences across sessions and machines
+- **Connection presets** — save and reuse named port profiles (baud/data/stop/parity/flow/DTR/RTS)
+- **BREAK signal** (250 ms) — one-click Arduino auto-reset / ESP32 bootloader entry
+- DTR/RTS handshake line control for boot-mode selection
+- **Waveform visualization** — parses numeric RX data (CSV/space/semicolon) and plots a live scrolling chart, Arduino Serial Plotter / serial-studio style
+- **Protocol parser** — reassembles the RX byte stream into discrete frames by delimiter (CRLF/custom hex), fixed length, or length-field header; copy any parsed frame as HEX. Includes preset templates for NMEA 0183, AT/modem, and length-prefixed binary
+- **Scripted triggers** — auto-send a configured response when the RX stream matches a text substring or hex byte sequence, with per-trigger cooldown to prevent loops
+- **Dark/Light theme** with a one-click sidebar toggle
+- **i18n** — English / 中文 UI with a persisted language preference
 
 ### Data Processing
 
 - Virtual scrolling + `requestAnimationFrame` batch rendering
 - Direction-colored frames (TX green / RX blue) with direction filtering (All / TX / RX)
 - Text & HEX search with debounce
+- Per-session keyword highlights for TXT/HEX patterns, scoped to All/TX/RX with color tags
 - ANSI escape sequence colored rendering
 - Data export: TXT (HEX/ASCII), CSV, JSONL, BIN
 - Right-click context menu for quick copy (HEX / ASCII / UTF-8 / full line)
@@ -81,8 +93,8 @@
 ### User Experience
 
 - Dark theme with green accent color
-- Configuration persistence — auto-restore serial params, display mode, AI settings, etc.
-- Keyboard shortcuts: `Ctrl+N` new session, `Ctrl+W` close session
+- Configuration persistence — auto-restore serial params, display mode, parser templates, AI settings, and recent session captures
+- Keyboard shortcuts: `Ctrl+N` new session, `Ctrl+W` close session, `Ctrl+L` clear buffer, `Esc` pause/resume capture, `Ctrl+Enter` send
 - LRU cache for formatted results, ensuring performance with large data frames
 - Send history + quick command management
 
@@ -157,7 +169,18 @@ pnpm tauri:build    # Tauri packaging
 | `pnpm format:check`  | Check formatting without writing              |
 | `pnpm test:frontend` | Run frontend unit tests with Node test runner |
 | `pnpm test:rust`     | Run Rust unit tests                           |
+| `pnpm bench:frontend`| Run frontend hot-path microbenchmarks (regression-gated) |
+| `pnpm bench:rust`    | Run Rust `criterion` benchmarks (CRC, export) |
 | `pnpm check`         | Run format check, lint, build, and all tests  |
+
+### Performance Benchmarks
+
+The hot paths are covered by regression-gated benchmarks so a performance drop
+fails CI just like a test failure:
+
+- **Frontend** (`pnpm bench:frontend`, `tests/frontend/perf.bench.ts`) — measures the per-frame formatting pipeline (`formatHex` / `formatUtf8`), the RX-flush `concatUint8Arrays`, the MERGED-view rebuild, and the LRU format-cache hit rate over 50 000 frames. A baseline is stored in `tests/frontend/.perf-baseline.json` (machine-local, git-ignored); refresh it with `pnpm bench:frontend:write` after an intentional optimization. A regression > 15 % fails the run.
+- **Rust** (`pnpm bench:rust`, `src-tauri/benches/hot_paths.rs`) — `criterion` benchmarks for the checksum algorithms (sum8 / CRC-8 / CRC-16 / CRC-32), `format_hex`, and the export formatter (JSONL / TXT-HEX at 1 k and 10 k frames). Reports ns/µs/ms with statistical confidence.
+- **Bundle** — `ANALYZE=1 pnpm build` emits `dist/stats.html` (treemap) for chunk-size auditing.
 
 ## Project Structure
 

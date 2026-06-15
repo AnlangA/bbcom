@@ -4,7 +4,7 @@
       <button class="section-title" type="button" @click="toggleSection('port')">
         <span class="section-heading">
           <Cable class="icon-sm" />
-          串口选择
+          {{ t('serial.portSelect') }}
         </span>
         <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.port }" />
       </button>
@@ -13,7 +13,7 @@
           <n-select
             v-model:value="selectedPort"
             :options="portOptions"
-            placeholder="选择串口"
+            :placeholder="t('serial.portPlaceholder')"
             clearable
             size="small"
           />
@@ -22,16 +22,28 @@
             @click="refreshPorts"
             :loading="isRefreshing"
             quaternary
-            title="刷新串口"
+            :title="t('serial.refreshPorts')"
           >
             <template #icon>
               <RefreshCw class="icon-sm" />
             </template>
           </n-button>
         </div>
-        <div v-if="ports.length === 0" class="empty-hint">未检测到串口设备</div>
+        <div v-if="ports.length === 0" class="empty-hint">{{ t('serial.noPorts') }}</div>
         <div v-if="missingActivePorts.length > 0" class="empty-hint warning">
-          端口已断开：{{ missingActivePorts.join(', ') }}
+          {{ t('serial.disconnectedPorts', { ports: missingActivePorts.join(', ') }) }}
+        </div>
+        <div v-if="selectedPort" class="port-meta">
+          <span class="port-name">{{ selectedPort }}</span>
+          <span>{{ config.baudRate }} bps</span>
+        </div>
+        <div class="port-action">
+          <n-button size="small" block @click="newSession" :disabled="!selectedPort" type="primary">
+            <template #icon>
+              <Plus class="icon-sm" />
+            </template>
+            {{ t('common.newSession') }}
+          </n-button>
         </div>
       </div>
     </div>
@@ -40,30 +52,30 @@
       <button class="section-title" type="button" @click="toggleSection('config')">
         <span class="section-heading">
           <Settings2 class="icon-sm" />
-          连接参数
+          {{ t('serial.params') }}
         </span>
         <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.config }" />
       </button>
       <div class="section-body" :class="{ collapsed: collapsed.config }">
         <div class="config-grid">
           <div class="config-item">
-            <label>波特率</label>
+            <label>{{ t('serial.baudRate') }}</label>
             <n-select v-model:value="config.baudRate" :options="baudRateOptions" size="small" />
           </div>
           <div class="config-item">
-            <label>数据位</label>
+            <label>{{ t('serial.dataBits') }}</label>
             <n-select v-model:value="config.dataBits" :options="dataBitsOptions" size="small" />
           </div>
           <div class="config-item">
-            <label>停止位</label>
+            <label>{{ t('serial.stopBits') }}</label>
             <n-select v-model:value="config.stopBits" :options="stopBitsOptions" size="small" />
           </div>
           <div class="config-item">
-            <label>校验位</label>
+            <label>{{ t('serial.parity') }}</label>
             <n-select v-model:value="config.parity" :options="parityOptions" size="small" />
           </div>
           <div class="config-item">
-            <label>流控</label>
+            <label>{{ t('serial.flowControl') }}</label>
             <n-select
               v-model:value="config.flowControl"
               :options="flowControlOptions"
@@ -71,7 +83,7 @@
             />
           </div>
           <div class="config-item config-signals">
-            <label>信号</label>
+            <label>{{ t('serial.signals') }}</label>
             <div class="signals">
               <label class="signal-toggle"
                 ><n-switch v-model:value="config.dtr" size="small" /> DTR</label
@@ -82,30 +94,32 @@
             </div>
           </div>
         </div>
+        <div class="config-summary" :title="t('serial.summary')">
+          <span class="summary-chip">
+            <span class="summary-label">{{ t('serial.rate') }}</span>
+            {{ config.baudRate }}
+          </span>
+          <span class="summary-chip">
+            <span class="summary-label">{{ t('serial.format') }}</span>
+            {{ serialFormatLabel }}
+          </span>
+          <span class="summary-chip">
+            <span class="summary-label">{{ t('serial.flowControl') }}</span>
+            {{ flowControlLabel }}
+          </span>
+          <span class="summary-chip">
+            <span class="summary-label">{{ t('serial.signals') }}</span>
+            {{ signalSummary }}
+          </span>
+        </div>
       </div>
-    </div>
-
-    <div class="section">
-      <n-button
-        size="small"
-        block
-        @click="newSession"
-        :disabled="!selectedPort"
-        type="primary"
-        secondary
-      >
-        <template #icon>
-          <Plus class="icon-sm" />
-        </template>
-        新建会话
-      </n-button>
     </div>
 
     <div class="section">
       <button class="section-title" type="button" @click="toggleSection('checksum')">
         <span class="section-heading">
           <Hash class="icon-sm" />
-          校验和计算
+          {{ t('checksum.title') }}
         </span>
         <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.checksum }" />
       </button>
@@ -113,23 +127,28 @@
         <div class="checksum-grid">
           <n-input
             v-model:value="checksumInput"
-            placeholder="输入 HEX (如: AA BB CC)"
+            :placeholder="t('checksum.placeholder')"
             size="small"
             :status="checksumInput && !isValidHexInput ? 'error' : undefined"
             @blur="normalizeChecksumInput"
           />
           <div class="checksum-meta">
-            <span>{{ checksumByteCount }} 字节</span>
-            <span v-if="checksumInput && !isValidHexInput" class="checksum-error"
-              >HEX 长度需为偶数</span
-            >
+            <span>{{ t('checksum.byteCount', { count: checksumByteCount }) }}</span>
+            <span v-if="checksumInput && !isValidHexInput" class="checksum-error">{{
+              t('checksum.hexEvenError')
+            }}</span>
           </div>
           <div class="checksum-actions">
             <n-select v-model:value="checksumAlgo" :options="checksumAlgoOptions" size="small" />
           </div>
-          <div v-if="checksumResult" class="checksum-result" @click="copyChecksum" title="点击复制">
+          <div
+            v-if="checksumResult"
+            class="checksum-result"
+            @click="copyChecksum"
+            :title="t('checksum.copyTitle')"
+          >
             <div>
-              <span class="checksum-label">结果</span>
+              <span class="checksum-label">{{ t('checksum.result') }}</span>
               <span class="checksum-algo">{{ checksumAlgoLabel }}</span>
             </div>
             <span class="checksum-value">{{ checksumResult }}</span>
@@ -151,6 +170,7 @@ import { useSessionActions } from '../../composables/useSessionActions';
 import { formatHex, isValidHex, parseHex } from '../../lib/format';
 import { calculateChecksum } from '../../lib/ipc';
 import { checksumOptions } from '../../lib/checksum-constants';
+import { t } from '../../lib/i18n';
 import {
   BAUD_RATES,
   DATA_BITS_OPTIONS,
@@ -192,7 +212,7 @@ const usedPorts = computed(
 
 const portOptions = computed(() =>
   ports.value.map((p) => ({
-    label: usedPorts.value.has(p) ? `${p} (使用中)` : p,
+    label: usedPorts.value.has(p) ? `${p} (${t('serial.inUse')})` : p,
     value: p,
     disabled: usedPorts.value.has(p),
   })),
@@ -211,6 +231,23 @@ watch(
 
 const config = computed(() => serialStore.portConfig);
 
+const parityCode = computed(() => {
+  if (config.value.parity === 'odd') return 'O';
+  if (config.value.parity === 'even') return 'E';
+  return 'N';
+});
+
+const serialFormatLabel = computed(
+  () => `${config.value.dataBits}${parityCode.value}${config.value.stopBits}`,
+);
+
+const flowControlLabel = computed(() => t(`serial.flow.${config.value.flowControl}`));
+
+const signalSummary = computed(() => {
+  const signals = [config.value.dtr ? 'DTR' : '', config.value.rts ? 'RTS' : ''].filter(Boolean);
+  return signals.join('+') || t('serial.none');
+});
+
 async function refreshPorts() {
   isRefreshing.value = true;
   await refresh();
@@ -228,16 +265,31 @@ const dataBitsOptions = DATA_BITS_OPTIONS;
 
 const stopBitsOptions = STOP_BITS_OPTIONS;
 
-const parityOptions = PARITY_OPTIONS;
+const parityOptions = computed(() =>
+  PARITY_OPTIONS.map((option) => ({
+    ...option,
+    label: t(`serial.parity.${option.value}`),
+  })),
+);
 
-const flowControlOptions = FLOW_CONTROL_OPTIONS;
+const flowControlOptions = computed(() =>
+  FLOW_CONTROL_OPTIONS.map((option) => ({
+    ...option,
+    label: t(`serial.flow.${option.value}`),
+  })),
+);
 
 const checksumInput = ref('');
 const checksumAlgo = ref<ChecksumType>('CHECKSUM');
 const checksumResult = ref('');
 let checksumTimer: ReturnType<typeof setTimeout> | null = null;
 
-const checksumAlgoOptions = checksumOptions;
+const checksumAlgoOptions = computed(() =>
+  checksumOptions.map((option) => ({
+    ...option,
+    label: option.value === 'CHECKSUM' ? t('checksum.checksum') : option.label,
+  })),
+);
 
 const isValidHexInput = computed(() => {
   if (!checksumInput.value.trim()) return true;
@@ -251,7 +303,7 @@ const checksumByteCount = computed(() => {
 
 const checksumAlgoLabel = computed(
   () =>
-    checksumAlgoOptions.find((option) => option.value === checksumAlgo.value)?.label ??
+    checksumAlgoOptions.value.find((option) => option.value === checksumAlgo.value)?.label ??
     checksumAlgo.value,
 );
 
@@ -269,7 +321,7 @@ async function calcChecksum() {
     const res = await calculateChecksum(data, checksumAlgo.value);
     checksumResult.value = res.result;
   } catch {
-    checksumResult.value = '计算失败';
+    checksumResult.value = t('checksum.failed');
   }
 }
 
@@ -280,7 +332,7 @@ function normalizeChecksumInput() {
 }
 
 async function copyChecksum() {
-  if (!checksumResult.value || checksumResult.value === '计算失败') return;
+  if (!checksumResult.value || checksumResult.value === t('checksum.failed')) return;
   try {
     await navigator.clipboard.writeText(checksumResult.value);
   } catch {
@@ -396,6 +448,28 @@ async function copyChecksum() {
   border-color: var(--accent-red-border);
 }
 
+.port-meta {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  min-width: 0;
+}
+
+.port-name {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.port-action {
+  margin-top: 10px;
+}
+
 .config-grid {
   display: flex;
   flex-direction: column;
@@ -436,6 +510,35 @@ async function copyChecksum() {
   color: var(--text-secondary);
   font-family: var(--font-mono);
   cursor: pointer;
+}
+
+.config-summary {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.summary-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.summary-label {
+  color: var(--text-dim);
+  font-family: var(--font-sans);
+  font-weight: 600;
 }
 
 .checksum-grid {

@@ -6,17 +6,44 @@ import { setMaxBufferFrames } from '../../src/lib/buffer-config.ts';
 import { MAX_FRAMES } from '../../src/types/index.ts';
 import type { PortConfig } from '../../src/types/index.ts';
 
+interface LocalStorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
 const cfg: PortConfig = {
   baudRate: 9600,
   dataBits: 8,
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
+  dtr: false,
+  rts: false,
 };
 
 function store() {
   setActivePinia(createPinia());
   return useSessionStore();
+}
+
+async function withLocalStorageMock<T>(fn: () => Promise<T> | T): Promise<T> {
+  const previous = (globalThis as { localStorage?: LocalStorageLike }).localStorage;
+  const data = new Map<string, string>();
+  (globalThis as { localStorage: LocalStorageLike }).localStorage = {
+    getItem: (k) => data.get(k) ?? null,
+    setItem: (k, v) => {
+      data.set(k, String(v));
+    },
+    removeItem: (k) => {
+      data.delete(k);
+    },
+  };
+  try {
+    return await fn();
+  } finally {
+    (globalThis as { localStorage?: LocalStorageLike }).localStorage = previous;
+  }
 }
 
 test('addFrame appends to frames and counts bytes/frames', () => {
@@ -85,4 +112,80 @@ test('trim respects configurable maxBufferFrames', () => {
   // trim threshold is 500, so once length exceeds 1000 + 500 it drops to 1000
   assert.equal(s.sessions[0].frames.length, 1000);
   setMaxBufferFrames(MAX_FRAMES);
+});
+
+test('session snapshots restore recent capture and per-session tools', async () => {
+  await withLocalStorageMock(async () => {
+    const s = store();
+    const id = s.createSession('COM9', cfg);
+    s.addFrame(id, { direction: 'RX', data: new Uint8Array([0x41, 0x42]) });
+    s.addFrame(id, { direction: 'TX', data: new Uint8Array([0x43]) });
+    s.setSendDraft(id, 'AT');
+    s.addQuickCommand(id, { name: 'Ping', data: 'AT', isHex: false });
+    s.addMacro(id, {
+      name: 'Boot',
+      steps: [{ data: 'AT', isHex: false, delayMs: 250 }],
+    });
+    s.addTrigger(id, {
+      name: 'Login',
+      enabled: true,
+      matchMode: 'text',
+      pattern: 'login:',
+      response: 'root',
+      responseIsHex: false,
+      cooldownMs: 500,
+    });
+    s.addHighlight(id, {
+      name: 'Errors',
+      enabled: true,
+      matchMode: 'text',
+      pattern: 'ERROR',
+      direction: 'RX',
+      color: 'red',
+    });
+    s.setParserState(id, { kind: 'fixed', frameSize: 12 }, 'modbus-fixed-8');
+    s.flushPersistedSessions();
+
+    const restored = store();
+    assert.equal(restored.sessions.length, 1);
+    const session = restored.sessions[0];
+    assert.equal(session.portName, 'COM9');
+    assert.equal(session.isConnected, false, 'restored sessions never reopen ports automatically');
+    assert.equal(session.frames.length, 2);
+    assert.deepEqual(Array.from(session.frames[0].data), [0x41, 0x42]);
+    assert.equal(session.rxBytes, 2);
+    assert.equal(session.txBytes, 1);
+    assert.equal(session.sendDraft, 'AT');
+    assert.equal(session.quickCommands[0].name, 'Ping');
+    assert.equal(session.macros[0].steps[0].delayMs, 250);
+    assert.equal(session.triggers[0].pattern, 'login:');
+    assert.deepEqual(session.highlights[0], {
+      id: session.highlights[0].id,
+      name: 'Errors',
+      enabled: true,
+      matchMode: 'text',
+      pattern: 'ERROR',
+      direction: 'RX',
+      color: 'red',
+    });
+    assert.deepEqual(session.parserState, {
+      config: { kind: 'fixed', frameSize: 12 },
+      presetId: 'modbus-fixed-8',
+    });
+  });
+});
+
+test('session snapshots are bounded to the recent frame tail', async () => {
+  await withLocalStorageMock(async () => {
+    const s = store();
+    const id = s.createSession('COM10', cfg);
+    for (let i = 0; i < 2105; i += 1) {
+      s.addFrame(id, { direction: 'RX', data: new Uint8Array([i % 256]) });
+    }
+    s.flushPersistedSessions();
+
+    const restored = store();
+    assert.equal(restored.sessions[0].frames.length, 2000);
+    assert.deepEqual(Array.from(restored.sessions[0].frames[0].data), [105]);
+  });
 });

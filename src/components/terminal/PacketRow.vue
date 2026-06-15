@@ -1,8 +1,9 @@
 <template>
   <div
     class="packet-row packet-item"
-    :class="directionClass"
+    :class="[directionClass, highlightClass]"
     :style="{ gridTemplateColumns: columns }"
+    :title="highlightLabel ? `${highlightLabel}: ${formatted}` : undefined"
     @contextmenu.prevent="onContextMenu"
   >
     <span class="col-dir">
@@ -37,6 +38,8 @@ const props = defineProps<{
   columns: string;
   displayLabel: string;
   useHtml: boolean;
+  highlightClass?: string | null;
+  highlightLabel?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -96,6 +99,36 @@ function onContextMenu(ev: MouseEvent) {
 
 .packet-item.rx:hover {
   border-left-color: var(--accent-blue-hover);
+}
+
+.packet-item.highlight-amber {
+  border-color: var(--accent-amber-border);
+  box-shadow: inset 0 0 0 1px var(--accent-amber-border);
+  background-image: linear-gradient(90deg, var(--accent-amber-subtle), transparent 260px);
+}
+
+.packet-item.highlight-red {
+  border-color: var(--accent-red-border);
+  box-shadow: inset 0 0 0 1px var(--accent-red-border);
+  background-image: linear-gradient(90deg, var(--accent-red-subtle), transparent 260px);
+}
+
+.packet-item.highlight-blue {
+  border-color: var(--accent-blue);
+  box-shadow: inset 0 0 0 1px var(--accent-blue-subtle);
+  background-image: linear-gradient(90deg, var(--accent-blue-subtle), transparent 260px);
+}
+
+.packet-item.highlight-green {
+  border-color: var(--accent-green);
+  box-shadow: inset 0 0 0 1px var(--accent-green-subtle);
+  background-image: linear-gradient(90deg, var(--accent-green-subtle), transparent 260px);
+}
+
+.packet-item.highlight-violet {
+  border-color: var(--accent-violet);
+  box-shadow: inset 0 0 0 1px var(--accent-violet-subtle);
+  background-image: linear-gradient(90deg, var(--accent-violet-subtle), transparent 260px);
 }
 
 .col-dir {

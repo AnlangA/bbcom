@@ -1,4 +1,4 @@
-import { computed, nextTick, ref, watch, type Ref } from 'vue';
+import { computed, onUnmounted, ref, watch, type Ref } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import type { DataFrame } from '../types';
 
@@ -19,6 +19,14 @@ const ROW_HEIGHT = 28;
  * instance whenever `count` changes (the options are a computed). Calling
  * `measure()` on every scroll tick (as this previously did) forced a full O(n)
  * offset recompute on every frame of auto-scroll — the dominant scroll jank.
+ *
+ * Auto-scroll is coalesced through a single in-flight RAF guard. At high baud
+ * `frameCount` can tick once per flush; without coalescing every tick queued
+ * its own `nextTick → RAF → scrollTo({ behavior: 'smooth' })`, and the resulting
+ * competing smooth-scroll animations fought each other for the scroll position.
+ * Now at most one RAF is ever pending, and streaming pins the tail with an
+ * instant jump (no animation) so it tracks the data rate instead of lagging it
+ * — the behavior of every professional serial terminal.
  */
 export function usePacketVirtualScroll({
   visibleFrames,
@@ -49,18 +57,31 @@ export function usePacketVirtualScroll({
     shouldAutoScroll.value = scrollHeight - scrollTop - clientHeight < ROW_HEIGHT * 2;
   }
 
+  // Single-flight auto-scroll: a non-null rafId means a pin-to-bottom is
+  // already scheduled, so further frame-count ticks within the same frame are
+  // folded into the one pending jump.
+  let autoScrollRafId: number | null = null;
+
+  function pinToBottom() {
+    autoScrollRafId = null;
+    const el = scrollRef.value;
+    if (!el) return;
+    // Instant jump (not smooth): during streaming, an animated scroll lags the
+    // data rate and visibly stutters. Pinning the tail directly keeps the
+    // newest frame in view at any baud.
+    el.scrollTop = el.scrollHeight;
+  }
+
   watch(frameCount, () => {
-    if (shouldAutoScroll.value && autoScroll.value) {
-      void nextTick(() => {
-        requestAnimationFrame(() => {
-          if (scrollRef.value) {
-            scrollRef.value.scrollTo({
-              top: scrollRef.value.scrollHeight,
-              behavior: 'smooth',
-            });
-          }
-        });
-      });
+    if (!shouldAutoScroll.value || !autoScroll.value) return;
+    if (autoScrollRafId !== null) return; // already scheduled — coalesce
+    autoScrollRafId = requestAnimationFrame(pinToBottom);
+  });
+
+  onUnmounted(() => {
+    if (autoScrollRafId !== null) {
+      cancelAnimationFrame(autoScrollRafId);
+      autoScrollRafId = null;
     }
   });
 

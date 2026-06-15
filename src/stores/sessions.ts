@@ -4,52 +4,502 @@ import type {
   AiChatMessage,
   AiModel,
   DataFrame,
+  Direction,
+  DirectionFilter,
+  HighlightColor,
+  HighlightMatchMode,
+  HighlightRule,
   LogAiContextMode,
+  Macro,
+  PortConfig,
   SendHistoryEntry,
+  SessionParserState,
   SerialSession,
+  Trigger,
 } from '../types';
+import type { ParserConfig } from '../lib/protocol-parser';
 import { MAX_HISTORY } from '../types';
 import { maxBufferFrames } from '../lib/buffer-config';
 import { nowMillis } from '../lib/time';
+import { parseHex, toContinuousHex } from '../lib/format';
+import { isLocalStorageAvailable, loadJson, saveJson } from '../lib/storage';
 
 const FRAME_TRIM_THRESHOLD = 500;
+const STORAGE_KEY = 'bbcom-session-snapshots';
+const STORAGE_VERSION = 1;
+const PERSIST_DEBOUNCE_MS = 800;
+const PERSIST_MAX_WAIT_MS = 2_500;
+const MAX_PERSISTED_SESSIONS = 8;
+const MAX_PERSISTED_FRAMES_PER_SESSION = 2_000;
+const MAX_PERSISTED_BYTES_PER_SESSION = 1_000_000;
+
+const DEFAULT_PORT_CONFIG: PortConfig = {
+  baudRate: 115200,
+  dataBits: 8,
+  stopBits: 1,
+  parity: 'none',
+  flowControl: 'none',
+  dtr: false,
+  rts: false,
+};
+
+const DEFAULT_PARSER_STATE: SessionParserState = {
+  config: {
+    kind: 'delimiter',
+    delimiter: [0x0d, 0x0a],
+    includeDelimiter: false,
+  },
+  presetId: 'at-crlf',
+};
+
+interface PersistedFrame {
+  id: string;
+  direction: Direction;
+  timestamp: number;
+  dataHex: string;
+}
+
+interface PersistedSession {
+  id: string;
+  portName: string;
+  portConfig: PortConfig;
+  frames: PersistedFrame[];
+  sendHistory: SendHistoryEntry[];
+  sendDraft: string;
+  quickCommands: SerialSession['quickCommands'];
+  macros: Macro[];
+  triggers: Trigger[];
+  highlights: HighlightRule[];
+  parserState: SessionParserState;
+  terminalAiModel: AiModel;
+  logAiModel: AiModel;
+  logAiContextMode: LogAiContextMode;
+  logAiFrameLimit: number;
+}
+
+interface PersistedSessionsFile {
+  version: number;
+  activeSessionId: string | null;
+  sessions: PersistedSession[];
+}
+
+function cloneParserConfig(config: ParserConfig): ParserConfig {
+  if (config.kind === 'fixed') {
+    return {
+      kind: 'fixed',
+      frameSize: Math.max(1, Math.min(65_535, Math.floor(config.frameSize || 1))),
+    };
+  }
+  if (config.kind === 'length') {
+    const lengthSize: 1 | 2 | 4 =
+      config.lengthSize === 2 || config.lengthSize === 4 ? config.lengthSize : 1;
+    return {
+      kind: 'length',
+      lengthOffset: Math.max(0, Math.min(255, Math.floor(config.lengthOffset || 0))),
+      lengthSize,
+      bigEndian: config.bigEndian !== false,
+      lengthAdjust: Math.max(0, Math.min(65_535, Math.floor(config.lengthAdjust || 0))),
+    };
+  }
+  if (config.kind === 'delimiter') {
+    return {
+      kind: 'delimiter',
+      delimiter: Array.isArray(config.delimiter)
+        ? config.delimiter
+            .filter((b) => Number.isFinite(b))
+            .map((b) => Math.max(0, Math.min(255, Math.floor(b))))
+        : [0x0d, 0x0a],
+      includeDelimiter: config.includeDelimiter === true,
+    };
+  }
+  return cloneParserConfig(DEFAULT_PARSER_STATE.config);
+}
+
+function cloneParserState(state: SessionParserState): SessionParserState {
+  return {
+    config: cloneParserConfig(state.config),
+    presetId: typeof state.presetId === 'string' ? state.presetId : null,
+  };
+}
+
+function normalizeParserState(raw: unknown): SessionParserState {
+  if (!raw || typeof raw !== 'object') return cloneParserState(DEFAULT_PARSER_STATE);
+  const state = raw as Partial<SessionParserState>;
+  if (!state.config || typeof state.config !== 'object') {
+    return cloneParserState(DEFAULT_PARSER_STATE);
+  }
+  return cloneParserState({
+    config: state.config as ParserConfig,
+    presetId: typeof state.presetId === 'string' ? state.presetId : null,
+  });
+}
+
+function normalizePortConfig(raw: unknown): PortConfig {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_PORT_CONFIG };
+  const cfg = raw as Partial<PortConfig>;
+  return {
+    baudRate:
+      typeof cfg.baudRate === 'number' && Number.isFinite(cfg.baudRate)
+        ? Math.max(1, Math.floor(cfg.baudRate))
+        : DEFAULT_PORT_CONFIG.baudRate,
+    dataBits: cfg.dataBits === 5 || cfg.dataBits === 6 || cfg.dataBits === 7 ? cfg.dataBits : 8,
+    stopBits: cfg.stopBits === 2 ? 2 : 1,
+    parity: cfg.parity === 'odd' || cfg.parity === 'even' ? cfg.parity : 'none',
+    flowControl:
+      cfg.flowControl === 'software' || cfg.flowControl === 'hardware' ? cfg.flowControl : 'none',
+    dtr: cfg.dtr === true,
+    rts: cfg.rts === true,
+  };
+}
+
+function createSessionRecord(
+  id: string,
+  portName: string,
+  portConfig: PortConfig,
+  overrides: Partial<SerialSession> = {},
+): SerialSession {
+  return {
+    id,
+    portName,
+    portConfig,
+    isConnected: false,
+    frames: [],
+    pausedFrames: [],
+    capturePaused: false,
+    txBytes: 0,
+    rxBytes: 0,
+    txFrames: 0,
+    rxFrames: 0,
+    startTime: null,
+    sendHistory: [],
+    sendDraft: '',
+    quickCommands: [],
+    macros: [],
+    triggers: [],
+    highlights: [],
+    parserState: cloneParserState(DEFAULT_PARSER_STATE),
+    autoLogEnabled: false,
+    logPath: null,
+    terminalAiModel: 'glm-4.5-air',
+    logAiModel: 'glm-4.5-air',
+    logAiContextMode: 'latest-10k',
+    logAiFrameLimit: 200,
+    logAiMessages: [],
+    ...overrides,
+  };
+}
+
+function countFrameTotals(frames: DataFrame[]) {
+  let txBytes = 0;
+  let rxBytes = 0;
+  let txFrames = 0;
+  let rxFrames = 0;
+  for (const frame of frames) {
+    if (frame.direction === 'TX') {
+      txBytes += frame.data.length;
+      txFrames += 1;
+    } else {
+      rxBytes += frame.data.length;
+      rxFrames += 1;
+    }
+  }
+  return { txBytes, rxBytes, txFrames, rxFrames };
+}
+
+function persistedFrameTail(frames: DataFrame[]): DataFrame[] {
+  const selected: DataFrame[] = [];
+  let bytes = 0;
+  for (let i = frames.length - 1; i >= 0; i -= 1) {
+    const frame = frames[i];
+    if (selected.length >= MAX_PERSISTED_FRAMES_PER_SESSION) break;
+    if (selected.length > 0 && bytes + frame.data.length > MAX_PERSISTED_BYTES_PER_SESSION) {
+      break;
+    }
+    selected.push(frame);
+    bytes += frame.data.length;
+  }
+  return selected.reverse();
+}
+
+function serializeFrame(frame: DataFrame): PersistedFrame {
+  return {
+    id: frame.id,
+    direction: frame.direction,
+    timestamp: frame.timestamp,
+    dataHex: toContinuousHex(frame.data),
+  };
+}
+
+function deserializeFrame(raw: unknown): DataFrame | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const frame = raw as Partial<PersistedFrame>;
+  if (frame.direction !== 'TX' && frame.direction !== 'RX') return null;
+  if (typeof frame.dataHex !== 'string') return null;
+  try {
+    return markRaw({
+      id: typeof frame.id === 'string' ? frame.id : crypto.randomUUID(),
+      direction: frame.direction,
+      timestamp:
+        typeof frame.timestamp === 'number' && Number.isFinite(frame.timestamp)
+          ? frame.timestamp
+          : nowMillis(),
+      data: parseHex(frame.dataHex),
+    });
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSendHistory(raw: unknown): SendHistoryEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (item): item is SendHistoryEntry =>
+        item &&
+        typeof item === 'object' &&
+        typeof (item as SendHistoryEntry).data === 'string' &&
+        typeof (item as SendHistoryEntry).isHex === 'boolean',
+    )
+    .slice(0, MAX_HISTORY);
+}
+
+function normalizeQuickCommands(raw: unknown): SerialSession['quickCommands'] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (item): item is SerialSession['quickCommands'][number] =>
+        item &&
+        typeof item === 'object' &&
+        typeof (item as SerialSession['quickCommands'][number]).name === 'string' &&
+        typeof (item as SerialSession['quickCommands'][number]).data === 'string',
+    )
+    .map((item) => ({
+      id: typeof item.id === 'string' ? item.id : crypto.randomUUID(),
+      name: item.name.trim() || 'Command',
+      data: item.data,
+      isHex: item.isHex === true,
+    }));
+}
+
+function normalizeMacros(raw: unknown): Macro[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (item): item is Macro =>
+        item &&
+        typeof item === 'object' &&
+        typeof (item as Macro).name === 'string' &&
+        Array.isArray((item as Macro).steps),
+    )
+    .map((macro) => ({
+      id: typeof macro.id === 'string' ? macro.id : crypto.randomUUID(),
+      name: macro.name.trim() || 'Macro',
+      steps: macro.steps
+        .filter((step) => step && typeof step.data === 'string')
+        .map((step) => ({
+          data: step.data,
+          isHex: step.isHex === true,
+          delayMs:
+            typeof step.delayMs === 'number' && Number.isFinite(step.delayMs)
+              ? Math.max(0, Math.min(3_600_000, Math.floor(step.delayMs)))
+              : 0,
+        })),
+    }))
+    .filter((macro) => macro.steps.length > 0);
+}
+
+function normalizeTriggers(raw: unknown): Trigger[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (item): item is Trigger =>
+        item &&
+        typeof item === 'object' &&
+        typeof (item as Trigger).name === 'string' &&
+        typeof (item as Trigger).pattern === 'string' &&
+        typeof (item as Trigger).response === 'string',
+    )
+    .map((trigger) => ({
+      id: typeof trigger.id === 'string' ? trigger.id : crypto.randomUUID(),
+      name: trigger.name.trim() || 'Trigger',
+      enabled: trigger.enabled === true,
+      matchMode: trigger.matchMode === 'hex' ? 'hex' : 'text',
+      pattern: trigger.pattern,
+      response: trigger.response,
+      responseIsHex: trigger.responseIsHex === true,
+      cooldownMs:
+        typeof trigger.cooldownMs === 'number' && Number.isFinite(trigger.cooldownMs)
+          ? Math.max(0, Math.min(60_000, Math.floor(trigger.cooldownMs)))
+          : 500,
+    }));
+}
+
+function normalizeHighlightDirection(raw: unknown): DirectionFilter {
+  return raw === 'TX' || raw === 'RX' ? raw : 'ALL';
+}
+
+function normalizeHighlightMatchMode(raw: unknown): HighlightMatchMode {
+  return raw === 'hex' ? 'hex' : 'text';
+}
+
+function normalizeHighlightColor(raw: unknown): HighlightColor {
+  return raw === 'red' || raw === 'blue' || raw === 'green' || raw === 'violet' ? raw : 'amber';
+}
+
+function normalizeHighlights(raw: unknown): HighlightRule[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (item): item is HighlightRule =>
+        item &&
+        typeof item === 'object' &&
+        typeof (item as HighlightRule).name === 'string' &&
+        typeof (item as HighlightRule).pattern === 'string',
+    )
+    .map((highlight) => ({
+      id: typeof highlight.id === 'string' ? highlight.id : crypto.randomUUID(),
+      name: highlight.name.trim() || 'Highlight',
+      enabled: highlight.enabled !== false,
+      matchMode: normalizeHighlightMatchMode(highlight.matchMode),
+      pattern: highlight.pattern,
+      direction: normalizeHighlightDirection(highlight.direction),
+      color: normalizeHighlightColor(highlight.color),
+    }))
+    .filter((highlight) => highlight.pattern.trim().length > 0);
+}
+
+function normalizeAiModel(raw: unknown): AiModel {
+  return raw === 'glm-5.1' || raw === 'glm-5-turbo' || raw === 'glm-4.7' || raw === 'glm-4.5-air'
+    ? raw
+    : 'glm-4.5-air';
+}
+
+function normalizeLogContextMode(raw: unknown): LogAiContextMode {
+  return raw === 'latest-n-frames' || raw === 'full-capped' ? raw : 'latest-10k';
+}
 
 export const useSessionStore = defineStore('sessions', () => {
   const sessions = ref<SerialSession[]>([]);
   const activeSessionId = ref<string | null>(null);
   const cleanupFns = new Map<string, () => Promise<void>>();
+  let loaded = false;
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let firstDirtyAt = 0;
 
   const activeSession = computed(
     () => sessions.value.find((s) => s.id === activeSessionId.value) ?? null,
   );
 
+  function loadPersistedSessions() {
+    const saved = loadJson<PersistedSessionsFile>(STORAGE_KEY, {
+      version: STORAGE_VERSION,
+      activeSessionId: null,
+      sessions: [],
+    });
+    if (!Array.isArray(saved.sessions)) {
+      loaded = true;
+      return;
+    }
+
+    const restored = saved.sessions
+      .slice(0, MAX_PERSISTED_SESSIONS)
+      .map(hydrateSession)
+      .filter((s): s is SerialSession => s !== null);
+    sessions.value = restored;
+    activeSessionId.value =
+      typeof saved.activeSessionId === 'string' &&
+      restored.some((session) => session.id === saved.activeSessionId)
+        ? saved.activeSessionId
+        : (restored[0]?.id ?? null);
+    loaded = true;
+  }
+
+  function hydrateSession(raw: unknown): SerialSession | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const saved = raw as Partial<PersistedSession>;
+    if (typeof saved.portName !== 'string' || saved.portName.length === 0) return null;
+
+    const frames = Array.isArray(saved.frames)
+      ? saved.frames.map(deserializeFrame).filter((f): f is DataFrame => f !== null)
+      : [];
+    const totals = countFrameTotals(frames);
+    return createSessionRecord(
+      typeof saved.id === 'string' ? saved.id : crypto.randomUUID(),
+      saved.portName,
+      normalizePortConfig(saved.portConfig),
+      {
+        frames,
+        ...totals,
+        sendHistory: normalizeSendHistory(saved.sendHistory),
+        sendDraft: typeof saved.sendDraft === 'string' ? saved.sendDraft : '',
+        quickCommands: normalizeQuickCommands(saved.quickCommands),
+        macros: normalizeMacros(saved.macros),
+        triggers: normalizeTriggers(saved.triggers),
+        highlights: normalizeHighlights(saved.highlights),
+        parserState: normalizeParserState(saved.parserState),
+        terminalAiModel: normalizeAiModel(saved.terminalAiModel),
+        logAiModel: normalizeAiModel(saved.logAiModel),
+        logAiContextMode: normalizeLogContextMode(saved.logAiContextMode),
+        logAiFrameLimit:
+          typeof saved.logAiFrameLimit === 'number' && Number.isFinite(saved.logAiFrameLimit)
+            ? Math.max(20, Math.min(2_000, Math.floor(saved.logAiFrameLimit)))
+            : 200,
+      },
+    );
+  }
+
+  function serializeSessions(): PersistedSessionsFile {
+    return {
+      version: STORAGE_VERSION,
+      activeSessionId: activeSessionId.value,
+      sessions: sessions.value.slice(0, MAX_PERSISTED_SESSIONS).map((session) => {
+        const frames = persistedFrameTail([...session.frames, ...session.pausedFrames]);
+        return {
+          id: session.id,
+          portName: session.portName,
+          portConfig: session.portConfig,
+          frames: frames.map(serializeFrame),
+          sendHistory: session.sendHistory.slice(0, MAX_HISTORY),
+          sendDraft: session.sendDraft,
+          quickCommands: session.quickCommands,
+          macros: session.macros,
+          triggers: session.triggers,
+          highlights: session.highlights,
+          parserState: cloneParserState(session.parserState),
+          terminalAiModel: session.terminalAiModel,
+          logAiModel: session.logAiModel,
+          logAiContextMode: session.logAiContextMode,
+          logAiFrameLimit: session.logAiFrameLimit,
+        };
+      }),
+    };
+  }
+
+  function flushPersistedSessions() {
+    if (!loaded) return;
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    firstDirtyAt = 0;
+    saveJson(STORAGE_KEY, serializeSessions());
+  }
+
+  function schedulePersist() {
+    if (!loaded || !isLocalStorageAvailable()) return;
+    const now = nowMillis();
+    if (firstDirtyAt === 0) firstDirtyAt = now;
+    if (saveTimer) clearTimeout(saveTimer);
+    const elapsed = now - firstDirtyAt;
+    const delay = elapsed >= PERSIST_MAX_WAIT_MS ? 0 : PERSIST_DEBOUNCE_MS;
+    saveTimer = setTimeout(flushPersistedSessions, delay);
+  }
+
   function createSession(portName: string, portConfig: SerialSession['portConfig']): string {
     const id = crypto.randomUUID();
-    sessions.value.push({
-      id,
-      portName,
-      portConfig,
-      isConnected: false,
-      frames: [],
-      pausedFrames: [],
-      capturePaused: false,
-      txBytes: 0,
-      rxBytes: 0,
-      txFrames: 0,
-      rxFrames: 0,
-      startTime: null,
-      sendHistory: [],
-      sendDraft: '',
-      quickCommands: [],
-      autoLogEnabled: false,
-      logPath: null,
-      terminalAiModel: 'glm-4.5-air',
-      logAiModel: 'glm-4.5-air',
-      logAiContextMode: 'latest-10k',
-      logAiFrameLimit: 200,
-      logAiMessages: [],
-    });
+    sessions.value.push(createSessionRecord(id, portName, portConfig));
     activeSessionId.value = id;
+    schedulePersist();
     return id;
   }
 
@@ -63,10 +513,12 @@ export const useSessionStore = defineStore('sessions', () => {
     if (activeSessionId.value === id) {
       activeSessionId.value = sessions.value[0]?.id ?? null;
     }
+    schedulePersist();
   }
 
   function setActiveSession(id: string) {
     activeSessionId.value = id;
+    schedulePersist();
   }
 
   function registerCleanup(id: string, fn: () => Promise<void>) {
@@ -108,6 +560,7 @@ export const useSessionStore = defineStore('sessions', () => {
       session.rxFrames += 1;
     }
 
+    schedulePersist();
     return fullFrame;
   }
 
@@ -122,6 +575,7 @@ export const useSessionStore = defineStore('sessions', () => {
       // does not accumulate offline time across reconnects.
       session.startTime = null;
     }
+    schedulePersist();
   }
 
   function clearFrames(sessionId: string) {
@@ -134,6 +588,7 @@ export const useSessionStore = defineStore('sessions', () => {
     session.rxBytes = 0;
     session.txFrames = 0;
     session.rxFrames = 0;
+    schedulePersist();
   }
 
   function setCapturePaused(sessionId: string, paused: boolean) {
@@ -149,6 +604,7 @@ export const useSessionStore = defineStore('sessions', () => {
         session.frames.splice(0, session.frames.length - max);
       }
     }
+    schedulePersist();
   }
 
   function addSendHistory(sessionId: string, entry: SendHistoryEntry) {
@@ -161,18 +617,21 @@ export const useSessionStore = defineStore('sessions', () => {
     if (session.sendHistory.length > MAX_HISTORY) {
       session.sendHistory = session.sendHistory.slice(0, MAX_HISTORY);
     }
+    schedulePersist();
   }
 
   function clearSendHistory(sessionId: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.sendHistory = [];
+    schedulePersist();
   }
 
   function setSendDraft(sessionId: string, draft: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.sendDraft = draft;
+    schedulePersist();
   }
 
   function addQuickCommand(
@@ -182,12 +641,110 @@ export const useSessionStore = defineStore('sessions', () => {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.quickCommands.push({ ...command, id: crypto.randomUUID() });
+    schedulePersist();
   }
 
   function removeQuickCommand(sessionId: string, commandId: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.quickCommands = session.quickCommands.filter((c) => c.id !== commandId);
+    schedulePersist();
+  }
+
+  function addMacro(sessionId: string, macro: Omit<Macro, 'id'>): string | undefined {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return undefined;
+    const id = crypto.randomUUID();
+    session.macros.push({ ...macro, id });
+    schedulePersist();
+    return id;
+  }
+
+  function updateMacro(sessionId: string, macroId: string, patch: Partial<Omit<Macro, 'id'>>) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    const idx = session.macros.findIndex((m) => m.id === macroId);
+    if (idx === -1) return;
+    session.macros[idx] = { ...session.macros[idx], ...patch };
+    schedulePersist();
+  }
+
+  function removeMacro(sessionId: string, macroId: string) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.macros = session.macros.filter((m) => m.id !== macroId);
+    schedulePersist();
+  }
+
+  function addTrigger(sessionId: string, trigger: Omit<Trigger, 'id'>): string | undefined {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return undefined;
+    const id = crypto.randomUUID();
+    session.triggers.push({ ...trigger, id });
+    schedulePersist();
+    return id;
+  }
+
+  function updateTrigger(
+    sessionId: string,
+    triggerId: string,
+    patch: Partial<Omit<Trigger, 'id'>>,
+  ) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    const idx = session.triggers.findIndex((t) => t.id === triggerId);
+    if (idx === -1) return;
+    session.triggers[idx] = { ...session.triggers[idx], ...patch };
+    schedulePersist();
+  }
+
+  function removeTrigger(sessionId: string, triggerId: string) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.triggers = session.triggers.filter((t) => t.id !== triggerId);
+    schedulePersist();
+  }
+
+  function addHighlight(
+    sessionId: string,
+    highlight: Omit<HighlightRule, 'id'>,
+  ): string | undefined {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return undefined;
+    const id = crypto.randomUUID();
+    session.highlights.push({ ...highlight, id });
+    schedulePersist();
+    return id;
+  }
+
+  function updateHighlight(
+    sessionId: string,
+    highlightId: string,
+    patch: Partial<Omit<HighlightRule, 'id'>>,
+  ) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    const idx = session.highlights.findIndex((h) => h.id === highlightId);
+    if (idx === -1) return;
+    session.highlights[idx] = { ...session.highlights[idx], ...patch };
+    schedulePersist();
+  }
+
+  function removeHighlight(sessionId: string, highlightId: string) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.highlights = session.highlights.filter((h) => h.id !== highlightId);
+    schedulePersist();
+  }
+
+  function setParserState(sessionId: string, config: ParserConfig, presetId?: string | null) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.parserState = {
+      config: cloneParserConfig(config),
+      presetId: presetId === undefined ? session.parserState.presetId : presetId,
+    };
+    schedulePersist();
   }
 
   /** Enable auto-logging to `path`, or disable it when `path` is null. Sets
@@ -197,30 +754,35 @@ export const useSessionStore = defineStore('sessions', () => {
     if (!session) return;
     session.logPath = path;
     session.autoLogEnabled = path !== null;
+    schedulePersist();
   }
 
   function setTerminalAiModel(sessionId: string, model: AiModel) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.terminalAiModel = model;
+    schedulePersist();
   }
 
   function setLogAiModel(sessionId: string, model: AiModel) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.logAiModel = model;
+    schedulePersist();
   }
 
   function setLogAiContextMode(sessionId: string, mode: LogAiContextMode) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.logAiContextMode = mode;
+    schedulePersist();
   }
 
   function setLogAiFrameLimit(sessionId: string, limit: number) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.logAiFrameLimit = Math.max(20, Math.min(2000, Math.floor(limit || 200)));
+    schedulePersist();
   }
 
   function addLogAiMessage(sessionId: string, message: Omit<AiChatMessage, 'id' | 'timestamp'>) {
@@ -233,12 +795,14 @@ export const useSessionStore = defineStore('sessions', () => {
         timestamp: Date.now(),
       }),
     );
+    schedulePersist();
   }
 
   function clearLogAiMessages(sessionId: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.logAiMessages = [];
+    schedulePersist();
   }
 
   function reorderSessions(fromIndex: number, toIndex: number) {
@@ -247,7 +811,10 @@ export const useSessionStore = defineStore('sessions', () => {
     if (toIndex < 0 || toIndex >= sessions.value.length) return;
     const [moved] = sessions.value.splice(fromIndex, 1);
     sessions.value.splice(toIndex, 0, moved);
+    schedulePersist();
   }
+
+  loadPersistedSessions();
 
   return {
     sessions,
@@ -266,6 +833,16 @@ export const useSessionStore = defineStore('sessions', () => {
     setSendDraft,
     addQuickCommand,
     removeQuickCommand,
+    addMacro,
+    updateMacro,
+    removeMacro,
+    addTrigger,
+    updateTrigger,
+    removeTrigger,
+    addHighlight,
+    updateHighlight,
+    removeHighlight,
+    setParserState,
     setAutoLogTarget,
     setTerminalAiModel,
     setLogAiModel,
@@ -274,5 +851,6 @@ export const useSessionStore = defineStore('sessions', () => {
     addLogAiMessage,
     clearLogAiMessages,
     reorderSessions,
+    flushPersistedSessions,
   };
 });

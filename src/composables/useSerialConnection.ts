@@ -4,21 +4,19 @@ import { SerialPort } from 'tauri-plugin-serialplugin-api';
 import { useSessionStore } from '../stores/sessions';
 import { useSessionFrames } from './useSessionFrames';
 import { useAutoLog } from './useAutoLog';
-import { encodeUtf8, parseHex } from '../lib/format';
+import { encodeUtf8, formatBytes, parseHex } from '../lib/format';
 import { concatUint8Arrays } from '../lib/bytes';
 import { escapeSerialPath } from '../lib/serial-utils';
 import { mapDataBits, mapFlowControl, mapParity, mapStopBits } from '../lib/serial-config';
 import { logger } from '../lib/logger';
+import { t } from '../lib/i18n';
 import { MAX_INPUT_SIZE } from '../types';
-import type { PortConfig } from '../types';
+import type { PortConfig, DataFrame } from '../types';
 
 const MAX_RX_QUEUE_BYTES = MAX_INPUT_SIZE * 2;
 const MAX_RX_QUEUE_CHUNKS = 512;
 const RECONNECT_INTERVAL_MS = 1500;
 const MAX_RECONNECT_ATTEMPTS = 10;
-// Prefix used to recognize (and clear) the transient RX-overflow error so it
-// does not persist in the SessionView error pill after the buffer recovers.
-const RX_OVERFLOW_PREFIX = '接收缓冲区溢出';
 
 interface SerialConnectionOptions {
   onDisconnect?: () => void;
@@ -28,6 +26,9 @@ interface SerialConnectionOptions {
   autoReconnect?: () => boolean;
   onReconnecting?: () => void;
   onReconnected?: () => void;
+  /** Fired for each completed RX frame (after it's added to the store), so
+   *  observers like the trigger engine can react without polling the store. */
+  onRxFrame?: (frame: DataFrame) => void;
 }
 
 export function useSerialConnection(
@@ -51,6 +52,7 @@ export function useSerialConnection(
   let dataQueue: Uint8Array[] = [];
   let totalQueueSize = 0;
   let droppedRxBytes = 0;
+  let rxOverflowErrorMessage: string | null = null;
   let overflowNotified = false;
   let rafId: number | null = null;
   let unlistenData: (() => void) | null = null;
@@ -60,6 +62,15 @@ export function useSerialConnection(
   let intentionalClose = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectAttempts = 0;
+
+  // Write serializer: chains every TX through a single promise so concurrent
+  // callers (cyclic loop, quick-command, history-resend, AI-fill) can never
+  // overlap writeBinary on the same port. The cyclic sender drives an async
+  // handler from setInterval without awaiting it; if a write IPC round-trip
+  // ever exceeds the loop interval, unserialized writes would interleave on
+  // the driver — undefined behavior on most serial drivers. Chaining costs one
+  // microtask and serializes strictly in call order.
+  let writeChain: Promise<boolean> = Promise.resolve(true);
 
   /** Open the port, start listening, apply handshake lines, (re)register the data listener. */
   async function openConnection() {
@@ -115,6 +126,9 @@ export function useSerialConnection(
     dataQueue = [];
     totalQueueSize = 0;
     droppedRxBytes = 0;
+    rxOverflowErrorMessage = null;
+    // Reset the write chain so a new connection starts from a settled state.
+    writeChain = Promise.resolve(true);
     await closePortSafely();
     try {
       await openConnection();
@@ -199,6 +213,7 @@ export function useSerialConnection(
       reconnecting.value = false;
       isConnected.value = true;
       error.value = null;
+      rxOverflowErrorMessage = null;
       sessionStore.setConnected(sessionId, true);
       options?.onReconnected?.();
     } catch {
@@ -237,11 +252,13 @@ export function useSerialConnection(
     }
 
     if (droppedRxBytes > 0) {
-      error.value = `${RX_OVERFLOW_PREFIX}，已丢弃 ${droppedRxBytes} 字节`;
-    } else if (error.value?.startsWith(RX_OVERFLOW_PREFIX)) {
+      rxOverflowErrorMessage = t('serial.error.rxOverflow', { bytes: formatBytes(droppedRxBytes) });
+      error.value = rxOverflowErrorMessage;
+    } else if (rxOverflowErrorMessage && error.value === rxOverflowErrorMessage) {
       // Buffer has recovered — clear a stale overflow message, but leave any
-      // connection-level error (which uses a different prefix) untouched.
+      // connection-level error untouched.
       error.value = null;
+      rxOverflowErrorMessage = null;
     }
 
     if (!rafId) {
@@ -267,6 +284,7 @@ export function useSerialConnection(
       return;
     }
     const chunks = dataQueue;
+    const chunkBytes = totalQueueSize;
     dataQueue = [];
     totalQueueSize = 0;
     droppedRxBytes = 0;
@@ -274,12 +292,18 @@ export function useSerialConnection(
 
     const frame = addFrame({
       direction: 'RX',
-      data: concatUint8Arrays(chunks),
+      data: concatUint8Arrays(chunks, chunkBytes),
     });
-    if (frame) appendFrame(sessionId, frame);
+    if (frame) {
+      appendFrame(sessionId, frame);
+      // Notify observers (e.g. the trigger engine) of the completed RX frame.
+      // Fired after the frame is stored so a trigger response re-enters the
+      // same single-flight write serializer in the right order.
+      options?.onRxFrame?.(frame);
+    }
   }
 
-  async function send(data: string, isHex: boolean) {
+  async function doSend(data: string, isHex: boolean): Promise<boolean> {
     if (!port.value) return false;
 
     let payload: Uint8Array;
@@ -320,6 +344,38 @@ export function useSerialConnection(
     return true;
   }
 
+  async function send(data: string, isHex: boolean): Promise<boolean> {
+    // Chain onto the in-flight write so sends never overlap. Each caller still
+    // observes its own boolean result; only the ordering is serialized.
+    const result = writeChain.then(() => doSend(data, isHex));
+    writeChain = result.catch(() => true);
+    return result;
+  }
+
+  /**
+   * Pulse the serial BREAK line (line held to SPACE) for ~250ms. Required for
+   * Arduino auto-reset into the bootloader and for forcing ESP32/ESP8266 into
+   * download mode (often combined with DTR/RTS). Idempotent: a second call
+   * while one is in flight is ignored. Non-fatal if the driver rejects it
+   * (some USB-CDC adapters don't implement break).
+   */
+  let breakInFlight = false;
+  async function sendBreak(durationMs = 250): Promise<boolean> {
+    if (breakInFlight || !port.value) return false;
+    breakInFlight = true;
+    try {
+      await port.value.setBreak();
+      await new Promise((r) => setTimeout(r, durationMs));
+      await port.value.clearBreak();
+      return true;
+    } catch (e) {
+      logger.warn('serial setBreak/clearBreak failed on', portName, e);
+      return false;
+    } finally {
+      breakInFlight = false;
+    }
+  }
+
   async function closePortSafely() {
     if (unlistenData) {
       try {
@@ -351,6 +407,9 @@ export function useSerialConnection(
     totalQueueSize = 0;
     droppedRxBytes = 0;
     error.value = null;
+    // Drain any in-flight write before tearing the port down, so a final
+    // queued TX (e.g. the last tick of a cyclic send) is not cut off mid-write.
+    await writeChain.catch(() => undefined);
     await closePortSafely();
     if (unlistenDisconnect) {
       unlistenDisconnect();
@@ -373,6 +432,7 @@ export function useSerialConnection(
     totalDroppedBytes,
     start,
     send,
+    sendBreak,
     stop,
   };
 }

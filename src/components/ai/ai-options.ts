@@ -1,5 +1,6 @@
 import type { AiModel, LogAiContextMode } from '../../types';
 import type { AiRisk } from '../../lib/ipc';
+import { t } from '../../lib/i18n';
 
 export const aiModelOptions: { label: string; value: AiModel }[] = [
   { label: 'GLM-5.1', value: 'glm-5.1' },
@@ -8,23 +9,23 @@ export const aiModelOptions: { label: string; value: AiModel }[] = [
   { label: 'GLM-4.5 Air', value: 'glm-4.5-air' },
 ];
 
-export const logContextModeOptions: { label: string; value: LogAiContextMode }[] = [
-  { label: '最新 10k 字符', value: 'latest-10k' },
-  { label: '最新 N 帧', value: 'latest-n-frames' },
-  { label: '全部日志(50k上限)', value: 'full-capped' },
-];
+export function getLogContextModeOptions(): { label: string; value: LogAiContextMode }[] {
+  return [
+    { label: t('ai.context.latest10k'), value: 'latest-10k' },
+    { label: t('ai.context.latestNFrames'), value: 'latest-n-frames' },
+    { label: t('ai.context.fullCapped'), value: 'full-capped' },
+  ];
+}
 
 export const aiModelMenuProps = {
   class: 'ai-model-menu',
   style: 'max-height: 72px;',
 };
 
-/** Chinese display label for each AI command risk level. */
-export const AI_RISK_LABELS: Record<AiRisk, string> = {
-  safe: '安全',
-  caution: '谨慎',
-  dangerous: '危险',
-};
+/** Display label for each AI command risk level. */
+export function aiRiskLabel(risk: AiRisk): string {
+  return t(`ai.risk.${risk}`);
+}
 
 export type RiskTagType = 'success' | 'warning' | 'error';
 

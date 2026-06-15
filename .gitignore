@@ -26,3 +26,6 @@ Thumbs.db
 .mimocode
 .pnpm-store
 .codex
+
+# Perf baselines (machine-local)
+tests/frontend/.perf-baseline.json

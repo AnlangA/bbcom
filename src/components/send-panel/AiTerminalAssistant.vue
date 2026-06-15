@@ -4,7 +4,7 @@
       <n-input
         v-model:value="prompt"
         size="small"
-        :placeholder="hasApiKey ? '自然语言生成命令，如：查看当前路径' : '请先在主页面保存 API Key'"
+        :placeholder="hasApiKey ? t('ai.terminal.placeholder') : t('ai.needApiKey')"
         :disabled="loading"
         @keydown.enter.prevent="generateCommand"
       />
@@ -18,14 +18,14 @@
         <template #icon>
           <WandSparkles class="icon-sm" />
         </template>
-        生成
+        {{ t('ai.terminal.generate') }}
       </n-button>
     </div>
 
     <div v-if="activeSession" class="settings-panel">
       <span class="field-label">
         <Terminal class="icon-sm" />
-        命令模型
+        {{ t('ai.terminal.model') }}
       </span>
       <n-select
         size="small"
@@ -42,20 +42,20 @@
           <n-tag size="small" round :type="riskTagType" :bordered="false">{{ riskLabel }}</n-tag>
           <span class="explanation">{{ result.explanation }}</span>
         </div>
-        <code class="command">{{ result.command || '需要更多信息' }}</code>
+        <code class="command">{{ result.command || t('ai.terminal.moreInfo') }}</code>
       </div>
       <div class="result-actions">
         <n-button size="tiny" secondary @click="copyCommand" :disabled="!result.command">
           <template #icon>
             <Copy class="icon-sm" />
           </template>
-          复制
+          {{ t('ai.terminal.copy') }}
         </n-button>
         <n-button size="tiny" type="primary" @click="applyCommand" :disabled="!result.command">
           <template #icon>
             <SendHorizontal class="icon-sm" />
           </template>
-          填入输入框
+          {{ t('ai.terminal.apply') }}
         </n-button>
       </div>
     </div>
@@ -70,9 +70,10 @@ import { useAppStore } from '../../stores/app';
 import { getAiErrorMessage } from '../../lib/ai-error';
 import { terminalAiAssist, type TerminalAiResponse } from '../../lib/ipc';
 import { logger } from '../../lib/logger';
+import { t } from '../../lib/i18n';
 import type { AiModel, SerialSession } from '../../types';
 import type { useAiWindowSession } from '../../composables/useAiWindowSession';
-import { aiModelMenuProps, aiModelOptions, AI_RISK_LABELS, aiRiskTagType } from '../ai/ai-options';
+import { aiModelMenuProps, aiModelOptions, aiRiskLabel, aiRiskTagType } from '../ai/ai-options';
 
 const props = defineProps<{
   session: SerialSession;
@@ -88,17 +89,17 @@ const result = ref<TerminalAiResponse | null>(null);
 const activeSession = computed(() => props.session);
 const hasApiKey = computed(() => Boolean(appStore.aiApiKey.trim()));
 const canGenerate = computed(() => prompt.value.trim().length > 0 && !loading.value);
-const riskLabel = computed(() => (result.value ? AI_RISK_LABELS[result.value.risk] : ''));
+const riskLabel = computed(() => (result.value ? aiRiskLabel(result.value.risk) : ''));
 const riskTagType = computed(() => (result.value ? aiRiskTagType(result.value.risk) : 'default'));
 
 async function generateCommand() {
   if (!canGenerate.value) return;
   if (!hasApiKey.value) {
-    message.warning('请先保存 API Key');
+    message.warning(t('ai.needApiKey'));
     return;
   }
   if (!activeSession.value) {
-    message.warning('请先创建串口会话');
+    message.warning(t('ai.needSession'));
     return;
   }
   loading.value = true;
@@ -116,7 +117,7 @@ async function generateCommand() {
       applyCommandToApp(response.command);
     }
   } catch (e: unknown) {
-    message.error(getAiErrorMessage(e, 'AI 命令生成失败'));
+    message.error(getAiErrorMessage(e, t('ai.terminal.failed')));
   } finally {
     loading.value = false;
   }
@@ -126,10 +127,10 @@ async function copyCommand() {
   if (!result.value?.command) return;
   try {
     await navigator.clipboard.writeText(result.value.command);
-    message.success('命令已复制');
+    message.success(t('ai.terminal.copied'));
   } catch (e) {
     logger.warn('clipboard write failed:', e);
-    message.error('复制失败');
+    message.error(t('packet.copyFailed'));
   }
 }
 

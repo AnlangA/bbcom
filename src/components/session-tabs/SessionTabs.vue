@@ -27,13 +27,18 @@
             class="tab-close"
             type="button"
             @click.stop="closeSession(session.id)"
-            title="关闭会话"
+            :title="t('session.close')"
           >
             <X class="icon-sm" />
           </button>
         </div>
       </div>
-      <button class="tab-add" type="button" @click="emit('create')" title="新建会话 (Ctrl+N)">
+      <button
+        class="tab-add"
+        type="button"
+        @click="emit('create')"
+        :title="t('session.newWithShortcut')"
+      >
         <Plus class="icon-sm" />
       </button>
     </div>
@@ -45,6 +50,7 @@ import { computed, ref } from 'vue';
 import { Plus, X } from 'lucide-vue-next';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
+import { t } from '../../lib/i18n';
 import type { SerialSession } from '../../types';
 
 const emit = defineEmits<{
@@ -95,10 +101,10 @@ function switchSession(id: string) {
 }
 
 function tabTooltip(session: SerialSession): string {
-  const status = session.isConnected ? '已连接' : '未连接';
+  const status = session.isConnected ? t('session.connected') : t('session.disconnected');
   const baud = session.portConfig.baudRate;
   const frames = session.frames.length;
-  return `${session.portName} | ${baud} bps | ${frames} 帧 | ${status}`;
+  return `${session.portName} | ${baud} bps | ${frames} ${t('status.frames')} | ${status}`;
 }
 </script>
 

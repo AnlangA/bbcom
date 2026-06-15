@@ -7,7 +7,7 @@
             class="collapse-btn"
             type="button"
             @click="appStore.toggleSidebarCollapsed"
-            :title="appStore.sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
+            :title="appStore.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')"
           >
             <PanelLeftClose v-if="!appStore.sidebarCollapsed" class="icon" />
             <PanelLeftOpen v-else class="icon" />
@@ -17,7 +17,7 @@
           </span>
           <span v-if="!appStore.sidebarCollapsed" class="brand-copy">
             <span class="brand-title">bbcom</span>
-            <span class="brand-subtitle">Serial console</span>
+            <span class="brand-subtitle">{{ t('app.subtitle') }}</span>
           </span>
         </div>
         <div class="sidebar-actions">
@@ -27,22 +27,59 @@
             :type="aiWindowVisible ? 'primary' : 'default'"
             secondary
             class="ai-toggle"
-            :title="aiWindowVisible ? '关闭 AI' : '开启 AI'"
-            :aria-label="aiWindowVisible ? '关闭 AI' : '开启 AI'"
+            :title="aiWindowVisible ? t('sidebar.ai.on') : t('sidebar.ai.off')"
+            :aria-label="aiWindowVisible ? t('sidebar.ai.on') : t('sidebar.ai.off')"
             @click="toggleAiWindow"
           >
             <template #icon>
               <Bot v-if="aiWindowVisible" class="icon-sm" />
               <BotOff v-else class="icon-sm" />
             </template>
-            <span class="action-label">{{ aiWindowVisible ? '关闭 AI' : '开启 AI' }}</span>
+            <span class="action-label">{{
+              aiWindowVisible ? t('sidebar.ai.on') : t('sidebar.ai.off')
+            }}</span>
+          </n-button>
+          <n-button
+            size="tiny"
+            quaternary
+            class="locale-toggle"
+            :title="
+              appStore.locale === 'zh'
+                ? t('sidebar.locale.toEnglish')
+                : t('sidebar.locale.toChinese')
+            "
+            :aria-label="
+              appStore.locale === 'zh'
+                ? t('sidebar.locale.toEnglish')
+                : t('sidebar.locale.toChinese')
+            "
+            @click="toggleLocale"
+          >
+            <template #icon>
+              <Languages class="icon-sm" />
+            </template>
+          </n-button>
+          <n-button
+            size="tiny"
+            quaternary
+            class="theme-toggle"
+            :title="appStore.theme === 'light' ? t('sidebar.theme.light') : t('sidebar.theme.dark')"
+            :aria-label="
+              appStore.theme === 'light' ? t('sidebar.theme.light') : t('sidebar.theme.dark')
+            "
+            @click="toggleTheme"
+          >
+            <template #icon>
+              <Moon v-if="appStore.theme === 'light'" class="icon-sm" />
+              <Sun v-else class="icon-sm" />
+            </template>
           </n-button>
           <n-button
             size="tiny"
             quaternary
             class="settings-toggle"
-            title="设置"
-            aria-label="设置"
+            :title="t('sidebar.settings')"
+            :aria-label="t('sidebar.settings')"
             @click="showSettings = true"
           >
             <template #icon>
@@ -68,11 +105,23 @@
           <div class="empty-mark">
             <Cable class="icon-lg" />
           </div>
-          <div class="empty-title">bbcom</div>
-          <div class="empty-text">在左侧选择串口并点击「新建会话」开始调试</div>
+          <div class="empty-title">{{ t('session.empty.title') }}</div>
+          <div class="empty-text">{{ t('session.empty.hint') }}</div>
+          <div class="empty-actions">
+            <n-button type="primary" size="medium" @click="showCreateDialog = true">
+              <template #icon>
+                <Plus class="icon-sm" />
+              </template>
+              {{ t('common.newSession') }}
+            </n-button>
+          </div>
           <div class="empty-shortcuts">
-            <span class="shortcut"><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建会话</span>
-            <span class="shortcut"><kbd>Ctrl</kbd>+<kbd>W</kbd> 关闭会话</span>
+            <span class="shortcut"
+              ><kbd>Ctrl</kbd>+<kbd>N</kbd> {{ t('shortcut.newSession') }}</span
+            >
+            <span class="shortcut"
+              ><kbd>Ctrl</kbd>+<kbd>W</kbd> {{ t('shortcut.closeSession') }}</span
+            >
           </div>
         </div>
         <Transition name="fade-slide" mode="out-in">
@@ -88,21 +137,39 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onErrorCaptured, onUnmounted, ref } from 'vue';
+import { computed, defineAsyncComponent, onErrorCaptured, onUnmounted, ref } from 'vue';
 import { NButton, useMessage } from 'naive-ui';
-import { Bot, BotOff, Cable, PanelLeftClose, PanelLeftOpen, Settings, Zap } from 'lucide-vue-next';
+import {
+  Bot,
+  BotOff,
+  Cable,
+  Languages,
+  Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  Settings,
+  Sun,
+  Zap,
+} from 'lucide-vue-next';
 import PortSelector from '../port-selector/PortSelector.vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
 import SessionView from '../session/SessionView.vue';
 import StatusBar from '../status-bar/StatusBar.vue';
-import CreateSessionDialog from './CreateSessionDialog.vue';
-import SettingsModal from './SettingsModal.vue';
-import AiSettingsPanel from '../ai/AiSettingsPanel.vue';
 import { useAiWindowState } from '../../composables/useAiWindowState';
 import { useAppShortcuts } from '../../composables/useAppShortcuts';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
+import { t, setLocale } from '../../lib/i18n';
+
+// Code-split the heavy modals/panels so their naive-ui dependencies (NModal,
+// NForm, NFormItem) are fetched on first open, not at first paint. Together
+// these trim a meaningful slice off the eager bundle; the main window renders
+// with PortSelector/SessionView/StatusBar only.
+const CreateSessionDialog = defineAsyncComponent(() => import('./CreateSessionDialog.vue'));
+const SettingsModal = defineAsyncComponent(() => import('./SettingsModal.vue'));
+const AiSettingsPanel = defineAsyncComponent(() => import('../ai/AiSettingsPanel.vue'));
 
 const sessionStore = useSessionStore();
 const appStore = useAppStore();
@@ -115,13 +182,23 @@ const showCreateDialog = ref(false);
 const showSettings = ref(false);
 const message = useMessage();
 
+function toggleTheme() {
+  appStore.setTheme(appStore.theme === 'light' ? 'dark' : 'light');
+}
+
+function toggleLocale() {
+  setLocale(appStore.locale === 'zh' ? 'en' : 'zh');
+}
+
 onErrorCaptured((err) => {
   // Surface component render errors with a toast instead of a silent blank
   // screen — critical for a desktop debugging tool where a blank window looks
   // like a hang.
   // eslint-disable-next-line no-console
   console.error('[bbcom] component error:', err);
-  message.error(`界面渲染出错：${err instanceof Error ? err.message : String(err)}`);
+  message.error(
+    t('message.componentError', { error: err instanceof Error ? err.message : String(err) }),
+  );
   return false;
 });
 
@@ -212,7 +289,9 @@ useAppShortcuts({
 
 .sidebar.collapsed .sidebar-header {
   padding: 12px 7px;
-  justify-content: center;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 6px;
 }
 
 .app-brand {
@@ -224,7 +303,7 @@ useAppShortcuts({
 
 .sidebar.collapsed .app-brand {
   flex-direction: column;
-  gap: 0;
+  gap: 6px;
 }
 
 .collapse-btn {
@@ -272,6 +351,10 @@ useAppShortcuts({
   transform: rotate(12deg);
 }
 
+.sidebar.collapsed .brand-mark {
+  display: none;
+}
+
 .brand-copy {
   display: flex;
   flex-direction: column;
@@ -296,6 +379,21 @@ useAppShortcuts({
 
 .ai-toggle {
   flex-shrink: 0;
+}
+
+.sidebar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sidebar.collapsed .sidebar-actions {
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 4px;
+  width: 100%;
 }
 
 .sidebar-content {
@@ -360,7 +458,7 @@ useAppShortcuts({
   color: var(--color-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-inset);
   animation: scale-in 400ms ease;
 }
@@ -374,6 +472,14 @@ useAppShortcuts({
 .empty-text {
   font-size: var(--font-size-base);
   color: var(--text-muted);
+  max-width: 360px;
+  line-height: var(--line-height-normal);
+}
+
+.empty-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-xs);
 }
 
 .empty-shortcuts {

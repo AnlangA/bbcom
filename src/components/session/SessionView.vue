@@ -12,33 +12,46 @@
           <template #icon>
             <Power class="icon-sm" />
           </template>
-          连接
+          {{ t('session.connect') }}
         </n-button>
         <n-button v-else type="error" size="small" ghost @click="disconnect">
           <template #icon>
             <PowerOff class="icon-sm" />
           </template>
-          断开
+          {{ t('session.disconnect') }}
         </n-button>
         <n-button size="small" @click="clear" :disabled="session.frames.length === 0">
           <template #icon>
             <Trash2 class="icon-sm" />
           </template>
-          清空
+          {{ t('session.clear') }}
         </n-button>
         <n-button
           v-if="session.isConnected"
           size="small"
           ghost
           :type="session.capturePaused ? 'warning' : 'default'"
-          :title="session.capturePaused ? '继续捕获' : '暂停捕获（冻结视图，继续缓冲）'"
+          :title="session.capturePaused ? t('session.resume.title') : t('session.pause.title')"
           @click="togglePause"
         >
           <template #icon>
             <Pause v-if="!session.capturePaused" class="icon-sm" />
             <Play v-else class="icon-sm" />
           </template>
-          {{ session.capturePaused ? '继续' : '暂停' }}
+          {{ session.capturePaused ? t('session.resume') : t('session.pause') }}
+        </n-button>
+        <n-button
+          v-if="session.isConnected"
+          size="small"
+          ghost
+          :loading="sendingBreak"
+          :title="t('session.break.title')"
+          @click="handleSendBreak"
+        >
+          <template #icon>
+            <Unplug class="icon-sm" />
+          </template>
+          BREAK
         </n-button>
         <n-tag
           :type="session.isConnected ? 'success' : 'default'"
@@ -46,8 +59,25 @@
           round
           :bordered="false"
         >
-          {{ session.isConnected ? '已连接' : '未连接' }}
+          {{ session.isConnected ? t('session.connected') : t('session.disconnected') }}
         </n-tag>
+        <div class="toolbar-stats" :aria-label="t('session.stats.aria')">
+          <span class="mini-stat tx" :title="`TX ${session.txFrames} ${t('status.frames')}`">
+            <span class="mini-label">TX</span>
+            {{ formatBytes(session.txBytes) }}
+          </span>
+          <span class="mini-stat rx" :title="`RX ${session.rxFrames} ${t('status.frames')}`">
+            <span class="mini-label">RX</span>
+            {{ formatBytes(session.rxBytes) }}
+          </span>
+          <span
+            class="mini-stat"
+            :title="t('session.stats.totalFrames', { count: session.frames.length })"
+          >
+            <span class="mini-label">{{ t('session.stats.frames') }}</span>
+            {{ session.frames.length }}
+          </span>
+        </div>
         <n-tag
           v-if="serialState.reconnecting.value"
           type="warning"
@@ -55,21 +85,21 @@
           round
           :bordered="false"
         >
-          重连中
+          {{ t('session.reconnecting') }}
         </n-tag>
         <span v-if="serialState.error.value" class="error-hint">{{ serialState.error.value }}</span>
         <span
           v-if="serialState.totalDroppedBytes.value > 0"
           class="drop-hint"
-          :title="`本次连接累计丢弃 ${serialState.totalDroppedBytes.value} 字节（接收速率超过处理能力）`"
+          :title="t('session.dropped.title', { count: serialState.totalDroppedBytes.value })"
         >
-          丢弃 {{ formatBytes(serialState.totalDroppedBytes.value) }}
+          {{ t('session.dropped', { bytes: formatBytes(serialState.totalDroppedBytes.value) }) }}
         </span>
       </div>
       <div class="toolbar-right">
         <div class="toolbar-field">
           <FileText class="icon-sm field-icon" />
-          <span class="field-label">格式</span>
+          <span class="field-label">{{ t('toolbar.format') }}</span>
           <n-select
             :value="appStore.displayMode"
             :options="displayModeOptions"
@@ -78,14 +108,14 @@
             @update:value="appStore.setDisplayMode"
           />
         </div>
-        <div class="toggle-group" role="group" aria-label="显示选项">
+        <div class="toggle-group" role="group" :aria-label="t('toolbar.displayOptions')">
           <n-button
             class="toggle-btn"
             size="small"
             quaternary
             :type="appStore.autoScroll ? 'primary' : 'default'"
-            title="自动滚动"
-            aria-label="自动滚动"
+            :title="t('toolbar.autoScroll')"
+            :aria-label="t('toolbar.autoScroll')"
             @click="toggleAutoScroll"
           >
             <template #icon>
@@ -97,8 +127,8 @@
             size="small"
             quaternary
             :type="appStore.ansiColorEnabled ? 'primary' : 'default'"
-            title="ANSI 颜色渲染"
-            aria-label="ANSI 颜色"
+            :title="t('toolbar.ansiColor.render')"
+            :aria-label="t('toolbar.ansiColor')"
             @click="appStore.toggleAnsiColor"
           >
             <template #icon>
@@ -109,9 +139,35 @@
             class="toggle-btn"
             size="small"
             quaternary
+            :type="showWaveform ? 'primary' : 'default'"
+            :title="t('toolbar.waveform.title')"
+            :aria-label="t('toolbar.waveform')"
+            @click="showWaveform = !showWaveform"
+          >
+            <template #icon>
+              <LineChart class="icon-sm" />
+            </template>
+          </n-button>
+          <n-button
+            class="toggle-btn"
+            size="small"
+            quaternary
+            :type="showParser ? 'primary' : 'default'"
+            :title="t('toolbar.parser.title')"
+            :aria-label="t('toolbar.parser')"
+            @click="showParser = !showParser"
+          >
+            <template #icon>
+              <Binary class="icon-sm" />
+            </template>
+          </n-button>
+          <n-button
+            class="toggle-btn"
+            size="small"
+            quaternary
             :type="appStore.showTimestamp ? 'primary' : 'default'"
-            title="显示时间戳"
-            aria-label="时间戳"
+            :title="t('toolbar.timestamp')"
+            :aria-label="t('toolbar.timestamp')"
             @click="toggleTimestamp"
           >
             <template #icon>
@@ -125,10 +181,10 @@
             :type="session.autoLogEnabled ? 'primary' : 'default'"
             :title="
               session.autoLogEnabled && session.logPath
-                ? `正在记录到 ${session.logPath}（再次点击停止）`
-                : '自动记录 TX/RX 到文件'
+                ? t('toolbar.autoLog.on', { path: session.logPath })
+                : t('toolbar.autoLog.off')
             "
-            aria-label="自动记录"
+            :aria-label="t('toolbar.autoLog')"
             @click="toggleAutoLog"
           >
             <template #icon>
@@ -146,22 +202,30 @@
             quaternary
             :disabled="session.frames.length === 0"
             :loading="isExporting"
-            title="导出数据"
+            :title="t('toolbar.exportData')"
           >
             <template #icon>
               <Download class="icon-sm" />
             </template>
-            导出
+            {{ t('toolbar.export') }}
           </n-button>
         </n-dropdown>
       </div>
     </div>
     <div class="display-area">
-      <DataPacketList :frames="session.frames" />
+      <WaveformPanel v-if="showWaveform" :frames="session.frames" direction="RX" />
+      <ParserPanel
+        v-if="showParser"
+        :session-id="session.id"
+        :frames="session.frames"
+        @close="showParser = false"
+      />
+      <DataPacketList :frames="session.frames" :highlights="session.highlights" />
     </div>
     <div class="send-area">
       <SendPanel
         :on-send="handleSend"
+        :session-id="props.session.id"
         :model-value="session.sendDraft"
         :disabled="!session.isConnected"
         :history="session.sendHistory"
@@ -176,21 +240,26 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { NButton, NTag, NDropdown, NSelect } from 'naive-ui';
 import {
   ArrowDownUp,
+  Binary,
   Clock,
   Download,
   FileText,
+  LineChart,
   Palette,
   Pause,
   Play,
   Power,
   PowerOff,
   Trash2,
+  Unplug,
 } from 'lucide-vue-next';
 import DataPacketList from '../terminal/DataPacketList.vue';
+import WaveformPanel from '../terminal/WaveformPanel.vue';
+import ParserPanel from '../terminal/ParserPanel.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
 import { useSerialConnection } from '../../composables/useSerialConnection';
 import { useSessionStore } from '../../stores/sessions';
@@ -198,9 +267,12 @@ import { useAppStore } from '../../stores/app';
 import { useExport } from '../../composables/useExport';
 import { useAutoLog } from '../../composables/useAutoLog';
 import { useSessionActions } from '../../composables/useSessionActions';
+import { useSessionShortcuts } from '../../composables/useSessionShortcuts';
+import { useTriggers } from '../../composables/useTriggers';
 import { useMessage } from 'naive-ui';
 import { EXPORT_OPTIONS, type ExportChoice } from '../../lib/constants';
 import { formatBytes } from '../../lib/format';
+import { t } from '../../lib/i18n';
 import type { DisplayMode, SerialSession } from '../../types';
 
 const props = defineProps<{
@@ -213,23 +285,40 @@ const { requestClearFrames } = useSessionActions();
 const { isExporting, exportData } = useExport();
 const { enable: enableAutoLog, disable: disableAutoLog } = useAutoLog();
 const message = useMessage();
+
+// Scripted triggers: watch RX bytes and auto-send a configured response on
+// match. `handleSend` is defined below but hoisted via function declaration, so
+// it is safely referenceable here. The engine itself is debounced/cooldown'd.
+const triggersRef = computed(() => props.session.triggers);
+const { feedFrame: feedTriggerFrame } = useTriggers({
+  triggers: triggersRef,
+  send: (data, isHex) => handleSend(data, isHex),
+  onFire: (fire) => {
+    const trigger = props.session.triggers.find((x) => x.id === fire.triggerId);
+    message.info(t('message.triggerFired', { name: trigger?.name ?? fire.triggerId }));
+  },
+});
+
 const serialState = useSerialConnection(
   props.session.id,
   props.session.portName,
   props.session.portConfig,
   {
     onDisconnect: () => {
-      message.warning('串口已断开');
+      message.warning(t('serial.error.disconnected'));
     },
     onOverflow: (total) => {
-      message.warning(`接收缓冲区溢出，已丢弃约 ${formatBytes(total)} 数据（速率超过处理能力）`);
+      message.warning(t('serial.error.rxOverflow', { bytes: formatBytes(total) }));
     },
     autoReconnect: () => appStore.autoReconnect,
     onReconnecting: () => {
-      message.info('连接已断开，正在尝试重新连接…');
+      message.info(t('serial.error.reconnecting'));
     },
     onReconnected: () => {
-      message.success('已重新连接');
+      message.success(t('serial.error.reconnected'));
+    },
+    onRxFrame: (frame) => {
+      void feedTriggerFrame(frame);
     },
   },
 );
@@ -241,7 +330,12 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   { label: 'UTF-8', value: 'UTF8' },
 ];
 
-const exportOptions = EXPORT_OPTIONS;
+const exportOptions = computed(() =>
+  EXPORT_OPTIONS.map((option) => ({
+    ...option,
+    label: t(`export.${option.key}`),
+  })),
+);
 
 onMounted(() => {
   sessionStore.registerCleanup(props.session.id, serialState.stop);
@@ -250,7 +344,7 @@ onMounted(() => {
 async function connect() {
   const ok = await serialState.start();
   if (!ok && serialState.error.value) {
-    message.error(`连接失败: ${serialState.error.value}`);
+    message.error(t('serial.error.connectFailed', { error: serialState.error.value }));
   }
 }
 
@@ -264,6 +358,32 @@ function clear() {
 
 function togglePause() {
   sessionStore.setCapturePaused(props.session.id, !props.session.capturePaused);
+}
+
+// Pro-terminal keyboard shortcuts: Ctrl/Cmd+L clears the buffer, Esc toggles
+// capture pause. Only active while connected so Esc doesn't fire spuriously.
+useSessionShortcuts({
+  onClear: clear,
+  onTogglePause: togglePause,
+  isConnected: () => props.session.isConnected,
+});
+
+const sendingBreak = ref(false);
+// Waveform overlay — toggled from the toolbar. Off by default so it only parses
+// RX data when the user wants a plot, keeping the default terminal view dense.
+const showWaveform = ref(false);
+// Protocol parser overlay — splits the RX byte stream into discrete frames per
+// a delimiter / fixed-length / length-field template.
+const showParser = ref(false);
+async function handleSendBreak() {
+  sendingBreak.value = true;
+  const ok = await serialState.sendBreak();
+  sendingBreak.value = false;
+  if (ok) {
+    message.success(t('message.breakSent'));
+  } else {
+    message.warning(t('message.breakFailed'));
+  }
 }
 
 async function handleSend(data: string, isHex: boolean) {
@@ -303,12 +423,12 @@ function toggleTimestamp() {
 async function toggleAutoLog() {
   if (props.session.autoLogEnabled) {
     disableAutoLog(props.session.id);
-    message.info('已停止自动记录');
+    message.info(t('message.autoLogStopped'));
     return;
   }
   const path = await enableAutoLog(props.session.id);
   if (path) {
-    message.success(`正在记录到 ${path}`);
+    message.success(t('message.autoLogStarted', { path }));
   }
 }
 
@@ -319,9 +439,9 @@ async function handleExport(choice: string) {
     appStore.displayMode,
   );
   if (result.ok) {
-    message.success('导出成功');
+    message.success(t('message.exportSuccess'));
   } else if (result.error) {
-    message.error(`导出失败：${result.error}`);
+    message.error(t('message.exportFailed', { error: result.error }));
   }
 }
 </script>
@@ -354,6 +474,7 @@ async function handleExport(choice: string) {
 }
 
 .toolbar-left {
+  flex-wrap: wrap;
   min-width: 0;
 }
 
@@ -396,6 +517,48 @@ async function handleExport(choice: string) {
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 600;
+}
+
+.toolbar-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.mini-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 7px;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mini-stat.tx {
+  color: var(--accent-green);
+  background: var(--accent-green-subtle);
+}
+
+.mini-stat.rx {
+  color: var(--accent-blue);
+  background: var(--accent-blue-subtle);
+}
+
+.mini-label {
+  color: var(--text-dim);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .error-hint {

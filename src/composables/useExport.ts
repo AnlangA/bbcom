@@ -3,6 +3,7 @@ import { save } from '@tauri-apps/plugin-dialog';
 import type { DataFrame, DisplayMode } from '../types';
 import { getCommandErrorMessage, invokeExportData } from '../lib/ipc';
 import { resolveExportFormat, type ExportChoice } from '../lib/constants';
+import { t } from '../lib/i18n';
 
 const EXT_MAP: Record<ExportChoice, { name: string; ext: string }> = {
   txt: { name: 'TXT', ext: 'txt' },
@@ -41,7 +42,7 @@ export function useExport() {
     } catch (e) {
       // Surface the typed Rust error (path validation, IO, too-many-frames) instead
       // of a generic toast. The serialized AppError is { type, details: { message } }.
-      return { ok: false, error: getCommandErrorMessage(e, '导出失败') };
+      return { ok: false, error: getCommandErrorMessage(e, t('message.exportFallbackFailed')) };
     } finally {
       isExporting.value = false;
     }

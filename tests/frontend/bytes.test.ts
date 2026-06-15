@@ -24,6 +24,13 @@ test('concatenates multiple chunks in order with correct total length', () => {
   assert.deepEqual(Array.from(result), [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
 });
 
+test('uses a caller-provided total length for the RX flush fast path', () => {
+  const chunks = [new Uint8Array([1, 2]), new Uint8Array([3]), new Uint8Array([4, 5, 6])];
+  const result = concatUint8Arrays(chunks, 6);
+  assert.equal(result.length, 6);
+  assert.deepEqual(Array.from(result), [1, 2, 3, 4, 5, 6]);
+});
+
 test('does not rely on an external size accumulator (regression: stale totalQueueSize dropped RX data)', () => {
   // The RX flush path resets its running byte counter to 0 BEFORE concatenating.
   // concatUint8Arrays must compute the size from the chunks themselves — otherwise

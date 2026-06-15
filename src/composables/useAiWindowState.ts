@@ -38,9 +38,13 @@ export function useAiWindowState() {
     void refresh();
     void listen<AiWindowState>('ai-window-state', (event) => {
       visible.value = event.payload.visible;
-    }).then((cleanup) => {
-      unlisten = cleanup;
-    });
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch((e) => {
+        logger.debug('ai-window event bridge unavailable:', e);
+      });
   });
 
   onUnmounted(() => {

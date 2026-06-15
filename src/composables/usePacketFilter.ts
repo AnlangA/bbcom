@@ -1,4 +1,4 @@
-import { computed, onScopeDispose, ref, watch, type Ref } from 'vue';
+import { computed, markRaw, onScopeDispose, ref, watch, type Ref } from 'vue';
 import type { DataFrame, DirectionFilter, PacketViewMode, SearchMode } from '../types';
 
 interface PacketFilterOptions {
@@ -111,12 +111,18 @@ export function usePacketFilter({
         data.set(chunk, offset);
         offset += chunk.length;
       }
-      merged.push({
-        id: `merged-${currentId}`,
-        direction: currentDirection,
-        timestamp: currentTimestamp,
-        data,
-      });
+      // markRaw mirrors the optimization applied to stored frames
+      // (stores/sessions.ts). Without it, these freshly-allocated merged
+      // objects — and their new Uint8Array payload — become fully reactive,
+      // silently reintroducing the per-byte proxy cost the store avoids.
+      merged.push(
+        markRaw({
+          id: `merged-${currentId}`,
+          direction: currentDirection,
+          timestamp: currentTimestamp,
+          data,
+        }),
+      );
     }
 
     for (const frame of filteredFrames.value) {

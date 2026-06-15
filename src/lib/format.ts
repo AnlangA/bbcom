@@ -14,6 +14,31 @@ const HEX_TABLE = Array.from({ length: 256 }, (_, i) =>
 );
 // Lowercase, space-less hex for search needles (toString(16) is already lowercase)
 const HEX_LOWER_TABLE = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+
+// Flat ASCII byte-pair lookup: for each byte value b, BYTE_HEX_PAIR[b*2..b*2+1]
+// holds the two ASCII hex characters. Expanding into a pre-sized Uint8Array and
+// decoding once avoids the per-byte String allocation + Array.join the previous
+// implementation did (the measured top frontend hot path — see perf.bench.ts).
+// Upper/lowercase variants split so formatHex (upper, spaced) and the lowercase
+// continuous search index share one fast path.
+const BYTE_HEX_PAIRS_UPPER = (() => {
+  const table = new Uint8Array(256 * 2);
+  for (let i = 0; i < 256; i += 1) {
+    const s = HEX_TABLE[i];
+    table[i * 2] = s.charCodeAt(0);
+    table[i * 2 + 1] = s.charCodeAt(1);
+  }
+  return table;
+})();
+const BYTE_HEX_PAIRS_LOWER = (() => {
+  const table = new Uint8Array(256 * 2);
+  for (let i = 0; i < 256; i += 1) {
+    const s = HEX_LOWER_TABLE[i];
+    table[i * 2] = s.charCodeAt(0);
+    table[i * 2 + 1] = s.charCodeAt(1);
+  }
+  return table;
+})();
 // Hex digit value per ASCII code point (-1 = not a hex digit) for fast parsing
 const HEX_VALUE = (() => {
   const table = new Int8Array(128).fill(-1);
@@ -30,21 +55,21 @@ function cleanHex(input: string): string {
   return input.replace(/[^0-9a-fA-F]/g, '');
 }
 
-/** Build a hex string from bytes using a lookup table and separator. */
-function bytesToHex(data: Uint8Array, table: string[], separator: string): string {
-  if (data.length === 0) return '';
-  const parts = new Array<string>(data.length);
-  for (let i = 0; i < data.length; i += 1) {
-    parts[i] = table[data[i]];
-  }
-  return parts.join(separator);
-}
-
-/**
- * Format byte array as HEX string with spaces (uppercase)
- */
+/** Format byte array as HEX string with spaces (uppercase). */
 export function formatHex(data: Uint8Array): string {
-  return bytesToHex(data, HEX_TABLE, ' ');
+  const n = data.length;
+  if (n === 0) return '';
+  // Each byte -> "XX " except the last (no trailing space): 3*n - 1 chars.
+  const out = new Uint8Array(n * 3 - 1);
+  const pairs = BYTE_HEX_PAIRS_UPPER;
+  for (let i = 0; i < n; i += 1) {
+    const p = data[i] * 2;
+    const o = i * 3;
+    out[o] = pairs[p];
+    out[o + 1] = pairs[p + 1];
+    if (i < n - 1) out[o + 2] = 0x20; // space separator
+  }
+  return asciiDecoder.decode(out);
 }
 
 /**
@@ -174,7 +199,17 @@ export function normalizeHex(input: string): string {
  * Lowercase, space-less HEX string used as a search index.
  */
 export function toContinuousHex(data: Uint8Array): string {
-  return bytesToHex(data, HEX_LOWER_TABLE, '');
+  const n = data.length;
+  if (n === 0) return '';
+  const out = new Uint8Array(n * 2);
+  const pairs = BYTE_HEX_PAIRS_LOWER;
+  for (let i = 0; i < n; i += 1) {
+    const p = data[i] * 2;
+    const o = i * 2;
+    out[o] = pairs[p];
+    out[o + 1] = pairs[p + 1];
+  }
+  return asciiDecoder.decode(out);
 }
 
 /**

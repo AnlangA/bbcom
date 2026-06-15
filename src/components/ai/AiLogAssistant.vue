@@ -4,7 +4,7 @@
       <div class="field-group">
         <span class="field-label">
           <Bot class="icon-sm" />
-          日志模型
+          {{ t('ai.log.model') }}
         </span>
         <n-select
           size="small"
@@ -17,12 +17,12 @@
       <div class="field-group">
         <span class="field-label">
           <MessageSquareText class="icon-sm" />
-          上下文
+          {{ t('ai.log.context') }}
         </span>
         <n-select
           size="small"
           :value="session.logAiContextMode"
-          :options="logContextModeOptions"
+          :options="localizedLogContextModeOptions"
           @update:value="setContextMode"
         />
       </div>
@@ -40,7 +40,7 @@
 
     <div class="message-list">
       <div v-if="session.logAiMessages.length === 0" class="empty-hint">
-        可询问“最近有哪些错误？”、“设备为什么重启？”等问题。
+        {{ t('ai.log.emptyHint') }}
       </div>
       <div
         v-for="item in session.logAiMessages"
@@ -48,7 +48,7 @@
         class="message-item"
         :class="item.role"
       >
-        <span class="role">{{ item.role === 'user' ? '我' : 'AI' }}</span>
+        <span class="role">{{ item.role === 'user' ? t('ai.log.me') : 'AI' }}</span>
         <span class="content">{{ item.content }}</span>
       </div>
     </div>
@@ -56,27 +56,27 @@
     <div v-if="result" class="result-card">
       <div class="answer">{{ result.answer }}</div>
       <div v-if="result.evidence.length > 0" class="result-section">
-        <span class="section-title">依据</span>
+        <span class="section-title">{{ t('ai.log.evidence') }}</span>
         <ul>
           <li v-for="item in result.evidence" :key="item">{{ item }}</li>
         </ul>
       </div>
       <div v-if="result.suggestions.length > 0" class="result-section">
-        <span class="section-title">建议</span>
+        <span class="section-title">{{ t('ai.log.suggestions') }}</span>
         <ul>
           <li v-for="item in result.suggestions" :key="item">{{ item }}</li>
         </ul>
       </div>
-      <n-tag v-if="result.truncated" size="small" type="warning" :bordered="false"
-        >上下文已截断</n-tag
-      >
+      <n-tag v-if="result.truncated" size="small" type="warning" :bordered="false">
+        {{ t('ai.log.truncated') }}
+      </n-tag>
     </div>
 
     <div class="prompt-row">
       <n-input
         v-model:value="prompt"
         size="small"
-        :placeholder="hasApiKey ? '输入日志分析问题' : '请先在主页面保存 API Key'"
+        :placeholder="hasApiKey ? t('ai.log.placeholder') : t('ai.needApiKey')"
         :disabled="loading"
         @keydown.enter.prevent="ask"
       />
@@ -84,13 +84,13 @@
         <template #icon>
           <Trash2 class="icon-sm" />
         </template>
-        清空
+        {{ t('ai.log.clear') }}
       </n-button>
       <n-button size="small" type="primary" :loading="loading" :disabled="!canAsk" @click="ask">
         <template #icon>
           <WandSparkles class="icon-sm" />
         </template>
-        分析
+        {{ t('ai.log.analyze') }}
       </n-button>
     </div>
   </div>
@@ -106,7 +106,8 @@ import type { AiModel, LogAiContextMode, SerialSession } from '../../types';
 import type { useAiWindowSession } from '../../composables/useAiWindowSession';
 import { buildLogAiContext } from '../../lib/ai-log-context';
 import { getAiErrorMessage } from '../../lib/ai-error';
-import { aiModelMenuProps, aiModelOptions, logContextModeOptions } from './ai-options';
+import { t } from '../../lib/i18n';
+import { aiModelMenuProps, aiModelOptions, getLogContextModeOptions } from './ai-options';
 
 interface LogAiResponse {
   answer: string;
@@ -128,11 +129,12 @@ const result = ref<LogAiResponse | null>(null);
 
 const hasApiKey = computed(() => Boolean(appStore.aiApiKey.trim()));
 const canAsk = computed(() => prompt.value.trim().length > 0 && !loading.value);
+const localizedLogContextModeOptions = computed(() => getLogContextModeOptions());
 
 async function ask() {
   if (!canAsk.value) return;
   if (!hasApiKey.value) {
-    message.warning('请先保存 API Key');
+    message.warning(t('ai.needApiKey'));
     return;
   }
   loading.value = true;
@@ -142,7 +144,7 @@ async function ask() {
   try {
     const latestSession = (await props.bridge.refreshSession()) ?? props.session;
     if (latestSession.frames.length === 0) {
-      message.warning('当前会话没有串口数据，请先连接串口并接收数据');
+      message.warning(t('ai.log.noData'));
       return;
     }
     const context = buildLogAiContext(latestSession);
@@ -164,7 +166,7 @@ async function ask() {
     await props.bridge.addLogAiMessage({ role: 'assistant', content: response.answer });
     prompt.value = '';
   } catch (e: unknown) {
-    message.error(getAiErrorMessage(e, 'AI 日志分析失败'));
+    message.error(getAiErrorMessage(e, t('ai.log.failed')));
   } finally {
     loading.value = false;
   }

@@ -7,9 +7,9 @@
             <Bot class="icon-lg" />
           </div>
           <div>
-            <div class="drag-title">AI 助手</div>
+            <div class="drag-title">{{ t('ai.title') }}</div>
             <div class="drag-subtitle">
-              {{ session ? `${session.portName} 独立上下文` : '请先创建串口会话' }}
+              {{ session ? t('ai.sessionContext', { port: session.portName }) : t('ai.noSession') }}
             </div>
           </div>
         </div>
@@ -21,20 +21,20 @@
             <PinOff v-if="alwaysOnTop" class="icon-sm" />
             <Pin v-else class="icon-sm" />
           </template>
-          {{ alwaysOnTop ? '取消置顶' : '置顶' }}
+          {{ alwaysOnTop ? t('ai.unpin') : t('ai.pin') }}
         </n-button>
       </div>
     </div>
 
     <n-tabs v-if="session" v-model:value="activeTab" size="small" animated>
-      <n-tab-pane name="terminal" tab="命令助手" display-directive="show">
+      <n-tab-pane name="terminal" :tab="t('ai.terminalTab')" display-directive="show">
         <AiTerminalAssistant :session="session" :bridge="bridge" />
       </n-tab-pane>
-      <n-tab-pane name="log" tab="日志助手" display-directive="show">
+      <n-tab-pane name="log" :tab="t('ai.logTab')" display-directive="show">
         <AiLogAssistant :session="session" :bridge="bridge" />
       </n-tab-pane>
     </n-tabs>
-    <div v-else class="empty-state">请先在主窗口创建串口会话。</div>
+    <div v-else class="empty-state">{{ t('ai.needSession') }}</div>
   </div>
 </template>
 
@@ -48,6 +48,7 @@ import { startAiWindowDrag } from '../../lib/ipc';
 import AiTerminalAssistant from '../send-panel/AiTerminalAssistant.vue';
 import AiLogAssistant from './AiLogAssistant.vue';
 import { logger } from '../../lib/logger';
+import { t } from '../../lib/i18n';
 
 const bridge = useAiWindowSession();
 const message = useMessage();
@@ -77,7 +78,7 @@ async function toggleAlwaysOnTop() {
     await getCurrentWindow().setAlwaysOnTop(next);
     alwaysOnTop.value = next;
   } catch {
-    message.error('置顶切换失败');
+    message.error(t('ai.pinFailed'));
   }
 }
 </script>

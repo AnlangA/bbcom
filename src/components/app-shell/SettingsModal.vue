@@ -2,7 +2,7 @@
   <n-modal
     :show="show"
     preset="card"
-    title="设置"
+    :title="t('settings.title')"
     :bordered="false"
     :style="{ width: '520px', maxWidth: '92vw' }"
     :mask-closable="true"
@@ -11,19 +11,29 @@
     <div class="settings-body">
       <section class="settings-section">
         <div class="section-head">
-          <span class="section-title">外观</span>
-          <span class="section-desc">切换深色 / 浅色主题（重启后保留）。</span>
+          <span class="section-title">{{ t('settings.appearance') }}</span>
+          <span class="section-desc">{{ t('settings.appearance.desc') }}</span>
         </div>
         <div class="section-row">
           <n-switch :value="appStore.theme === 'light'" size="small" @update:value="setTheme" />
-          <span class="row-label">浅色模式</span>
+          <span class="row-label">{{ t('settings.lightMode') }}</span>
+        </div>
+        <div class="section-row">
+          <n-select
+            :value="appStore.locale"
+            :options="localeOptions"
+            size="small"
+            style="width: 168px"
+            @update:value="setAppLocale"
+          />
+          <span class="row-label">{{ t('settings.language') }}</span>
         </div>
       </section>
 
       <section class="settings-section">
         <div class="section-head">
-          <span class="section-title">捕获缓冲</span>
-          <span class="section-desc">每个会话保留的最大帧数，超出后自动丢弃最旧的数据。</span>
+          <span class="section-title">{{ t('settings.captureBuffer') }}</span>
+          <span class="section-desc">{{ t('settings.captureBuffer.desc') }}</span>
         </div>
         <div class="section-row">
           <n-input-number
@@ -35,44 +45,44 @@
             style="width: 168px"
             @update:value="onBufferChange"
           >
-            <template #suffix>帧</template>
+            <template #suffix>{{ t('status.frames') }}</template>
           </n-input-number>
-          <n-button size="small" quaternary @click="resetBuffer">恢复默认</n-button>
+          <n-button size="small" quaternary @click="resetBuffer">{{
+            t('settings.resetDefault')
+          }}</n-button>
         </div>
       </section>
 
       <section class="settings-section">
         <div class="section-head">
-          <span class="section-title">连接</span>
-          <span class="section-desc"
-            >串口意外断开（拔线、设备复位）时自动尝试重新连接，最多 10 次。</span
-          >
+          <span class="section-title">{{ t('settings.connection') }}</span>
+          <span class="section-desc">{{ t('settings.connection.desc') }}</span>
         </div>
         <div class="section-row">
           <n-switch v-model:checked="appStore.autoReconnect" size="small" />
-          <span class="row-label">自动重连</span>
+          <span class="row-label">{{ t('settings.autoReconnect') }}</span>
         </div>
       </section>
 
       <section class="settings-section">
         <div class="section-head">
-          <span class="section-title">关于</span>
+          <span class="section-title">{{ t('settings.about') }}</span>
         </div>
         <dl class="about-grid">
           <div class="about-row">
-            <dt>应用</dt>
-            <dd>bbcom · 串口调试助手</dd>
+            <dt>{{ t('settings.app') }}</dt>
+            <dd>{{ t('settings.appDescription') }}</dd>
           </div>
           <div class="about-row">
-            <dt>版本</dt>
+            <dt>{{ t('settings.version') }}</dt>
             <dd class="mono">{{ APP_VERSION }}</dd>
           </div>
           <div class="about-row">
-            <dt>技术栈</dt>
+            <dt>{{ t('settings.stack') }}</dt>
             <dd>Tauri · Rust · Vue 3</dd>
           </div>
           <div class="about-row">
-            <dt>主页</dt>
+            <dt>{{ t('settings.homepage') }}</dt>
             <dd>
               <a
                 class="about-link"
@@ -88,17 +98,19 @@
     </div>
     <template #footer>
       <div class="settings-footer">
-        <span class="footer-hint">更改会自动保存</span>
-        <n-button size="small" type="primary" @click="close">完成</n-button>
+        <span class="footer-hint">{{ t('settings.savedHint') }}</span>
+        <n-button size="small" type="primary" @click="close">{{ t('settings.done') }}</n-button>
       </div>
     </template>
   </n-modal>
 </template>
 
 <script setup lang="ts">
-import { NModal, NInputNumber, NButton, NSwitch } from 'naive-ui';
+import { computed } from 'vue';
+import { NModal, NInputNumber, NButton, NSwitch, NSelect } from 'naive-ui';
 import { useAppStore } from '../../stores/app';
 import { APP_VERSION } from '../../lib/version';
+import { supportedLocales, t, type Locale } from '../../lib/i18n';
 import { MAX_FRAMES } from '../../types';
 
 defineProps<{ show: boolean }>();
@@ -106,6 +118,7 @@ defineProps<{ show: boolean }>();
 const emit = defineEmits<{ (e: 'update:show', value: boolean): void }>();
 
 const appStore = useAppStore();
+const localeOptions = computed(() => supportedLocales());
 
 function onUpdateShow(value: boolean) {
   emit('update:show', value);
@@ -120,7 +133,11 @@ function resetBuffer() {
 }
 
 function setTheme(light: boolean) {
-  appStore.theme = light ? 'light' : 'dark';
+  appStore.setTheme(light ? 'light' : 'dark');
+}
+
+function setAppLocale(value: Locale) {
+  appStore.setLocale(value);
 }
 
 function close() {

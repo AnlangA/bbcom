@@ -3,41 +3,41 @@
     <template v-if="session">
       <div class="stat">
         <Usb class="icon-sm stat-icon" />
-        <span class="stat-label">端口</span>
+        <span class="stat-label">{{ t('status.port') }}</span>
         <span class="stat-value port-name">{{ session.portName }}</span>
       </div>
       <span class="divider">|</span>
       <div class="stat">
         <span class="stat-label">TX</span>
         <span class="stat-value tx">{{ formatBytes(session.txBytes) }}</span>
-        <span class="stat-detail">{{ session.txFrames }} 帧</span>
+        <span class="stat-detail">{{ session.txFrames }} {{ t('status.frames') }}</span>
       </div>
       <span class="divider">|</span>
       <div class="stat">
         <span class="stat-label">RX</span>
         <span class="stat-value rx">{{ formatBytes(session.rxBytes) }}</span>
-        <span class="stat-detail">{{ session.rxFrames }} 帧</span>
+        <span class="stat-detail">{{ session.rxFrames }} {{ t('status.frames') }}</span>
       </div>
       <span v-if="session.isConnected && dataRate" class="divider">|</span>
       <div v-if="session.isConnected && dataRate" class="stat">
-        <span class="stat-label">速率</span>
+        <span class="stat-label">{{ t('status.rate') }}</span>
         <span class="stat-value rate">{{ dataRate }}</span>
       </div>
       <span class="divider">|</span>
       <div class="stat">
-        <span class="stat-label">时长</span>
+        <span class="stat-label">{{ t('status.duration') }}</span>
         <span class="stat-value">{{ duration }}</span>
       </div>
       <span class="divider">|</span>
       <div class="stat">
-        <span class="stat-label">波特率</span>
+        <span class="stat-label">{{ t('status.baud') }}</span>
         <span class="stat-value">{{ session.portConfig.baudRate }}</span>
       </div>
       <div class="stat status-indicator">
         <span class="status-dot" :class="session.isConnected ? 'connected' : 'disconnected'"></span>
       </div>
     </template>
-    <span v-else class="no-session">无活动会话</span>
+    <span v-else class="no-session">{{ t('session.noActiveSession') }}</span>
   </div>
 </template>
 
@@ -46,6 +46,7 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import { Usb } from 'lucide-vue-next';
 import type { SerialSession } from '../../types';
 import { formatBytes, formatDuration, formatRate } from '../../lib/format';
+import { t } from '../../lib/i18n';
 
 const props = defineProps<{
   session: SerialSession | null;

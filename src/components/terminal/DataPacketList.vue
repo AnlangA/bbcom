@@ -10,7 +10,9 @@
         />
         <n-input
           v-model:value="searchInput"
-          :placeholder="appStore.searchMode === 'HEX' ? '搜索 HEX...' : '搜索文本...'"
+          :placeholder="
+            appStore.searchMode === 'HEX' ? t('packet.searchHex') : t('packet.searchText')
+          "
           size="tiny"
           clearable
           style="width: 160px"
@@ -23,7 +25,7 @@
           <n-button
             :type="appStore.searchMode === 'TEXT' ? 'primary' : 'default'"
             @click="appStore.setSearchMode('TEXT')"
-            >文本</n-button
+            >{{ t('packet.text') }}</n-button
           >
           <n-button
             :type="appStore.searchMode === 'HEX' ? 'primary' : 'default'"
@@ -35,12 +37,12 @@
           <n-button
             :type="appStore.packetViewMode === 'FRAME' ? 'primary' : 'default'"
             @click="appStore.setPacketViewMode('FRAME')"
-            >按帧</n-button
+            >{{ t('packet.frame') }}</n-button
           >
           <n-button
             :type="appStore.packetViewMode === 'MERGED' ? 'primary' : 'default'"
             @click="appStore.setPacketViewMode('MERGED')"
-            >合并</n-button
+            >{{ t('packet.merged') }}</n-button
           >
         </n-button-group>
       </div>
@@ -54,17 +56,17 @@
             <template #icon>
               <Copy class="icon-sm" />
             </template>
-            复制
+            {{ t('packet.copy') }}
           </n-button>
         </n-dropdown>
         <span class="frame-count">{{ filteredFrames.length }} / {{ frames.length }}</span>
       </div>
     </div>
     <div class="packet-row packet-header" :style="{ gridTemplateColumns: columns }">
-      <span class="col-dir">方向</span>
-      <span v-if="appStore.showTimestamp" class="col-time">时间</span>
-      <span class="col-data">数据</span>
-      <span class="col-mode">模式</span>
+      <span class="col-dir">{{ t('packet.direction') }}</span>
+      <span v-if="appStore.showTimestamp" class="col-time">{{ t('packet.time') }}</span>
+      <span class="col-data">{{ t('packet.data') }}</span>
+      <span class="col-mode">{{ t('packet.mode') }}</span>
     </div>
     <div
       ref="scrollRef"
@@ -74,7 +76,7 @@
       @keydown="onKeydown"
     >
       <div v-if="visibleFrames.length === 0" class="packet-empty">
-        {{ frames.length === 0 ? '暂无串口数据' : '没有匹配的数据帧' }}
+        {{ frames.length === 0 ? t('packet.empty') : t('packet.noMatch') }}
       </div>
       <div :style="{ height: `${totalSize}px`, width: '100%', position: 'relative' }">
         <PacketRow
@@ -87,6 +89,7 @@
             appStore.displayMode,
             appStore.ansiColorEnabled,
             appStore.showTimestamp,
+            row.highlightClass,
           ]"
           :style="row.style"
           :frame="row.frame"
@@ -96,6 +99,8 @@
           :columns="row.columns"
           :display-label="row.displayLabel"
           :use-html="row.useHtml"
+          :highlight-class="row.highlightClass"
+          :highlight-label="row.highlightLabel"
           @contextmenu="onRowContextMenu"
         />
       </div>
@@ -122,10 +127,13 @@ import { usePacketFilter } from '../../composables/usePacketFilter';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
 import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
 import PacketRow from './PacketRow.vue';
-import type { DataFrame, DirectionFilter } from '../../types';
+import { findFrameHighlight } from '../../lib/highlights';
+import { t } from '../../lib/i18n';
+import type { DataFrame, DirectionFilter, HighlightRule } from '../../types';
 
 const props = defineProps<{
   frames: DataFrame[];
+  highlights?: HighlightRule[];
 }>();
 
 const appStore = useAppStore();
@@ -138,26 +146,26 @@ const ctxY = ref(0);
 let ctxFrame: DataFrame | null = null;
 const selectedFrameId = ref<string | null>(null);
 
-const ctxOptions = [
-  { label: '复制 HEX', key: 'hex' },
-  { label: '复制 ASCII', key: 'ascii' },
-  { label: '复制 UTF-8', key: 'utf8' },
-  { label: '复制纯文本 (无 ANSI)', key: 'plain' },
-  { label: '复制完整行', key: 'row' },
-];
+const ctxOptions = computed(() => [
+  { label: t('packet.copyHex'), key: 'hex' },
+  { label: t('packet.copyAscii'), key: 'ascii' },
+  { label: t('packet.copyUtf8'), key: 'utf8' },
+  { label: t('packet.copyPlain'), key: 'plain' },
+  { label: t('packet.copyRow'), key: 'row' },
+]);
 
-const copyOptions = [
-  { label: '复制当前筛选 HEX', key: 'filtered-hex' },
-  { label: '复制当前筛选文本', key: 'filtered-text' },
-  { label: '复制全部 HEX', key: 'all-hex' },
-  { label: '复制全部文本', key: 'all-text' },
-];
+const copyOptions = computed(() => [
+  { label: t('packet.copyFilteredHex'), key: 'filtered-hex' },
+  { label: t('packet.copyFilteredText'), key: 'filtered-text' },
+  { label: t('packet.copyAllHex'), key: 'all-hex' },
+  { label: t('packet.copyAllText'), key: 'all-text' },
+]);
 
-const directionOptions: { label: string; value: DirectionFilter }[] = [
-  { label: '全部', value: 'ALL' },
+const directionOptions = computed<{ label: string; value: DirectionFilter }[]>(() => [
+  { label: t('packet.directionAll'), value: 'ALL' },
   { label: 'TX', value: 'TX' },
   { label: 'RX', value: 'RX' },
-];
+]);
 const MAX_COPY_BYTES = 2 * 1024 * 1024;
 const MAX_COPY_FRAMES = 5000;
 
@@ -217,6 +225,8 @@ interface PacketRowData {
   columns: string;
   displayLabel: string;
   useHtml: boolean;
+  highlightClass: string | null;
+  highlightLabel: string | null;
 }
 
 // Pre-map the virtualized items into stable row descriptors. Formatting runs
@@ -230,10 +240,15 @@ const rows = computed<PacketRowData[]>(() => {
   const cols = columns.value;
   const label = displayLabel.value;
   const html = useHtml.value;
+  const highlights = props.highlights ?? [];
   const out: PacketRowData[] = [];
   for (const item of items) {
     const frame = frames[item.index];
     if (!frame) continue;
+    const highlight = findFrameHighlight(highlights, frame, {
+      getHexSearchData,
+      getTextSearchData,
+    });
     out.push({
       key: frame.id,
       start: item.start,
@@ -253,6 +268,8 @@ const rows = computed<PacketRowData[]>(() => {
       columns: cols,
       displayLabel: label,
       useHtml: html,
+      highlightClass: highlight ? `highlight-${highlight.color}` : null,
+      highlightLabel: highlight?.name ?? null,
     });
   }
   return out;
@@ -295,8 +312,8 @@ function onKeydown(e: KeyboardEvent) {
     if (frame) {
       const text = `[${frame.timestamp}] ${frame.direction} | ${formatFrame(frame)}`;
       navigator.clipboard.writeText(text).then(
-        () => message.success('已复制'),
-        () => message.error('复制失败'),
+        () => message.success(t('packet.copied')),
+        () => message.error(t('packet.copyFailed')),
       );
     }
   }
@@ -347,9 +364,9 @@ async function handleCtxSelect(key: string) {
 
   try {
     await navigator.clipboard.writeText(text);
-    message.success('已复制');
+    message.success(t('packet.copied'));
   } catch {
-    message.error('复制失败');
+    message.error(t('packet.copyFailed'));
   }
 }
 
@@ -357,7 +374,7 @@ async function handleCopySelect(key: string) {
   const frames = key.startsWith('all') ? props.frames : filteredFrames.value;
   const totalBytes = frames.reduce((sum, frame) => sum + frame.data.length, 0);
   if (frames.length > MAX_COPY_FRAMES || totalBytes > MAX_COPY_BYTES) {
-    message.warning('复制内容过大，请先筛选或使用导出');
+    message.warning(t('packet.copyTooLarge'));
     return;
   }
   const asHex = key.endsWith('hex');
@@ -369,9 +386,9 @@ async function handleCopySelect(key: string) {
     .join('\n');
   try {
     await navigator.clipboard.writeText(text);
-    message.success('已复制');
+    message.success(t('packet.copied'));
   } catch {
-    message.error('复制失败');
+    message.error(t('packet.copyFailed'));
   }
 }
 </script>

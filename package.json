@@ -15,6 +15,9 @@
     "format:check": "prettier --check src/ && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
     "test:frontend": "node --test --experimental-strip-types --import ./tests/frontend/register-loader.mjs tests/frontend/*.test.ts",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "bench:frontend": "node --test --experimental-strip-types --import ./tests/frontend/register-loader.mjs tests/frontend/perf.bench.ts",
+    "bench:frontend:write": "BENCH_WRITE=1 node --test --experimental-strip-types --import ./tests/frontend/register-loader.mjs tests/frontend/perf.bench.ts",
+    "bench:rust": "cargo bench --manifest-path src-tauri/Cargo.toml",
     "test": "pnpm run test:frontend && pnpm run test:rust",
     "check": "pnpm run lint && pnpm run format:check && pnpm run build && pnpm run test"
   },
@@ -38,6 +41,7 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-vue": "^9.0.0",
     "prettier": "^3.8.4",
+    "rollup-plugin-visualizer": "^7.0.1",
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.0.0",
     "vite": "^6.0.0",

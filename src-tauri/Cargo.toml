@@ -26,3 +26,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "time"] }
 zai-rs = "0.1.14"
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
+
+# perf: separate bench target so `cargo bench` only compiles the criterion
+# harness, not the full Tauri app (faster iteration, no codegen regression on
+# the main build).
+[[bench]]
+name = "hot_paths"
+harness = false

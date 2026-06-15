@@ -4,6 +4,69 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>bbcom</title>
+    <!--
+      Paint the native window background before the JS/CSS bundle evaluates so a
+      dark-theme desktop app never flashes white between window creation and
+      first paint. The value matches --bg-app in src/styles/variables.css and is
+      chosen from the persisted theme (key "bbcom-app-settings") so light-theme
+      users get their background too. main.ts mounts into #app and replaces the
+      skeleton, so there is no layout shift.
+    -->
+    <link rel="preconnect" href="https://rsms.me" crossorigin />
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('bbcom-app-settings');
+          if (raw) {
+            var saved = JSON.parse(raw);
+            if (saved && saved.theme === 'light') {
+              document.documentElement.dataset.bootTheme = 'light';
+            }
+          }
+        } catch (e) {
+          /* ignore — fall through to the dark default */
+        }
+      })();
+    </script>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0e1013; /* --bg-app (dark) */
+        color-scheme: dark;
+      }
+      html[data-boot-theme='light'],
+      html[data-boot-theme='light'] body {
+        background: #eef1f4; /* --bg-app (light) */
+        color-scheme: light;
+      }
+      #app:empty::after {
+        /* Minimal centered boot dot, replaced the instant Vue mounts. */
+        content: '';
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        width: 7px;
+        height: 7px;
+        margin: -3.5px 0 0 -3.5px;
+        border-radius: 50%;
+        background: #3ddc97; /* --color-primary */
+        opacity: 0.55;
+        animation: bbcom-boot-pulse 1.1s ease-in-out infinite;
+      }
+      @keyframes bbcom-boot-pulse {
+        0%,
+        100% {
+          opacity: 0.18;
+          transform: scale(0.8);
+        }
+        50% {
+          opacity: 0.6;
+          transform: scale(1);
+        }
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>

@@ -8,7 +8,7 @@ export const checksumOptions: { label: string; value: ChecksumType }[] = [
 ];
 
 export const checksumAlgoOptionsWithNone: { label: string; value: 'none' | ChecksumType }[] = [
-  { label: '无校验', value: 'none' },
+  { label: 'No checksum', value: 'none' },
   ...checksumOptions,
 ];
 
