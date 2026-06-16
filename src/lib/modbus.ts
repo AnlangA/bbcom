@@ -43,6 +43,14 @@ export type WriteMultipleFc = 0x0f | 0x10;
 /** Register value encodings users can pick per row. 32-bit types span 2 regs. */
 export type ModbusValueType = 'bool' | 'uint16' | 'int16' | 'uint32-be' | 'int32-be' | 'float32-be';
 
+/** Protocol quantity limits from the public Modbus function-code definitions. */
+export const MODBUS_LIMITS = {
+  readBits: 2000,
+  readRegisters: 125,
+  writeBits: 1968,
+  writeRegisters: 123,
+} as const;
+
 /** How many 16-bit registers a value type occupies (coils are 1 bit). */
 export function registerSpan(type: ModbusValueType): 1 | 2 {
   return type === 'bool' || type === 'uint16' || type === 'int16' ? 1 : 2;
@@ -89,6 +97,13 @@ export function verifyCrc(frame: Uint8Array): boolean {
 
 /** Build an FC 01/02/03/04 read request PDU: [fc][startHi][startLo][cntHi][cntLo]. */
 export function buildReadRequestPdu(fc: ReadFc, start: number, count: number): Uint8Array {
+  if (!isReadFc(fc)) throw new RangeError(`unsupported read function code: ${fc}`);
+  assertU16('start', start);
+  assertQuantity(
+    'count',
+    count,
+    isBitFc(fc) ? MODBUS_LIMITS.readBits : MODBUS_LIMITS.readRegisters,
+  );
   return new Uint8Array([
     fc,
     (start >>> 8) & 0xff,
@@ -100,11 +115,14 @@ export function buildReadRequestPdu(fc: ReadFc, start: number, count: number): U
 
 /** Build an FC05 write-single-coil PDU. ON encodes as 0xFF00, OFF as 0x0000. */
 export function buildWriteSingleCoilPdu(addr: number, on: boolean): Uint8Array {
+  assertU16('addr', addr);
   return new Uint8Array([0x05, (addr >>> 8) & 0xff, addr & 0xff, on ? 0xff : 0x00, 0x00]);
 }
 
 /** Build an FC06 write-single-register PDU. */
 export function buildWriteSingleRegisterPdu(addr: number, value: number): Uint8Array {
+  assertU16('addr', addr);
+  assertU16('value', value);
   return new Uint8Array([
     0x06,
     (addr >>> 8) & 0xff,
@@ -121,6 +139,8 @@ export function buildWriteSingleRegisterPdu(addr: number, value: number): Uint8A
  */
 export function buildWriteMultipleCoilsPdu(start: number, bits: boolean[]): Uint8Array {
   const count = bits.length;
+  assertU16('start', start);
+  assertQuantity('count', count, MODBUS_LIMITS.writeBits);
   const byteCount = Math.ceil(count / 8);
   const data = new Uint8Array(byteCount);
   for (let i = 0; i < count; i += 1) {
@@ -140,6 +160,8 @@ export function buildWriteMultipleCoilsPdu(start: number, bits: boolean[]): Uint
 /** Build an FC10 write-multiple-registers PDU: [10][startHi][startLo][cntHi][cntLo][byteCount][data…]. */
 export function buildWriteMultipleRegistersPdu(start: number, values: number[]): Uint8Array {
   const count = values.length;
+  assertU16('start', start);
+  assertQuantity('count', count, MODBUS_LIMITS.writeRegisters);
   const out = new Uint8Array(6 + count * 2);
   out[0] = 0x10;
   out[1] = (start >>> 8) & 0xff;
@@ -148,8 +170,9 @@ export function buildWriteMultipleRegistersPdu(start: number, values: number[]):
   out[4] = count & 0xff;
   out[5] = count * 2;
   for (let i = 0; i < count; i += 1) {
-    out[6 + i * 2] = (values[i] >>> 8) & 0xff;
-    out[6 + i * 2 + 1] = values[i] & 0xff;
+    const value = assertU16('value', values[i]);
+    out[6 + i * 2] = (value >>> 8) & 0xff;
+    out[6 + i * 2 + 1] = value & 0xff;
   }
   return out;
 }
@@ -193,22 +216,39 @@ export interface ExceptionResult {
 }
 export type ModbusResponse = ReadBitsResult | ReadRegsResult | WriteAckResult | ExceptionResult;
 
+export interface ParseResponseOptions {
+  /**
+   * True when `frame` starts at the response PDU function code. RTU callers pass
+   * false and include the slave byte plus CRC; legacy raw callers may still pass
+   * false with a synthetic slave byte before the PDU.
+   */
+  pduOnly?: boolean;
+  /** Synthetic slave address to report for PDU-only transports. */
+  slave?: number;
+}
+
 /**
  * Parse a complete ADU response. Returns null if the frame is malformed (bad
  * length, bad CRC, impossible byte count). The caller ensures frame boundaries
  * — on a real bus that's the transport's `scanResponse` (RTU: smallest
  * CRC-valid window; PDU: fixed by the outstanding request's FC).
  */
-export function parseResponse(verifyCrcFlag: boolean, frame: Uint8Array): ModbusResponse | null {
-  if (frame.length < 4) return null;
+export function parseResponse(
+  verifyCrcFlag: boolean,
+  frame: Uint8Array,
+  options: ParseResponseOptions = {},
+): ModbusResponse | null {
+  const pduOnly = !verifyCrcFlag && options.pduOnly === true;
+  const minLen = verifyCrcFlag ? 4 : pduOnly ? 2 : 3;
+  if (frame.length < minLen) return null;
   if (verifyCrcFlag && !verifyCrc(frame)) return null;
 
-  // For RTU the CRC is the trailing 2 bytes; for PDU transport there's no CRC.
-  // Strip the slave byte first, then work on a PDU view that excludes the CRC.
-  const slave = frame[0];
+  // For RTU the CRC is the trailing 2 bytes; PDU-only frames have no slave byte.
+  // Legacy non-CRC callers can still pass a synthetic slave byte before the PDU.
   const pduLen = verifyCrcFlag ? frame.length - 2 : frame.length;
-  const fc = frame[1];
-  const pdu = frame.subarray(1, pduLen);
+  const slave = pduOnly ? (options.slave ?? 0) : frame[0];
+  const pdu = pduOnly ? frame.subarray(0, pduLen) : frame.subarray(1, pduLen);
+  const fc = pdu[0];
 
   // Exception response: function code with the high bit set + 1 exception byte.
   if (fc & 0x80) {
@@ -240,8 +280,15 @@ export function parseResponse(verifyCrcFlag: boolean, frame: Uint8Array): Modbus
     return { kind: 'read-regs', slave, fc: fc as ReadFc, regs };
   }
 
-  if (fc === 0x05 || fc === 0x06 || fc === 0x0f || fc === 0x10) {
-    // write-ack echo: [fc][addrHi][addrLo][countHi][countLo]
+  if (fc === 0x05 || fc === 0x06) {
+    // single-write echo: [fc][addrHi][addrLo][valueHi][valueLo]
+    if (pdu.length !== 5) return null;
+    const addr = (pdu[1] << 8) | pdu[2];
+    return { kind: 'write-ack', slave, fc: fc as WriteSingleFc, addr, count: 1 };
+  }
+
+  if (fc === 0x0f || fc === 0x10) {
+    // multiple-write echo: [fc][addrHi][addrLo][countHi][countLo]
     if (pdu.length !== 5) return null;
     const addr = (pdu[1] << 8) | pdu[2];
     const count = (pdu[3] << 8) | pdu[4];
@@ -273,6 +320,29 @@ export function decodeValue(type: ModbusValueType, regs: number[]): number {
   return NaN;
 }
 
+/**
+ * Encode a UI-level numeric value into Modbus 16-bit register words. This is
+ * the inverse of `decodeValue` for writable row types and is used before FC06
+ * or FC10 requests are built.
+ */
+export function encodeValue(type: ModbusValueType, value: number): number[] {
+  if (!Number.isFinite(value)) throw new RangeError('value must be finite');
+  if (type === 'bool') return [value === 0 ? 0 : 1];
+  if (type === 'uint16') return [clampInteger(value, 0, 0xffff)];
+  if (type === 'int16') return [clampInteger(value, -0x8000, 0x7fff) & 0xffff];
+  if (type === 'uint32-be') {
+    const u32 = clampInteger(value, 0, 0xffffffff);
+    return [(u32 >>> 16) & 0xffff, u32 & 0xffff];
+  }
+  if (type === 'int32-be') {
+    const i32 = clampInteger(value, -0x80000000, 0x7fffffff);
+    const u32 = i32 < 0 ? i32 + 0x100000000 : i32;
+    return [(u32 >>> 16) & 0xffff, u32 & 0xffff];
+  }
+  if (type === 'float32-be') return encodeFloat32BE(value);
+  return [];
+}
+
 /** Decode a single coil/discrete-input bit into 0/1. */
 export function decodeBit(bit: boolean): number {
   return bit ? 1 : 0;
@@ -295,6 +365,31 @@ function decodeFloat32BE(hi: number, lo: number): number {
   view.setUint16(0, hi & 0xffff, false); // big-endian
   view.setUint16(2, lo & 0xffff, false);
   return view.getFloat32(0, false);
+}
+
+function encodeFloat32BE(value: number): number[] {
+  const buf = new ArrayBuffer(4);
+  const view = new DataView(buf);
+  view.setFloat32(0, value, false);
+  return [view.getUint16(0, false), view.getUint16(2, false)];
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
+function assertU16(name: string, value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
+    throw new RangeError(`${name} must be an integer in 0..65535`);
+  }
+  return value;
+}
+
+function assertQuantity(name: string, value: number, max: number): number {
+  if (!Number.isInteger(value) || value < 1 || value > max) {
+    throw new RangeError(`${name} must be an integer in 1..${max}`);
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------

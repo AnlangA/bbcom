@@ -83,7 +83,7 @@
       </n-input-number>
       <span class="mb-writesrc">
         <span class="mb-field-label">{{ t('modbus.writeSource') }}</span>
-        <n-button size="tiny" quaternary @click="onLoadWriteSource">
+        <n-button size="tiny" quaternary @click="pickWriteSource">
           <template #icon><FileUp class="icon-sm" /></template>
           {{ writeSourceName ?? t('modbus.writeSourceNone') }}
         </n-button>
@@ -92,7 +92,7 @@
           size="tiny"
           quaternary
           :title="t('modbus.clearWriteSource')"
-          @click="onClearWriteSource"
+          @click="clearWriteSourceSelection"
         >
           <template #icon><X class="icon-sm" /></template>
         </n-button>
@@ -309,14 +309,7 @@
 
 <script setup lang="ts">
 import { computed, ref, shallowReactive } from 'vue';
-import {
-  NButton,
-  NCheckbox,
-  NInput,
-  NInputNumber,
-  NSelect,
-  useMessage,
-} from 'naive-ui';
+import { NButton, NCheckbox, NInput, NInputNumber, NSelect, useMessage } from 'naive-ui';
 import {
   Cpu,
   Download,
@@ -449,11 +442,7 @@ function isWriteReg(reg: ModbusRegister): boolean {
   return reg.functionCode === 0x05 || reg.functionCode === 0x06;
 }
 
-function togglePeriodic(
-  regId: string,
-  field: 'periodicRead' | 'periodicWrite',
-  value: boolean,
-) {
+function togglePeriodic(regId: string, field: 'periodicRead' | 'periodicWrite', value: boolean) {
   sessionStore.updateModbusRegister(props.sessionId, regId, { [field]: value });
 }
 
@@ -541,12 +530,12 @@ function emitStopReplay() {
   props.onStopReplay();
 }
 
-function onLoadWriteSource() {
+function pickWriteSource() {
   // Delegates to SessionView, which owns the hidden file input + master binding.
   props.onPickWriteSource();
 }
 
-function onClearWriteSource() {
+function clearWriteSourceSelection() {
   props.onClearWriteSource();
 }
 

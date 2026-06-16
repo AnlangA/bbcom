@@ -176,7 +176,10 @@ export function scanResponse(
  * PDU it is skipped (integrity is the transport's job).
  */
 export function parseFrame(transport: ModbusTransport, frame: Uint8Array): ModbusResponse | null {
-  return parseResponse(transport === 'rtu', frame);
+  if (transport === 'pdu') {
+    return parseResponse(false, frame, { pduOnly: true, slave: PDU_DEFAULT_SLAVE });
+  }
+  return parseResponse(true, frame);
 }
 
 /** Default per-slave address used when transport is PDU (slave is out-of-band). */

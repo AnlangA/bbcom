@@ -8,6 +8,13 @@ import {
   type ReadFc,
 } from '../lib/modbus';
 import {
+  buildModbusReadBatches,
+  buildModbusWriteBatches,
+  encodeModbusRegisterWriteValues,
+  type ModbusReadBatch,
+  type ModbusWriteBatch,
+} from '../lib/modbus-batches';
+import {
   parseFrame,
   readRequest,
   scanResponse,
@@ -28,28 +35,6 @@ export interface ModbusSample {
   channel: number | null;
   value: number;
   ts: number;
-}
-
-/** A grouped, contiguous read request the master will emit in one transaction. */
-interface ReadBatch {
-  slave: number;
-  fc: ReadFc;
-  /** Starting address (coil or register). */
-  start: number;
-  /** Number of coils or 16-bit registers to read. */
-  count: number;
-  /** Rows covered by this batch, with each row's offset within the read window. */
-  rows: Array<{ reg: ModbusRegister; offset: number }>;
-}
-
-/** A grouped, contiguous write request. */
-interface WriteBatch {
-  slave: number;
-  /** Single FC variant if the batch holds exactly one row, else the multiple FC. */
-  fc: 0x05 | 0x06 | 0x0f | 0x10;
-  start: number;
-  /** Row payload: bit (coils) or 16-bit word (registers). */
-  rows: ModbusRegister[];
 }
 
 interface UseModbusMasterOptions {
@@ -110,7 +95,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
   // half-duplex; the next request isn't sent until this resolves or times out).
   let rxBuffer: Uint8Array = new Uint8Array(0);
   let pending: {
-    batch: ReadBatch | WriteBatch;
+    batch: ModbusReadBatch | ModbusWriteBatch;
     resolve: (response: ModbusResponse | null) => void;
     timer: ReturnType<typeof setTimeout>;
     /** Expected PDU length for the response (PDU transport needs this). */
@@ -202,7 +187,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
   // --- Transaction core --------------------------------------------------
 
   function expectedReadResponseLength(
-    batch: ReadBatch,
+    batch: ModbusReadBatch,
     transport: ModbusTransport,
   ): number | undefined {
     // RTU frames itself via CRC; only PDU transport needs an explicit length.
@@ -216,7 +201,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
   }
 
   function expectedWriteResponseLength(
-    _batch: WriteBatch,
+    _batch: ModbusWriteBatch,
     transport: ModbusTransport,
   ): number | undefined {
     if (transport === 'rtu') return undefined;
@@ -226,7 +211,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
 
   /** Send a framed request and resolve with the parsed response (or null on timeout). */
   function transact(
-    batch: ReadBatch | WriteBatch,
+    batch: ModbusReadBatch | ModbusWriteBatch,
     buildWire: () => Uint8Array,
     expectedLen: number | undefined,
   ): Promise<ModbusResponse | null> {
@@ -254,117 +239,14 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     });
   }
 
-  // --- Batching ----------------------------------------------------------
-
-  /** Group read-enabled rows into contiguous read batches. */
-  function buildReadBatches(regs: ModbusRegister[]): ReadBatch[] {
-    // Only read FCs participate in the poll loop.
-    const readable = regs
-      .filter((r) => isReadFc(r.functionCode))
-      .slice()
-      .sort(
-        (a, b) =>
-          a.slaveAddress - b.slaveAddress ||
-          a.functionCode - b.functionCode ||
-          a.address - b.address,
-      );
-    const batches: ReadBatch[] = [];
-    for (const reg of readable) {
-      const fc = reg.functionCode as ReadFc;
-      const span = isBitFc(fc) ? 1 : registerSpan(reg.type);
-      // Try to extend the last batch when same slave/fc and address-contiguous.
-      const last = batches[batches.length - 1];
-      if (
-        last &&
-        last.slave === reg.slaveAddress &&
-        last.fc === fc &&
-        last.start + last.count === reg.address
-      ) {
-        last.count += span;
-        last.rows.push({ reg, offset: reg.address - last.start });
-      } else {
-        batches.push({
-          slave: reg.slaveAddress,
-          fc,
-          start: reg.address,
-          count: span,
-          rows: [{ reg, offset: 0 }],
-        });
-      }
-    }
-    // Clamp each batch to the Modbus per-request max (2000 coils / 125 regs).
-    const cap = (b: ReadBatch) => {
-      const max = isBitFc(b.fc) ? 2000 : 125;
-      if (b.count <= max) return [b];
-      // Split oversized batches at the max boundary.
-      const out: ReadBatch[] = [];
-      let remaining = b.rows;
-      let cursor = b.start;
-      while (remaining.length > 0) {
-        const sliceRows: typeof b.rows = [];
-        let used = 0;
-        for (const row of remaining) {
-          const span = isBitFc(b.fc) ? 1 : registerSpan(row.reg.type);
-          if (used + span > max) break;
-          sliceRows.push({ reg: row.reg, offset: row.offset - (cursor - b.start) });
-          used += span;
-        }
-        out.push({ slave: b.slave, fc: b.fc, start: cursor, count: used, rows: sliceRows });
-        cursor += used;
-        remaining = remaining.slice(sliceRows.length);
-      }
-      return out;
-    };
-    return batches.flatMap(cap);
-  }
-
-  /** Group write-enabled rows into contiguous write batches. */
-  function buildWriteBatches(regs: ModbusRegister[]): WriteBatch[] {
-    const writable = regs
-      .filter((r) => r.functionCode === 0x05 || r.functionCode === 0x06)
-      .filter((r) => r.value !== null && Number.isFinite(r.value))
-      .slice()
-      .sort(
-        (a, b) =>
-          a.slaveAddress - b.slaveAddress ||
-          a.functionCode - b.functionCode ||
-          a.address - b.address,
-      );
-    const batches: WriteBatch[] = [];
-    for (const reg of writable) {
-      const isCoil = reg.functionCode === 0x05;
-      const span = isCoil ? 1 : registerSpan(reg.type);
-      const last = batches[batches.length - 1];
-      // A single row alone uses the single FC; contiguous same-slave rows
-      // upgrade the batch to the multiple FC (0F/10).
-      if (
-        last &&
-        last.slave === reg.slaveAddress &&
-        isCoil === (last.fc === 0x0f) &&
-        last.start + last.rows.length === reg.address
-      ) {
-        last.rows.push(reg);
-        last.fc = isCoil ? 0x0f : 0x10;
-      } else {
-        batches.push({
-          slave: reg.slaveAddress,
-          fc: isCoil ? 0x05 : 0x06,
-          start: reg.address,
-          rows: [reg],
-        });
-        // span kept for clarity; single-row batches use the single FC regardless.
-        void span;
-      }
-    }
-    return batches;
-  }
-
   /**
    * Send one write batch and resolve with the ack count. Factored out of
    * `sendAll` so the periodic write loop shares the exact same wire logic.
    * Caller must hold the busy guard.
    */
-  async function sendWriteBatches(batches: WriteBatch[]): Promise<{ sent: number; ok: number }> {
+  async function sendWriteBatches(
+    batches: ModbusWriteBatch[],
+  ): Promise<{ sent: number; ok: number }> {
     const transport = config.value.transport;
     let ok = 0;
     let sent = 0;
@@ -372,26 +254,38 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       if (stopped) break;
       sent += batch.rows.length;
       let wire: Uint8Array;
-      if (batch.fc === 0x05 || batch.fc === 0x0f) {
+      if (batch.kind === 'coil') {
         const bits = batch.rows.map((r) => (r.value ?? 0) !== 0);
         wire =
-          batch.rows.length === 1
+          batch.fc === 0x05
             ? writeSingleCoilRequest(transport, batch.slave, batch.start, bits[0])
             : writeMultipleCoilsRequest(transport, batch.slave, batch.start, bits);
       } else {
-        const values = batch.rows.map((r) => r.value ?? 0);
+        const values = encodeModbusRegisterWriteValues(batch);
         wire =
-          batch.rows.length === 1
+          batch.fc === 0x06
             ? writeSingleRegisterRequest(transport, batch.slave, batch.start, values[0])
             : writeMultipleRegistersRequest(transport, batch.slave, batch.start, values);
       }
       const expectedLen = expectedWriteResponseLength(batch, transport);
       const response = await transact(batch, () => wire, expectedLen);
-      if (response?.kind === 'write-ack') ok += batch.rows.length;
+      if (isExpectedWriteAck(response, batch, transport)) ok += batch.rows.length;
       else if (response?.kind === 'exception')
         emitStatus({ kind: 'exception', code: response.code });
     }
     return { sent, ok };
+  }
+
+  function isExpectedWriteAck(
+    response: ModbusResponse | null,
+    batch: ModbusWriteBatch,
+    transport: ModbusTransport,
+  ): boolean {
+    if (response?.kind !== 'write-ack') return false;
+    if (transport === 'rtu' && response.slave !== (batch.slave & 0xff)) return false;
+    if (response.fc !== batch.fc || response.addr !== batch.start) return false;
+    const expectedCount = batch.fc === 0x05 || batch.fc === 0x06 ? 1 : batch.count;
+    return response.count === expectedCount;
   }
 
   // --- Read loop ---------------------------------------------------------
@@ -400,7 +294,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     // Only rows opted into periodic reading are polled.
     const regs = registers.value.filter((r) => r.periodicRead);
     const transport = config.value.transport;
-    const batches = buildReadBatches(regs);
+    const batches = buildModbusReadBatches(regs);
     if (batches.length === 0) {
       emitStatus({ kind: 'idle' });
       return;
@@ -540,7 +434,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     );
     emitStatus({ kind: 'writing', count: targets.length });
     const regsWithValues = targets.map((t) => ({ ...t.reg, value: t.value }));
-    await sendWriteBatches(buildWriteBatches(regsWithValues));
+    await sendWriteBatches(buildModbusWriteBatches(regsWithValues));
     if (status.value.kind === 'writing') emitStatus({ kind: 'idle' });
   }
 
@@ -616,7 +510,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     const fc = reg.functionCode as ReadFc;
     const span = isBitFc(fc) ? 1 : registerSpan(reg.type);
     const transport = config.value.transport;
-    const batch: ReadBatch = {
+    const batch: ModbusReadBatch = {
       slave: reg.slaveAddress,
       fc,
       start: reg.address,
@@ -669,41 +563,17 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     // Capture the narrowed value before entering the closure — TS can't carry
     // the null-guard narrowing into the withBusy callback.
     const value = reg.value;
-    const transport = config.value.transport;
     startListening();
     return withBusy(async () => {
-      if (reg.functionCode === 0x05) {
-        const wire = writeSingleCoilRequest(transport, reg.slaveAddress, reg.address, value !== 0);
-        const batch: WriteBatch = {
-          slave: reg.slaveAddress,
-          fc: 0x05,
-          start: reg.address,
-          rows: [reg],
-        };
-        const expectedLen = expectedWriteResponseLength(batch, transport);
-        const response = await transact(batch, () => wire, expectedLen);
-        return response?.kind === 'write-ack';
-      }
-      if (reg.functionCode === 0x06) {
-        const wire = writeSingleRegisterRequest(transport, reg.slaveAddress, reg.address, value);
-        const batch: WriteBatch = {
-          slave: reg.slaveAddress,
-          fc: 0x06,
-          start: reg.address,
-          rows: [reg],
-        };
-        const expectedLen = expectedWriteResponseLength(batch, transport);
-        const response = await transact(batch, () => wire, expectedLen);
-        return response?.kind === 'write-ack';
-      }
-      return false;
+      const { ok } = await sendWriteBatches(buildModbusWriteBatches([{ ...reg, value }]));
+      return ok === 1;
     });
   }
 
   /** Write every writable row, auto-batching contiguous ones into FC0F/FC10. */
   async function sendAll(): Promise<{ sent: number; ok: number }> {
     startListening();
-    return withBusy(() => sendWriteBatches(buildWriteBatches(registers.value)));
+    return withBusy(() => sendWriteBatches(buildModbusWriteBatches(registers.value)));
   }
 
   // --- Replay (.bbreg stream → registers) --------------------------------

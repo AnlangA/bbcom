@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   frameRequest,
   parseFrame,
+  PDU_DEFAULT_SLAVE,
   readRequest,
   scanResponse,
   writeSingleRegisterRequest,
@@ -87,8 +88,9 @@ test('parseFrame RTU decodes a read-regs response, PDU skips CRC', () => {
   const rtu = new Uint8Array([0x01, 0x03, 0x04, 0x12, 0x34, 0x56, 0x78, 0x81, 0x07]);
   const r = parseFrame('rtu', rtu);
   assert.equal(r?.kind, 'read-regs');
-  // PDU transport: same bytes but no CRC; parseFrame should still decode it.
-  const pdu = new Uint8Array([0x01, 0x03, 0x04, 0x12, 0x34, 0x56, 0x78]);
+  // PDU transport: raw PDU bytes only, no addr and no CRC.
+  const pdu = new Uint8Array([0x03, 0x04, 0x12, 0x34, 0x56, 0x78]);
   const r2 = parseFrame('pdu', pdu);
   assert.equal(r2?.kind, 'read-regs');
+  if (r2?.kind === 'read-regs') assert.equal(r2.slave, PDU_DEFAULT_SLAVE);
 });

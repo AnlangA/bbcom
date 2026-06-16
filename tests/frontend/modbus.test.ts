@@ -11,8 +11,10 @@ import {
   crc16Modbus,
   decodeBit,
   decodeValue,
+  encodeValue,
   isBitFc,
   isReadFc,
+  MODBUS_LIMITS,
   parseResponse,
   registerSpan,
   verifyCrc,
@@ -24,6 +26,16 @@ function hex(...bytes: number[]): Uint8Array {
 
 function asString(u: Uint8Array): string {
   return Array.from(u, (b) => b.toString(16).padStart(2, '0')).join(' ');
+}
+
+function withCrc(...bytes: number[]): Uint8Array {
+  const body = hex(...bytes);
+  const crc = crc16Modbus(body);
+  const out = new Uint8Array(body.length + 2);
+  out.set(body, 0);
+  out[body.length] = crc & 0xff;
+  out[body.length + 1] = (crc >>> 8) & 0xff;
+  return out;
 }
 
 test('crc16Modbus matches the standard vector 01 04 02 12 34 -> 0x47B4', () => {
@@ -55,7 +67,10 @@ test('buildWriteSingleRegisterPdu lays out FC06 write', () => {
 
 test('buildWriteMultipleCoilsPdu packs bits LSB-first and reports byte count', () => {
   // 3 coils at addr 1: ON,OFF,ON -> byte 0x05. PDU: 0f 00 01 00 03 01 05
-  assert.equal(asString(buildWriteMultipleCoilsPdu(1, [true, false, true])), '0f 00 01 00 03 01 05');
+  assert.equal(
+    asString(buildWriteMultipleCoilsPdu(1, [true, false, true])),
+    '0f 00 01 00 03 01 05',
+  );
   // 9 coils fills 2 bytes; the 9th bit lands in byte[1] bit0.
   const pdu = buildWriteMultipleCoilsPdu(0, [
     false,
@@ -79,6 +94,21 @@ test('buildWriteMultipleRegistersPdu lays out FC10 write', () => {
     asString(buildWriteMultipleRegistersPdu(1, [0x000a, 0x0102])),
     '10 00 01 00 02 04 00 0a 01 02',
   );
+});
+
+test('request builders reject invalid Modbus quantities', () => {
+  assert.throws(() => buildReadRequestPdu(0x03, 0, 0), /count/);
+  assert.throws(() => buildReadRequestPdu(0x03, 0, MODBUS_LIMITS.readRegisters + 1), /count/);
+  assert.throws(() => buildWriteMultipleCoilsPdu(0, []), /count/);
+  assert.throws(
+    () =>
+      buildWriteMultipleRegistersPdu(
+        0,
+        Array.from({ length: MODBUS_LIMITS.writeRegisters + 1 }, () => 0),
+      ),
+    /count/,
+  );
+  assert.throws(() => buildWriteSingleRegisterPdu(0, 0x10000), /value/);
 });
 
 test('parseResponse reads holding-register values (FC03)', () => {
@@ -111,6 +141,28 @@ test('parseResponse reads write-ack echo for FC10', () => {
   }
 });
 
+test('parseResponse reports count=1 for FC06 single-write ack', () => {
+  const frame = withCrc(0x01, 0x06, 0x00, 0x01, 0x12, 0x34);
+  const r = parseResponse(true, frame);
+  assert.equal(r?.kind, 'write-ack');
+  if (r?.kind === 'write-ack') {
+    assert.equal(r.addr, 1);
+    assert.equal(r.count, 1);
+  }
+});
+
+test('parseResponse can decode a raw PDU-only read response', () => {
+  const r = parseResponse(false, hex(0x03, 0x04, 0x12, 0x34, 0x56, 0x78), {
+    pduOnly: true,
+    slave: 7,
+  });
+  assert.equal(r?.kind, 'read-regs');
+  if (r?.kind === 'read-regs') {
+    assert.equal(r.slave, 7);
+    assert.deepEqual(r.regs, [0x1234, 0x5678]);
+  }
+});
+
 test('parseResponse decodes an exception frame (fc | 0x80)', () => {
   // slave 1, fc 0x83, code 0x02, crc c0 f1
   const frame = hex(0x01, 0x83, 0x02, 0xc0, 0xf1);
@@ -136,6 +188,15 @@ test('decodeValue handles all register types', () => {
   assert.ok(Math.abs(decodeValue('float32-be', [0x3f80, 0x0000]) - 1.0) < 1e-6);
   assert.equal(decodeValue('bool', [0]), 0);
   assert.equal(decodeValue('bool', [1]), 1);
+});
+
+test('encodeValue maps typed values to big-endian register words', () => {
+  assert.deepEqual(encodeValue('bool', 2), [1]);
+  assert.deepEqual(encodeValue('uint16', 0x1234), [0x1234]);
+  assert.deepEqual(encodeValue('int16', -1), [0xffff]);
+  assert.deepEqual(encodeValue('uint32-be', 0x12345678), [0x1234, 0x5678]);
+  assert.deepEqual(encodeValue('int32-be', -1), [0xffff, 0xffff]);
+  assert.deepEqual(encodeValue('float32-be', 1), [0x3f80, 0x0000]);
 });
 
 test('decodeBit maps boolean to 0/1', () => {
