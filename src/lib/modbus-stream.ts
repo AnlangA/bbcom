@@ -19,6 +19,7 @@
  * Pure TS (no Vue/DOM) → unit-testable under the `node --test` runner.
  */
 
+import { registerSpan } from './modbus';
 import type { ModbusFunctionCode, ModbusRegister, ModbusValueType } from '../types';
 
 /** One decoded sample of one register. */
@@ -45,11 +46,16 @@ export interface ModbusStreamRecord {
 
 const VALUE_TYPES: ReadonlySet<ModbusValueType> = new Set([
   'bool',
+  'uint8',
+  'int8',
   'uint16',
   'int16',
   'uint32-be',
   'int32-be',
   'float32-be',
+  'uint32-le',
+  'int32-le',
+  'float32-le',
 ]);
 
 /** Encode a list of records as a `.bbreg` JSONL string. */
@@ -140,17 +146,26 @@ export function snapshotFromRegisters(regs: ModbusRegister[]): ModbusStreamRecor
   const now = Date.now();
   const out: ModbusStreamRecord[] = [];
   for (const reg of regs) {
-    if (reg.value === null || !Number.isFinite(reg.value)) continue;
-    out.push({
-      t: reg.valueTs ?? now,
-      slave: reg.slaveAddress,
-      fc: reg.functionCode,
-      addr: reg.address,
-      type: reg.type,
-      value: reg.value,
-      name: reg.name,
-      ch: reg.waveformChannel,
-      unit: reg.unit,
+    const values =
+      Array.isArray(reg.values) && reg.values.length > 0
+        ? reg.values.filter((value) => Number.isFinite(value))
+        : reg.value !== null && Number.isFinite(reg.value)
+          ? [reg.value]
+          : [];
+    if (values.length === 0) continue;
+    const span = registerSpan(reg.type);
+    values.forEach((value, index) => {
+      out.push({
+        t: reg.valueTs ?? now,
+        slave: reg.slaveAddress,
+        fc: reg.functionCode,
+        addr: reg.address + index * span,
+        type: reg.type,
+        value,
+        name: index === 0 ? reg.name : `${reg.name}[${index}]`,
+        ch: reg.waveformChannel,
+        unit: reg.unit,
+      });
     });
   }
   return out;

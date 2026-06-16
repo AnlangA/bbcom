@@ -118,7 +118,10 @@ function tabTooltip(session: SerialSession): string {
   align-items: center;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-subtle);
-  padding: 6px 8px 0;
+  /* Left/right padding matches the toolbar below so the tabs' content edge and
+     the toolbar's content edge share a vertical line, instead of visually
+     stepping inward by 4px. */
+  padding: 6px 12px 0;
   height: 42px;
   min-height: 42px;
 }
@@ -252,7 +255,9 @@ function tabTooltip(session: SerialSession): string {
   flex-shrink: 0;
   transition: all var(--transition-normal);
   margin-left: 6px;
-  margin-bottom: 6px;
+  /* Vertically centered by the header's align-items:center; a manual bottom
+     margin would push the + button below the tabs' baseline, making it read as
+     misaligned with the tab strip. */
 }
 
 .tab-add:hover {

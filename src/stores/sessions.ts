@@ -27,6 +27,7 @@ import { MAX_HISTORY } from '../types';
 import { maxBufferFrames } from '../lib/buffer-config';
 import { nowMillis } from '../lib/time';
 import { parseHex, toContinuousHex } from '../lib/format';
+import { MODBUS_LIMITS, isReadFc, maxValueCountForRegisters } from '../lib/modbus';
 import { isLocalStorageAvailable, loadJson, saveJson } from '../lib/storage';
 
 const FRAME_TRIM_THRESHOLD = 500;
@@ -67,15 +68,20 @@ const DEFAULT_MODBUS_CONFIG: ModbusMasterConfig = {
 
 const MODBUS_VALUE_TYPES: ReadonlySet<ModbusValueType> = new Set([
   'bool',
+  'uint8',
+  'int8',
   'uint16',
   'int16',
   'uint32-be',
   'int32-be',
   'float32-be',
+  'uint32-le',
+  'int32-le',
+  'float32-le',
 ]);
 
 const MODBUS_FUNCTION_CODES: ReadonlySet<ModbusFunctionCode> = new Set([
-  0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+  0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x10,
 ]);
 
 interface PersistedFrame {
@@ -420,6 +426,64 @@ function normalizeModbusType(raw: unknown): ModbusValueType {
   return MODBUS_VALUE_TYPES.has(raw as ModbusValueType) ? (raw as ModbusValueType) : 'uint16';
 }
 
+function normalizeModbusQuantity(
+  raw: unknown,
+  fc: ModbusFunctionCode,
+  type: ModbusValueType,
+): number {
+  const min = 1;
+  const max =
+    fc === 0x01 || fc === 0x02
+      ? MODBUS_LIMITS.readBits
+      : fc === 0x03 || fc === 0x04
+        ? maxValueCountForRegisters(type, MODBUS_LIMITS.readRegisters)
+        : fc === 0x10
+          ? maxValueCountForRegisters(type, MODBUS_LIMITS.writeRegisters)
+          : min;
+  const n = typeof raw === 'number' && Number.isFinite(raw) ? Math.floor(raw) : min;
+  return Math.max(min, Math.min(max, n));
+}
+
+function normalizeModbusValues(raw: unknown): number[] | null {
+  if (!Array.isArray(raw)) return null;
+  const values = raw.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+  return values.length > 0 ? values : null;
+}
+
+function normalizeModbusRegisterRecord(raw: Partial<ModbusRegister>): ModbusRegister {
+  const fc = normalizeModbusFc(raw.functionCode);
+  const type = normalizeModbusType(raw.type);
+  const isWriteFc = fc === 0x05 || fc === 0x06 || fc === 0x10;
+  return {
+    id: typeof raw.id === 'string' ? raw.id : crypto.randomUUID(),
+    name: typeof raw.name === 'string' ? raw.name : 'Register',
+    slaveAddress:
+      typeof raw.slaveAddress === 'number' && Number.isFinite(raw.slaveAddress)
+        ? Math.max(0, Math.min(247, Math.floor(raw.slaveAddress)))
+        : 1,
+    functionCode: fc,
+    address:
+      typeof raw.address === 'number' && Number.isFinite(raw.address)
+        ? Math.max(0, Math.min(0xffff, Math.floor(raw.address)))
+        : 0,
+    quantity: normalizeModbusQuantity(raw.quantity, fc, type),
+    type,
+    unit: typeof raw.unit === 'string' && raw.unit.length > 0 ? raw.unit : undefined,
+    waveformChannel:
+      typeof raw.waveformChannel === 'number' &&
+      Number.isInteger(raw.waveformChannel) &&
+      raw.waveformChannel >= 0 &&
+      raw.waveformChannel <= 7
+        ? raw.waveformChannel
+        : null,
+    value: typeof raw.value === 'number' && Number.isFinite(raw.value) ? raw.value : null,
+    values: normalizeModbusValues(raw.values),
+    valueTs: typeof raw.valueTs === 'number' && Number.isFinite(raw.valueTs) ? raw.valueTs : null,
+    periodicRead: isReadFc(fc) ? raw.periodicRead !== false : false,
+    periodicWrite: isWriteFc ? raw.periodicWrite === true : false,
+  };
+}
+
 /**
  * Hydrate the register table from persisted storage. Runtime-only fields
  * (value/valueTs) are dropped — a reloaded session starts with no live values
@@ -430,36 +494,7 @@ function normalizeModbusRegisters(raw: unknown): ModbusRegister[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
-    .map((reg) => ({
-      id: typeof reg.id === 'string' ? reg.id : crypto.randomUUID(),
-      name: typeof reg.name === 'string' ? reg.name : 'Register',
-      slaveAddress:
-        typeof reg.slaveAddress === 'number' && Number.isFinite(reg.slaveAddress)
-          ? Math.max(0, Math.min(247, Math.floor(reg.slaveAddress)))
-          : 1,
-      functionCode: normalizeModbusFc(reg.functionCode),
-      address:
-        typeof reg.address === 'number' && Number.isFinite(reg.address)
-          ? Math.max(0, Math.min(0xffff, Math.floor(reg.address)))
-          : 0,
-      type: normalizeModbusType(reg.type),
-      unit: typeof reg.unit === 'string' ? reg.unit : undefined,
-      waveformChannel:
-        typeof reg.waveformChannel === 'number' &&
-        Number.isInteger(reg.waveformChannel) &&
-        reg.waveformChannel >= 0 &&
-        reg.waveformChannel <= 7
-          ? reg.waveformChannel
-          : null,
-      // value/valueTs are runtime-only and intentionally accepted but not required.
-      value: typeof reg.value === 'number' && Number.isFinite(reg.value) ? reg.value : null,
-      valueTs: typeof reg.valueTs === 'number' && Number.isFinite(reg.valueTs) ? reg.valueTs : null,
-      // periodicRead defaults to true (preserves the prior "poll all read rows"
-      // behavior for rows saved before the flag existed); periodicWrite defaults
-      // to false so auto-writes never start without an explicit opt-in.
-      periodicRead: reg.periodicRead !== false,
-      periodicWrite: reg.periodicWrite === true,
-    }));
+    .map((reg) => normalizeModbusRegisterRecord(reg as Partial<ModbusRegister>));
 }
 
 function cloneModbusConfig(cfg: ModbusMasterConfig): ModbusMasterConfig {
@@ -503,12 +538,14 @@ function persistableModbusRegisters(regs: ModbusRegister[]): ModbusRegister[] {
     slaveAddress: reg.slaveAddress,
     functionCode: reg.functionCode,
     address: reg.address,
+    quantity: normalizeModbusQuantity(reg.quantity, reg.functionCode, reg.type),
     type: reg.type,
     unit: reg.unit,
     waveformChannel: reg.waveformChannel,
     periodicRead: reg.periodicRead,
     periodicWrite: reg.periodicWrite,
     value: null,
+    values: null,
     valueTs: null,
   }));
 }
@@ -890,12 +927,14 @@ export const useSessionStore = defineStore('sessions', () => {
 
   function addModbusRegister(
     sessionId: string,
-    reg: Omit<ModbusRegister, 'id' | 'value' | 'valueTs'>,
+    reg: Omit<ModbusRegister, 'id' | 'value' | 'values' | 'valueTs'>,
   ): string | undefined {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return undefined;
     const id = crypto.randomUUID();
-    session.modbusRegisters.push({ ...reg, id, value: null, valueTs: null });
+    session.modbusRegisters.push(
+      normalizeModbusRegisterRecord({ ...reg, id, value: null, values: null, valueTs: null }),
+    );
     schedulePersist();
     return id;
   }
@@ -909,7 +948,11 @@ export const useSessionStore = defineStore('sessions', () => {
     if (!session) return;
     const idx = session.modbusRegisters.findIndex((r) => r.id === regId);
     if (idx === -1) return;
-    session.modbusRegisters[idx] = { ...session.modbusRegisters[idx], ...patch };
+    session.modbusRegisters[idx] = normalizeModbusRegisterRecord({
+      ...session.modbusRegisters[idx],
+      ...patch,
+      id: session.modbusRegisters[idx].id,
+    });
     schedulePersist();
   }
 
@@ -928,7 +971,7 @@ export const useSessionStore = defineStore('sessions', () => {
   function setModbusRegisters(sessionId: string, regs: ModbusRegister[]) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.modbusRegisters = regs;
+    session.modbusRegisters = normalizeModbusRegisters(regs);
     schedulePersist();
   }
 
@@ -940,7 +983,7 @@ export const useSessionStore = defineStore('sessions', () => {
    */
   function setModbusRegisterValues(
     sessionId: string,
-    values: Array<{ id: string; value: number; valueTs: number }>,
+    values: Array<{ id: string; value: number; values?: number[] | null; valueTs: number }>,
   ) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
@@ -950,7 +993,12 @@ export const useSessionStore = defineStore('sessions', () => {
     session.modbusRegisters = session.modbusRegisters.map((reg) => {
       const hit = byId.get(reg.id);
       if (!hit) return reg;
-      return { ...reg, value: hit.value, valueTs: hit.valueTs };
+      return {
+        ...reg,
+        value: hit.value,
+        values: hit.values === undefined ? reg.values : hit.values,
+        valueTs: hit.valueTs,
+      };
     });
   }
 

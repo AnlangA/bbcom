@@ -50,6 +50,20 @@ test('parseStream round-trips an encoded stream', () => {
   assert.equal(parsed[1].value, 7);
 });
 
+test('parseStream accepts little-endian 32-bit value types', () => {
+  const parsed = parseStream(
+    [
+      '{"t":1,"slave":1,"fc":3,"addr":10,"type":"uint32-le","value":305419896}',
+      '{"t":2,"slave":1,"fc":3,"addr":12,"type":"int32-le","value":-2}',
+      '{"t":3,"slave":1,"fc":3,"addr":14,"type":"float32-le","value":1}',
+    ].join('\n'),
+  );
+  assert.deepEqual(
+    parsed.map((r) => r.type),
+    ['uint32-le', 'int32-le', 'float32-le'],
+  );
+});
+
 test('parseStream skips blank and junk lines without throwing', () => {
   const text = [
     encodeStream([sample]),

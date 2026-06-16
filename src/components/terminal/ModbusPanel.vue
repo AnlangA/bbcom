@@ -9,8 +9,8 @@
         periodic writes via the W toggle (values come from a loaded .bbreg source).
       Periodic reads feed the waveform (rows with a channel assignment). Periodic
       writes push values from the data source, advancing per-row each tick and
-      looping. Manual Send/Send all/Replay still write on demand (FC05/06,
-      auto-batched into FC0F/FC10 when contiguous).
+      looping. Manual Send/Send all/Replay still write on demand. FC10 rows
+      are batched when contiguous; FC06 rows stay single-register writes.
     -->
     <!-- Header row 1: identity + transport + master enable + status -->
     <div class="mb-header">
@@ -145,6 +145,7 @@
       <span class="col col-slave">{{ t('modbus.col.slave') }}</span>
       <span class="col col-fc">{{ t('modbus.col.fc') }}</span>
       <span class="col col-addr">{{ t('modbus.col.addr') }}</span>
+      <span class="col col-qty">{{ t('modbus.col.quantity') }}</span>
       <span class="col col-type">{{ t('modbus.col.type') }}</span>
       <span class="col col-ch">{{ t('modbus.col.ch') }}</span>
       <span class="col col-rw" :title="t('modbus.col.rwHint')">{{ t('modbus.col.rw') }}</span>
@@ -162,11 +163,63 @@
         class="mb-row"
         :class="{ alt: idx % 2 === 1 }"
       >
-        <span class="col col-name" :title="reg.name">{{ reg.name }}</span>
-        <span class="col col-slave">{{ reg.slaveAddress }}</span>
-        <span class="col col-fc">{{ fcLabel(reg.functionCode) }}</span>
-        <span class="col col-addr">{{ reg.address }}</span>
-        <span class="col col-type">{{ typeLabel(reg.type) }}</span>
+        <span class="col col-name" :title="reg.name">
+          <n-input
+            :value="reg.name"
+            size="tiny"
+            @update:value="(v) => editRegister(reg, { name: v })"
+          />
+        </span>
+        <span class="col col-slave">
+          <n-input-number
+            :value="reg.slaveAddress"
+            size="tiny"
+            :min="0"
+            :max="247"
+            :show-button="false"
+            @update:value="(v) => editRegisterAndClearValue(reg, { slaveAddress: v ?? 1 })"
+          />
+        </span>
+        <span class="col col-fc">
+          <n-select
+            :value="reg.functionCode"
+            :options="fcOptions"
+            size="tiny"
+            @update:value="(v) => editFunctionCode(reg, v)"
+          />
+        </span>
+        <span class="col col-addr">
+          <n-input-number
+            :value="reg.address"
+            size="tiny"
+            :min="0"
+            :max="65535"
+            :show-button="false"
+            @update:value="(v) => editRegisterAndClearValue(reg, { address: v ?? 0 })"
+          />
+        </span>
+        <span class="col col-qty">
+          <n-input-number
+            v-if="isDataCountEditable(reg.functionCode)"
+            :value="dataQuantity(reg)"
+            size="tiny"
+            :min="1"
+            :max="dataQuantityMax(reg.functionCode, reg.type)"
+            :show-button="false"
+            style="width: 54px"
+            @update:value="(v) => editQuantity(reg, v ?? 1)"
+          />
+          <span v-else>—</span>
+        </span>
+        <span class="col col-type">
+          <n-select
+            :value="reg.type"
+            :options="typeOptionsFor(reg.functionCode)"
+            size="tiny"
+            :disabled="isBitReg(reg)"
+            @update:value="(v) => editType(reg, v)"
+          />
+        </span>
         <span class="col col-ch">
           <n-select
             :value="reg.waveformChannel ?? -1"
@@ -177,7 +230,7 @@
           />
         </span>
         <span class="col col-rw">
-          <!-- R: periodic read toggle (read FCs only). W: periodic write toggle (FC05/06). -->
+          <!-- R: periodic read toggle (read FCs only). W: periodic write toggle (FC05/06/10). -->
           <button
             class="rw-toggle"
             type="button"
@@ -203,22 +256,29 @@
           <!-- Write FCs: editable value. Read FCs: live monospace readout. -->
           <n-input
             v-if="isWriteReg(reg) && !isBitReg(reg)"
-            :value="String(reg.value ?? '')"
+            :value="editValueText(reg)"
             size="tiny"
-            :placeholder="t('modbus.valuePlaceholder')"
-            @update:value="(v) => editValue(reg.id, v)"
+            :placeholder="valuePlaceholder(reg)"
+            @update:value="(v) => editValue(reg, v)"
           />
           <n-checkbox
             v-else-if="isWriteReg(reg) && isBitReg(reg)"
             :checked="(reg.value ?? 0) !== 0"
             size="small"
-            @update:checked="(v) => editValue(reg.id, v ? '1' : '0')"
+            @update:checked="(v) => editValue(reg, v ? '1' : '0')"
           />
           <span v-else class="value-readout" :class="{ stale: reg.value === null }">{{
             formatValue(reg)
           }}</span>
         </span>
-        <span class="col col-unit">{{ reg.unit ?? '' }}</span>
+        <span class="col col-unit">
+          <n-input
+            :value="reg.unit ?? ''"
+            size="tiny"
+            placeholder="°C"
+            @update:value="(v) => editRegister(reg, { unit: v || undefined })"
+          />
+        </span>
         <span class="col col-actions">
           <button
             class="row-btn"
@@ -277,10 +337,11 @@
         style="width: 76px"
       />
       <n-select
-        v-model:value="draft.functionCode"
+        :value="draft.functionCode"
         :options="fcOptions"
         size="tiny"
         style="width: 150px"
+        @update:value="setDraftFunctionCode"
       />
       <n-input-number
         v-model:value="draft.address"
@@ -289,7 +350,23 @@
         :max="65535"
         style="width: 92px"
       />
-      <n-select v-model:value="draft.type" :options="typeOptions" size="tiny" style="width: 88px" />
+      <n-input-number
+        v-model:value="draft.quantity"
+        size="tiny"
+        :min="1"
+        :max="draftQuantityMax"
+        :disabled="!isDataCountEditable(draft.functionCode)"
+        :show-button="false"
+        style="width: 66px"
+      />
+      <n-select
+        :value="draft.type"
+        :options="typeOptionsFor(draft.functionCode)"
+        size="tiny"
+        :disabled="isBitFc(draft.functionCode)"
+        style="width: 88px"
+        @update:value="setDraftType"
+      />
       <n-input v-model:value="draft.unit" size="tiny" placeholder="°C" style="width: 56px" />
       <n-select
         v-model:value="draft.waveformChannel"
@@ -331,7 +408,14 @@ import {
   recordsToRegisterDefs,
   snapshotFromRegisters,
 } from '../../lib/modbus-stream';
-import { isBitFc, isReadFc } from '../../lib/modbus';
+import {
+  MODBUS_LIMITS,
+  isBitFc,
+  isReadFc,
+  maxValueCountForRegisters,
+  registerCountForValues,
+  registerSpan,
+} from '../../lib/modbus';
 import { t } from '../../lib/i18n';
 import type {
   ModbusFunctionCode,
@@ -387,18 +471,32 @@ const fcOptions = computed(() => [
   { label: t('modbus.fc.04'), value: 0x04 },
   { label: t('modbus.fc.05'), value: 0x05 },
   { label: t('modbus.fc.06'), value: 0x06 },
+  { label: t('modbus.fc.10'), value: 0x10 },
 ]);
 const typeOptions = computed(() =>
-  (['bool', 'uint16', 'int16', 'uint32-be', 'int32-be', 'float32-be'] as ModbusValueType[]).map(
-    (tp) => ({ label: t(`modbus.type.${tp}`), value: tp }),
-  ),
+  (
+    [
+      'bool',
+      'uint8',
+      'int8',
+      'uint16',
+      'int16',
+      'uint32-be',
+      'int32-be',
+      'float32-be',
+      'uint32-le',
+      'int32-le',
+      'float32-le',
+    ] as ModbusValueType[]
+  ).map((tp) => ({ label: t(`modbus.type.${tp}`), value: tp })),
 );
+const bitTypeOptions = computed(() => [{ label: t('modbus.type.bool'), value: 'bool' }]);
 const channelOptions = computed(() => [
   { label: t('modbus.channel.off'), value: -1 },
   ...Array.from({ length: 8 }, (_, i) => ({ label: `${i}`, value: i })),
 ]);
 
-/** Whether the table has any writable rows (FC05/06) — drives Send/Replay visibility. */
+/** Whether the table has any writable rows (FC05/06/10) — drives Send/Replay visibility. */
 const hasWriteRegs = computed(() => props.registers.some(isWriteReg));
 
 interface Draft {
@@ -406,6 +504,7 @@ interface Draft {
   slaveAddress: number;
   functionCode: ModbusFunctionCode;
   address: number;
+  quantity: number;
   type: ModbusValueType;
   unit: string;
   waveformChannel: number; // -1 = off
@@ -415,23 +514,19 @@ const draft = shallowReactive<Draft>({
   slaveAddress: 1,
   functionCode: 0x03,
   address: 0,
+  quantity: 1,
   type: 'uint16',
   unit: '',
   waveformChannel: -1,
 });
 
-const canAdd = computed(() => draft.name.trim().length > 0);
+const draftQuantityMax = computed(() => dataQuantityMax(draft.functionCode, draft.type));
+const canAdd = computed(() => draft.name.trim().length > 0 && draft.quantity >= 1);
 
 function patch(p: Partial<ModbusMasterConfig>) {
   sessionStore.setModbusConfig(props.sessionId, p);
 }
 
-function fcLabel(fc: number): string {
-  return t(`modbus.fc.${fc.toString(16).padStart(2, '0')}`);
-}
-function typeLabel(tp: ModbusValueType): string {
-  return t(`modbus.type.${tp}`);
-}
 function isBitReg(reg: ModbusRegister): boolean {
   return isBitFc(reg.functionCode);
 }
@@ -439,7 +534,65 @@ function isReadReg(reg: ModbusRegister): boolean {
   return isReadFc(reg.functionCode);
 }
 function isWriteReg(reg: ModbusRegister): boolean {
-  return reg.functionCode === 0x05 || reg.functionCode === 0x06;
+  return reg.functionCode === 0x05 || reg.functionCode === 0x06 || reg.functionCode === 0x10;
+}
+
+function typeOptionsFor(fc: ModbusFunctionCode) {
+  return isBitFc(fc) ? bitTypeOptions.value : typeOptions.value;
+}
+
+function editRegister(reg: ModbusRegister, patchValue: Partial<Omit<ModbusRegister, 'id'>>) {
+  sessionStore.updateModbusRegister(props.sessionId, reg.id, patchValue);
+}
+
+function editRegisterAndClearValue(
+  reg: ModbusRegister,
+  patchValue: Partial<Omit<ModbusRegister, 'id'>>,
+) {
+  editRegister(reg, {
+    ...patchValue,
+    value: null,
+    values: null,
+    valueTs: null,
+  });
+}
+
+function typeForFunctionCode(
+  fc: ModbusFunctionCode,
+  currentType: ModbusValueType,
+): ModbusValueType {
+  if (isBitFc(fc)) return 'bool';
+  return currentType === 'bool' ? 'uint16' : currentType;
+}
+
+function editFunctionCode(reg: ModbusRegister, fc: ModbusFunctionCode) {
+  const type = typeForFunctionCode(fc, reg.type);
+  editRegisterAndClearValue(reg, {
+    functionCode: fc,
+    type,
+    quantity: normalizeDataQuantity(reg.quantity, fc, type),
+    periodicRead: isReadFc(fc) ? reg.periodicRead : false,
+    periodicWrite: fc === 0x05 || fc === 0x06 || fc === 0x10 ? reg.periodicWrite : false,
+  });
+}
+
+function editType(reg: ModbusRegister, type: ModbusValueType) {
+  const nextType = typeForFunctionCode(reg.functionCode, type);
+  editRegisterAndClearValue(reg, {
+    type: nextType,
+    quantity: normalizeDataQuantity(reg.quantity, reg.functionCode, nextType),
+  });
+}
+
+function setDraftFunctionCode(fc: ModbusFunctionCode) {
+  draft.functionCode = fc;
+  draft.type = typeForFunctionCode(fc, draft.type);
+  draft.quantity = normalizeDataQuantity(draft.quantity, fc, draft.type);
+}
+
+function setDraftType(type: ModbusValueType) {
+  draft.type = typeForFunctionCode(draft.functionCode, type);
+  draft.quantity = normalizeDataQuantity(draft.quantity, draft.functionCode, draft.type);
 }
 
 function togglePeriodic(regId: string, field: 'periodicRead' | 'periodicWrite', value: boolean) {
@@ -447,10 +600,12 @@ function togglePeriodic(regId: string, field: 'periodicRead' | 'periodicWrite', 
 }
 
 function formatValue(reg: ModbusRegister): string {
+  const values = Array.isArray(reg.values) && reg.values.length > 0 ? reg.values : null;
+  if (values) {
+    return values.map(formatNumber).join(' ');
+  }
   if (reg.value === null || !Number.isFinite(reg.value)) return '—';
-  if (Math.abs(reg.value) >= 1000) return reg.value.toFixed(0);
-  if (Math.abs(reg.value) >= 10) return reg.value.toFixed(1);
-  return reg.value.toFixed(2);
+  return formatNumber(reg.value);
 }
 
 function setChannel(regId: string, ch: number) {
@@ -459,12 +614,27 @@ function setChannel(regId: string, ch: number) {
   });
 }
 
-function editValue(regId: string, raw: string) {
-  const num = Number(raw);
-  sessionStore.updateModbusRegister(props.sessionId, regId, {
-    value: Number.isFinite(num) ? num : null,
+function editValueText(reg: ModbusRegister): string {
+  const values = Array.isArray(reg.values) && reg.values.length > 0 ? reg.values : null;
+  if (values) return values.join(' ');
+  return reg.value === null || !Number.isFinite(reg.value) ? '' : String(reg.value);
+}
+
+function valuePlaceholder(reg: ModbusRegister): string {
+  return reg.functionCode === 0x10
+    ? t('modbus.valueListPlaceholder')
+    : t('modbus.valuePlaceholder');
+}
+
+function editValue(reg: ModbusRegister, raw: string) {
+  const values = parseValueList(raw);
+  const value = values[0] ?? null;
+  const patch: Partial<Omit<ModbusRegister, 'id'>> = {
+    value,
+    values: values.length > 1 ? values : null,
     valueTs: Date.now(),
-  });
+  };
+  sessionStore.updateModbusRegister(props.sessionId, reg.id, patch);
 }
 
 function addRegister() {
@@ -472,12 +642,14 @@ function addRegister() {
   // New rows default to periodic read for read-FCs and never auto-write — the
   // user opts each row in via the R/W toggles.
   const fc = draft.functionCode;
-  const isWriteFc = fc === 0x05 || fc === 0x06;
+  const quantity = normalizeDataQuantity(draft.quantity, fc, draft.type);
+  const isWriteFc = fc === 0x05 || fc === 0x06 || fc === 0x10;
   sessionStore.addModbusRegister(props.sessionId, {
     name: draft.name.trim(),
     slaveAddress: draft.slaveAddress,
     functionCode: draft.functionCode,
     address: draft.address,
+    quantity,
     type: draft.type,
     unit: draft.unit || undefined,
     waveformChannel: draft.waveformChannel < 0 ? null : draft.waveformChannel,
@@ -486,8 +658,57 @@ function addRegister() {
   });
   // Reset the name + address for the next add, keep the rest (common to batch-add a block).
   draft.name = '';
-  draft.address +=
-    draft.type === 'bool' || draft.type === 'uint16' || draft.type === 'int16' ? 1 : 2;
+  draft.address += addressStepFor(fc, draft.type, quantity);
+}
+
+function isDataCountEditable(fc: ModbusFunctionCode): boolean {
+  return fc === 0x03 || fc === 0x10;
+}
+
+function dataQuantity(reg: ModbusRegister): number {
+  return normalizeDataQuantity(reg.quantity, reg.functionCode, reg.type);
+}
+
+function dataQuantityMax(fc: ModbusFunctionCode, type: ModbusValueType): number {
+  if (fc === 0x03) return maxValueCountForRegisters(type, MODBUS_LIMITS.readRegisters);
+  if (fc === 0x10) return maxValueCountForRegisters(type, MODBUS_LIMITS.writeRegisters);
+  return 1;
+}
+
+function normalizeDataQuantity(
+  raw: unknown,
+  fc: ModbusFunctionCode,
+  type: ModbusValueType,
+): number {
+  const n = typeof raw === 'number' && Number.isFinite(raw) ? Math.floor(raw) : 1;
+  return Math.max(1, Math.min(dataQuantityMax(fc, type), n));
+}
+
+function editQuantity(reg: ModbusRegister, raw: number) {
+  editRegisterAndClearValue(reg, {
+    quantity: normalizeDataQuantity(raw, reg.functionCode, reg.type),
+  });
+}
+
+function addressStepFor(fc: ModbusFunctionCode, type: ModbusValueType, quantity: number): number {
+  if (fc === 0x03 || fc === 0x10) return registerCountForValues(type, quantity);
+  return isBitFc(fc) ? 1 : registerSpan(type);
+}
+
+function parseValueList(raw: string): number[] {
+  return raw
+    .trim()
+    .split(/[\s,;，；]+/)
+    .filter(Boolean)
+    .map((part) => Number(part))
+    .filter((value) => Number.isFinite(value));
+}
+
+function formatNumber(value: number): string {
+  if (Number.isInteger(value)) return String(value);
+  if (Math.abs(value) >= 1000) return value.toFixed(0);
+  if (Math.abs(value) >= 10) return value.toFixed(1);
+  return value.toFixed(2);
 }
 
 function remove(regId: string) {
@@ -551,9 +772,9 @@ function onFilePicked(e: Event) {
       message.warning(t('modbus.empty'));
       return;
     }
-    // If the stream contains write-target records (FC05/06) the master can
+    // If the stream contains write-target records (FC05/06/10) the master can
     // replay them; otherwise import it as register-row definitions.
-    const hasWriteTargets = records.some((r) => r.fc === 0x05 || r.fc === 0x06);
+    const hasWriteTargets = records.some((r) => r.fc === 0x05 || r.fc === 0x06 || r.fc === 0x10);
     if (hasWriteTargets) {
       props.onReplay(records);
       message.success(t('waveform.exportedStream', { count: records.length }));
@@ -691,8 +912,8 @@ function onFilePicked(e: Event) {
 .mb-row {
   display: grid;
   grid-template-columns:
-    minmax(90px, 1.4fr) 44px 130px 60px 80px 64px 48px minmax(80px, 1fr) 50px
-    92px;
+    minmax(82px, 1.2fr) 42px 126px 56px 54px 78px 60px 48px minmax(108px, 1fr)
+    44px 92px;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;

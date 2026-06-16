@@ -1,16 +1,12 @@
 import { onUnmounted, ref, watch, type Ref } from 'vue';
-import {
-  decodeValue,
-  isBitFc,
-  isReadFc,
-  registerSpan,
-  type ModbusResponse,
-  type ReadFc,
-} from '../lib/modbus';
+import { decodeValues, isBitFc, isReadFc, type ModbusResponse, type ReadFc } from '../lib/modbus';
 import {
   buildModbusReadBatches,
   buildModbusWriteBatches,
+  encodeModbusCoilWriteValues,
   encodeModbusRegisterWriteValues,
+  modbusDataValueCount,
+  modbusReadRowCount,
   type ModbusReadBatch,
   type ModbusWriteBatch,
 } from '../lib/modbus-batches';
@@ -255,7 +251,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       sent += batch.rows.length;
       let wire: Uint8Array;
       if (batch.kind === 'coil') {
-        const bits = batch.rows.map((r) => (r.value ?? 0) !== 0);
+        const bits = encodeModbusCoilWriteValues(batch);
         wire =
           batch.fc === 0x05
             ? writeSingleCoilRequest(transport, batch.slave, batch.start, bits[0])
@@ -301,7 +297,12 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     }
     emitStatus({ kind: 'polling', count: batches.length });
     const samples: ModbusSample[] = [];
-    const valueUpdates: Array<{ id: string; value: number; valueTs: number }> = [];
+    const valueUpdates: Array<{
+      id: string;
+      value: number;
+      values?: number[] | null;
+      valueTs: number;
+    }> = [];
     const now = Date.now();
 
     for (const batch of batches) {
@@ -316,21 +317,36 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       }
       if (response.kind === 'read-bits') {
         for (const { reg, offset } of batch.rows) {
-          const bit = response.bits[offset] ?? false;
-          const value = bit ? 1 : 0;
-          valueUpdates.push({ id: reg.id, value, valueTs: now });
+          const dataCount = modbusDataValueCount(reg);
+          const values = response.bits
+            .slice(offset, offset + dataCount)
+            .map((bit) => (bit ? 1 : 0));
+          if (values.length === 0) continue;
+          const value = values[0];
+          valueUpdates.push({
+            id: reg.id,
+            value,
+            values: values.length > 1 ? values : null,
+            valueTs: now,
+          });
           if (reg.waveformChannel !== null) {
             samples.push({ registerId: reg.id, channel: reg.waveformChannel, value, ts: now });
           }
         }
       } else if (response.kind === 'read-regs') {
-        for (const { reg } of batch.rows) {
-          const span = registerSpan(reg.type);
-          const startIdx = reg.address - batch.start;
-          const window = response.regs.slice(startIdx, startIdx + span);
-          if (window.length < span) continue;
-          const value = decodeValue(reg.type, window);
-          valueUpdates.push({ id: reg.id, value, valueTs: now });
+        for (const { reg, offset } of batch.rows) {
+          const registerCount = modbusReadRowCount(reg);
+          const dataCount = modbusDataValueCount(reg);
+          const window = response.regs.slice(offset, offset + registerCount);
+          const values = decodeValues(reg.type, window).slice(0, dataCount);
+          if (values.length === 0) continue;
+          const value = values[0];
+          valueUpdates.push({
+            id: reg.id,
+            value,
+            values: values.length > 1 ? values : null,
+            valueTs: now,
+          });
           if (reg.waveformChannel !== null) {
             samples.push({ registerId: reg.id, channel: reg.waveformChannel, value, ts: now });
           }
@@ -405,7 +421,9 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
 
   async function writeOnce() {
     const regs = registers.value.filter(
-      (r) => r.periodicWrite && (r.functionCode === 0x05 || r.functionCode === 0x06),
+      (r) =>
+        r.periodicWrite &&
+        (r.functionCode === 0x05 || r.functionCode === 0x06 || r.functionCode === 0x10),
     );
     if (regs.length === 0) {
       if (status.value.kind === 'writing') emitStatus({ kind: 'idle' });
@@ -430,7 +448,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     // what is being pushed, then batch-send exactly like sendAll.
     sessionStore.setModbusRegisterValues(
       sessionId,
-      targets.map((t) => ({ id: t.reg.id, value: t.value, valueTs: now })),
+      targets.map((t) => ({ id: t.reg.id, value: t.value, values: null, valueTs: now })),
     );
     emitStatus({ kind: 'writing', count: targets.length });
     const regsWithValues = targets.map((t) => ({ ...t.reg, value: t.value }));
@@ -444,7 +462,9 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       config.value.enabled &&
       isConnected.value &&
       registers.value.some(
-        (r) => r.periodicWrite && (r.functionCode === 0x05 || r.functionCode === 0x06),
+        (r) =>
+          r.periodicWrite &&
+          (r.functionCode === 0x05 || r.functionCode === 0x06 || r.functionCode === 0x10),
       )
     );
   }
@@ -508,13 +528,13 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
   async function readOnce(reg: ModbusRegister): Promise<number | null> {
     if (!isReadFc(reg.functionCode)) return null;
     const fc = reg.functionCode as ReadFc;
-    const span = isBitFc(fc) ? 1 : registerSpan(reg.type);
+    const count = modbusReadRowCount(reg);
     const transport = config.value.transport;
     const batch: ModbusReadBatch = {
       slave: reg.slaveAddress,
       fc,
       start: reg.address,
-      count: span,
+      count,
       rows: [{ reg, offset: 0 }],
     };
     startListening();
@@ -528,16 +548,22 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
         return null;
       }
       if (response.kind === 'read-bits') {
-        const value = response.bits[0] ? 1 : 0;
+        const dataCount = modbusDataValueCount(reg);
+        const values = response.bits.slice(0, dataCount).map((bit) => (bit ? 1 : 0));
+        if (values.length === 0) return null;
+        const value = values[0];
         sessionStore.setModbusRegisterValues(sessionId, [
-          { id: reg.id, value, valueTs: Date.now() },
+          { id: reg.id, value, values: values.length > 1 ? values : null, valueTs: Date.now() },
         ]);
         return value;
       }
       if (response.kind === 'read-regs') {
-        const value = decodeValue(reg.type, response.regs.slice(0, span));
+        const dataCount = modbusDataValueCount(reg);
+        const values = decodeValues(reg.type, response.regs.slice(0, count)).slice(0, dataCount);
+        if (values.length === 0) return null;
+        const value = values[0];
         sessionStore.setModbusRegisterValues(sessionId, [
-          { id: reg.id, value, valueTs: Date.now() },
+          { id: reg.id, value, values: values.length > 1 ? values : null, valueTs: Date.now() },
         ]);
         return value;
       }
@@ -557,20 +583,18 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     if (shouldRunRead()) scheduleNextRead();
   }
 
-  /** Write a single row's value (FC05/06 single, or batched if contiguous). */
+  /** Write a single row's value (FC05/06/10). */
   async function sendRow(reg: ModbusRegister): Promise<boolean> {
-    if (reg.value === null || !Number.isFinite(reg.value)) return false;
-    // Capture the narrowed value before entering the closure — TS can't carry
-    // the null-guard narrowing into the withBusy callback.
-    const value = reg.value;
+    const batches = buildModbusWriteBatches([reg]);
+    if (batches.length === 0) return false;
     startListening();
     return withBusy(async () => {
-      const { ok } = await sendWriteBatches(buildModbusWriteBatches([{ ...reg, value }]));
+      const { ok } = await sendWriteBatches(batches);
       return ok === 1;
     });
   }
 
-  /** Write every writable row, auto-batching contiguous ones into FC0F/FC10. */
+  /** Write every writable row; only explicit FC10 register rows batch together. */
   async function sendAll(): Promise<{ sent: number; ok: number }> {
     startListening();
     return withBusy(() => sendWriteBatches(buildModbusWriteBatches(registers.value)));
@@ -589,7 +613,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     stopReplay();
     const byKey = new Map<string, ModbusRegister>();
     for (const reg of registers.value) {
-      if (reg.functionCode === 0x05 || reg.functionCode === 0x06) {
+      if (reg.functionCode === 0x05 || reg.functionCode === 0x06 || reg.functionCode === 0x10) {
         byKey.set(`${reg.slaveAddress}:${reg.functionCode}:${reg.address}`, reg);
       }
     }
@@ -638,6 +662,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     // Write the value; skip on failure (timeout/no-ack) but keep replaying.
     sessionStore.updateModbusRegister(sessionId, item.reg.id, {
       value: item.value,
+      values: null,
       valueTs: Date.now(),
     });
     await sendRow({ ...item.reg, value: item.value });

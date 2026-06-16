@@ -7,16 +7,22 @@
         <span class="stat-value port-name">{{ session.portName }}</span>
       </div>
       <span class="divider">|</span>
-      <div class="stat">
-        <span class="stat-label">TX</span>
-        <span class="stat-value tx">{{ formatBytes(session.txBytes) }}</span>
-        <span class="stat-detail">{{ session.txFrames }} {{ t('status.frames') }}</span>
-      </div>
-      <span class="divider">|</span>
-      <div class="stat">
-        <span class="stat-label">RX</span>
-        <span class="stat-value rx">{{ formatBytes(session.rxBytes) }}</span>
-        <span class="stat-detail">{{ session.rxFrames }} {{ t('status.frames') }}</span>
+      <div class="traffic-stats" :aria-label="t('session.stats.aria')">
+        <span class="mini-stat tx" :title="`TX ${session.txFrames} ${t('status.frames')}`">
+          <span class="mini-label">TX</span>
+          {{ formatBytes(session.txBytes) }}
+        </span>
+        <span class="mini-stat rx" :title="`RX ${session.rxFrames} ${t('status.frames')}`">
+          <span class="mini-label">RX</span>
+          {{ formatBytes(session.rxBytes) }}
+        </span>
+        <span
+          class="mini-stat"
+          :title="t('session.stats.totalFrames', { count: session.frames.length })"
+        >
+          <span class="mini-label">{{ t('session.stats.frames') }}</span>
+          {{ session.frames.length }}
+        </span>
       </div>
       <span v-if="session.isConnected && dataRate" class="divider">|</span>
       <div v-if="session.isConnected && dataRate" class="stat">
@@ -177,22 +183,51 @@ const duration = computed(() => {
   font-weight: 600;
 }
 
-.stat-value.tx {
-  color: var(--accent-green);
-}
-
-.stat-value.rx {
-  color: var(--accent-blue);
-}
-
 .stat-value.rate {
   color: var(--accent-amber);
   font-size: 11px;
 }
 
-.stat-detail {
-  color: var(--text-dim);
+.traffic-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.mini-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 7px;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mini-stat.tx {
+  color: var(--accent-green);
+  background: var(--accent-green-subtle);
+}
+
+.mini-stat.rx {
+  color: var(--accent-blue);
+  background: var(--accent-blue-subtle);
+}
+
+.mini-label {
+  color: var(--text-dim);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .divider {

@@ -11,11 +11,15 @@ import {
   crc16Modbus,
   decodeBit,
   decodeValue,
+  decodeValues,
   encodeValue,
+  encodeValues,
   isBitFc,
   isReadFc,
+  maxValueCountForRegisters,
   MODBUS_LIMITS,
   parseResponse,
+  registerCountForValues,
   registerSpan,
   verifyCrc,
 } from '../../src/lib/modbus.ts';
@@ -179,6 +183,8 @@ test('parseResponse returns null on bad CRC', () => {
 });
 
 test('decodeValue handles all register types', () => {
+  assert.equal(decodeValue('uint8', [0x1234]), 0x12);
+  assert.equal(decodeValue('int8', [0xff34]), -1);
   assert.equal(decodeValue('uint16', [0x1234]), 0x1234);
   assert.equal(decodeValue('int16', [0xffff]), -1);
   assert.equal(decodeValue('int16', [0x7fff]), 32767);
@@ -186,17 +192,47 @@ test('decodeValue handles all register types', () => {
   assert.equal(decodeValue('int32-be', [0xffff, 0xffff]), -1);
   // 1.0f = 0x3F800000 -> hi 0x3F80 lo 0x0000
   assert.ok(Math.abs(decodeValue('float32-be', [0x3f80, 0x0000]) - 1.0) < 1e-6);
+  assert.equal(decodeValue('uint32-le', [0x5678, 0x1234]), 0x12345678);
+  assert.equal(decodeValue('int32-le', [0x0000, 0x8000]), -0x80000000);
+  assert.ok(Math.abs(decodeValue('float32-le', [0x0000, 0x3f80]) - 1.0) < 1e-6);
   assert.equal(decodeValue('bool', [0]), 0);
   assert.equal(decodeValue('bool', [1]), 1);
 });
 
-test('encodeValue maps typed values to big-endian register words', () => {
+test('decodeValues decodes register windows into typed value lists', () => {
+  assert.deepEqual(decodeValues('uint8', [0x1234, 0x5678]), [0x12, 0x34, 0x56, 0x78]);
+  assert.deepEqual(decodeValues('int8', [0xff80, 0x017f]), [-1, -128, 1, 127]);
+  assert.deepEqual(decodeValues('uint16', [1, 2, 3]), [1, 2, 3]);
+  assert.deepEqual(decodeValues('int16', [0xffff, 0x0001]), [-1, 1]);
+  assert.deepEqual(
+    decodeValues('uint32-le', [0x5678, 0x1234, 0x0002, 0x0001]),
+    [0x12345678, 0x00010002],
+  );
+});
+
+test('encodeValue maps typed values to register words', () => {
   assert.deepEqual(encodeValue('bool', 2), [1]);
+  assert.deepEqual(encodeValue('uint8', 0x12), [0x1200]);
+  assert.deepEqual(encodeValue('int8', -1), [0xff00]);
   assert.deepEqual(encodeValue('uint16', 0x1234), [0x1234]);
   assert.deepEqual(encodeValue('int16', -1), [0xffff]);
   assert.deepEqual(encodeValue('uint32-be', 0x12345678), [0x1234, 0x5678]);
   assert.deepEqual(encodeValue('int32-be', -1), [0xffff, 0xffff]);
   assert.deepEqual(encodeValue('float32-be', 1), [0x3f80, 0x0000]);
+  assert.deepEqual(encodeValue('uint32-le', 0x12345678), [0x5678, 0x1234]);
+  assert.deepEqual(encodeValue('int32-le', -2), [0xfffe, 0xffff]);
+  assert.deepEqual(encodeValue('float32-le', 1), [0x0000, 0x3f80]);
+});
+
+test('encodeValues flattens typed value lists into register words', () => {
+  assert.deepEqual(encodeValues('uint8', [0x12, 0x34, 0x56]), [0x1234, 0x5600]);
+  assert.deepEqual(encodeValues('int8', [-1, -128, 1]), [0xff80, 0x0100]);
+  assert.deepEqual(encodeValues('uint16', [1, 2, 3]), [1, 2, 3]);
+  assert.deepEqual(
+    encodeValues('uint32-be', [0x12345678, 0x00010002]),
+    [0x1234, 0x5678, 0x0001, 0x0002],
+  );
+  assert.deepEqual(encodeValues('uint32-le', [0x12345678]), [0x5678, 0x1234]);
 });
 
 test('decodeBit maps boolean to 0/1', () => {
@@ -205,12 +241,31 @@ test('decodeBit maps boolean to 0/1', () => {
 });
 
 test('registerSpan reports 1 for 16-bit/bool and 2 for 32-bit types', () => {
+  assert.equal(registerSpan('uint8'), 1);
+  assert.equal(registerSpan('int8'), 1);
   assert.equal(registerSpan('uint16'), 1);
   assert.equal(registerSpan('int16'), 1);
   assert.equal(registerSpan('bool'), 1);
   assert.equal(registerSpan('uint32-be'), 2);
   assert.equal(registerSpan('int32-be'), 2);
   assert.equal(registerSpan('float32-be'), 2);
+  assert.equal(registerSpan('uint32-le'), 2);
+  assert.equal(registerSpan('int32-le'), 2);
+  assert.equal(registerSpan('float32-le'), 2);
+});
+
+test('registerCountForValues converts data counts to Modbus register counts', () => {
+  assert.equal(registerCountForValues('uint8', 10), 5);
+  assert.equal(registerCountForValues('int8', 10), 5);
+  assert.equal(registerCountForValues('uint8', 9), 5);
+  assert.equal(registerCountForValues('uint16', 10), 10);
+  assert.equal(registerCountForValues('int16', 10), 10);
+  assert.equal(registerCountForValues('uint32-be', 10), 20);
+  assert.equal(registerCountForValues('int32-le', 10), 20);
+  assert.equal(registerCountForValues('float32-be', 10), 20);
+  assert.equal(maxValueCountForRegisters('uint8', MODBUS_LIMITS.readRegisters), 250);
+  assert.equal(maxValueCountForRegisters('int8', MODBUS_LIMITS.readRegisters), 250);
+  assert.equal(maxValueCountForRegisters('uint32-be', MODBUS_LIMITS.readRegisters), 62);
 });
 
 test('isBitFc and isReadFc classify function codes', () => {

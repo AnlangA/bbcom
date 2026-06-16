@@ -40,8 +40,30 @@ export type WriteSingleFc = 0x05 | 0x06;
 /** Multiple-write family (FC 0F/10). */
 export type WriteMultipleFc = 0x0f | 0x10;
 
-/** Register value encodings users can pick per row. 32-bit types span 2 regs. */
-export type ModbusValueType = 'bool' | 'uint16' | 'int16' | 'uint32-be' | 'int32-be' | 'float32-be';
+/**
+ * Register value encodings users can pick per row. 32-bit types span 2 regs.
+ *
+ * 32-bit types come in two byte-order families (each spanning 2 registers):
+ * - `-be`: the value's high word is in the lower register address (the natural
+ *   "big-endian register order"). Standard for most PLCs.
+ * - `-le`: the value's low word is in the lower register address (word-swapped
+ *   / "little-endian register order"). Common on Schneider, some energy
+ *   meters, and embedded ARM devices. The two 16-bit words are swapped
+ *   relative to the `-be` layout — this is a register-order swap, not a byte
+ *   swap within each word (each word stays big-endian on the wire).
+ */
+export type ModbusValueType =
+  | 'bool'
+  | 'uint8'
+  | 'int8'
+  | 'uint16'
+  | 'int16'
+  | 'uint32-be'
+  | 'int32-be'
+  | 'float32-be'
+  | 'uint32-le'
+  | 'int32-le'
+  | 'float32-le';
 
 /** Protocol quantity limits from the public Modbus function-code definitions. */
 export const MODBUS_LIMITS = {
@@ -53,7 +75,22 @@ export const MODBUS_LIMITS = {
 
 /** How many 16-bit registers a value type occupies (coils are 1 bit). */
 export function registerSpan(type: ModbusValueType): 1 | 2 {
-  return type === 'bool' || type === 'uint16' || type === 'int16' ? 1 : 2;
+  return type === 'bool' || isByteValueType(type) || type === 'uint16' || type === 'int16' ? 1 : 2;
+}
+
+/** How many 16-bit registers are required to carry `count` typed data values. */
+export function registerCountForValues(type: ModbusValueType, count: number): number {
+  const valueCount = Math.max(1, Math.floor(count));
+  if (isByteValueType(type)) return Math.ceil(valueCount / 2);
+  if (type === 'bool') return valueCount;
+  return valueCount * registerSpan(type);
+}
+
+/** Maximum typed data values that fit in a Modbus register-count limit. */
+export function maxValueCountForRegisters(type: ModbusValueType, registerLimit: number): number {
+  if (isByteValueType(type)) return registerLimit * 2;
+  if (type === 'bool') return registerLimit;
+  return Math.floor(registerLimit / registerSpan(type));
 }
 
 /** True for FC 01/02/05/0F (coil / discrete-input, 1-bit). */
@@ -307,40 +344,119 @@ export function parseResponse(
  * Decode a window of 16-bit registers into a single value per `type`.
  * `regs` must hold exactly `registerSpan(type)` entries. For 'bool', pass the
  * single coil state in `regs[0]` (1 = true) — or use `decodeBit` directly.
+ *
+ * For 32-bit `-le` types the two register words are swapped before decoding:
+ * a value stored little-endian-on-the-wire (low word in the lower address)
+ * is reassembled into the canonical hi/lo pair the BE decoder expects.
  */
 export function decodeValue(type: ModbusValueType, regs: number[]): number {
   if (type === 'bool') return regs[0] ? 1 : 0;
+  if (type === 'uint8') return (regs[0] >>> 8) & 0xff;
+  if (type === 'int8') return toInt8((regs[0] >>> 8) & 0xff);
   if (type === 'uint16') return regs[0] & 0xffff;
   if (type === 'int16') return toInt16(regs[0]);
-  const hi = regs[0] >>> 0;
-  const lo = regs[1] >>> 0;
-  if (type === 'uint32-be') return hi * 0x10000 + lo;
-  if (type === 'int32-be') return toInt32(hi, lo);
-  if (type === 'float32-be') return decodeFloat32BE(hi, lo);
+  const { hi, lo } = u32Halves(type, regs);
+  if (type === 'uint32-be' || type === 'uint32-le') return hi * 0x10000 + lo;
+  if (type === 'int32-be' || type === 'int32-le') return toInt32(hi, lo);
+  if (type === 'float32-be' || type === 'float32-le') return decodeFloat32BE(hi, lo);
   return NaN;
+}
+
+/** Decode a register window into as many typed values as it can hold. */
+export function decodeValues(type: ModbusValueType, regs: number[]): number[] {
+  if (isByteValueType(type)) {
+    const out: number[] = [];
+    for (const reg of regs) {
+      const hi = (reg >>> 8) & 0xff;
+      const lo = reg & 0xff;
+      out.push(type === 'int8' ? toInt8(hi) : hi, type === 'int8' ? toInt8(lo) : lo);
+    }
+    return out;
+  }
+  const span = registerSpan(type);
+  const out: number[] = [];
+  for (let i = 0; i + span <= regs.length; i += span) {
+    out.push(decodeValue(type, regs.slice(i, i + span)));
+  }
+  return out;
 }
 
 /**
  * Encode a UI-level numeric value into Modbus 16-bit register words. This is
  * the inverse of `decodeValue` for writable row types and is used before FC06
  * or FC10 requests are built.
+ *
+ * For 32-bit `-le` types the encoded hi/lo pair is swapped to word order before
+ * being returned, so it round-trips through `decodeValue`.
  */
 export function encodeValue(type: ModbusValueType, value: number): number[] {
   if (!Number.isFinite(value)) throw new RangeError('value must be finite');
   if (type === 'bool') return [value === 0 ? 0 : 1];
+  if (type === 'uint8') return [clampInteger(value, 0, 0xff) << 8];
+  if (type === 'int8') return [(clampInteger(value, -0x80, 0x7f) & 0xff) << 8];
   if (type === 'uint16') return [clampInteger(value, 0, 0xffff)];
   if (type === 'int16') return [clampInteger(value, -0x8000, 0x7fff) & 0xffff];
-  if (type === 'uint32-be') {
+  if (type === 'uint32-be' || type === 'uint32-le') {
     const u32 = clampInteger(value, 0, 0xffffffff);
-    return [(u32 >>> 16) & 0xffff, u32 & 0xffff];
+    return emitU32Words(type, (u32 >>> 16) & 0xffff, u32 & 0xffff);
   }
-  if (type === 'int32-be') {
+  if (type === 'int32-be' || type === 'int32-le') {
     const i32 = clampInteger(value, -0x80000000, 0x7fffffff);
     const u32 = i32 < 0 ? i32 + 0x100000000 : i32;
-    return [(u32 >>> 16) & 0xffff, u32 & 0xffff];
+    return emitU32Words(type, (u32 >>> 16) & 0xffff, u32 & 0xffff);
   }
-  if (type === 'float32-be') return encodeFloat32BE(value);
+  if (type === 'float32-be' || type === 'float32-le') {
+    const [hi, lo] = encodeFloat32BE(value);
+    return emitU32Words(type, hi, lo);
+  }
   return [];
+}
+
+/** Encode multiple UI-level numeric values into a flat register-word list. */
+export function encodeValues(type: ModbusValueType, values: number[]): number[] {
+  if (isByteValueType(type)) {
+    const out: number[] = [];
+    for (let i = 0; i < values.length; i += 2) {
+      const hi =
+        type === 'int8'
+          ? clampInteger(values[i] ?? 0, -0x80, 0x7f) & 0xff
+          : clampInteger(values[i] ?? 0, 0, 0xff);
+      const lo =
+        type === 'int8'
+          ? clampInteger(values[i + 1] ?? 0, -0x80, 0x7f) & 0xff
+          : clampInteger(values[i + 1] ?? 0, 0, 0xff);
+      out.push((hi << 8) | lo);
+    }
+    return out;
+  }
+  const out: number[] = [];
+  for (const value of values) out.push(...encodeValue(type, value));
+  return out;
+}
+
+/**
+ * Reassemble the two 16-bit register words for a 32-bit `type` into the value's
+ * canonical {hi, lo} halves. `-be` reads them in wire order (regs[0]=hi);
+ * `-le` swaps them (regs[0]=lo). Throws for non-32-bit types.
+ */
+function u32Halves(type: ModbusValueType, regs: number[]): { hi: number; lo: number } {
+  if (type === 'uint32-le' || type === 'int32-le' || type === 'float32-le') {
+    // Low word arrives in the lower register address.
+    return { hi: regs[1] >>> 0, lo: regs[0] >>> 0 };
+  }
+  return { hi: regs[0] >>> 0, lo: regs[1] >>> 0 };
+}
+
+/**
+ * Emit the two register words for a 32-bit `type` from the value's canonical
+ * {hi, lo} halves. `-be` writes them in wire order; `-le` swaps them so the
+ * low word lands in the lower register address (round-trips with u32Halves).
+ */
+function emitU32Words(type: ModbusValueType, hi: number, lo: number): number[] {
+  if (type === 'uint32-le' || type === 'int32-le' || type === 'float32-le') {
+    return [lo & 0xffff, hi & 0xffff];
+  }
+  return [hi & 0xffff, lo & 0xffff];
 }
 
 /** Decode a single coil/discrete-input bit into 0/1. */
@@ -351,6 +467,11 @@ export function decodeBit(bit: boolean): number {
 function toInt16(u16: number): number {
   const v = u16 & 0xffff;
   return v >= 0x8000 ? v - 0x10000 : v;
+}
+
+function toInt8(u8: number): number {
+  const v = u8 & 0xff;
+  return v >= 0x80 ? v - 0x100 : v;
 }
 
 function toInt32(hi: number, lo: number): number {
@@ -376,6 +497,10 @@ function encodeFloat32BE(value: number): number[] {
 
 function clampInteger(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
+function isByteValueType(type: ModbusValueType): boolean {
+  return type === 'uint8' || type === 'int8';
 }
 
 function assertU16(name: string, value: number): number {

@@ -213,8 +213,16 @@ test('modbus registers + config round-trip through persistence; values are dropp
       periodicRead: true,
       periodicWrite: false,
     });
-    s.setModbusRegisterValues(id, [{ id: s.sessions[0].modbusRegisters[0].id, value: 42, valueTs: 1234 }]);
-    s.setModbusConfig(id, { transport: 'pdu', enabled: true, pollIntervalMs: 250, writeIntervalMs: 500, timeoutMs: 300 });
+    s.setModbusRegisterValues(id, [
+      { id: s.sessions[0].modbusRegisters[0].id, value: 42, valueTs: 1234 },
+    ]);
+    s.setModbusConfig(id, {
+      transport: 'pdu',
+      enabled: true,
+      pollIntervalMs: 250,
+      writeIntervalMs: 500,
+      timeoutMs: 300,
+    });
     s.setWaveformSourceMode(id, 'register');
     s.flushPersistedSessions();
 
@@ -237,9 +245,60 @@ test('modbus registers + config round-trip through persistence; values are dropp
     assert.equal(restored.sessions[0].modbusConfig.transport, 'pdu');
     assert.equal(restored.sessions[0].modbusConfig.enabled, true);
     assert.equal(restored.sessions[0].modbusConfig.pollIntervalMs, 250);
-    assert.equal(restored.sessions[0].modbusConfig.writeIntervalMs, 500, 'writeIntervalMs survives reload');
+    assert.equal(
+      restored.sessions[0].modbusConfig.writeIntervalMs,
+      500,
+      'writeIntervalMs survives reload',
+    );
     assert.equal(restored.sessions[0].modbusConfig.timeoutMs, 300);
     assert.equal(restored.sessions[0].waveformSourceMode, 'register');
+  });
+});
+
+test('modbus register edits are normalized after a row is added', async () => {
+  await withLocalStorageMock(async () => {
+    const s = store();
+    const id = s.createSession('COM12', cfg);
+    const regId = s.addModbusRegister(id, {
+      name: 'Setpoint',
+      slaveAddress: 1,
+      functionCode: 0x03,
+      address: 0,
+      type: 'uint16',
+      waveformChannel: 0,
+      periodicRead: true,
+      periodicWrite: false,
+    });
+    assert.ok(regId);
+
+    s.updateModbusRegister(id, regId, {
+      slaveAddress: 999,
+      functionCode: 0x10,
+      address: 99999,
+      quantity: 999,
+      type: 'float32-be',
+      unit: '',
+      waveformChannel: 99,
+      periodicRead: true,
+      periodicWrite: true,
+      value: 1,
+      values: [1, 2],
+      valueTs: 123,
+    });
+
+    const reg = s.sessions[0].modbusRegisters[0];
+    assert.equal(reg.slaveAddress, 247);
+    assert.equal(reg.functionCode, 0x10);
+    assert.equal(reg.address, 65535);
+    assert.equal(reg.quantity, 61);
+    assert.equal(reg.type, 'float32-be');
+    assert.equal(reg.unit, undefined);
+    assert.equal(reg.waveformChannel, null);
+    assert.equal(reg.periodicRead, false);
+    assert.equal(reg.periodicWrite, true);
+    assert.equal(reg.value, 1);
+    assert.deepEqual(reg.values, [1, 2]);
+    assert.equal(reg.valueTs, 123);
   });
 });
 
@@ -266,7 +325,16 @@ test('modbus config is clamped to valid ranges on hydration', async () => {
           portConfig: cfg,
           frames: [],
           modbusRegisters: [
-            { id: 'r1', name: 'Bad', slaveAddress: 999, functionCode: 0x99, address: -5, type: 'bogus', value: 7, valueTs: 1 },
+            {
+              id: 'r1',
+              name: 'Bad',
+              slaveAddress: 999,
+              functionCode: 0x99,
+              address: -5,
+              type: 'bogus',
+              value: 7,
+              valueTs: 1,
+            },
           ],
           modbusConfig: { transport: 'weird', enabled: 'yes', pollIntervalMs: 5, timeoutMs: 99999 },
           waveformSourceMode: 'unknown',
