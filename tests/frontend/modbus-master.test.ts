@@ -111,6 +111,7 @@ function addRegister(
   patch: {
     id?: string;
     name?: string;
+    slaveAddress?: number;
     fc?: ModbusFunctionCode;
     address?: number;
     type?: ModbusValueType;
@@ -122,7 +123,7 @@ function addRegister(
 ): ModbusRegister {
   const id = h.store.addModbusRegister(h.sessionId, {
     name: patch.name ?? patch.id ?? 'Register',
-    slaveAddress: 1,
+    slaveAddress: patch.slaveAddress ?? 1,
     functionCode: patch.fc ?? 0x03,
     address: patch.address ?? 0,
     quantity: 1,
@@ -823,6 +824,49 @@ test('periodic read loop backs off after consecutive timeouts and resets after a
       `expected normal cadence after success, got ${sentAt[3] - sentAt[2]}ms`,
     );
     assert.notEqual(h.store.sessions[0].modbusRegisters[0].value, null);
+  } finally {
+    h.scope.stop();
+  }
+});
+
+test('periodic read backoff skips only the failing batch while healthy slaves continue', async () => {
+  const seenSlaves: number[] = [];
+  const h = createHarness(
+    (payload, reply) => {
+      const slave = payload[0];
+      seenSlaves.push(slave);
+      if (slave === 2) reply(rtuReadRegs(2, 0x03, [200 + seenSlaves.length]));
+      return true;
+    },
+    { enabled: true, pollIntervalMs: 100, timeoutMs: 20 },
+  );
+
+  try {
+    addRegister(h, { id: 'offline-slave', slaveAddress: 1, address: 2 });
+    addRegister(h, { id: 'healthy-slave', slaveAddress: 2, address: 2 });
+    h.master.start();
+
+    await waitFor(
+      () => h.statuses.some((status) => status.kind === 'backoff'),
+      500,
+      'offline slave should enter keyed backoff after consecutive timeouts',
+    );
+
+    const offlineAttemptsAtBackoff = seenSlaves.filter((slave) => slave === 1).length;
+    const healthyAttemptsAtBackoff = seenSlaves.filter((slave) => slave === 2).length;
+
+    await waitFor(
+      () => seenSlaves.filter((slave) => slave === 2).length > healthyAttemptsAtBackoff,
+      180,
+      'healthy slave should continue while offline slave is cooling down',
+    );
+
+    assert.equal(
+      seenSlaves.filter((slave) => slave === 1).length,
+      offlineAttemptsAtBackoff,
+      'offline slave should be skipped during its keyed cooldown',
+    );
+    assert.notEqual(h.store.sessions[0].modbusRegisters[1].value, null);
   } finally {
     h.scope.stop();
   }

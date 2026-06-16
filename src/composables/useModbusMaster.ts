@@ -1,35 +1,36 @@
 import { onScopeDispose, ref, watch, type Ref } from 'vue';
-import { isBitFc, isReadFc, type ModbusResponse, type ReadFc } from '../lib/modbus';
+import { isReadFc, type ModbusResponse, type ReadFc } from '../lib/modbus';
 import {
   buildModbusReadBatches,
   buildModbusWriteBatches,
-  encodeModbusCoilWriteValues,
-  encodeModbusRegisterWriteValues,
   modbusReadRowCount,
   type ModbusReadBatch,
   type ModbusWriteBatch,
 } from '../lib/modbus-batches';
 import {
-  readRequest,
-  writeMultipleCoilsRequest,
-  writeMultipleRegistersRequest,
-  writeSingleCoilRequest,
-  writeSingleRegisterRequest,
-  type ModbusTransport,
-} from '../lib/modbus-transport';
-import { ModbusBackoff } from '../lib/modbus-backoff';
+  runModbusReadBatches,
+  runModbusWriteBatches,
+  type ModbusPeriodicBatchContext,
+  type ModbusBatchStatusEvent,
+} from '../lib/modbus-batch-runner';
 import { ModbusLoopCoordinator } from '../lib/modbus-loop-coordinator';
 import {
-  isExpectedModbusWriteAck,
-  mapModbusReadResponse,
-  type ModbusSample,
-} from '../lib/modbus-response-mapper';
+  ModbusPeriodicOutcomeTracker,
+  type ModbusTransactionOutcome,
+} from '../lib/modbus-periodic-outcome';
+import { buildModbusReadWireRequest } from '../lib/modbus-request-builder';
+import { mapModbusReadResponse, type ModbusSample } from '../lib/modbus-response-mapper';
 import { ModbusReplayCoordinator } from '../lib/modbus-replay-coordinator';
 import {
   ModbusTransactionRunner,
   type ModbusTransactionStatus,
 } from '../lib/modbus-transaction-runner';
-import { isPeriodicWritableFc, ModbusWriteSource } from '../lib/modbus-write-source';
+import {
+  buildModbusReplayWriteTargets,
+  hasPeriodicWritableRows,
+  ModbusWriteSource,
+  type ModbusReplayWriteTarget,
+} from '../lib/modbus-write-source';
 import type { ModbusStreamRecord } from '../lib/modbus-stream';
 import { useSessionStore } from '../stores/sessions';
 import type { ModbusMasterConfig, ModbusRegister } from '../types';
@@ -63,23 +64,11 @@ export type ModbusMasterStatus =
   | {
       kind: 'backoff';
       scope: 'read' | 'write';
+      key: string;
       delayMs: number;
       consecutiveFailures: number;
     }
   | { kind: 'error'; message: string };
-
-type PeriodicBackoffScope = 'read' | 'write';
-
-interface TransactionOutcome {
-  response: ModbusResponse | null;
-  failure: ModbusTransactionStatus | null;
-}
-
-interface ReplayQueueItem {
-  ts: number;
-  reg: ModbusRegister;
-  value: number;
-}
 
 /**
  * Per-session Modbus master. Owns two independent background loops plus the
@@ -123,8 +112,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     opts.onStatus?.(s);
   }
 
-  const readBackoff = new ModbusBackoff();
-  const writeBackoff = new ModbusBackoff();
+  const periodicOutcomes = new ModbusPeriodicOutcomeTracker();
 
   const transactions = new ModbusTransactionRunner<ModbusReadBatch | ModbusWriteBatch>({
     sendBytes,
@@ -139,13 +127,13 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
   const loops = new ModbusLoopCoordinator({
     shouldRunRead,
     shouldRunWrite,
-    getReadIntervalMs: () => readBackoff.delayFor(config.value.pollIntervalMs),
-    getWriteIntervalMs: () => writeBackoff.delayFor(config.value.writeIntervalMs),
+    getReadIntervalMs: () => config.value.pollIntervalMs,
+    getWriteIntervalMs: () => config.value.writeIntervalMs,
     runRead: pollOnce,
     runWrite: writeOnce,
   });
 
-  const replayCoordinator = new ModbusReplayCoordinator<ReplayQueueItem>({
+  const replayCoordinator = new ModbusReplayCoordinator<ModbusReplayWriteTarget>({
     runItem: runReplayItem,
     onProgress: (remaining) => {
       replaying.value = true;
@@ -191,38 +179,15 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
 
   // --- Transaction core --------------------------------------------------
 
-  function expectedReadResponseLength(
-    batch: ModbusReadBatch,
-    transport: ModbusTransport,
-  ): number | undefined {
-    // RTU frames itself via CRC; only PDU transport needs an explicit length.
-    if (transport === 'rtu') return undefined;
-    if (isBitFc(batch.fc)) {
-      // [addr][fc][byteCount][data…] — but PDU drops addr, so [fc][byteCount][data…].
-      const byteCount = Math.ceil(batch.count / 8);
-      return 2 + byteCount;
-    }
-    return 2 + batch.count * 2;
-  }
-
-  function expectedWriteResponseLength(
-    _batch: ModbusWriteBatch,
-    transport: ModbusTransport,
-  ): number | undefined {
-    if (transport === 'rtu') return undefined;
-    // write-ack echo: [fc][startHi][startLo][countHi][countLo] = 5 (PDU, no addr).
-    return 5;
-  }
-
   /** Send a framed request and resolve with the parsed response (or null on timeout). */
   async function transact(
     batch: ModbusReadBatch | ModbusWriteBatch,
     buildWire: () => Uint8Array,
     expectedLen: number | undefined,
-    periodicScope?: PeriodicBackoffScope,
+    periodicContext?: ModbusPeriodicBatchContext,
   ): Promise<ModbusResponse | null> {
     const outcome = await transactDetailed(batch, buildWire, expectedLen);
-    if (periodicScope) recordPeriodicOutcome(periodicScope, outcome);
+    if (periodicContext) recordPeriodicOutcome(periodicContext, outcome);
     return outcome.response;
   }
 
@@ -230,46 +195,46 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     batch: ModbusReadBatch | ModbusWriteBatch,
     buildWire: () => Uint8Array,
     expectedLen: number | undefined,
-  ): Promise<TransactionOutcome> {
+  ): Promise<ModbusTransactionOutcome> {
     lastTransactionStatus = null;
     const response = await transactions.transact(batch, buildWire, expectedLen);
-    if (response) resetBackoffs();
     return { response, failure: response ? null : lastTransactionStatus };
   }
 
-  function recordPeriodicOutcome(scope: PeriodicBackoffScope, outcome: TransactionOutcome): void {
-    const backoff = scope === 'read' ? readBackoff : writeBackoff;
-    if (outcome.response) {
-      backoff.recordSuccess();
-      return;
-    }
-    if (!shouldTrackBackoff(outcome.failure)) return;
-
-    backoff.recordFailure();
-    if (!backoff.isBackingOff()) return;
-
-    const baseDelayMs =
-      scope === 'read' ? config.value.pollIntervalMs : config.value.writeIntervalMs;
-    emitStatus({
-      kind: 'backoff',
-      scope,
-      delayMs: backoff.delayFor(baseDelayMs),
-      consecutiveFailures: backoff.getConsecutiveFailures(),
+  function recordPeriodicOutcome(
+    context: ModbusPeriodicBatchContext,
+    outcome: ModbusTransactionOutcome,
+  ): void {
+    const status = periodicOutcomes.record(context.scope, context.key, outcome, {
+      baseDelayMs: periodicBaseDelayMs(context.scope),
+      trackFailure: shouldTrackBackoff(),
     });
+    if (status) emitStatus(status);
   }
 
-  function shouldTrackBackoff(failure: ModbusTransactionStatus | null): boolean {
-    return (
-      !stopped &&
-      config.value.enabled &&
-      isConnected.value &&
-      (failure?.kind === 'timeout' || failure?.kind === 'error')
-    );
+  function shouldTrackBackoff(): boolean {
+    return !stopped && config.value.enabled && isConnected.value;
   }
 
   function resetBackoffs(): void {
-    readBackoff.reset();
-    writeBackoff.reset();
+    periodicOutcomes.reset();
+  }
+
+  function periodicBaseDelayMs(scope: ModbusPeriodicBatchContext['scope']): number {
+    return scope === 'read' ? config.value.pollIntervalMs : config.value.writeIntervalMs;
+  }
+
+  function shouldSkipPeriodicBatch(
+    _batch: ModbusReadBatch | ModbusWriteBatch,
+    context: ModbusPeriodicBatchContext,
+  ): boolean {
+    return periodicOutcomes.isCoolingDown(context.scope, context.key);
+  }
+
+  function emitBatchStatusEvents(events: readonly ModbusBatchStatusEvent[]): void {
+    for (const event of events) {
+      if (event.kind === 'exception') emitStatus({ kind: 'exception', code: event.code });
+    }
   }
 
   /**
@@ -279,35 +244,20 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
    */
   async function sendWriteBatches(
     batches: ModbusWriteBatch[],
-    periodicScope?: PeriodicBackoffScope,
+    periodicScope?: ModbusPeriodicScope,
   ): Promise<{ sent: number; ok: number }> {
     const transport = config.value.transport;
-    let ok = 0;
-    let sent = 0;
-    for (const batch of batches) {
-      if (stopped) break;
-      sent += batch.rows.length;
-      let wire: Uint8Array;
-      if (batch.kind === 'coil') {
-        const bits = encodeModbusCoilWriteValues(batch);
-        wire =
-          batch.fc === 0x05
-            ? writeSingleCoilRequest(transport, batch.slave, batch.start, bits[0])
-            : writeMultipleCoilsRequest(transport, batch.slave, batch.start, bits);
-      } else {
-        const values = encodeModbusRegisterWriteValues(batch);
-        wire =
-          batch.fc === 0x06
-            ? writeSingleRegisterRequest(transport, batch.slave, batch.start, values[0])
-            : writeMultipleRegistersRequest(transport, batch.slave, batch.start, values);
-      }
-      const expectedLen = expectedWriteResponseLength(batch, transport);
-      const response = await transact(batch, () => wire, expectedLen, periodicScope);
-      if (isExpectedModbusWriteAck(response, batch, transport)) ok += batch.rows.length;
-      else if (response?.kind === 'exception')
-        emitStatus({ kind: 'exception', code: response.code });
-    }
-    return { sent, ok };
+    const result = await runModbusWriteBatches({
+      batches,
+      transport,
+      periodicScope,
+      shouldStop: () => stopped,
+      shouldSkipBatch: shouldSkipPeriodicBatch,
+      transact: (batch, wire, expectedLen, context) =>
+        transact(batch, () => wire, expectedLen, context),
+    });
+    emitBatchStatusEvents(result.statuses);
+    return { sent: result.sent, ok: result.ok };
   }
 
   // --- Read loop ---------------------------------------------------------
@@ -322,35 +272,23 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       return;
     }
     emitStatus({ kind: 'polling', count: batches.length });
-    const samples: ModbusSample[] = [];
-    const valueUpdates: Array<{
-      id: string;
-      value: number;
-      values?: number[] | null;
-      valueTs: number;
-    }> = [];
-    const now = Date.now();
+    const result = await runModbusReadBatches({
+      batches,
+      transport,
+      periodicScope: 'read',
+      shouldStop: () => stopped,
+      shouldSkipBatch: shouldSkipPeriodicBatch,
+      transact: (batch, wire, expectedLen, context) =>
+        transact(batch, () => wire, expectedLen, context),
+    });
+    if (result.stopped) return;
+    emitBatchStatusEvents(result.statuses);
 
-    for (const batch of batches) {
-      if (stopped) return;
-      const wire = readRequest(transport, batch.slave, batch.fc, batch.start, batch.count);
-      const expectedLen = expectedReadResponseLength(batch, transport);
-      const response = await transact(batch, () => wire, expectedLen, 'read');
-      if (!response) continue; // timeout / send failure → skip, next tick retries
-      if (response.kind === 'exception') {
-        emitStatus({ kind: 'exception', code: response.code });
-        continue;
-      }
-      const mapped = mapModbusReadResponse(batch, response, now);
-      valueUpdates.push(...mapped.valueUpdates);
-      samples.push(...mapped.samples);
+    if (result.valueUpdates.length > 0) {
+      sessionStore.setModbusRegisterValues(sessionId, result.valueUpdates);
     }
-
-    if (valueUpdates.length > 0) {
-      sessionStore.setModbusRegisterValues(sessionId, valueUpdates);
-    }
-    if (samples.length > 0) {
-      opts.onSamples?.(samples);
+    if (result.samples.length > 0) {
+      opts.onSamples?.(result.samples);
     }
     if (status.value.kind === 'polling') emitStatus({ kind: 'idle' });
   }
@@ -411,7 +349,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       !stopped &&
       config.value.enabled &&
       isConnected.value &&
-      registers.value.some((r) => r.periodicWrite && isPeriodicWritableFc(r.functionCode))
+      hasPeriodicWritableRows(registers.value)
     );
   }
 
@@ -459,8 +397,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     };
     startListening();
     return withBusy(async () => {
-      const wire = readRequest(transport, batch.slave, batch.fc, batch.start, batch.count);
-      const expectedLen = expectedReadResponseLength(batch, transport);
+      const { wire, expectedLen } = buildModbusReadWireRequest(transport, batch);
       const response = await transact(batch, () => wire, expectedLen);
       if (!response) return null;
       if (response.kind === 'exception') {
@@ -507,27 +444,14 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
 
   /**
    * Replay a loaded `.bbreg` stream onto the device's registers. Each record is
-   * matched to a write-row by `(slave, fc, addr)`, sorted by timestamp, and
-   * written at its recorded inter-arrival cadence via `sendRow` (which respects
-   * the busy guard + serialized TX). Honors the per-request timeout; a missing
-   * match or an unreceptive slave skips the record without aborting the replay.
+   * matched to the same write-row key used by periodic write sources, sorted by
+   * timestamp, and written at its recorded inter-arrival cadence via `sendRow`
+   * (which respects the busy guard + serialized TX). Honors the per-request
+   * timeout; a missing match or an unreceptive slave skips the record without
+   * aborting the replay.
    */
   function startReplay(records: ModbusStreamRecord[]): void {
-    const byKey = new Map<string, ModbusRegister>();
-    for (const reg of registers.value) {
-      if (reg.functionCode === 0x05 || reg.functionCode === 0x06 || reg.functionCode === 0x10) {
-        byKey.set(`${reg.slaveAddress}:${reg.functionCode}:${reg.address}`, reg);
-      }
-    }
-    const queue: ReplayQueueItem[] = [];
-    for (const rec of records) {
-      // FC03 read records replay onto the matching FC06 write row at the same
-      // address (a recorded sensor value becomes the setpoint to push back).
-      const writeFc = rec.fc === 0x03 ? 0x06 : rec.fc === 0x01 ? 0x05 : rec.fc;
-      const reg = byKey.get(`${rec.slave}:${writeFc}:${rec.addr}`);
-      if (!reg) continue;
-      queue.push({ ts: rec.t, reg, value: rec.value });
-    }
+    const queue = buildModbusReplayWriteTargets(records, registers.value);
     if (queue.length === 0) {
       replayCoordinator.stop();
       return;
@@ -536,7 +460,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     replayCoordinator.start(queue);
   }
 
-  async function runReplayItem(item: ReplayQueueItem): Promise<void> {
+  async function runReplayItem(item: ModbusReplayWriteTarget): Promise<void> {
     // Write the value; skip on failure (timeout/no-ack) but keep replaying.
     sessionStore.updateModbusRegister(sessionId, item.reg.id, {
       value: item.value,

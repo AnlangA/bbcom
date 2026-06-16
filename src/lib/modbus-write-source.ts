@@ -6,6 +6,10 @@ export interface ModbusWriteTarget {
   value: number;
 }
 
+export interface ModbusReplayWriteTarget extends ModbusWriteTarget {
+  ts: number;
+}
+
 /**
  * Periodic-write data source for loaded `.bbreg` streams.
  *
@@ -20,7 +24,7 @@ export class ModbusWriteSource {
   load(records: readonly ModbusStreamRecord[], name: string): void {
     this.clear();
     for (const rec of records) {
-      const key = writeSourceKey(rec.slave, writeFcForRecord(rec.fc), rec.addr);
+      const key = writeSourceRecordKey(rec);
       const seq = this.sequences.get(key);
       if (seq) seq.push(rec.value);
       else this.sequences.set(key, [rec.value]);
@@ -48,7 +52,7 @@ export class ModbusWriteSource {
     for (const reg of registers) {
       if (!reg.periodicWrite || !isPeriodicWritableFc(reg.functionCode)) continue;
 
-      const key = writeSourceKey(reg.slaveAddress, reg.functionCode, reg.address);
+      const key = writeSourceRegisterKey(reg);
       const seq = this.sequences.get(key);
       if (!seq || seq.length === 0) continue;
 
@@ -59,6 +63,42 @@ export class ModbusWriteSource {
     }
     return targets;
   }
+}
+
+export function buildModbusReplayWriteTargets(
+  records: readonly ModbusStreamRecord[],
+  registers: readonly ModbusRegister[],
+): ModbusReplayWriteTarget[] {
+  const byKey = new Map<string, ModbusRegister>();
+  for (const reg of registers) {
+    if (isPeriodicWritableFc(reg.functionCode)) {
+      byKey.set(writeSourceRegisterKey(reg), reg);
+    }
+  }
+
+  const targets: ModbusReplayWriteTarget[] = [];
+  for (const rec of records) {
+    const reg = byKey.get(writeSourceRecordKey(rec));
+    if (!reg) continue;
+    targets.push({ ts: rec.t, reg, value: rec.value });
+  }
+  return targets;
+}
+
+export function hasPeriodicWritableRows(registers: readonly ModbusRegister[]): boolean {
+  return registers.some((reg) => reg.periodicWrite && isPeriodicWritableFc(reg.functionCode));
+}
+
+export function writeSourceRecordKey(
+  rec: Pick<ModbusStreamRecord, 'slave' | 'fc' | 'addr'>,
+): string {
+  return writeSourceKey(rec.slave, writeFcForRecord(rec.fc), rec.addr);
+}
+
+export function writeSourceRegisterKey(
+  reg: Pick<ModbusRegister, 'slaveAddress' | 'functionCode' | 'address'>,
+): string {
+  return writeSourceKey(reg.slaveAddress, reg.functionCode, reg.address);
 }
 
 export function writeSourceKey(slave: number, fc: number, addr: number): string {

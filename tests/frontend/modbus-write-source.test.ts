@@ -2,9 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ModbusWriteSource,
+  buildModbusReplayWriteTargets,
+  hasPeriodicWritableRows,
   isPeriodicWritableFc,
   writeFcForRecord,
   writeSourceKey,
+  writeSourceRecordKey,
+  writeSourceRegisterKey,
 } from '../../src/lib/modbus-write-source.ts';
 import type { ModbusRegister } from '../../src/types/index.ts';
 
@@ -34,6 +38,11 @@ test('write source keys map recorded read function codes to writable rows', () =
   assert.equal(writeFcForRecord(0x01), 0x05);
   assert.equal(writeFcForRecord(0x10), 0x10);
   assert.equal(writeSourceKey(2, 0x06, 9), '2:6:9');
+  assert.equal(writeSourceRecordKey({ slave: 2, fc: 0x03, addr: 9 }), '2:6:9');
+  assert.equal(
+    writeSourceRegisterKey(reg({ id: 'target', slaveAddress: 2, functionCode: 0x06, address: 9 })),
+    '2:6:9',
+  );
 });
 
 test('isPeriodicWritableFc accepts only Modbus write function codes', () => {
@@ -41,6 +50,52 @@ test('isPeriodicWritableFc accepts only Modbus write function codes', () => {
   assert.equal(isPeriodicWritableFc(0x06), true);
   assert.equal(isPeriodicWritableFc(0x10), true);
   assert.equal(isPeriodicWritableFc(0x03), false);
+});
+
+test('hasPeriodicWritableRows requires both periodic opt-in and a write function code', () => {
+  assert.equal(hasPeriodicWritableRows([]), false);
+  assert.equal(
+    hasPeriodicWritableRows([
+      reg({ id: 'read-row', functionCode: 0x03, address: 5, periodicWrite: true }),
+      reg({ id: 'manual-write', functionCode: 0x06, address: 5, periodicWrite: false }),
+    ]),
+    false,
+  );
+  assert.equal(
+    hasPeriodicWritableRows([
+      reg({ id: 'periodic-write', functionCode: 0x06, address: 5, periodicWrite: true }),
+    ]),
+    true,
+  );
+});
+
+test('buildModbusReplayWriteTargets reuses write-source key mapping without periodic opt-in', () => {
+  const regs = [
+    reg({ id: 'holding', functionCode: 0x06, address: 5, periodicWrite: false }),
+    reg({ id: 'coil', slaveAddress: 2, functionCode: 0x05, address: 8, periodicWrite: false }),
+    reg({ id: 'multi', functionCode: 0x10, address: 12, periodicWrite: false }),
+    reg({ id: 'read-row', functionCode: 0x03, address: 5, periodicWrite: true }),
+  ];
+
+  const targets = buildModbusReplayWriteTargets(
+    [
+      { t: 3, slave: 1, fc: 0x03, addr: 5, type: 'uint16', value: 77 },
+      { t: 1, slave: 2, fc: 0x01, addr: 8, type: 'bool', value: 1 },
+      { t: 2, slave: 1, fc: 0x10, addr: 12, type: 'uint16', value: 99 },
+      { t: 4, slave: 1, fc: 0x04, addr: 5, type: 'uint16', value: 123 },
+      { t: 5, slave: 1, fc: 0x03, addr: 99, type: 'uint16', value: 456 },
+    ],
+    regs,
+  );
+
+  assert.deepEqual(
+    targets.map((target) => [target.ts, target.reg.id, target.value]),
+    [
+      [3, 'holding', 77],
+      [1, 'coil', 1],
+      [2, 'multi', 99],
+    ],
+  );
 });
 
 test('nextTargets advances each matched row cursor independently and wraps', () => {

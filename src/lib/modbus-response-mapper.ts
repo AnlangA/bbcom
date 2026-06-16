@@ -57,7 +57,11 @@ export function isExpectedModbusWriteAck(
   return response.count === expectedCount;
 }
 
-function mapReadBits(batch: ModbusReadBatch, bits: boolean[], ts: number): MappedModbusReadResponse {
+function mapReadBits(
+  batch: ModbusReadBatch,
+  bits: boolean[],
+  ts: number,
+): MappedModbusReadResponse {
   const mapped = emptyMapping();
   for (const { reg, offset } of batch.rows) {
     const dataCount = modbusDataValueCount(reg);
