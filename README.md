@@ -27,9 +27,12 @@
 - 🔥 **Multi-Session** — Connect and monitor multiple serial ports simultaneously
 - ⚡ **High Performance** — Virtual scrolling + RAF batch rendering stays smooth at high baud rates
 - 🤖 **AI Terminal Assistant** — Natural language to shell commands, powered by ZHIPU AI
-- 🎨 **Dark Theme** — Comfortable for long debugging sessions with TX/RX color-coded frames
+- 📊 **Waveform Visualization** — Parses numeric RX data and plots a live scrolling chart, Arduino Serial Plotter style
+- 🛠️ **Modbus Master** — RTU/PDU transports, FC01-FC10 batched poll read/write, register-to-waveform channel binding
+- 🎨 **Dark/Light Theme** — Comfortable for long debugging sessions with TX/RX color-coded frames, one-click toggle
 - 💾 **Data Export** — TXT, CSV, JSONL, BIN formats
 - 🔒 **CRC Checksums** — Checksum / CRC-8 / CRC-16 / CRC-32 calculation
+- 🌐 **i18n** — English / 中文 UI with a persisted language preference
 
 ## Screenshots
 
@@ -41,6 +44,14 @@
   <tr>
     <td><img src="images/主窗口.png" alt="Main window" width="480"/></td>
     <td><img src="images/ai助手窗口.png" alt="AI assistant" width="480"/></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Modbus Registers</b></td>
+    <td align="center"><b>Waveform Plot</b></td>
+  </tr>
+  <tr>
+    <td><img src="images/modbus窗口.png" alt="Modbus registers window" width="480"/></td>
+    <td><img src="images/绘图窗口.png" alt="Waveform plot window" width="480"/></td>
   </tr>
 </table>
 
@@ -62,6 +73,7 @@
 - DTR/RTS handshake line control for boot-mode selection
 - **Waveform visualization** — parses numeric RX data (CSV/space/semicolon) and plots a live scrolling chart, Arduino Serial Plotter / serial-studio style. Pause/resume, per-channel show/hide, min/max/avg stats, autoscale Y-axis labels, clear, and one-click CSV export
 - **Protocol parser** — reassembles the RX byte stream into discrete frames by delimiter (CRLF/custom hex), fixed length, or length-field header; click any frame for a hex+ASCII dump, filter frames by text, and see live frame/byte/throughput stats. Presets include NMEA 0183, AT/modem, SCPI/instrument, length-prefixed (1B/2B BE+LE), and NUL-delimited binary
+- **Modbus master** — RTU (addr+PDU+CRC) and PDU (raw, TCP-gateway style) transports; read FC01-FC04, write single FC05/06, write multiple FC10; contiguous addresses auto-batch; value types span bool/u8/i8/u16/i16/u32/i32/f32 (BE+LE); configurable poll/write intervals and timeout; per-row periodic read (R) or periodic write (W) toggles; registers can bind to waveform channels 0-7 for live plotting; `.bbreg` config import/export, batch Read all / Send all, and data-source Replay streaming
 - **Tool tab bar** — Quick commands, Macros, Triggers, Highlights, and History share one compact horizontal tab strip with live count badges, replacing the stacked collapsible-tower layout
 - **View-mode switcher** — Terminal, Waveform, and Parser are mutually-exclusive views toggled from the toolbar (one click each), so they never stack and compete for terminal height
 - **Scripted triggers** — auto-send a configured response when the RX stream matches a text substring or hex byte sequence, with per-trigger cooldown to prevent loops
@@ -94,11 +106,12 @@
 
 ### User Experience
 
-- Dark theme with green accent color
-- Configuration persistence — auto-restore serial params, display mode, parser templates, AI settings, and recent session captures
+- Dark/Light theme with green accent color, one-click sidebar toggle
+- Configuration persistence — auto-restore serial params, display mode, parser templates, Modbus config, AI settings, and recent session captures
 - Keyboard shortcuts: `Ctrl+N` new session, `Ctrl+W` close session, `Ctrl+L` clear buffer, `Esc` pause/resume capture, `Ctrl+Enter` send
 - LRU cache for formatted results, ensuring performance with large data frames
 - Send history + quick command management
+- English / 中文 UI with a persisted language preference
 
 ## Tech Stack
 
