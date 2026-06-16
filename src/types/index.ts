@@ -112,13 +112,7 @@ export interface SessionParserState {
 // ---------------------------------------------------------------------------
 
 /** Register/coil value encoding. 32-bit types span two 16-bit registers. */
-export type ModbusValueType =
-  | 'bool'
-  | 'uint16'
-  | 'int16'
-  | 'uint32-be'
-  | 'int32-be'
-  | 'float32-be';
+export type ModbusValueType = 'bool' | 'uint16' | 'int16' | 'uint32-be' | 'int32-be' | 'float32-be';
 
 /**
  * Function-code family a row belongs to. Stored as the family's single-read or
@@ -149,18 +143,31 @@ export interface ModbusRegister {
   /** READ: latest decoded value. SEND: value to write. Runtime-only. */
   value: number | null;
   valueTs: number | null;
+  /**
+   * Whether this row participates in periodic background reads. A row with a
+   * read FC (01/02/03/04) and periodicRead=true is polled each tick. Defaults
+   * to true for backward compatibility with pre-existing rows.
+   */
+  periodicRead: boolean;
+  /**
+   * Whether this row participates in periodic background writes. Only honored
+   * for write FCs (05/06); each tick advances that row's value cursor in the
+   * loaded write data source (`.bbreg`) and sends the next value. Defaults to
+   * false so auto-writes never start without an explicit opt-in.
+   */
+  periodicWrite: boolean;
 }
 
-/** Per-session Modbus master settings + table mode. Persisted (minus row values). */
+/** Per-session Modbus master settings. Persisted (minus row values). */
 export interface ModbusMasterConfig {
   /** 'rtu' = addr+PDU+CRC; 'pdu' = raw PDU bytes (TCP-style gateway). */
   transport: 'rtu' | 'pdu';
-  /** READ polls rows live; SEND makes the Value column editable for writing. */
-  tableMode: 'read' | 'send';
-  /** Master polling enabled. In SEND mode this only affects background polling. */
+  /** Master enabled. Gates both the read and write background loops. */
   enabled: boolean;
-  /** Poll interval in ms (100..10000). */
+  /** Read poll interval in ms (100..10000). */
   pollIntervalMs: number;
+  /** Write interval in ms (100..10000) — cadence for periodic writes. */
+  writeIntervalMs: number;
   /** Per-request response timeout in ms. */
   timeoutMs: number;
 }

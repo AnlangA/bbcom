@@ -20,7 +20,7 @@
             @click="toggleChannel(i)"
           >
             <span class="legend-swatch" :style="{ background: ch.color }"></span>
-            <span class="legend-name">{{ t('waveform.channel') }}{{ i }}</span>
+            <span class="legend-name">{{ channelLabel(i) }}</span>
           </button>
           <span class="legend-value">{{ ch.latest !== null ? formatNum(ch.latest) : '—' }}</span>
         </span>
@@ -32,6 +32,14 @@
         <button
           class="wf-btn"
           type="button"
+          :title="t('waveform.sourceMode')"
+          @click="$emit('toggleMode')"
+        >
+          <Type class="icon-sm" />
+        </button>
+        <button
+          class="wf-btn"
+          type="button"
           :title="paused ? t('waveform.resume') : t('waveform.pause')"
           @click="paused = !paused"
         >
@@ -40,6 +48,9 @@
         </button>
         <button class="wf-btn" type="button" :title="t('waveform.clear')" @click="clearBuffer">
           <Eraser class="icon-sm" />
+        </button>
+        <button class="wf-btn" type="button" :title="t('waveform.loadStream')" @click="loadStream">
+          <Upload class="icon-sm" />
         </button>
         <button
           class="wf-btn"
@@ -59,19 +70,26 @@
         class="stat-chip"
         :style="{ '--stat-color': channelState[i]?.color }"
       >
-        <span class="stat-name">{{ t('waveform.channel') }}{{ i }}</span>
+        <span class="stat-name">{{ channelLabel(i) }}</span>
         <span class="stat-val">{{ t('waveform.stat.min') }} {{ formatNum(stat.min) }}</span>
         <span class="stat-val">{{ t('waveform.stat.max') }} {{ formatNum(stat.max) }}</span>
         <span class="stat-val">{{ t('waveform.stat.avg') }} {{ formatNum(stat.mean) }}</span>
       </span>
     </div>
+    <input
+      ref="streamFileInput"
+      type="file"
+      accept=".bbreg,.jsonl,.txt"
+      hidden
+      @change="onStreamFilePicked"
+    />
     <canvas ref="canvasRef" class="waveform-canvas"></canvas>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { Download, Eraser, LineChart, Pause, Play } from 'lucide-vue-next';
+import { Download, Eraser, LineChart, Pause, Play, Type, Upload } from 'lucide-vue-next';
 import { useMessage } from 'naive-ui';
 import type { DataFrame } from '../../types';
 import { t } from '../../lib/i18n';
@@ -85,12 +103,21 @@ import {
   pushSample,
   type ChannelStats,
 } from '../../lib/waveform';
+import { parseStream } from '../../lib/modbus-stream';
 
 const props = defineProps<{
   frames: DataFrame[];
   /** Which direction's data to plot. RX is the usual sensor stream. */
   direction?: DataFrame['direction'];
+  /** Sample source: 'text' parses trailing RX numbers (Arduino Serial Plotter
+   *  style); 'register' plots Modbus register values pushed by the master. */
+  mode?: 'text' | 'register';
+  /** Per-channel display labels for register mode (e.g. {0: 'Temp'}). Keys with
+   *  no entry fall back to the default 'Ch N' label. */
+  channelLabels?: Record<number, string>;
 }>();
+
+defineEmits<{ (e: 'toggleMode'): void }>();
 
 const message = useMessage();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -111,7 +138,79 @@ let consumed = 0;
 // their samples are dropped — freezing the plot at its last position.
 const paused = ref(false);
 
+/** Label for channel `i`: the register name in register mode, else 'Ch N'. */
+function channelLabel(i: number): string {
+  const label = props.channelLabels?.[i];
+  if (label) return label;
+  return `${t('waveform.channel')}${i}`;
+}
+
+/**
+ * Push one decoded register value onto a channel (register mode). Called by the
+ * Modbus master on each poll tick via a template ref. Grows the channel list to
+ * fit the channel index and updates the legend readout.
+ */
+function pushRegisterSample(channel: number, value: number) {
+  if (paused.value || channel < 0 || !Number.isFinite(value)) return;
+  ensureChannel(channel);
+  // Sparse sample: only the bound channel carries a new value; others hold
+  // their previous latest so unrelated channels keep steady lines.
+  const sample: number[] = [];
+  for (let i = 0; i <= channel; i += 1) {
+    sample[i] = i === channel ? value : (channelState.value[i]?.latest ?? 0);
+  }
+  pushSample(buffer, sample);
+  const next = channelState.value.slice();
+  next[channel] = { ...next[channel], latest: value };
+  channelState.value = next;
+}
+
+function ensureChannel(channel: number) {
+  if (channel < channelState.value.length) return;
+  const next: ChannelState[] = channelState.value.slice();
+  for (let i = next.length; i <= channel; i += 1) {
+    next.push({ color: channelColor(i), latest: null, visible: true });
+  }
+  channelState.value = next;
+}
+
+defineExpose({ pushRegisterSample });
+
+const streamFileInput = ref<HTMLInputElement | null>(null);
+
+function loadStream() {
+  streamFileInput.value?.click();
+}
+
+function onStreamFilePicked(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const records = parseStream(String(reader.result ?? ''));
+    if (records.length === 0) {
+      message.warning(t('waveform.noData'));
+      return;
+    }
+    for (const rec of records) {
+      if (typeof rec.ch === 'number' && rec.ch >= 0) {
+        pushRegisterSample(rec.ch, rec.value);
+      }
+    }
+    message.success(t('waveform.exportedStream', { count: records.length }));
+  };
+  reader.readAsText(file);
+  input.value = '';
+}
+
 function ingestNewFrames() {
+  // Register mode is fed imperatively by the master (pushRegisterSample); the
+  // text-parsing path only runs in text mode.
+  if ((props.mode ?? 'text') === 'register') {
+    consumed = props.frames.length;
+    return;
+  }
   const dir = props.direction ?? 'RX';
   const frames = props.frames;
   let channelCount = channelState.value.length;

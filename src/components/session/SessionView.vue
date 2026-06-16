@@ -165,6 +165,19 @@
             class="toggle-btn"
             size="small"
             quaternary
+            :type="viewMode === 'modbus' ? 'primary' : 'default'"
+            :title="t('modbus.title')"
+            :aria-label="t('modbus.title')"
+            @click="viewMode = 'modbus'"
+          >
+            <template #icon>
+              <Cpu class="icon-sm" />
+            </template>
+          </n-button>
+          <n-button
+            class="toggle-btn"
+            size="small"
+            quaternary
             :type="appStore.ansiColorEnabled ? 'primary' : 'default'"
             :title="t('toolbar.ansiColor.render')"
             :aria-label="t('toolbar.ansiColor')"
@@ -232,7 +245,38 @@
         stays mounted (cheap to keep alive) while waveform/parser swap in only
         when selected, keeping the default view dense.
       -->
-      <WaveformPanel v-if="viewMode === 'waveform'" :frames="session.frames" direction="RX" />
+      <WaveformPanel
+        v-if="viewMode === 'waveform'"
+        ref="waveformRef"
+        :frames="session.frames"
+        direction="RX"
+        :mode="session.waveformSourceMode"
+        :channel-labels="waveformChannelLabels"
+        @toggle-mode="toggleWaveformSourceMode"
+      />
+      <ModbusPanel
+        v-else-if="viewMode === 'modbus'"
+        :session-id="session.id"
+        :config="session.modbusConfig"
+        :registers="session.modbusRegisters"
+        :is-connected="session.isConnected"
+        :busy="modbusBusy"
+        :status-text="modbusStatusText"
+        :status-class="modbusStatusClass"
+        :replaying="master.replaying.value"
+        :write-source-name="writeSourceName"
+        :on-read-all="onModbusReadAll"
+        :on-read-row="onModbusReadRow"
+        :on-send-all="onModbusSendAll"
+        :on-send-row="onModbusSendRow"
+        :on-replay="onModbusReplay"
+        :on-stop-replay="onModbusStopReplay"
+        :on-load-write-source="onLoadWriteSource"
+        :on-clear-write-source="onClearWriteSource"
+        :on-pick-write-source="onPickWriteSource"
+        @plot-in-waveform="onPlotInWaveform"
+        @close="viewMode = 'terminal'"
+      />
       <ParserPanel
         v-else-if="viewMode === 'parser'"
         :session-id="session.id"
@@ -255,6 +299,13 @@
         @remove-quick-command="removeQuickCommand"
       />
     </div>
+    <input
+      ref="writeSourceInput"
+      type="file"
+      accept=".bbreg,.jsonl,.txt"
+      hidden
+      @change="onWriteSourcePicked"
+    />
   </div>
 </template>
 
@@ -265,6 +316,7 @@ import {
   ArrowDownUp,
   Binary,
   Clock,
+  Cpu,
   Download,
   FileText,
   LineChart,
@@ -280,10 +332,13 @@ import {
 import DataPacketList from '../terminal/DataPacketList.vue';
 import WaveformPanel from '../terminal/WaveformPanel.vue';
 import ParserPanel from '../terminal/ParserPanel.vue';
+import ModbusPanel from '../terminal/ModbusPanel.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
 import { useSerialConnection } from '../../composables/useSerialConnection';
 import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
+import { useModbusMaster } from '../../composables/useModbusMaster';
+import { parseStream, type ModbusStreamRecord } from '../../lib/modbus-stream';
 import { useExport } from '../../composables/useExport';
 import { useAutoLog } from '../../composables/useAutoLog';
 import { useSessionActions } from '../../composables/useSessionActions';
@@ -293,7 +348,7 @@ import { useMessage } from 'naive-ui';
 import { EXPORT_OPTIONS, type ExportChoice } from '../../lib/constants';
 import { formatBytes } from '../../lib/format';
 import { t } from '../../lib/i18n';
-import type { DisplayMode, SerialSession } from '../../types';
+import type { DisplayMode, ModbusRegister, SerialSession } from '../../types';
 
 const props = defineProps<{
   session: SerialSession;
@@ -390,9 +445,182 @@ useSessionShortcuts({
 
 const sendingBreak = ref(false);
 // Single view-mode switcher for the display area: terminal (default, dense),
-// waveform (live RX plot), or parser (frame reassembly). Only the selected view
-// renders, so they never stack and compete for vertical space.
-const viewMode = ref<'terminal' | 'waveform' | 'parser'>('terminal');
+// waveform (live RX plot), parser (frame reassembly), or modbus (register
+// table). Only the selected view renders, so they never stack and compete for
+// vertical space.
+const viewMode = ref<'terminal' | 'waveform' | 'parser' | 'modbus'>('terminal');
+
+// --- Modbus master ---------------------------------------------------------
+// One master per session. It owns the poll loop (READ mode) and the imperative
+// read/write API the register table calls. Decoded samples route into the
+// waveform when its source mode is 'register'. The master shares the serial
+// port via serialState.sendBytes / serialState.rawBytes (serialized TX, raw RX).
+const modbusConfigRef = computed(() => props.session.modbusConfig);
+const modbusRegistersRef = computed(() => props.session.modbusRegisters);
+const waveformRef = ref<{ pushRegisterSample: (channel: number, value: number) => void } | null>(
+  null,
+);
+const modbusBusy = ref(false);
+const modbusStatus = ref<{ kind: string; code?: number; count?: number; remaining?: number }>({
+  kind: 'idle',
+});
+
+const master = useModbusMaster({
+  sessionId: props.session.id,
+  config: modbusConfigRef,
+  registers: modbusRegistersRef,
+  sendBytes: (payload) => serialState.sendBytes(payload),
+  rawBytes: (cb) => serialState.rawBytes(cb),
+  isConnected: serialState.isConnected,
+  onSamples: (samples) => {
+    if (props.session.waveformSourceMode !== 'register') return;
+    for (const s of samples) {
+      if (s.channel === null) continue;
+      waveformRef.value?.pushRegisterSample(s.channel, s.value);
+    }
+  },
+  onStatus: (s) => {
+    modbusStatus.value = {
+      kind: s.kind,
+      code: 'code' in s ? s.code : undefined,
+      count: 'count' in s ? s.count : undefined,
+      remaining: 'remaining' in s ? s.remaining : undefined,
+    };
+  },
+});
+
+const modbusStatusText = computed(() => {
+  const s = modbusStatus.value;
+  if (s.kind === 'polling') return t('modbus.status.polling', { count: s.count ?? 0 });
+  if (s.kind === 'writing') return t('modbus.status.writing', { count: s.count ?? 0 });
+  if (s.kind === 'timeout') return t('modbus.status.timeout');
+  if (s.kind === 'exception') return t('modbus.status.exception', { code: s.code ?? 0 });
+  if (s.kind === 'crc-error') return t('modbus.status.crcError');
+  if (s.kind === 'replaying') return t('modbus.status.replaying', { remaining: s.remaining ?? 0 });
+  return t('modbus.status.idle');
+});
+const modbusStatusClass = computed(() => modbusStatus.value.kind);
+
+// Per-channel labels for register-mode waveform (channel index → register name).
+const waveformChannelLabels = computed(() => {
+  const labels: Record<number, string> = {};
+  for (const reg of props.session.modbusRegisters) {
+    if (reg.waveformChannel !== null && reg.waveformChannel >= 0) {
+      labels[reg.waveformChannel] = reg.name;
+    }
+  }
+  return labels;
+});
+
+function toggleWaveformSourceMode() {
+  const next = props.session.waveformSourceMode === 'register' ? 'text' : 'register';
+  sessionStore.setWaveformSourceMode(props.session.id, next);
+}
+
+async function onModbusReadAll() {
+  modbusBusy.value = true;
+  try {
+    // Batched sweep: contiguous rows share one FC03/04 request, serialized
+    // against the poll loop via the master's busy guard.
+    await master.readAll();
+  } finally {
+    modbusBusy.value = false;
+  }
+}
+async function onModbusReadRow(reg: ModbusRegister) {
+  modbusBusy.value = true;
+  try {
+    await master.readOnce(reg);
+  } finally {
+    modbusBusy.value = false;
+  }
+}
+async function onModbusSendAll() {
+  modbusBusy.value = true;
+  try {
+    const res = await master.sendAll();
+    if (res.sent > 0) {
+      message.success(t('modbus.sendAll') + ` (${res.ok}/${res.sent})`);
+    }
+  } finally {
+    modbusBusy.value = false;
+  }
+}
+async function onModbusSendRow(reg: ModbusRegister) {
+  modbusBusy.value = true;
+  try {
+    const ok = await master.sendRow(reg);
+    if (!ok) message.warning(t('modbus.send'));
+  } finally {
+    modbusBusy.value = false;
+  }
+}
+function onModbusReplay(records: ModbusStreamRecord[]) {
+  master.startReplay(records);
+}
+function onModbusStopReplay() {
+  master.stopReplay();
+}
+
+// --- Periodic-write data source (.bbreg) ---
+// The source is parsed here then handed to the master, which groups records
+// into per-(slave,writeFc,addr) value sequences. The filename is shown in the
+// ModbusPanel timing bar so the user can see what's loaded.
+const writeSourceInput = ref<HTMLInputElement | null>(null);
+const writeSourceName = ref<string | null>(null);
+
+function onPickWriteSource() {
+  writeSourceInput.value?.click();
+}
+function onLoadWriteSource(records: ModbusStreamRecord[], name: string) {
+  master.loadWriteSource(records, name);
+  writeSourceName.value = name;
+  message.success(t('modbus.writeSourceLoaded', { count: records.length, name }));
+}
+function onClearWriteSource() {
+  master.clearWriteSource();
+  writeSourceName.value = null;
+}
+function onWriteSourcePicked(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const text = String(reader.result ?? '');
+    const records = parseStream(text);
+    if (records.length === 0) {
+      message.warning(t('modbus.empty'));
+      return;
+    }
+    onLoadWriteSource(records, file.name);
+  };
+  reader.readAsText(file);
+  input.value = ''; // allow re-picking the same file
+}
+/** Plot-in-waveform: assign a channel, set source mode, jump to the waveform. */
+function onPlotInWaveform(reg: ModbusRegister) {
+  let ch = reg.waveformChannel;
+  if (ch === null) {
+    // Assign the next free channel (0..7).
+    const used = new Set(
+      props.session.modbusRegisters
+        .map((r) => r.waveformChannel)
+        .filter((c): c is number => c !== null),
+    );
+    ch = -1;
+    for (let i = 0; i < 8; i += 1) {
+      if (!used.has(i)) {
+        ch = i;
+        break;
+      }
+    }
+    if (ch < 0) return; // all channels taken
+    sessionStore.updateModbusRegister(props.session.id, reg.id, { waveformChannel: ch });
+  }
+  sessionStore.setWaveformSourceMode(props.session.id, 'register');
+  viewMode.value = 'waveform';
+}
 async function handleSendBreak() {
   sendingBreak.value = true;
   const ok = await serialState.sendBreak();

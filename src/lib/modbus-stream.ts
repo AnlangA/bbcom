@@ -178,13 +178,18 @@ export function recordsToRegisterDefs(records: ModbusStreamRecord[]): Omit<Modbu
       type: rec.type,
       unit: rec.unit,
       waveformChannel: rec.ch ?? null,
+      // Stream records carry no periodic flags — default like new rows:
+      // read-FC rows poll, write-FC rows don't auto-write.
+      periodicRead: rec.fc === 0x01 || rec.fc === 0x02 || rec.fc === 0x03 || rec.fc === 0x04,
+      periodicWrite: false,
       value: rec.value,
       valueTs: rec.t,
     });
   }
   // Stable order: by slave, then fc, then address — so reloads look consistent.
-  out.sort((a, b) =>
-    a.slaveAddress - b.slaveAddress || a.functionCode - b.functionCode || a.address - b.address,
+  out.sort(
+    (a, b) =>
+      a.slaveAddress - b.slaveAddress || a.functionCode - b.functionCode || a.address - b.address,
   );
   return out;
 }

@@ -42,7 +42,11 @@ function withCrc(addrAndPdu: Uint8Array): Uint8Array {
  * - RTU: [slave] + PDU + CRC.
  * - PDU: PDU bytes only (slave is ignored — travels out-of-band for this transport).
  */
-export function frameRequest(transport: ModbusTransport, slave: number, pdu: Uint8Array): Uint8Array {
+export function frameRequest(
+  transport: ModbusTransport,
+  slave: number,
+  pdu: Uint8Array,
+): Uint8Array {
   if (transport === 'pdu') return pdu;
   const addrAndPdu = new Uint8Array(pdu.length + 1);
   addrAndPdu[0] = slave & 0xff;

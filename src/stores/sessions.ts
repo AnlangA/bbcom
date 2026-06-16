@@ -59,9 +59,9 @@ const DEFAULT_PARSER_STATE: SessionParserState = {
 
 const DEFAULT_MODBUS_CONFIG: ModbusMasterConfig = {
   transport: 'rtu',
-  tableMode: 'read',
   enabled: false,
   pollIntervalMs: 1000,
+  writeIntervalMs: 1000,
   timeoutMs: 500,
 };
 
@@ -429,10 +429,7 @@ function normalizeModbusType(raw: unknown): ModbusValueType {
 function normalizeModbusRegisters(raw: unknown): ModbusRegister[] {
   if (!Array.isArray(raw)) return [];
   return raw
-    .filter(
-      (item): item is Record<string, unknown> =>
-        !!item && typeof item === 'object',
-    )
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
     .map((reg) => ({
       id: typeof reg.id === 'string' ? reg.id : crypto.randomUUID(),
       name: typeof reg.name === 'string' ? reg.name : 'Register',
@@ -455,19 +452,22 @@ function normalizeModbusRegisters(raw: unknown): ModbusRegister[] {
           ? reg.waveformChannel
           : null,
       // value/valueTs are runtime-only and intentionally accepted but not required.
-      value:
-        typeof reg.value === 'number' && Number.isFinite(reg.value) ? reg.value : null,
-      valueTs:
-        typeof reg.valueTs === 'number' && Number.isFinite(reg.valueTs) ? reg.valueTs : null,
+      value: typeof reg.value === 'number' && Number.isFinite(reg.value) ? reg.value : null,
+      valueTs: typeof reg.valueTs === 'number' && Number.isFinite(reg.valueTs) ? reg.valueTs : null,
+      // periodicRead defaults to true (preserves the prior "poll all read rows"
+      // behavior for rows saved before the flag existed); periodicWrite defaults
+      // to false so auto-writes never start without an explicit opt-in.
+      periodicRead: reg.periodicRead !== false,
+      periodicWrite: reg.periodicWrite === true,
     }));
 }
 
 function cloneModbusConfig(cfg: ModbusMasterConfig): ModbusMasterConfig {
   return {
     transport: cfg.transport === 'pdu' ? 'pdu' : 'rtu',
-    tableMode: cfg.tableMode === 'send' ? 'send' : 'read',
     enabled: cfg.enabled === true,
     pollIntervalMs: Math.max(100, Math.min(10_000, Math.floor(cfg.pollIntervalMs || 1000))),
+    writeIntervalMs: Math.max(100, Math.min(10_000, Math.floor(cfg.writeIntervalMs || 1000))),
     timeoutMs: Math.max(50, Math.min(5_000, Math.floor(cfg.timeoutMs || 500))),
   };
 }
@@ -477,16 +477,17 @@ function normalizeModbusConfig(raw: unknown): ModbusMasterConfig {
   const cfg = raw as Partial<ModbusMasterConfig>;
   return cloneModbusConfig({
     transport: cfg.transport === 'pdu' ? 'pdu' : 'rtu',
-    tableMode: cfg.tableMode === 'send' ? 'send' : 'read',
     enabled: cfg.enabled === true,
     pollIntervalMs:
       typeof cfg.pollIntervalMs === 'number' && Number.isFinite(cfg.pollIntervalMs)
         ? cfg.pollIntervalMs
         : 1000,
+    writeIntervalMs:
+      typeof cfg.writeIntervalMs === 'number' && Number.isFinite(cfg.writeIntervalMs)
+        ? cfg.writeIntervalMs
+        : 1000,
     timeoutMs:
-      typeof cfg.timeoutMs === 'number' && Number.isFinite(cfg.timeoutMs)
-        ? cfg.timeoutMs
-        : 500,
+      typeof cfg.timeoutMs === 'number' && Number.isFinite(cfg.timeoutMs) ? cfg.timeoutMs : 500,
   });
 }
 
@@ -505,6 +506,8 @@ function persistableModbusRegisters(regs: ModbusRegister[]): ModbusRegister[] {
     type: reg.type,
     unit: reg.unit,
     waveformChannel: reg.waveformChannel,
+    periodicRead: reg.periodicRead,
+    periodicWrite: reg.periodicWrite,
     value: null,
     valueTs: null,
   }));

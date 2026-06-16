@@ -189,3 +189,113 @@ test('session snapshots are bounded to the recent frame tail', async () => {
     assert.deepEqual(Array.from(restored.sessions[0].frames[0].data), [105]);
   });
 });
+
+test('modbus registers + config round-trip through persistence; values are dropped', async () => {
+  await withLocalStorageMock(async () => {
+    const s = store();
+    const id = s.createSession('COM11', cfg);
+
+    // Defaults: RTU transport, polling off.
+    assert.equal(s.sessions[0].modbusConfig.transport, 'rtu');
+    assert.equal(s.sessions[0].modbusConfig.enabled, false);
+    assert.equal(s.sessions[0].waveformSourceMode, 'text');
+    assert.deepEqual(s.sessions[0].modbusRegisters, []);
+
+    // Add a register with a runtime value + a PDU transport override.
+    s.addModbusRegister(id, {
+      name: 'Temperature',
+      slaveAddress: 2,
+      functionCode: 0x03,
+      address: 100,
+      type: 'uint16',
+      unit: '°C',
+      waveformChannel: 1,
+      periodicRead: true,
+      periodicWrite: false,
+    });
+    s.setModbusRegisterValues(id, [{ id: s.sessions[0].modbusRegisters[0].id, value: 42, valueTs: 1234 }]);
+    s.setModbusConfig(id, { transport: 'pdu', enabled: true, pollIntervalMs: 250, writeIntervalMs: 500, timeoutMs: 300 });
+    s.setWaveformSourceMode(id, 'register');
+    s.flushPersistedSessions();
+
+    const restored = store();
+    const reg = restored.sessions[0].modbusRegisters[0];
+    assert.equal(reg.name, 'Temperature');
+    assert.equal(reg.slaveAddress, 2);
+    assert.equal(reg.functionCode, 0x03);
+    assert.equal(reg.address, 100);
+    assert.equal(reg.type, 'uint16');
+    assert.equal(reg.unit, '°C');
+    assert.equal(reg.waveformChannel, 1);
+    // periodic flags persist (they are config, not runtime values).
+    assert.equal(reg.periodicRead, true, 'periodicRead survives reload');
+    assert.equal(reg.periodicWrite, false, 'periodicWrite survives reload');
+    // Runtime values must NOT survive a reload — they are repopulated by polling.
+    assert.equal(reg.value, null);
+    assert.equal(reg.valueTs, null);
+
+    assert.equal(restored.sessions[0].modbusConfig.transport, 'pdu');
+    assert.equal(restored.sessions[0].modbusConfig.enabled, true);
+    assert.equal(restored.sessions[0].modbusConfig.pollIntervalMs, 250);
+    assert.equal(restored.sessions[0].modbusConfig.writeIntervalMs, 500, 'writeIntervalMs survives reload');
+    assert.equal(restored.sessions[0].modbusConfig.timeoutMs, 300);
+    assert.equal(restored.sessions[0].waveformSourceMode, 'register');
+  });
+});
+
+test('modbus config is clamped to valid ranges on hydration', async () => {
+  await withLocalStorageMock(async () => {
+    // Inject a malformed snapshot directly into localStorage.
+    const data = new Map<string, string>();
+    (globalThis as { localStorage: LocalStorageLike }).localStorage = {
+      getItem: (k) => data.get(k) ?? null,
+      setItem: (k, v) => {
+        data.set(k, String(v));
+      },
+      removeItem: (k) => {
+        data.delete(k);
+      },
+    };
+    const bad = {
+      version: 1,
+      activeSessionId: 'x',
+      sessions: [
+        {
+          id: 'x',
+          portName: 'COM12',
+          portConfig: cfg,
+          frames: [],
+          modbusRegisters: [
+            { id: 'r1', name: 'Bad', slaveAddress: 999, functionCode: 0x99, address: -5, type: 'bogus', value: 7, valueTs: 1 },
+          ],
+          modbusConfig: { transport: 'weird', enabled: 'yes', pollIntervalMs: 5, timeoutMs: 99999 },
+          waveformSourceMode: 'unknown',
+        },
+      ],
+    };
+    data.set('bbcom-session-snapshots', JSON.stringify(bad));
+
+    const s = store();
+    const reg = s.sessions[0].modbusRegisters[0];
+    assert.equal(reg.slaveAddress, 247, 'slave clamped');
+    assert.equal(reg.functionCode, 0x03, 'unknown FC defaults to read-holding');
+    assert.equal(reg.address, 0, 'negative address clamped to 0');
+    assert.equal(reg.type, 'uint16', 'unknown type defaults to uint16');
+    // Pre-flag snapshots migrate to safe defaults: read-on, write-off.
+    assert.equal(reg.periodicRead, true, 'missing periodicRead defaults to true');
+    assert.equal(reg.periodicWrite, false, 'missing periodicWrite defaults to false');
+    // The normalize layer preserves a carried value (used by snapshot import);
+    // production persistence strips values before writing via
+    // persistableModbusRegisters, so reloads start clean. Here we injected a
+    // raw value directly, so it survives normalization — verifying that path.
+    assert.equal(reg.value, 7, 'carried value preserved by normalize');
+
+    const mc = s.sessions[0].modbusConfig;
+    assert.equal(mc.transport, 'rtu');
+    assert.equal(mc.enabled, false);
+    assert.equal(mc.pollIntervalMs, 100, 'below-min interval clamped');
+    assert.equal(mc.writeIntervalMs, 1000, 'missing writeIntervalMs defaults to 1000');
+    assert.equal(mc.timeoutMs, 5000, 'above-max timeout clamped');
+    assert.equal(s.sessions[0].waveformSourceMode, 'text');
+  });
+});

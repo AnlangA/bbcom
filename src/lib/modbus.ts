@@ -41,13 +41,7 @@ export type WriteSingleFc = 0x05 | 0x06;
 export type WriteMultipleFc = 0x0f | 0x10;
 
 /** Register value encodings users can pick per row. 32-bit types span 2 regs. */
-export type ModbusValueType =
-  | 'bool'
-  | 'uint16'
-  | 'int16'
-  | 'uint32-be'
-  | 'int32-be'
-  | 'float32-be';
+export type ModbusValueType = 'bool' | 'uint16' | 'int16' | 'uint32-be' | 'int32-be' | 'float32-be';
 
 /** How many 16-bit registers a value type occupies (coils are 1 bit). */
 export function registerSpan(type: ModbusValueType): 1 | 2 {
@@ -111,7 +105,13 @@ export function buildWriteSingleCoilPdu(addr: number, on: boolean): Uint8Array {
 
 /** Build an FC06 write-single-register PDU. */
 export function buildWriteSingleRegisterPdu(addr: number, value: number): Uint8Array {
-  return new Uint8Array([0x06, (addr >>> 8) & 0xff, addr & 0xff, (value >>> 8) & 0xff, value & 0xff]);
+  return new Uint8Array([
+    0x06,
+    (addr >>> 8) & 0xff,
+    addr & 0xff,
+    (value >>> 8) & 0xff,
+    value & 0xff,
+  ]);
 }
 
 /**
