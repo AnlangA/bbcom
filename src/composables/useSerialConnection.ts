@@ -8,6 +8,7 @@ import { encodeUtf8, formatBytes, parseHex } from '../lib/format';
 import { concatUint8Arrays } from '../lib/bytes';
 import { escapeSerialPath } from '../lib/serial-utils';
 import { mapDataBits, mapFlowControl, mapParity, mapStopBits } from '../lib/serial-config';
+import { SerialRxQueue } from '../lib/serial-rx-queue';
 import { logger } from '../lib/logger';
 import { t } from '../lib/i18n';
 import { MAX_INPUT_SIZE } from '../types';
@@ -49,11 +50,11 @@ export function useSerialConnection(
   /** True while auto-reconnect is cycling through retry attempts. */
   const reconnecting = ref(false);
 
-  let dataQueue: Uint8Array[] = [];
-  let totalQueueSize = 0;
-  let droppedRxBytes = 0;
+  const rxQueue = new SerialRxQueue({
+    maxBytes: MAX_RX_QUEUE_BYTES,
+    maxChunks: MAX_RX_QUEUE_CHUNKS,
+  });
   let rxOverflowErrorMessage: string | null = null;
-  let overflowNotified = false;
   let rafId: number | null = null;
   let unlistenData: (() => void) | null = null;
   let unlistenDisconnect: (() => void) | null = null;
@@ -121,7 +122,6 @@ export function useSerialConnection(
     isConnecting.value = true;
     error.value = null;
     totalDroppedBytes.value = 0;
-    overflowNotified = false;
     intentionalClose = false;
     reconnecting.value = false;
     stopReconnect();
@@ -129,9 +129,7 @@ export function useSerialConnection(
       cancelAnimationFrame(rafId);
       rafId = null;
     }
-    dataQueue = [];
-    totalQueueSize = 0;
-    droppedRxBytes = 0;
+    rxQueue.reset();
     rxOverflowErrorMessage = null;
     // Reset the write chain so a new connection starts from a settled state.
     writeChain = Promise.resolve(true);
@@ -242,29 +240,19 @@ export function useSerialConnection(
       for (const obs of rawByteObservers) obs(bytes);
     }
 
-    while (
-      dataQueue.length > 0 &&
-      (totalQueueSize + bytes.length > MAX_RX_QUEUE_BYTES ||
-        dataQueue.length >= MAX_RX_QUEUE_CHUNKS)
-    ) {
-      const dropped = dataQueue.shift();
-      if (!dropped) break;
-      totalQueueSize -= dropped.length;
-      recordDrop(dropped.length);
+    const result = rxQueue.enqueue(bytes);
+    totalDroppedBytes.value = result.totalDroppedBytes;
+
+    if (result.overflowStarted) {
+      // Notify once per connection so silent data loss is at least surfaced
+      // once; the running total stays visible in the toolbar afterwards.
+      options?.onOverflow?.(result.totalDroppedBytes);
     }
 
-    if (bytes.length > MAX_RX_QUEUE_BYTES) {
-      const retained = bytes.slice(bytes.length - MAX_RX_QUEUE_BYTES);
-      recordDrop(bytes.length - retained.length);
-      dataQueue.push(retained);
-      totalQueueSize += retained.length;
-    } else {
-      dataQueue.push(bytes);
-      totalQueueSize += bytes.length;
-    }
-
-    if (droppedRxBytes > 0) {
-      rxOverflowErrorMessage = t('serial.error.rxOverflow', { bytes: formatBytes(droppedRxBytes) });
+    if (result.droppedSinceDrain > 0) {
+      rxOverflowErrorMessage = t('serial.error.rxOverflow', {
+        bytes: formatBytes(result.droppedSinceDrain),
+      });
       error.value = rxOverflowErrorMessage;
     } else if (rxOverflowErrorMessage && error.value === rxOverflowErrorMessage) {
       // Buffer has recovered — clear a stale overflow message, but leave any
@@ -273,38 +261,22 @@ export function useSerialConnection(
       rxOverflowErrorMessage = null;
     }
 
-    if (!rafId) {
+    if (!rafId && result.pendingChunks > 0) {
       rafId = requestAnimationFrame(flushQueue);
     }
   }
 
-  function recordDrop(count: number) {
-    if (count <= 0) return;
-    droppedRxBytes += count;
-    totalDroppedBytes.value += count;
-    if (!overflowNotified) {
-      // Notify once per connection so silent data loss is at least surfaced
-      // once; the running total stays visible in the toolbar afterwards.
-      overflowNotified = true;
-      options?.onOverflow?.(totalDroppedBytes.value);
-    }
-  }
-
   function flushQueue() {
-    if (dataQueue.length === 0) {
+    if (rxQueue.pendingChunks === 0) {
       rafId = null;
       return;
     }
-    const chunks = dataQueue;
-    const chunkBytes = totalQueueSize;
-    dataQueue = [];
-    totalQueueSize = 0;
-    droppedRxBytes = 0;
+    const { chunks, byteLength } = rxQueue.drain();
     rafId = null;
 
     const frame = addFrame({
       direction: 'RX',
-      data: concatUint8Arrays(chunks, chunkBytes),
+      data: concatUint8Arrays(chunks, byteLength),
     });
     if (frame) {
       appendFrame(sessionId, frame);
@@ -455,9 +427,7 @@ export function useSerialConnection(
       cancelAnimationFrame(rafId);
       rafId = null;
     }
-    dataQueue = [];
-    totalQueueSize = 0;
-    droppedRxBytes = 0;
+    rxQueue.clearPending();
     error.value = null;
     // Drain any in-flight write before tearing the port down, so a final
     // queued TX (e.g. the last tick of a cyclic send) is not cut off mid-write.

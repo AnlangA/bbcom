@@ -138,9 +138,17 @@ import { NInput, NButton, NCheckbox, NInputNumber, useMessage } from 'naive-ui';
 import { Download, Pencil, Play, Plus, Square, Upload, X } from 'lucide-vue-next';
 import { useSessionStore } from '../../stores/sessions';
 import { useMacroRunner, type MacroRunResult } from '../../composables/useMacroRunner';
+import {
+  canSaveMacroDraft,
+  createMacroDraft,
+  createMacroStep,
+  formatMacroSummary as macroSummary,
+  macroSavePayload,
+  type MacroDraft,
+} from '../../lib/macro-editor';
 import { defaultExportFilename, exportMacros, importMacros } from '../../lib/macro-library';
 import { t } from '../../lib/i18n';
-import type { Macro, MacroStep } from '../../types';
+import type { Macro } from '../../types';
 
 const props = defineProps<{
   sessionId: string;
@@ -186,30 +194,25 @@ async function runMacro(macro: Macro) {
   }
 }
 
-// --- draft / edit ---
-interface Draft {
-  name: string;
-  steps: MacroStep[];
-}
 const editing = ref(false);
 const editingId = ref<string | null>(null);
-const draft = shallowReactive<Draft>({ name: '', steps: [] });
+const draft = shallowReactive<MacroDraft>({ name: '', steps: [] });
 
-const canSave = computed(
-  () => draft.name.trim().length > 0 && draft.steps.some((s) => s.data.trim()),
-);
+const canSave = computed(() => canSaveMacroDraft(draft));
 
 function startCreate() {
+  const nextDraft = createMacroDraft();
   editingId.value = null;
-  draft.name = '';
-  draft.steps = [{ data: '', isHex: false, delayMs: 0 }];
+  draft.name = nextDraft.name;
+  draft.steps = nextDraft.steps;
   editing.value = true;
 }
 
 function startEdit(macro: Macro) {
+  const nextDraft = createMacroDraft(macro);
   editingId.value = macro.id;
-  draft.name = macro.name;
-  draft.steps = macro.steps.map((s) => ({ ...s }));
+  draft.name = nextDraft.name;
+  draft.steps = nextDraft.steps;
   editing.value = true;
 }
 
@@ -219,7 +222,7 @@ function cancelEdit() {
 }
 
 function addStep() {
-  draft.steps.push({ data: '', isHex: false, delayMs: 0 });
+  draft.steps.push(createMacroStep());
 }
 
 function removeStep(index: number) {
@@ -227,23 +230,13 @@ function removeStep(index: number) {
 }
 
 function save() {
-  if (!canSave.value) return;
-  // Drop empty steps so a saved macro only carries real payloads.
-  const steps = draft.steps
-    .filter((s) => s.data.trim())
-    .map((s) => ({
-      data: s.data,
-      isHex: s.isHex,
-      delayMs: Math.max(0, Math.floor(s.delayMs || 0)),
-    }));
+  const payload = macroSavePayload(draft);
+  if (!payload) return;
   if (editingId.value) {
-    sessionStore.updateMacro(props.sessionId, editingId.value, {
-      name: draft.name.trim(),
-      steps,
-    });
+    sessionStore.updateMacro(props.sessionId, editingId.value, payload);
     message.success(t('macro.updated'));
   } else {
-    sessionStore.addMacro(props.sessionId, { name: draft.name.trim(), steps });
+    sessionStore.addMacro(props.sessionId, payload);
     message.success(t('macro.saved'));
   }
   editing.value = false;
@@ -320,15 +313,6 @@ async function onFilePicked(e: Event) {
   } catch (e) {
     message.error(t('macro.importFailed', { error: e instanceof Error ? e.message : String(e) }));
   }
-}
-
-function macroSummary(macro: Macro): string {
-  return macro.steps
-    .map(
-      (s) =>
-        `${s.isHex ? 'HEX' : 'TXT'}: ${s.data.length > 16 ? s.data.slice(0, 16) + '…' : s.data}${s.delayMs ? ` (+${s.delayMs}ms)` : ''}`,
-    )
-    .join('  →  ');
 }
 </script>
 

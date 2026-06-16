@@ -422,15 +422,18 @@ import {
   recordsToRegisterDefs,
   snapshotFromRegisters,
 } from '../../lib/modbus-stream';
-import {
-  MODBUS_LIMITS,
-  isBitFc,
-  isReadFc,
-  maxValueCountForRegisters,
-  registerCountForValues,
-  registerSpan,
-} from '../../lib/modbus';
+import { isBitFc, isReadFc } from '../../lib/modbus';
 import { modbusWriteRowValues } from '../../lib/modbus-batches';
+import {
+  formatModbusRegisterValue,
+  isModbusDataCountEditable,
+  isModbusWriteFc,
+  modbusAddressStepFor,
+  modbusDataQuantityMax,
+  modbusTypeForFunctionCode,
+  normalizeModbusDataQuantity,
+  parseModbusValueInput,
+} from '../../lib/modbus-registers';
 import { t } from '../../lib/i18n';
 import type {
   ModbusFunctionCode,
@@ -566,7 +569,7 @@ function isReadReg(reg: ModbusRegister): boolean {
   return isReadFc(reg.functionCode);
 }
 function isWriteReg(reg: ModbusRegister): boolean {
-  return reg.functionCode === 0x05 || reg.functionCode === 0x06 || reg.functionCode === 0x10;
+  return isModbusWriteFc(reg.functionCode);
 }
 
 function typeOptionsFor(fc: ModbusFunctionCode) {
@@ -590,27 +593,19 @@ function editRegisterAndClearValue(
   });
 }
 
-function typeForFunctionCode(
-  fc: ModbusFunctionCode,
-  currentType: ModbusValueType,
-): ModbusValueType {
-  if (isBitFc(fc)) return 'bool';
-  return currentType === 'bool' ? 'uint16' : currentType;
-}
-
 function editFunctionCode(reg: ModbusRegister, fc: ModbusFunctionCode) {
-  const type = typeForFunctionCode(fc, reg.type);
+  const type = modbusTypeForFunctionCode(fc, reg.type);
   editRegisterAndClearValue(reg, {
     functionCode: fc,
     type,
     quantity: normalizeDataQuantity(reg.quantity, fc, type),
     periodicRead: isReadFc(fc) ? reg.periodicRead : false,
-    periodicWrite: fc === 0x05 || fc === 0x06 || fc === 0x10 ? reg.periodicWrite : false,
+    periodicWrite: isModbusWriteFc(fc) ? reg.periodicWrite : false,
   });
 }
 
 function editType(reg: ModbusRegister, type: ModbusValueType) {
-  const nextType = typeForFunctionCode(reg.functionCode, type);
+  const nextType = modbusTypeForFunctionCode(reg.functionCode, type);
   editRegisterAndClearValue(reg, {
     type: nextType,
     quantity: normalizeDataQuantity(reg.quantity, reg.functionCode, nextType),
@@ -619,12 +614,12 @@ function editType(reg: ModbusRegister, type: ModbusValueType) {
 
 function setDraftFunctionCode(fc: ModbusFunctionCode) {
   draft.functionCode = fc;
-  draft.type = typeForFunctionCode(fc, draft.type);
+  draft.type = modbusTypeForFunctionCode(fc, draft.type);
   draft.quantity = normalizeDataQuantity(draft.quantity, fc, draft.type);
 }
 
 function setDraftType(type: ModbusValueType) {
-  draft.type = typeForFunctionCode(draft.functionCode, type);
+  draft.type = modbusTypeForFunctionCode(draft.functionCode, type);
   draft.quantity = normalizeDataQuantity(draft.quantity, draft.functionCode, draft.type);
 }
 
@@ -633,12 +628,7 @@ function togglePeriodic(regId: string, field: 'periodicRead' | 'periodicWrite', 
 }
 
 function formatValue(reg: ModbusRegister): string {
-  const values = Array.isArray(reg.values) && reg.values.length > 0 ? reg.values : null;
-  if (values) {
-    return values.map(formatNumber).join(' ');
-  }
-  if (reg.value === null || !Number.isFinite(reg.value)) return '—';
-  return formatNumber(reg.value);
+  return formatModbusRegisterValue(reg);
 }
 
 function setChannel(regId: string, ch: number) {
@@ -664,7 +654,7 @@ function valuePlaceholder(reg: ModbusRegister): string {
 
 function editValue(reg: ModbusRegister, raw: string) {
   valueDrafts[reg.id] = raw;
-  const values = parseValueList(raw);
+  const values = parseModbusValueInput(raw);
   const value = values[0] ?? null;
   const patch: Partial<Omit<ModbusRegister, 'id'>> = {
     value,
@@ -680,7 +670,6 @@ function addRegister() {
   // user opts each row in via the R/W toggles.
   const fc = draft.functionCode;
   const quantity = normalizeDataQuantity(draft.quantity, fc, draft.type);
-  const isWriteFc = fc === 0x05 || fc === 0x06 || fc === 0x10;
   sessionStore.addModbusRegister(props.sessionId, {
     name: draft.name.trim(),
     slaveAddress: draft.slaveAddress,
@@ -690,7 +679,7 @@ function addRegister() {
     type: draft.type,
     unit: draft.unit || undefined,
     waveformChannel: draft.waveformChannel < 0 ? null : draft.waveformChannel,
-    periodicRead: !isWriteFc,
+    periodicRead: !isModbusWriteFc(fc),
     periodicWrite: false,
   });
   // Reset the name + address for the next add, keep the rest (common to batch-add a block).
@@ -699,7 +688,7 @@ function addRegister() {
 }
 
 function isDataCountEditable(fc: ModbusFunctionCode): boolean {
-  return fc === 0x03 || fc === 0x10;
+  return isModbusDataCountEditable(fc);
 }
 
 function dataQuantity(reg: ModbusRegister): number {
@@ -707,9 +696,7 @@ function dataQuantity(reg: ModbusRegister): number {
 }
 
 function dataQuantityMax(fc: ModbusFunctionCode, type: ModbusValueType): number {
-  if (fc === 0x03) return maxValueCountForRegisters(type, MODBUS_LIMITS.readRegisters);
-  if (fc === 0x10) return maxValueCountForRegisters(type, MODBUS_LIMITS.writeRegisters);
-  return 1;
+  return modbusDataQuantityMax(fc, type);
 }
 
 function normalizeDataQuantity(
@@ -717,8 +704,7 @@ function normalizeDataQuantity(
   fc: ModbusFunctionCode,
   type: ModbusValueType,
 ): number {
-  const n = typeof raw === 'number' && Number.isFinite(raw) ? Math.floor(raw) : 1;
-  return Math.max(1, Math.min(dataQuantityMax(fc, type), n));
+  return normalizeModbusDataQuantity(raw, fc, type);
 }
 
 function editQuantity(reg: ModbusRegister, raw: number) {
@@ -728,24 +714,7 @@ function editQuantity(reg: ModbusRegister, raw: number) {
 }
 
 function addressStepFor(fc: ModbusFunctionCode, type: ModbusValueType, quantity: number): number {
-  if (fc === 0x03 || fc === 0x10) return registerCountForValues(type, quantity);
-  return isBitFc(fc) ? 1 : registerSpan(type);
-}
-
-function parseValueList(raw: string): number[] {
-  return raw
-    .trim()
-    .split(/[\s,;，；]+/)
-    .filter(Boolean)
-    .map((part) => Number(part))
-    .filter((value) => Number.isFinite(value));
-}
-
-function formatNumber(value: number): string {
-  if (Number.isInteger(value)) return String(value);
-  if (Math.abs(value) >= 1000) return value.toFixed(0);
-  if (Math.abs(value) >= 10) return value.toFixed(1);
-  return value.toFixed(2);
+  return modbusAddressStepFor(fc, type, quantity);
 }
 
 async function handleSendRow(reg: ModbusRegister) {

@@ -4,7 +4,14 @@ import type {
   ModbusRegister,
   ModbusValueType,
 } from '../types';
-import { MODBUS_LIMITS, isReadFc, maxValueCountForRegisters } from './modbus';
+import {
+  MODBUS_LIMITS,
+  isBitFc,
+  isReadFc,
+  maxValueCountForRegisters,
+  registerCountForValues,
+  registerSpan,
+} from './modbus';
 
 export const DEFAULT_MODBUS_CONFIG: ModbusMasterConfig = {
   transport: 'rtu',
@@ -31,6 +38,10 @@ const MODBUS_VALUE_TYPES: ReadonlySet<ModbusValueType> = new Set([
 const MODBUS_FUNCTION_CODES: ReadonlySet<ModbusFunctionCode> = new Set([
   0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x10,
 ]);
+
+export function isModbusWriteFc(fc: number): fc is 0x05 | 0x06 | 0x10 {
+  return fc === 0x05 || fc === 0x06 || fc === 0x10;
+}
 
 /** Validate a Modbus FC into the supported family, else default to read-holding (03). */
 export function normalizeModbusFunctionCode(raw: unknown): ModbusFunctionCode {
@@ -66,10 +77,68 @@ export function normalizeModbusValues(raw: unknown): number[] | null {
   return values.length > 0 ? values : null;
 }
 
+export function modbusTypeForFunctionCode(
+  fc: ModbusFunctionCode,
+  currentType: ModbusValueType,
+): ModbusValueType {
+  if (isBitFc(fc)) return 'bool';
+  return currentType === 'bool' ? 'uint16' : currentType;
+}
+
+export function isModbusDataCountEditable(fc: ModbusFunctionCode): boolean {
+  return fc === 0x03 || fc === 0x10;
+}
+
+export function modbusDataQuantityMax(fc: ModbusFunctionCode, type: ModbusValueType): number {
+  if (fc === 0x03) return maxValueCountForRegisters(type, MODBUS_LIMITS.readRegisters);
+  if (fc === 0x10) return maxValueCountForRegisters(type, MODBUS_LIMITS.writeRegisters);
+  return 1;
+}
+
+export function normalizeModbusDataQuantity(
+  raw: unknown,
+  fc: ModbusFunctionCode,
+  type: ModbusValueType,
+): number {
+  const n = typeof raw === 'number' && Number.isFinite(raw) ? Math.floor(raw) : 1;
+  return Math.max(1, Math.min(modbusDataQuantityMax(fc, type), n));
+}
+
+export function modbusAddressStepFor(
+  fc: ModbusFunctionCode,
+  type: ModbusValueType,
+  quantity: number,
+): number {
+  if (fc === 0x03 || fc === 0x10) return registerCountForValues(type, quantity);
+  return isBitFc(fc) ? 1 : registerSpan(type);
+}
+
+export function parseModbusValueInput(raw: string): number[] {
+  return raw
+    .trim()
+    .split(/[\s,;，；]+/)
+    .filter(Boolean)
+    .map((part) => Number(part))
+    .filter((value) => Number.isFinite(value));
+}
+
+export function formatModbusNumber(value: number): string {
+  if (Number.isInteger(value)) return String(value);
+  if (Math.abs(value) >= 1000) return value.toFixed(0);
+  if (Math.abs(value) >= 10) return value.toFixed(1);
+  return value.toFixed(2);
+}
+
+export function formatModbusRegisterValue(reg: Pick<ModbusRegister, 'value' | 'values'>): string {
+  const values = Array.isArray(reg.values) && reg.values.length > 0 ? reg.values : null;
+  if (values) return values.map(formatModbusNumber).join(' ');
+  if (reg.value === null || !Number.isFinite(reg.value)) return '—';
+  return formatModbusNumber(reg.value);
+}
+
 export function normalizeModbusRegister(raw: Partial<ModbusRegister>): ModbusRegister {
   const fc = normalizeModbusFunctionCode(raw.functionCode);
   const type = normalizeModbusValueType(raw.type);
-  const isWriteFc = fc === 0x05 || fc === 0x06 || fc === 0x10;
   return {
     id: typeof raw.id === 'string' ? raw.id : crypto.randomUUID(),
     name: typeof raw.name === 'string' ? raw.name : 'Register',
@@ -96,7 +165,7 @@ export function normalizeModbusRegister(raw: Partial<ModbusRegister>): ModbusReg
     values: normalizeModbusValues(raw.values),
     valueTs: typeof raw.valueTs === 'number' && Number.isFinite(raw.valueTs) ? raw.valueTs : null,
     periodicRead: isReadFc(fc) ? raw.periodicRead !== false : false,
-    periodicWrite: isWriteFc ? raw.periodicWrite === true : false,
+    periodicWrite: isModbusWriteFc(fc) ? raw.periodicWrite === true : false,
   };
 }
 

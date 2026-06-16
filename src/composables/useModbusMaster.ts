@@ -16,6 +16,7 @@ import {
 import { ModbusLoopCoordinator } from '../lib/modbus-loop-coordinator';
 import {
   ModbusPeriodicOutcomeTracker,
+  type ModbusPeriodicScope,
   type ModbusTransactionOutcome,
 } from '../lib/modbus-periodic-outcome';
 import { buildModbusReadWireRequest } from '../lib/modbus-request-builder';

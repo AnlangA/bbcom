@@ -122,13 +122,27 @@ import { computed, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, NSelect, useMessage } from 'naive-ui';
 import { Copy, Search } from 'lucide-vue-next';
 import { useAppStore } from '../../stores/app';
-import { formatHex, formatUtf8, formatAscii, formatTimestamp } from '../../lib/format';
 import { usePacketFilter } from '../../composables/usePacketFilter';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
 import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
 import PacketRow from './PacketRow.vue';
-import { findFrameHighlight } from '../../lib/highlights';
 import { t } from '../../lib/i18n';
+import {
+  buildPacketRows,
+  framesForPacketCopy,
+  packetBatchCopyText,
+  packetColumns,
+  packetContextCopyText,
+  packetCopySizeStatus,
+  packetDisplayLabel,
+  packetKeyboardCopyText,
+  packetSelectionIndex,
+  packetUsesHtml,
+  scrollTopForVirtualIndex,
+  type PacketBatchCopyKey,
+  type PacketContextCopyKey,
+  type PacketRowData,
+} from '../../lib/packet-list';
 import type { DataFrame, DirectionFilter, HighlightRule } from '../../types';
 
 const props = defineProps<{
@@ -166,10 +180,8 @@ const directionOptions = computed<{ label: string; value: DirectionFilter }[]>((
   { label: 'TX', value: 'TX' },
   { label: 'RX', value: 'RX' },
 ]);
-const MAX_COPY_BYTES = 2 * 1024 * 1024;
-const MAX_COPY_FRAMES = 5000;
 
-const columns = computed(() => (appStore.showTimestamp ? '50px 160px 1fr 50px' : '50px 1fr 50px'));
+const columns = computed(() => packetColumns(appStore.showTimestamp));
 
 const { formatFrame, getHexSearchData, getTextSearchData, stripAnsi, clearCaches } =
   usePacketFormatter({
@@ -201,78 +213,28 @@ const { scrollRef, virtualItems, totalSize, onScroll } = usePacketVirtualScroll(
 });
 
 const displayLabel = computed(() =>
-  appStore.packetViewMode === 'MERGED' ? `${appStore.displayMode}*` : appStore.displayMode,
+  packetDisplayLabel(appStore.packetViewMode, appStore.displayMode),
 );
 
-const useHtml = computed(() => appStore.displayMode !== 'HEX' && appStore.ansiColorEnabled);
-
-interface PacketRowData {
-  key: string;
-  start: number;
-  size: number;
-  style: {
-    position: 'absolute';
-    top: string;
-    left: string;
-    width: string;
-    height: string;
-    transform: string;
-  };
-  frame: DataFrame;
-  formatted: string;
-  timestamp: string;
-  showTimestamp: boolean;
-  columns: string;
-  displayLabel: string;
-  useHtml: boolean;
-  highlightClass: string | null;
-  highlightLabel: string | null;
-}
+const useHtml = computed(() => packetUsesHtml(appStore.displayMode, appStore.ansiColorEnabled));
 
 // Pre-map the virtualized items into stable row descriptors. Formatting runs
 // here (shared LRU cache), so each visible row carries an already-formatted
 // string; combined with v-memo on <PacketRow>, unchanged rows skip the v-html
 // diff entirely when only the buffer grows.
 const rows = computed<PacketRowData[]>(() => {
-  const items = virtualItems.value;
-  const frames = visibleFrames.value;
-  const showTimestamp = appStore.showTimestamp;
-  const cols = columns.value;
-  const label = displayLabel.value;
-  const html = useHtml.value;
-  const highlights = props.highlights ?? [];
-  const out: PacketRowData[] = [];
-  for (const item of items) {
-    const frame = frames[item.index];
-    if (!frame) continue;
-    const highlight = findFrameHighlight(highlights, frame, {
-      getHexSearchData,
-      getTextSearchData,
-    });
-    out.push({
-      key: frame.id,
-      start: item.start,
-      size: item.size,
-      style: {
-        position: 'absolute',
-        top: '0px',
-        left: '0px',
-        width: '100%',
-        height: `${item.size}px`,
-        transform: `translateY(${item.start}px)`,
-      },
-      frame,
-      formatted: formatFrame(frame),
-      timestamp: formatTimestamp(frame.timestamp),
-      showTimestamp,
-      columns: cols,
-      displayLabel: label,
-      useHtml: html,
-      highlightClass: highlight ? `highlight-${highlight.color}` : null,
-      highlightLabel: highlight?.name ?? null,
-    });
-  }
-  return out;
+  return buildPacketRows({
+    virtualItems: virtualItems.value,
+    frames: visibleFrames.value,
+    showTimestamp: appStore.showTimestamp,
+    columns: columns.value,
+    displayLabel: displayLabel.value,
+    useHtml: useHtml.value,
+    highlights: props.highlights,
+    formatFrame,
+    getHexSearchData,
+    getTextSearchData,
+  });
 });
 
 function showContextMenu(e: MouseEvent, frame: DataFrame) {
@@ -292,25 +254,16 @@ function onKeydown(e: KeyboardEvent) {
   const frames = visibleFrames.value;
   if (frames.length === 0) return;
 
-  const currentIndex = selectedFrameId.value
-    ? frames.findIndex((f) => f.id === selectedFrameId.value)
-    : -1;
-
-  if (e.key === 'ArrowDown') {
+  const nextIndex = packetSelectionIndex(frames, selectedFrameId.value, e.key);
+  if (nextIndex !== null) {
     e.preventDefault();
-    const nextIndex = Math.min(currentIndex + 1, frames.length - 1);
     selectFrame(frames[nextIndex]);
     scrollToIndex(nextIndex);
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    const prevIndex = Math.max(currentIndex - 1, 0);
-    selectFrame(frames[prevIndex]);
-    scrollToIndex(prevIndex);
   } else if (e.key === 'c' && (e.ctrlKey || e.metaKey) && selectedFrameId.value) {
     e.preventDefault();
     const frame = frames.find((f) => f.id === selectedFrameId.value);
     if (frame) {
-      const text = `[${frame.timestamp}] ${frame.direction} | ${formatFrame(frame)}`;
+      const text = packetKeyboardCopyText(frame, formatFrame);
       navigator.clipboard.writeText(text).then(
         () => message.success(t('packet.copied')),
         () => message.error(t('packet.copyFailed')),
@@ -321,17 +274,14 @@ function onKeydown(e: KeyboardEvent) {
 
 function scrollToIndex(index: number) {
   if (!scrollRef.value) return;
-  const item = virtualItems.value.find((v) => v.index === index);
-  if (item) {
-    const itemTop = item.start;
-    const itemBottom = itemTop + item.size;
-    const scrollTop = scrollRef.value.scrollTop;
-    const viewportHeight = scrollRef.value.clientHeight;
-    if (itemTop < scrollTop) {
-      scrollRef.value.scrollTop = itemTop;
-    } else if (itemBottom > scrollTop + viewportHeight) {
-      scrollRef.value.scrollTop = itemBottom - viewportHeight;
-    }
+  const nextScrollTop = scrollTopForVirtualIndex(
+    index,
+    virtualItems.value,
+    scrollRef.value.scrollTop,
+    scrollRef.value.clientHeight,
+  );
+  if (nextScrollTop !== null) {
+    scrollRef.value.scrollTop = nextScrollTop;
   }
 }
 
@@ -342,25 +292,10 @@ function onRowContextMenu(e: MouseEvent, frame: DataFrame) {
 async function handleCtxSelect(key: string) {
   ctxShow.value = false;
   if (!ctxFrame) return;
-
-  let text = '';
-  switch (key) {
-    case 'hex':
-      text = formatHex(ctxFrame.data);
-      break;
-    case 'ascii':
-      text = formatAscii(ctxFrame.data);
-      break;
-    case 'utf8':
-      text = formatUtf8(ctxFrame.data);
-      break;
-    case 'plain':
-      text = stripAnsi(formatAscii(ctxFrame.data));
-      break;
-    case 'row':
-      text = `[${formatTimestamp(ctxFrame.timestamp)}] ${ctxFrame.direction} | ${formatFrame(ctxFrame)}`;
-      break;
-  }
+  const text = packetContextCopyText(key as PacketContextCopyKey, ctxFrame, {
+    formatFrame,
+    stripAnsi,
+  });
 
   try {
     await navigator.clipboard.writeText(text);
@@ -371,19 +306,14 @@ async function handleCtxSelect(key: string) {
 }
 
 async function handleCopySelect(key: string) {
-  const frames = key.startsWith('all') ? props.frames : filteredFrames.value;
-  const totalBytes = frames.reduce((sum, frame) => sum + frame.data.length, 0);
-  if (frames.length > MAX_COPY_FRAMES || totalBytes > MAX_COPY_BYTES) {
+  const copyKey = key as PacketBatchCopyKey;
+  const frames = framesForPacketCopy(copyKey, props.frames, filteredFrames.value);
+  const { tooLarge } = packetCopySizeStatus(frames);
+  if (tooLarge) {
     message.warning(t('packet.copyTooLarge'));
     return;
   }
-  const asHex = key.endsWith('hex');
-  const text = frames
-    .map((frame) => {
-      const data = asHex ? formatHex(frame.data) : formatUtf8(frame.data);
-      return `[${formatTimestamp(frame.timestamp)}] ${frame.direction} | ${data}`;
-    })
-    .join('\n');
+  const text = packetBatchCopyText(copyKey, frames);
   try {
     await navigator.clipboard.writeText(text);
     message.success(t('packet.copied'));

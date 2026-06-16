@@ -336,6 +336,13 @@ import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
 import { useModbusMaster } from '../../composables/useModbusMaster';
 import { parseStream, type ModbusStreamRecord } from '../../lib/modbus-stream';
+import {
+  buildModbusWaveformChannelLabels,
+  findAvailableModbusWaveformChannel,
+  formatSessionModbusStatus,
+  snapshotModbusStatus,
+  type SessionModbusStatus,
+} from '../../lib/session-modbus-view';
 import { useExport } from '../../composables/useExport';
 import { useAutoLog } from '../../composables/useAutoLog';
 import { useSessionActions } from '../../composables/useSessionActions';
@@ -458,16 +465,7 @@ const waveformRef = ref<{ pushRegisterSample: (channel: number, value: number) =
   null,
 );
 const modbusBusy = ref(false);
-const modbusStatus = ref<{
-  kind: string;
-  code?: number;
-  count?: number;
-  remaining?: number;
-  message?: string;
-  scope?: string;
-  delayMs?: number;
-  consecutiveFailures?: number;
-}>({ kind: 'idle' });
+const modbusStatus = ref<SessionModbusStatus>({ kind: 'idle' });
 
 const master = useModbusMaster({
   sessionId: props.session.id,
@@ -484,48 +482,17 @@ const master = useModbusMaster({
     }
   },
   onStatus: (s) => {
-    modbusStatus.value = {
-      kind: s.kind,
-      code: 'code' in s ? s.code : undefined,
-      count: 'count' in s ? s.count : undefined,
-      remaining: 'remaining' in s ? s.remaining : undefined,
-      message: 'message' in s ? s.message : undefined,
-      scope: 'scope' in s ? s.scope : undefined,
-      delayMs: 'delayMs' in s ? s.delayMs : undefined,
-      consecutiveFailures: 'consecutiveFailures' in s ? s.consecutiveFailures : undefined,
-    };
+    modbusStatus.value = snapshotModbusStatus(s);
   },
 });
 
-const modbusStatusText = computed(() => {
-  const s = modbusStatus.value;
-  if (s.kind === 'polling') return t('modbus.status.polling', { count: s.count ?? 0 });
-  if (s.kind === 'writing') return t('modbus.status.writing', { count: s.count ?? 0 });
-  if (s.kind === 'timeout') return t('modbus.status.timeout');
-  if (s.kind === 'exception') return t('modbus.status.exception', { code: s.code ?? 0 });
-  if (s.kind === 'crc-error') return t('modbus.status.crcError');
-  if (s.kind === 'replaying') return t('modbus.status.replaying', { remaining: s.remaining ?? 0 });
-  if (s.kind === 'backoff')
-    return t('modbus.status.backoff', {
-      scope: s.scope === 'write' ? t('modbus.status.scopeWrite') : t('modbus.status.scopeRead'),
-      delay: s.delayMs ?? 0,
-      count: s.consecutiveFailures ?? 0,
-    });
-  if (s.kind === 'error') return t('modbus.status.error', { message: s.message ?? '' });
-  return t('modbus.status.idle');
-});
+const modbusStatusText = computed(() => formatSessionModbusStatus(modbusStatus.value, t));
 const modbusStatusClass = computed(() => modbusStatus.value.kind);
 
 // Per-channel labels for register-mode waveform (channel index → register name).
-const waveformChannelLabels = computed(() => {
-  const labels: Record<number, string> = {};
-  for (const reg of props.session.modbusRegisters) {
-    if (reg.waveformChannel !== null && reg.waveformChannel >= 0) {
-      labels[reg.waveformChannel] = reg.name;
-    }
-  }
-  return labels;
-});
+const waveformChannelLabels = computed(() =>
+  buildModbusWaveformChannelLabels(props.session.modbusRegisters),
+);
 
 function toggleWaveformSourceMode() {
   const next = props.session.waveformSourceMode === 'register' ? 'text' : 'register';
@@ -619,19 +586,8 @@ function onPlotInWaveform(reg: ModbusRegister) {
   let ch = reg.waveformChannel;
   if (ch === null) {
     // Assign the next free channel (0..7).
-    const used = new Set(
-      props.session.modbusRegisters
-        .map((r) => r.waveformChannel)
-        .filter((c): c is number => c !== null),
-    );
-    ch = -1;
-    for (let i = 0; i < 8; i += 1) {
-      if (!used.has(i)) {
-        ch = i;
-        break;
-      }
-    }
-    if (ch < 0) return; // all channels taken
+    ch = findAvailableModbusWaveformChannel(props.session.modbusRegisters);
+    if (ch === null) return; // all channels taken
     sessionStore.updateModbusRegister(props.session.id, reg.id, { waveformChannel: ch });
   }
   sessionStore.setWaveformSourceMode(props.session.id, 'register');

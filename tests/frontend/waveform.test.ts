@@ -1,13 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildWaveformCsv,
   channelColor,
   channelRanges,
   channelStats,
   createBuffer,
+  ensureWaveformChannels,
+  formatWaveformNumber,
+  ingestWaveformTextFrames,
   parseSampleLine,
   pushSample,
+  pushRegisterWaveformSample,
+  type WaveformChannelState,
 } from '../../src/lib/waveform.ts';
+
+function frame(direction: 'RX' | 'TX', text: string): { direction: 'RX' | 'TX'; data: Uint8Array } {
+  return { direction, data: new TextEncoder().encode(text) };
+}
 
 test('parseSampleLine parses a trailing CSV of numbers', () => {
   assert.deepEqual(parseSampleLine('hello\n12.5,-3,40\n'), [12.5, -3, 40]);
@@ -75,6 +85,107 @@ test('channelColor is stable per index and cycles the palette', () => {
   assert.notEqual(channelColor(0), channelColor(1), 'different indices differ');
   // cycles: index == palette length wraps to 0
   assert.equal(channelColor(0), channelColor(8), 'palette wraps at 8');
+});
+
+test('ensureWaveformChannels grows channels while preserving existing state', () => {
+  const existing: WaveformChannelState[] = [{ color: 'red', latest: 12, visible: false }];
+  const next = ensureWaveformChannels(existing, 3);
+
+  assert.deepEqual(next[0], existing[0]);
+  assert.equal(next[1].color, channelColor(1));
+  assert.equal(next[1].latest, null);
+  assert.equal(next[1].visible, true);
+  assert.equal(next[2].color, channelColor(2));
+});
+
+test('pushRegisterWaveformSample appends sparse register samples and updates latest', () => {
+  const b = createBuffer(10);
+  let channels: WaveformChannelState[] = [];
+
+  let result = pushRegisterWaveformSample(b, channels, 2, 42, false);
+  channels = result.channels;
+  assert.equal(result.pushed, true);
+  assert.deepEqual(b.samples, [[0, 0, 42]]);
+  assert.equal(channels.length, 3);
+  assert.equal(channels[2].latest, 42);
+  assert.equal(channels[0].latest, null);
+
+  result = pushRegisterWaveformSample(b, channels, 0, 7, false);
+  channels = result.channels;
+  assert.deepEqual(b.samples[1], [7]);
+  assert.equal(channels[0].latest, 7);
+  assert.equal(channels[2].latest, 42);
+});
+
+test('pushRegisterWaveformSample ignores paused or invalid samples', () => {
+  const b = createBuffer(10);
+  const channels: WaveformChannelState[] = [{ color: 'red', latest: 1, visible: true }];
+
+  assert.equal(pushRegisterWaveformSample(b, channels, 0, 2, true).pushed, false);
+  assert.equal(pushRegisterWaveformSample(b, channels, -1, 2, false).pushed, false);
+  assert.equal(pushRegisterWaveformSample(b, channels, 0, Number.NaN, false).pushed, false);
+  assert.equal(b.samples.length, 0);
+});
+
+test('ingestWaveformTextFrames parses only the selected direction and refreshes latest', () => {
+  const b = createBuffer(10);
+  const result = ingestWaveformTextFrames(
+    b,
+    [frame('TX', '1,2\n'), frame('RX', '3,4\n'), frame('RX', 'noise\n5,6,7\n')],
+    {
+      startIndex: 0,
+      direction: 'RX',
+      paused: false,
+      channels: [],
+    },
+  );
+
+  assert.equal(result.consumed, 3);
+  assert.equal(result.pushedSamples, 2);
+  assert.deepEqual(b.samples, [
+    [3, 4],
+    [5, 6, 7],
+  ]);
+  assert.equal(result.channels.length, 3);
+  assert.deepEqual(
+    result.channels.map((channel) => channel.latest),
+    [5, 6, 7],
+  );
+});
+
+test('ingestWaveformTextFrames consumes frames while paused without appending samples', () => {
+  const b = createBuffer(10);
+  pushSample(b, [9, 8]);
+  const result = ingestWaveformTextFrames(b, [frame('RX', '1,2,3\n')], {
+    startIndex: 0,
+    direction: 'RX',
+    paused: true,
+    channels: [
+      { color: channelColor(0), latest: 9, visible: true },
+      { color: channelColor(1), latest: 8, visible: false },
+    ],
+  });
+
+  assert.equal(result.consumed, 1);
+  assert.equal(result.pushedSamples, 0);
+  assert.deepEqual(b.samples, [[9, 8]]);
+  assert.equal(result.channels.length, 3);
+  assert.deepEqual(
+    result.channels.map((channel) => channel.latest),
+    [9, 8, null],
+  );
+  assert.equal(result.channels[1].visible, false);
+});
+
+test('formatWaveformNumber matches compact legend formatting', () => {
+  assert.equal(formatWaveformNumber(Number.NaN), '—');
+  assert.equal(formatWaveformNumber(1234.5), '1235');
+  assert.equal(formatWaveformNumber(12.34), '12.3');
+  assert.equal(formatWaveformNumber(1.234), '1.23');
+});
+
+test('buildWaveformCsv emits headers and blanks missing or invalid values', () => {
+  assert.equal(buildWaveformCsv([[1, 2], [3], [Number.NaN, 5]], 2), 'ch0,ch1\n1,2\n3,\n,5');
 });
 
 test('channelStats reports min/max/mean across the buffer', () => {

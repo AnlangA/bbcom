@@ -94,14 +94,15 @@ import { useMessage } from 'naive-ui';
 import type { DataFrame } from '../../types';
 import { t } from '../../lib/i18n';
 import {
-  channelColor,
   channelRanges,
   channelStats,
   createBuffer,
-  decodeFrameText,
-  parseSampleLine,
-  pushSample,
+  buildWaveformCsv,
+  formatWaveformNumber,
+  ingestWaveformTextFrames,
+  pushRegisterWaveformSample,
   type ChannelStats,
+  type WaveformChannelState,
 } from '../../lib/waveform';
 import { parseStream } from '../../lib/modbus-stream';
 
@@ -125,12 +126,7 @@ const canvasRef = ref<HTMLCanvasElement | null>(null);
 const CAPACITY = 600;
 const buffer = createBuffer(CAPACITY);
 
-interface ChannelState {
-  color: string;
-  latest: number | null;
-  visible: boolean;
-}
-const channelState = ref<ChannelState[]>([]);
+const channelState = ref<WaveformChannelState[]>([]);
 
 // Track how many frames we've already consumed so we only parse new ones.
 let consumed = 0;
@@ -151,27 +147,14 @@ function channelLabel(i: number): string {
  * fit the channel index and updates the legend readout.
  */
 function pushRegisterSample(channel: number, value: number) {
-  if (paused.value || channel < 0 || !Number.isFinite(value)) return;
-  ensureChannel(channel);
-  // Sparse sample: only the bound channel carries a new value; others hold
-  // their previous latest so unrelated channels keep steady lines.
-  const sample: number[] = [];
-  for (let i = 0; i <= channel; i += 1) {
-    sample[i] = i === channel ? value : (channelState.value[i]?.latest ?? 0);
-  }
-  pushSample(buffer, sample);
-  const next = channelState.value.slice();
-  next[channel] = { ...next[channel], latest: value };
-  channelState.value = next;
-}
-
-function ensureChannel(channel: number) {
-  if (channel < channelState.value.length) return;
-  const next: ChannelState[] = channelState.value.slice();
-  for (let i = next.length; i <= channel; i += 1) {
-    next.push({ color: channelColor(i), latest: null, visible: true });
-  }
-  channelState.value = next;
+  const result = pushRegisterWaveformSample(
+    buffer,
+    channelState.value,
+    channel,
+    value,
+    paused.value,
+  );
+  channelState.value = result.channels;
 }
 
 defineExpose({ pushRegisterSample });
@@ -211,36 +194,14 @@ function ingestNewFrames() {
     consumed = props.frames.length;
     return;
   }
-  const dir = props.direction ?? 'RX';
-  const frames = props.frames;
-  let channelCount = channelState.value.length;
-  for (let i = consumed; i < frames.length; i += 1) {
-    const f = frames[i];
-    if (f.direction !== dir) continue;
-    const sample = parseSampleLine(decodeFrameText(f.data));
-    if (sample.length === 0) continue;
-    if (sample.length > channelCount) channelCount = sample.length;
-    if (!paused.value) pushSample(buffer, sample);
-  }
-  if (channelCount !== channelState.value.length) {
-    // Grow the channel list, preserving visibility/latest of existing channels.
-    const next: ChannelState[] = [];
-    for (let i = 0; i < channelCount; i += 1) {
-      const prev = channelState.value[i];
-      next.push({
-        color: channelColor(i),
-        latest: prev?.latest ?? null,
-        visible: prev?.visible ?? true,
-      });
-    }
-    channelState.value = next;
-  }
-  // Refresh the legend readout from the latest sample.
-  const last = buffer.samples.length > 0 ? buffer.samples[buffer.samples.length - 1] : null;
-  if (last) {
-    channelState.value = channelState.value.map((ch, i) => ({ ...ch, latest: last[i] ?? null }));
-  }
-  consumed = frames.length;
+  const result = ingestWaveformTextFrames(buffer, props.frames, {
+    startIndex: consumed,
+    direction: props.direction ?? 'RX',
+    paused: paused.value,
+    channels: channelState.value,
+  });
+  channelState.value = result.channels;
+  consumed = result.consumed;
 }
 
 function toggleChannel(i: number) {
@@ -256,10 +217,7 @@ function clearBuffer() {
 const statsView = computed<ChannelStats[]>(() => channelStats(buffer, channelState.value.length));
 
 function formatNum(n: number): string {
-  if (!Number.isFinite(n)) return '—';
-  if (Math.abs(n) >= 1000) return n.toFixed(0);
-  if (Math.abs(n) >= 10) return n.toFixed(1);
-  return n.toFixed(2);
+  return formatWaveformNumber(n);
 }
 
 // RAF render loop. Only runs while enabled and there's a canvas. Re-derives
@@ -382,7 +340,7 @@ function refreshMonoFont() {
 }
 
 function loop() {
-  if (!paused.value) ingestNewFrames();
+  ingestNewFrames();
   if (!rendering) render();
 }
 
@@ -420,17 +378,7 @@ function exportCsv() {
   const samples = buffer.samples;
   if (samples.length === 0) return;
   const channelCount = channelState.value.length;
-  const header = Array.from({ length: channelCount }, (_, i) => `ch${i}`).join(',');
-  const lines = [header];
-  for (let i = 0; i < samples.length; i += 1) {
-    const row: string[] = [];
-    for (let c = 0; c < channelCount; c += 1) {
-      const v = samples[i][c];
-      row.push(v === undefined || !Number.isFinite(v) ? '' : String(v));
-    }
-    lines.push(row.join(','));
-  }
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const blob = new Blob([buildWaveformCsv(samples, channelCount)], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

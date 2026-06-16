@@ -2,10 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   cloneModbusConfig,
+  formatModbusNumber,
+  formatModbusRegisterValue,
+  isModbusDataCountEditable,
+  isModbusWriteFc,
+  modbusAddressStepFor,
+  modbusDataQuantityMax,
+  modbusTypeForFunctionCode,
   normalizeModbusConfig,
+  normalizeModbusDataQuantity,
   normalizeModbusQuantity,
   normalizeModbusRegister,
   normalizeModbusRegisters,
+  parseModbusValueInput,
   persistableModbusRegisters,
 } from '../../src/lib/modbus-registers.ts';
 import type { ModbusRegister } from '../../src/types/index.ts';
@@ -65,6 +74,52 @@ test('normalizeModbusQuantity respects Modbus limits by FC and value width', () 
   assert.equal(normalizeModbusQuantity(9999, 0x03, 'float32-be'), 62);
   assert.equal(normalizeModbusQuantity(9999, 0x10, 'float32-be'), 61);
   assert.equal(normalizeModbusQuantity(9999, 0x06, 'uint16'), 1);
+});
+
+test('register editor helpers derive FC-specific editability and value type', () => {
+  assert.equal(isModbusWriteFc(0x05), true);
+  assert.equal(isModbusWriteFc(0x06), true);
+  assert.equal(isModbusWriteFc(0x10), true);
+  assert.equal(isModbusWriteFc(0x03), false);
+
+  assert.equal(isModbusDataCountEditable(0x03), true);
+  assert.equal(isModbusDataCountEditable(0x10), true);
+  assert.equal(isModbusDataCountEditable(0x04), false);
+
+  assert.equal(modbusTypeForFunctionCode(0x01, 'float32-be'), 'bool');
+  assert.equal(modbusTypeForFunctionCode(0x05, 'uint16'), 'bool');
+  assert.equal(modbusTypeForFunctionCode(0x03, 'bool'), 'uint16');
+  assert.equal(modbusTypeForFunctionCode(0x10, 'float32-le'), 'float32-le');
+});
+
+test('register editor helpers clamp editable data quantity and advance addresses', () => {
+  assert.equal(modbusDataQuantityMax(0x03, 'uint8'), 250);
+  assert.equal(modbusDataQuantityMax(0x10, 'float32-be'), 61);
+  assert.equal(modbusDataQuantityMax(0x04, 'uint16'), 1);
+
+  assert.equal(normalizeModbusDataQuantity(9999, 0x03, 'float32-be'), 62);
+  assert.equal(normalizeModbusDataQuantity(0, 0x10, 'uint16'), 1);
+  assert.equal(normalizeModbusDataQuantity(2.9, 0x10, 'uint16'), 2);
+  assert.equal(normalizeModbusDataQuantity(12, 0x06, 'uint16'), 1);
+
+  assert.equal(modbusAddressStepFor(0x03, 'uint8', 5), 3);
+  assert.equal(modbusAddressStepFor(0x03, 'float32-be', 5), 10);
+  assert.equal(modbusAddressStepFor(0x06, 'float32-be', 1), 2);
+  assert.equal(modbusAddressStepFor(0x05, 'bool', 1), 1);
+});
+
+test('register editor helpers parse and format value input consistently', () => {
+  assert.deepEqual(parseModbusValueInput('1, 2;3 4，5；bad NaN Infinity'), [1, 2, 3, 4, 5]);
+  assert.deepEqual(parseModbusValueInput('   '), []);
+
+  assert.equal(formatModbusNumber(12), '12');
+  assert.equal(formatModbusNumber(12.345), '12.3');
+  assert.equal(formatModbusNumber(1.234), '1.23');
+  assert.equal(formatModbusNumber(1234.56), '1235');
+  assert.equal(formatModbusRegisterValue({ value: null, values: null }), '—');
+  assert.equal(formatModbusRegisterValue({ value: Number.NaN, values: null }), '—');
+  assert.equal(formatModbusRegisterValue({ value: 7, values: null }), '7');
+  assert.equal(formatModbusRegisterValue({ value: 7, values: [1, 2.25, 1200.5] }), '1 2.25 1201');
 });
 
 test('normalizeModbusConfig and cloneModbusConfig clamp timing and transport', () => {

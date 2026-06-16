@@ -125,7 +125,7 @@
             v-model:value="checksumInput"
             :placeholder="t('checksum.placeholder')"
             size="small"
-            :status="checksumInput && !isValidHexInput ? 'error' : undefined"
+            :status="checksumState.status"
             @blur="normalizeChecksumInput"
           />
           <div class="checksum-meta">
@@ -158,15 +158,30 @@
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue';
 import { NSelect, NButton, NInput, NSwitch } from 'naive-ui';
+import type { SelectOption } from 'naive-ui';
 import { Cable, ChevronRight, Hash, Plus, RefreshCw, Settings2 } from 'lucide-vue-next';
 import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
-import { formatHex, isValidHex, parseHex } from '../../lib/format';
+import { parseHex } from '../../lib/format';
 import { calculateChecksum } from '../../lib/ipc';
 import { checksumOptions } from '../../lib/checksum-constants';
 import { t } from '../../lib/i18n';
+import {
+  buildPortOptions,
+  canCalculateChecksum,
+  checksumInputState,
+  connectedPortNames,
+  isCopyableChecksumResult,
+  localizeChecksumOptions,
+  localizeValueOptions,
+  missingActivePorts as findMissingActivePorts,
+  nextSelectedPort,
+  normalizeChecksumInputValue,
+  serialFormatLabel as formatSerialFormatLabel,
+  serialSignalSummary,
+} from '../../lib/port-selector';
 import {
   BAUD_RATES,
   DATA_BITS_OPTIONS,
@@ -182,9 +197,7 @@ const { createSession } = useSessionActions();
 const { ports, refresh } = usePortWatcher();
 const isRefreshing = ref(false);
 const missingActivePorts = computed(() =>
-  sessionStore.sessions
-    .filter((s) => s.isConnected && !ports.value.includes(s.portName))
-    .map((s) => s.portName),
+  findMissingActivePorts(sessionStore.sessions, ports.value),
 );
 
 const collapsed = reactive({
@@ -202,24 +215,19 @@ const selectedPort = computed({
   set: (v) => serialStore.setSelectedPort(v),
 });
 
-const usedPorts = computed(
-  () => new Set(sessionStore.sessions.filter((s) => s.isConnected).map((s) => s.portName)),
-);
+const usedPorts = computed(() => connectedPortNames(sessionStore.sessions));
 
-const portOptions = computed(() =>
-  ports.value.map((p) => ({
-    label: usedPorts.value.has(p) ? `${p} (${t('serial.inUse')})` : p,
-    value: p,
-    disabled: usedPorts.value.has(p),
-  })),
+const portOptions = computed<SelectOption[]>(() =>
+  buildPortOptions(ports.value, usedPorts.value, t('serial.inUse')),
 );
 
 // Auto-select first available port when none is selected
 watch(
   () => ports.value,
   (newPorts) => {
-    if (!selectedPort.value && newPorts.length > 0) {
-      selectedPort.value = newPorts[0];
+    const nextPort = nextSelectedPort(selectedPort.value, newPorts);
+    if (nextPort !== selectedPort.value) {
+      selectedPort.value = nextPort;
     }
   },
   { immediate: true },
@@ -227,22 +235,11 @@ watch(
 
 const config = computed(() => serialStore.portConfig);
 
-const parityCode = computed(() => {
-  if (config.value.parity === 'odd') return 'O';
-  if (config.value.parity === 'even') return 'E';
-  return 'N';
-});
-
-const serialFormatLabel = computed(
-  () => `${config.value.dataBits}${parityCode.value}${config.value.stopBits}`,
-);
+const serialFormatLabel = computed(() => formatSerialFormatLabel(config.value));
 
 const flowControlLabel = computed(() => t(`serial.flow.${config.value.flowControl}`));
 
-const signalSummary = computed(() => {
-  const signals = [config.value.dtr ? 'DTR' : '', config.value.rts ? 'RTS' : ''].filter(Boolean);
-  return signals.join('+') || t('serial.none');
-});
+const signalSummary = computed(() => serialSignalSummary(config.value, t('serial.none')));
 
 async function refreshPorts() {
   isRefreshing.value = true;
@@ -261,18 +258,12 @@ const dataBitsOptions = DATA_BITS_OPTIONS;
 
 const stopBitsOptions = STOP_BITS_OPTIONS;
 
-const parityOptions = computed(() =>
-  PARITY_OPTIONS.map((option) => ({
-    ...option,
-    label: t(`serial.parity.${option.value}`),
-  })),
+const parityOptions = computed<SelectOption[]>(() =>
+  localizeValueOptions(PARITY_OPTIONS, (value) => t(`serial.parity.${value}`)),
 );
 
-const flowControlOptions = computed(() =>
-  FLOW_CONTROL_OPTIONS.map((option) => ({
-    ...option,
-    label: t(`serial.flow.${option.value}`),
-  })),
+const flowControlOptions = computed<SelectOption[]>(() =>
+  localizeValueOptions(FLOW_CONTROL_OPTIONS, (value) => t(`serial.flow.${value}`)),
 );
 
 const checksumInput = ref('');
@@ -280,38 +271,32 @@ const checksumAlgo = ref<ChecksumType>('CHECKSUM');
 const checksumResult = ref('');
 let checksumTimer: ReturnType<typeof setTimeout> | null = null;
 
-const checksumAlgoOptions = computed(() =>
-  checksumOptions.map((option) => ({
-    ...option,
-    label: option.value === 'CHECKSUM' ? t('checksum.checksum') : option.label,
-  })),
+const checksumAlgoOptions = computed<SelectOption[]>(() =>
+  localizeChecksumOptions(checksumOptions, t('checksum.checksum')),
 );
 
-const isValidHexInput = computed(() => {
-  if (!checksumInput.value.trim()) return true;
-  return isValidHex(checksumInput.value);
-});
+const checksumState = computed(() => checksumInputState(checksumInput.value));
 
-const checksumByteCount = computed(() => {
-  const cleaned = checksumInput.value.replace(/[^0-9a-fA-F]/g, '');
-  return Math.floor(cleaned.length / 2);
-});
+const isValidHexInput = computed(() => checksumState.value.isValid);
+
+const checksumByteCount = computed(() => checksumState.value.byteCount);
 
 const checksumAlgoLabel = computed(
   () =>
-    checksumAlgoOptions.value.find((option) => option.value === checksumAlgo.value)?.label ??
-    checksumAlgo.value,
+    (checksumAlgoOptions.value.find((option) => option.value === checksumAlgo.value)?.label as
+      | string
+      | undefined) ?? checksumAlgo.value,
 );
 
 watch([checksumInput, checksumAlgo], () => {
   if (checksumTimer) clearTimeout(checksumTimer);
   checksumResult.value = '';
-  if (!checksumInput.value.trim() || !isValidHexInput.value) return;
+  if (!canCalculateChecksum(checksumInput.value)) return;
   checksumTimer = setTimeout(calcChecksum, 150);
 });
 
 async function calcChecksum() {
-  if (!checksumInput.value || !isValidHexInput.value) return;
+  if (!canCalculateChecksum(checksumInput.value)) return;
   const data = parseHex(checksumInput.value);
   try {
     const res = await calculateChecksum(data, checksumAlgo.value);
@@ -322,13 +307,11 @@ async function calcChecksum() {
 }
 
 function normalizeChecksumInput() {
-  if (checksumInput.value.trim() && isValidHexInput.value) {
-    checksumInput.value = formatHex(parseHex(checksumInput.value));
-  }
+  checksumInput.value = normalizeChecksumInputValue(checksumInput.value);
 }
 
 async function copyChecksum() {
-  if (!checksumResult.value || checksumResult.value === t('checksum.failed')) return;
+  if (!isCopyableChecksumResult(checksumResult.value, t('checksum.failed'))) return;
   try {
     await navigator.clipboard.writeText(checksumResult.value);
   } catch {

@@ -1,6 +1,7 @@
-import type { Macro, MacroStep } from '../types';
+import type { Macro } from '../types';
 import { t } from './i18n';
 import { logger } from './logger';
+import { normalizeMacroSteps } from './macro-editor';
 
 /**
  * Cross-session macro library import/export.
@@ -31,7 +32,7 @@ export function exportMacros(macros: Macro[]): string {
     kind: FILE_KIND,
     version: 1,
     exportedAt: new Date().toISOString(),
-    macros: macros.map((m) => ({ name: m.name, steps: cleanSteps(m.steps) })),
+    macros: macros.map((m) => ({ name: m.name, steps: normalizeMacroSteps(m.steps) })),
   };
   return JSON.stringify(payload, null, 2);
 }
@@ -64,38 +65,14 @@ export function importMacros(raw: string): Macro[] {
   return macros;
 }
 
-/** Coerce an unknown object into a clean MacroStep, or null if invalid. */
-function validateStep(raw: unknown): MacroStep | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const s = raw as Partial<MacroStep> & Record<string, unknown>;
-  if (typeof s.data !== 'string' || s.data.length === 0) return null;
-  const isHex = s.isHex === true;
-  let delayMs = 0;
-  if (typeof s.delayMs === 'number' && Number.isFinite(s.delayMs)) {
-    delayMs = Math.max(0, Math.floor(s.delayMs));
-  }
-  return { data: s.data, isHex, delayMs };
-}
-
 function validateMacro(raw: unknown): Macro | null {
   if (!raw || typeof raw !== 'object') return null;
   const m = raw as Partial<Macro> & Record<string, unknown>;
   if (typeof m.name !== 'string' || m.name.trim().length === 0) return null;
   if (!Array.isArray(m.steps)) return null;
-  const steps = m.steps.map(validateStep).filter((s): s is MacroStep => s !== null);
+  const steps = normalizeMacroSteps(m.steps);
   if (steps.length === 0) return null;
   return { id: '', name: m.name.trim(), steps };
-}
-
-/** Drop empty/invalid steps before export so the file only carries real payloads. */
-function cleanSteps(steps: MacroStep[]): MacroStep[] {
-  return steps
-    .filter((s) => s && typeof s.data === 'string' && s.data.trim().length > 0)
-    .map((s) => ({
-      data: s.data,
-      isHex: s.isHex === true,
-      delayMs: typeof s.delayMs === 'number' ? Math.max(0, Math.floor(s.delayMs)) : 0,
-    }));
 }
 
 /** Default filename for an export (safe across platforms). */

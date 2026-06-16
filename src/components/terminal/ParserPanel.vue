@@ -184,23 +184,22 @@ import { computed, ref, watch } from 'vue';
 import { NCheckbox, NInput, NInputNumber, NSelect, useMessage } from 'naive-ui';
 import { Binary, Copy, FileText, Search, X } from 'lucide-vue-next';
 import {
-  ProtocolParser,
   byteAscii,
   frameMatchesText,
   hexDump,
   parseDelimiterHex,
   type ParserConfig,
 } from '../../lib/protocol-parser';
+import {
+  ParserFrameCollector,
+  parserConfigKey,
+  type DisplayParsedFrame,
+} from '../../lib/parser-frame-collector';
 import { PARSER_PRESETS } from '../../lib/parser-presets';
 import { formatBytes, formatHex } from '../../lib/format';
 import { t } from '../../lib/i18n';
 import type { DataFrame } from '../../types';
 import { useSessionStore } from '../../stores/sessions';
-
-interface DisplayParsedFrame {
-  data: Uint8Array;
-  offset: number;
-}
 
 const props = defineProps<{
   sessionId: string;
@@ -346,94 +345,24 @@ function lengthConfig(): LengthParserConfig {
 const parsedFrames = ref<DisplayParsedFrame[]>([]);
 const selectedFrame = ref<DisplayParsedFrame | null>(null);
 const searchTerm = ref('');
-let parser = new ProtocolParser(currentConfig.value);
-let consumedFrameCount = 0;
-let runningOffset = 0;
-let lastConfigKey = '';
+const parserCollector = new ParserFrameCollector(currentConfig.value);
 // Throughput tracking: bytes parsed and the timestamp window they arrived in.
-let windowStart = 0;
-let windowBytes = 0;
 const throughputBps = ref(0);
 
-function configKey(cfg: ParserConfig): string {
-  if (cfg.kind === 'fixed') return `fixed:${cfg.frameSize}`;
-  if (cfg.kind === 'length') {
-    return `length:${cfg.lengthOffset}:${cfg.lengthSize}:${cfg.bigEndian ? 1 : 0}:${cfg.lengthAdjust}`;
-  }
-  return `delimiter:${cfg.includeDelimiter ? 1 : 0}:${cfg.delimiter.join(',')}`;
-}
-
-function resetParser(cfg: ParserConfig) {
-  parser = new ProtocolParser(cfg);
-  parsedFrames.value = [];
-  selectedFrame.value = null;
-  consumedFrameCount = 0;
-  runningOffset = 0;
-  windowStart = 0;
-  windowBytes = 0;
-  throughputBps.value = 0;
-}
-
-function ingestFrames(startIndex: number) {
-  const next = parsedFrames.value;
-  const frames = props.frames;
-  const now = Date.now();
-  for (let i = startIndex; i < frames.length; i += 1) {
-    const frame = frames[i];
-    if (frame.direction !== 'RX') {
-      // Non-RX frames don't advance the parsed byte stream offset.
-      continue;
-    }
-    const parsed = parser.feed(frame.data);
-    for (const p of parsed) {
-      next.push({ data: p.data, offset: runningOffset + p.offset });
-      windowBytes += p.data.length;
-    }
-    runningOffset += frame.data.length;
-  }
-  consumedFrameCount = frames.length;
-  // Recompute throughput over a rolling ~1s window since the first new frame.
-  if (windowBytes > 0) {
-    if (windowStart === 0) windowStart = now;
-    const elapsed = (now - windowStart) / 1000;
-    if (elapsed >= 0.5) {
-      throughputBps.value = Math.round(windowBytes / elapsed);
-      // Slide the window forward so the rate reflects recent activity.
-      windowStart = now;
-      windowBytes = 0;
-    }
-  } else {
-    throughputBps.value = 0;
-    windowStart = 0;
-  }
-}
-
 function syncParsedFrames() {
-  const cfg = currentConfig.value;
-  const key = configKey(cfg);
-  const configChanged = key !== lastConfigKey;
-  const framesWereReset = props.frames.length < consumedFrameCount;
-  lastConfigKey = key;
-
-  if (cfg.kind === 'delimiter' && cfg.delimiter.length === 0) {
-    resetParser(cfg);
-    return;
-  }
-
-  if (configChanged || framesWereReset) {
-    resetParser(cfg);
-    ingestFrames(0);
-    return;
-  }
-
-  if (props.frames.length > consumedFrameCount) {
-    ingestFrames(consumedFrameCount);
-  }
+  const result = parserCollector.sync(props.frames, currentConfig.value);
+  parsedFrames.value = result.frames;
+  throughputBps.value = result.throughputBps;
+  if (result.reset) selectedFrame.value = null;
 }
 
-watch(() => [props.frames.length, configKey(currentConfig.value)] as const, syncParsedFrames, {
-  immediate: true,
-});
+watch(
+  () => [props.frames.length, parserConfigKey(currentConfig.value)] as const,
+  syncParsedFrames,
+  {
+    immediate: true,
+  },
+);
 
 // Search filter: case-insensitive substring against decoded frame text.
 const filteredFrames = computed(() => {
