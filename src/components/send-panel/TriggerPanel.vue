@@ -112,7 +112,14 @@ import { NInput, NButton, NButtonGroup, NCheckbox, NInputNumber } from 'naive-ui
 import { ArrowRight, Pencil, Plus, X } from 'lucide-vue-next';
 import { useSessionStore } from '../../stores/sessions';
 import { t } from '../../lib/i18n';
-import type { Trigger, TriggerMatchMode } from '../../types';
+import {
+  canSaveTriggerDraft,
+  createTriggerDraft,
+  formatTriggerSummary,
+  triggerSavePayload,
+  type TriggerDraft,
+} from '../../lib/send-rules-editor';
+import type { Trigger } from '../../types';
 
 const props = defineProps<{
   sessionId: string;
@@ -124,56 +131,21 @@ const triggers = computed(
   () => sessionStore.sessions.find((s) => s.id === props.sessionId)?.triggers ?? [],
 );
 
-// --- draft / edit ---
-interface Draft {
-  name: string;
-  matchMode: TriggerMatchMode;
-  pattern: string;
-  response: string;
-  responseIsHex: boolean;
-  cooldownMs: number;
-}
 const editing = ref(false);
 const editingId = ref<string | null>(null);
-const draft = shallowReactive<Draft>({
-  name: '',
-  matchMode: 'text',
-  pattern: '',
-  response: '',
-  responseIsHex: false,
-  cooldownMs: 500,
-});
+const draft = shallowReactive<TriggerDraft>(createTriggerDraft());
 
-const canSave = computed(
-  () =>
-    draft.name.trim().length > 0 &&
-    draft.pattern.trim().length > 0 &&
-    draft.response.trim().length > 0,
-);
+const canSave = computed(() => canSaveTriggerDraft(draft));
 
 function startCreate() {
   editingId.value = null;
-  Object.assign(draft, {
-    name: '',
-    matchMode: 'text',
-    pattern: '',
-    response: '',
-    responseIsHex: false,
-    cooldownMs: 500,
-  });
+  Object.assign(draft, createTriggerDraft());
   editing.value = true;
 }
 
-function startEdit(t: Trigger) {
-  editingId.value = t.id;
-  Object.assign(draft, {
-    name: t.name,
-    matchMode: t.matchMode,
-    pattern: t.pattern,
-    response: t.response,
-    responseIsHex: t.responseIsHex,
-    cooldownMs: t.cooldownMs,
-  });
+function startEdit(trigger: Trigger) {
+  editingId.value = trigger.id;
+  Object.assign(draft, createTriggerDraft(trigger));
   editing.value = true;
 }
 
@@ -183,16 +155,8 @@ function cancelEdit() {
 }
 
 function save() {
-  if (!canSave.value) return;
-  const payload = {
-    name: draft.name.trim(),
-    enabled: true,
-    matchMode: draft.matchMode,
-    pattern: draft.pattern.trim(),
-    response: draft.response,
-    responseIsHex: draft.responseIsHex,
-    cooldownMs: Math.max(0, Math.floor(draft.cooldownMs || 0)),
-  };
+  const payload = triggerSavePayload(draft);
+  if (!payload) return;
   if (editingId.value) {
     sessionStore.updateTrigger(props.sessionId, editingId.value, payload);
   } else {
@@ -210,14 +174,8 @@ function remove(id: string) {
   sessionStore.removeTrigger(props.sessionId, id);
 }
 
-function summary(t: Trigger): string {
-  return `${t.matchMode === 'hex' ? 'HEX' : 'TXT'} "${t.pattern}" → ${
-    t.responseIsHex ? 'HEX' : 'TXT'
-  } "${t.response}"${t.cooldownMs ? ` (${triggerCooldownSummary(t.cooldownMs)})` : ''}`;
-}
-
-function triggerCooldownSummary(ms: number): string {
-  return t('trigger.summaryCooldown', { ms });
+function summary(trigger: Trigger): string {
+  return formatTriggerSummary(trigger, (ms) => t('trigger.summaryCooldown', { ms }));
 }
 </script>
 

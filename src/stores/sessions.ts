@@ -33,9 +33,18 @@ import {
   serializeSessionSnapshots,
   type PersistedSessionsFile,
 } from '../lib/session-persistence';
+import {
+  appendFrameToSession,
+  appendIdentifiedItem,
+  flushPausedFramesToLive,
+  normalizeLogAiFrameLimit,
+  patchIdentifiedItem,
+  removeIdentifiedItem,
+  resetSessionFrames,
+  upsertSendHistory,
+} from '../lib/session-store-helpers';
 import { isLocalStorageAvailable, loadJson, saveJson } from '../lib/storage';
 
-const FRAME_TRIM_THRESHOLD = 500;
 const PERSIST_DEBOUNCE_MS = 800;
 const PERSIST_MAX_WAIT_MS = 2_500;
 
@@ -147,22 +156,7 @@ export const useSessionStore = defineStore('sessions', () => {
       timestamp: nowMillis(),
     });
 
-    // While capture is paused, hold frames off-screen so the live view freezes
-    // without losing data; resuming flushes them back in order.
-    const max = maxBufferFrames.value;
-    const target = session.capturePaused ? session.pausedFrames : session.frames;
-    target.push(fullFrame);
-    if (target.length > max + FRAME_TRIM_THRESHOLD) {
-      target.splice(0, target.length - max);
-    }
-
-    if (frame.direction === 'TX') {
-      session.txBytes += frame.data.length;
-      session.txFrames += 1;
-    } else {
-      session.rxBytes += frame.data.length;
-      session.rxFrames += 1;
-    }
+    appendFrameToSession(session, fullFrame, maxBufferFrames.value);
 
     schedulePersist();
     return fullFrame;
@@ -185,13 +179,7 @@ export const useSessionStore = defineStore('sessions', () => {
   function clearFrames(sessionId: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.frames = [];
-    session.pausedFrames = [];
-    session.capturePaused = false;
-    session.txBytes = 0;
-    session.rxBytes = 0;
-    session.txFrames = 0;
-    session.rxFrames = 0;
+    resetSessionFrames(session);
     schedulePersist();
   }
 
@@ -201,12 +189,7 @@ export const useSessionStore = defineStore('sessions', () => {
     session.capturePaused = paused;
     if (!paused && session.pausedFrames.length > 0) {
       // Flush the off-screen buffer back into the live view, preserving order.
-      const max = maxBufferFrames.value;
-      for (const held of session.pausedFrames) session.frames.push(held);
-      session.pausedFrames = [];
-      if (session.frames.length > max + FRAME_TRIM_THRESHOLD) {
-        session.frames.splice(0, session.frames.length - max);
-      }
+      flushPausedFramesToLive(session, maxBufferFrames.value);
     }
     schedulePersist();
   }
@@ -214,13 +197,7 @@ export const useSessionStore = defineStore('sessions', () => {
   function addSendHistory(sessionId: string, entry: SendHistoryEntry) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.sendHistory = session.sendHistory.filter(
-      (h) => !(h.data === entry.data && h.isHex === entry.isHex),
-    );
-    session.sendHistory.unshift(entry);
-    if (session.sendHistory.length > MAX_HISTORY) {
-      session.sendHistory = session.sendHistory.slice(0, MAX_HISTORY);
-    }
+    session.sendHistory = upsertSendHistory(session.sendHistory, entry, MAX_HISTORY);
     schedulePersist();
   }
 
@@ -244,22 +221,21 @@ export const useSessionStore = defineStore('sessions', () => {
   ) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.quickCommands.push({ ...command, id: crypto.randomUUID() });
+    appendIdentifiedItem(session.quickCommands, command);
     schedulePersist();
   }
 
   function removeQuickCommand(sessionId: string, commandId: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.quickCommands = session.quickCommands.filter((c) => c.id !== commandId);
+    session.quickCommands = removeIdentifiedItem(session.quickCommands, commandId);
     schedulePersist();
   }
 
   function addMacro(sessionId: string, macro: Omit<Macro, 'id'>): string | undefined {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return undefined;
-    const id = crypto.randomUUID();
-    session.macros.push({ ...macro, id });
+    const id = appendIdentifiedItem(session.macros, macro);
     schedulePersist();
     return id;
   }
@@ -267,24 +243,21 @@ export const useSessionStore = defineStore('sessions', () => {
   function updateMacro(sessionId: string, macroId: string, patch: Partial<Omit<Macro, 'id'>>) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    const idx = session.macros.findIndex((m) => m.id === macroId);
-    if (idx === -1) return;
-    session.macros[idx] = { ...session.macros[idx], ...patch };
+    if (!patchIdentifiedItem(session.macros, macroId, patch)) return;
     schedulePersist();
   }
 
   function removeMacro(sessionId: string, macroId: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.macros = session.macros.filter((m) => m.id !== macroId);
+    session.macros = removeIdentifiedItem(session.macros, macroId);
     schedulePersist();
   }
 
   function addTrigger(sessionId: string, trigger: Omit<Trigger, 'id'>): string | undefined {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return undefined;
-    const id = crypto.randomUUID();
-    session.triggers.push({ ...trigger, id });
+    const id = appendIdentifiedItem(session.triggers, trigger);
     schedulePersist();
     return id;
   }
@@ -296,16 +269,14 @@ export const useSessionStore = defineStore('sessions', () => {
   ) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    const idx = session.triggers.findIndex((t) => t.id === triggerId);
-    if (idx === -1) return;
-    session.triggers[idx] = { ...session.triggers[idx], ...patch };
+    if (!patchIdentifiedItem(session.triggers, triggerId, patch)) return;
     schedulePersist();
   }
 
   function removeTrigger(sessionId: string, triggerId: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.triggers = session.triggers.filter((t) => t.id !== triggerId);
+    session.triggers = removeIdentifiedItem(session.triggers, triggerId);
     schedulePersist();
   }
 
@@ -315,8 +286,7 @@ export const useSessionStore = defineStore('sessions', () => {
   ): string | undefined {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return undefined;
-    const id = crypto.randomUUID();
-    session.highlights.push({ ...highlight, id });
+    const id = appendIdentifiedItem(session.highlights, highlight);
     schedulePersist();
     return id;
   }
@@ -328,16 +298,14 @@ export const useSessionStore = defineStore('sessions', () => {
   ) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    const idx = session.highlights.findIndex((h) => h.id === highlightId);
-    if (idx === -1) return;
-    session.highlights[idx] = { ...session.highlights[idx], ...patch };
+    if (!patchIdentifiedItem(session.highlights, highlightId, patch)) return;
     schedulePersist();
   }
 
   function removeHighlight(sessionId: string, highlightId: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.highlights = session.highlights.filter((h) => h.id !== highlightId);
+    session.highlights = removeIdentifiedItem(session.highlights, highlightId);
     schedulePersist();
   }
 
@@ -476,7 +444,7 @@ export const useSessionStore = defineStore('sessions', () => {
   function setLogAiFrameLimit(sessionId: string, limit: number) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.logAiFrameLimit = Math.max(20, Math.min(2000, Math.floor(limit || 200)));
+    session.logAiFrameLimit = normalizeLogAiFrameLimit(limit);
     schedulePersist();
   }
 

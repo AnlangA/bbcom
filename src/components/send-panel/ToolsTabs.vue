@@ -128,6 +128,13 @@ import HighlightPanel from './HighlightPanel.vue';
 import { useSessionStore } from '../../stores/sessions';
 import { truncate } from '../../lib/format';
 import { t } from '../../lib/i18n';
+import {
+  activeToolCounts,
+  buildQuickCommandPayload,
+  canRunToolAction,
+  defaultToolsTab,
+  type ToolsTabId,
+} from '../../lib/tools-tabs';
 import type { QuickCommand, SendHistoryEntry } from '../../types';
 
 const props = defineProps<{
@@ -153,47 +160,43 @@ const sessionStore = useSessionStore();
 const quickName = ref('');
 // Default to Quick; if the session has no quick commands but has history, land
 // on history so a returning user immediately sees something useful.
-const activeTab = ref<'quick' | 'macros' | 'triggers' | 'highlights' | 'history'>('quick');
+const activeTab = ref<ToolsTabId>('quick');
 
 const session = computed(() =>
   props.sessionId ? sessionStore.sessions.find((s) => s.id === props.sessionId) : undefined,
 );
-const macrosCount = computed(() => session.value?.macros.length ?? 0);
-const triggersActive = computed(() => session.value?.triggers.filter((x) => x.enabled).length ?? 0);
-const highlightsActive = computed(
-  () => session.value?.highlights.filter((x) => x.enabled).length ?? 0,
-);
+const counts = computed(() => activeToolCounts(session.value, props.quickCommands, props.history));
 
 const tabs = computed(() => [
   {
     id: 'quick' as const,
     label: t('tools.tab.quick'),
     icon: BookmarkPlus,
-    count: props.quickCommands.length,
+    count: counts.value.quick,
   },
   {
     id: 'macros' as const,
     label: t('tools.tab.macros'),
     icon: ListVideo,
-    count: macrosCount.value,
+    count: counts.value.macros,
   },
   {
     id: 'triggers' as const,
     label: t('tools.tab.triggers'),
     icon: Zap,
-    count: triggersActive.value,
+    count: counts.value.triggers,
   },
   {
     id: 'highlights' as const,
     label: t('tools.tab.highlights'),
     icon: Highlighter,
-    count: highlightsActive.value,
+    count: counts.value.highlights,
   },
   {
     id: 'history' as const,
     label: t('tools.tab.history'),
     icon: HistoryIcon,
-    count: props.history.length,
+    count: counts.value.history,
   },
 ]);
 
@@ -202,33 +205,27 @@ const tabs = computed(() => [
 watch(
   () => props.sessionId,
   () => {
-    if (activeTab.value !== 'quick') return;
-    if (props.quickCommands.length === 0) {
-      if (macrosCount.value > 0) activeTab.value = 'macros';
-      else if (triggersActive.value > 0) activeTab.value = 'triggers';
-      else if (highlightsActive.value > 0) activeTab.value = 'highlights';
-      else if (props.history.length > 0) activeTab.value = 'history';
-    }
+    activeTab.value = defaultToolsTab(activeTab.value, counts.value);
   },
   { immediate: true },
 );
 
 function addQuickCommand() {
-  if (!props.modelValue.trim()) return;
-  const name = quickName.value.trim() || truncate(props.modelValue, 12);
+  const command = buildQuickCommandPayload(props.modelValue, quickName.value, props.isHex);
+  if (!command) return;
   // Capture the current send mode so a quick-command saved in HEX mode
   // re-sends as HEX (matches the pre-refactor behaviour).
-  emit('addQuickCommand', { name, data: props.modelValue, isHex: props.isHex });
+  emit('addQuickCommand', command);
   quickName.value = '';
 }
 
 function sendQuick(command: QuickCommand) {
-  if (props.disabled) return;
+  if (!canRunToolAction(props.disabled)) return;
   props.onSend(command.data, command.isHex);
 }
 
 function resend(item: SendHistoryEntry) {
-  if (props.disabled) return;
+  if (!canRunToolAction(props.disabled)) return;
   props.onSend(item.data, item.isHex);
 }
 </script>

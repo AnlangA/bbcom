@@ -108,12 +108,14 @@ import { Pencil, Plus, X } from 'lucide-vue-next';
 import { useSessionStore } from '../../stores/sessions';
 import { HIGHLIGHT_COLORS } from '../../lib/highlights';
 import { t } from '../../lib/i18n';
-import type {
-  DirectionFilter,
-  HighlightColor,
-  HighlightMatchMode,
-  HighlightRule,
-} from '../../types';
+import {
+  canSaveHighlightDraft,
+  createHighlightDraft,
+  formatHighlightSummary,
+  highlightSavePayload,
+  type HighlightDraft,
+} from '../../lib/send-rules-editor';
+import type { DirectionFilter, HighlightColor, HighlightRule } from '../../types';
 
 const props = defineProps<{
   sessionId: string;
@@ -124,25 +126,11 @@ const highlights = computed(
   () => sessionStore.sessions.find((s) => s.id === props.sessionId)?.highlights ?? [],
 );
 
-interface Draft {
-  name: string;
-  matchMode: HighlightMatchMode;
-  pattern: string;
-  direction: DirectionFilter;
-  color: HighlightColor;
-}
-
 const editing = ref(false);
 const editingId = ref<string | null>(null);
-const draft = shallowReactive<Draft>({
-  name: '',
-  matchMode: 'text',
-  pattern: '',
-  direction: 'RX',
-  color: 'amber',
-});
+const draft = shallowReactive<HighlightDraft>(createHighlightDraft());
 
-const canSave = computed(() => draft.name.trim().length > 0 && draft.pattern.trim().length > 0);
+const canSave = computed(() => canSaveHighlightDraft(draft));
 
 const directionOptions = computed<{ label: string; value: DirectionFilter }[]>(() => [
   { label: t('packet.directionAll'), value: 'ALL' },
@@ -159,25 +147,13 @@ const colorOptions = computed<{ label: string; value: HighlightColor }[]>(() =>
 
 function startCreate() {
   editingId.value = null;
-  Object.assign(draft, {
-    name: '',
-    matchMode: 'text',
-    pattern: '',
-    direction: 'RX',
-    color: 'amber',
-  });
+  Object.assign(draft, createHighlightDraft());
   editing.value = true;
 }
 
 function startEdit(rule: HighlightRule) {
   editingId.value = rule.id;
-  Object.assign(draft, {
-    name: rule.name,
-    matchMode: rule.matchMode,
-    pattern: rule.pattern,
-    direction: rule.direction,
-    color: rule.color,
-  });
+  Object.assign(draft, createHighlightDraft(rule));
   editing.value = true;
 }
 
@@ -187,15 +163,8 @@ function cancelEdit() {
 }
 
 function save() {
-  if (!canSave.value) return;
-  const payload = {
-    name: draft.name.trim(),
-    enabled: true,
-    matchMode: draft.matchMode,
-    pattern: draft.pattern.trim(),
-    direction: draft.direction,
-    color: draft.color,
-  };
+  const payload = highlightSavePayload(draft);
+  if (!payload) return;
   if (editingId.value) {
     sessionStore.updateHighlight(props.sessionId, editingId.value, payload);
   } else {
@@ -214,7 +183,7 @@ function remove(id: string) {
 }
 
 function summary(rule: HighlightRule): string {
-  return `${rule.direction} ${rule.matchMode === 'hex' ? 'HEX' : 'TXT'} "${rule.pattern}"`;
+  return formatHighlightSummary(rule);
 }
 </script>
 
