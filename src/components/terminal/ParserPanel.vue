@@ -183,19 +183,30 @@
 import { computed, ref, watch } from 'vue';
 import { NCheckbox, NInput, NInputNumber, NSelect, useMessage } from 'naive-ui';
 import { Binary, Copy, FileText, Search, X } from 'lucide-vue-next';
-import {
-  byteAscii,
-  frameMatchesText,
-  hexDump,
-  parseDelimiterHex,
-  type ParserConfig,
-} from '../../lib/protocol-parser';
+import { hexDump, type ParserConfig, type ParserKind } from '../../lib/protocol-parser';
 import {
   ParserFrameCollector,
   parserConfigKey,
   type DisplayParsedFrame,
 } from '../../lib/parser-frame-collector';
 import { PARSER_PRESETS } from '../../lib/parser-presets';
+import {
+  configForKind,
+  DEFAULT_DELIMITER_CONFIG,
+  delimiterConfig,
+  delimiterConfigFromHex,
+  filterParsedFrames,
+  fixedConfig,
+  formatDelimiterHex,
+  frameAsciiText,
+  lengthConfig,
+  MAX_RENDERED_PARSED_FRAMES,
+  nonNegativeInteger,
+  parsedFrameStats,
+  positiveInteger,
+  renderedParsedFrameWindow,
+  truncateHexPreview,
+} from '../../lib/parser-panel';
 import { formatBytes, formatHex } from '../../lib/format';
 import { t } from '../../lib/i18n';
 import type { DataFrame } from '../../types';
@@ -210,26 +221,6 @@ const emit = defineEmits<{ (e: 'close'): void }>();
 
 const sessionStore = useSessionStore();
 const message = useMessage();
-const MAX_RENDERED_PARSED_FRAMES = 500;
-
-type Kind = 'delimiter' | 'length' | 'fixed';
-type DelimiterParserConfig = Extract<ParserConfig, { kind: 'delimiter' }>;
-type FixedParserConfig = Extract<ParserConfig, { kind: 'fixed' }>;
-type LengthParserConfig = Extract<ParserConfig, { kind: 'length' }>;
-
-const DEFAULT_DELIMITER_CONFIG: DelimiterParserConfig = {
-  kind: 'delimiter',
-  delimiter: [0x0d, 0x0a],
-  includeDelimiter: false,
-};
-const DEFAULT_FIXED_CONFIG: FixedParserConfig = { kind: 'fixed', frameSize: 8 };
-const DEFAULT_LENGTH_CONFIG: LengthParserConfig = {
-  kind: 'length',
-  lengthOffset: 0,
-  lengthSize: 1,
-  bigEndian: true,
-  lengthAdjust: 1,
-};
 
 const kindOptions = computed(() => [
   { label: t('parser.kind.delimiter'), value: 'delimiter' },
@@ -255,17 +246,11 @@ const parserState = computed(
 const presetId = computed(() => parserState.value.presetId);
 const currentConfig = computed<ParserConfig>(() => parserState.value.config);
 
-const configKind = computed<Kind>({
+const configKind = computed<ParserKind>({
   get: () => currentConfig.value.kind,
   set: (kind) => {
     if (kind === currentConfig.value.kind) return;
-    if (kind === 'fixed') {
-      setConfig(DEFAULT_FIXED_CONFIG, null);
-    } else if (kind === 'length') {
-      setConfig(DEFAULT_LENGTH_CONFIG, null);
-    } else {
-      setConfig(DEFAULT_DELIMITER_CONFIG, null);
-    }
+    setConfig(configForKind(currentConfig.value, kind), null);
   },
 });
 
@@ -277,69 +262,56 @@ function applyPreset(id: string | null) {
 }
 
 const delimiterHex = computed({
-  get: () => {
-    const cfg = delimiterConfig();
-    return cfg.delimiter.map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
-  },
+  get: () => formatDelimiterHex(delimiterConfig(currentConfig.value).delimiter),
   set: (value: string) => {
+    setConfig(delimiterConfigFromHex(currentConfig.value, value), null);
+  },
+});
+const includeDelimiter = computed({
+  get: () => delimiterConfig(currentConfig.value).includeDelimiter,
+  set: (value: boolean) => {
+    setConfig({ ...delimiterConfig(currentConfig.value), includeDelimiter: value }, null);
+  },
+});
+const fixedSize = computed({
+  get: () => fixedConfig(currentConfig.value).frameSize,
+  set: (value: number | null) => {
+    setConfig({ kind: 'fixed', frameSize: positiveInteger(value) }, null);
+  },
+});
+const lenOffset = computed({
+  get: () => lengthConfig(currentConfig.value).lengthOffset,
+  set: (value: number | null) => {
     setConfig(
-      {
-        ...delimiterConfig(),
-        delimiter: parseDelimiterHex(value),
-      },
+      { ...lengthConfig(currentConfig.value), lengthOffset: nonNegativeInteger(value) },
       null,
     );
   },
 });
-const includeDelimiter = computed({
-  get: () => delimiterConfig().includeDelimiter,
-  set: (value: boolean) => {
-    setConfig({ ...delimiterConfig(), includeDelimiter: value }, null);
-  },
-});
-const fixedSize = computed({
-  get: () => fixedConfig().frameSize,
-  set: (value: number | null) => {
-    setConfig({ kind: 'fixed', frameSize: Math.max(1, Math.floor(value || 1)) }, null);
-  },
-});
-const lenOffset = computed({
-  get: () => lengthConfig().lengthOffset,
-  set: (value: number | null) => {
-    setConfig({ ...lengthConfig(), lengthOffset: Math.max(0, Math.floor(value || 0)) }, null);
-  },
-});
 const lenSize = computed({
-  get: () => lengthConfig().lengthSize,
+  get: () => lengthConfig(currentConfig.value).lengthSize,
   set: (value: 1 | 2 | 4) => {
-    setConfig({ ...lengthConfig(), lengthSize: value }, null);
+    setConfig({ ...lengthConfig(currentConfig.value), lengthSize: value }, null);
   },
 });
 const lenBigEndian = computed({
-  get: () => lengthConfig().bigEndian,
+  get: () => lengthConfig(currentConfig.value).bigEndian,
   set: (value: boolean) => {
-    setConfig({ ...lengthConfig(), bigEndian: value }, null);
+    setConfig({ ...lengthConfig(currentConfig.value), bigEndian: value }, null);
   },
 });
 const lenAdjust = computed({
-  get: () => lengthConfig().lengthAdjust,
+  get: () => lengthConfig(currentConfig.value).lengthAdjust,
   set: (value: number | null) => {
-    setConfig({ ...lengthConfig(), lengthAdjust: Math.max(0, Math.floor(value || 0)) }, null);
+    setConfig(
+      { ...lengthConfig(currentConfig.value), lengthAdjust: nonNegativeInteger(value) },
+      null,
+    );
   },
 });
 
 function setConfig(config: ParserConfig, selectedPresetId: string | null) {
   sessionStore.setParserState(props.sessionId, config, selectedPresetId);
-}
-
-function delimiterConfig(): DelimiterParserConfig {
-  return currentConfig.value.kind === 'delimiter' ? currentConfig.value : DEFAULT_DELIMITER_CONFIG;
-}
-function fixedConfig(): FixedParserConfig {
-  return currentConfig.value.kind === 'fixed' ? currentConfig.value : DEFAULT_FIXED_CONFIG;
-}
-function lengthConfig(): LengthParserConfig {
-  return currentConfig.value.kind === 'length' ? currentConfig.value : DEFAULT_LENGTH_CONFIG;
 }
 
 const parsedFrames = ref<DisplayParsedFrame[]>([]);
@@ -365,33 +337,25 @@ watch(
 );
 
 // Search filter: case-insensitive substring against decoded frame text.
-const filteredFrames = computed(() => {
-  const term = searchTerm.value.trim();
-  if (term.length === 0) return parsedFrames.value;
-  return parsedFrames.value.filter((f) => frameMatchesText(f.data, term));
-});
+const filteredFrames = computed(() => filterParsedFrames(parsedFrames.value, searchTerm.value));
 
-const renderedStartIndex = computed(() =>
-  Math.max(0, filteredFrames.value.length - MAX_RENDERED_PARSED_FRAMES),
+const renderedFrameWindow = computed(() =>
+  renderedParsedFrameWindow(filteredFrames.value, MAX_RENDERED_PARSED_FRAMES),
 );
-const renderedFilteredFrames = computed(() =>
-  filteredFrames.value.length <= MAX_RENDERED_PARSED_FRAMES
-    ? filteredFrames.value
-    : filteredFrames.value.slice(renderedStartIndex.value),
-);
+const renderedStartIndex = computed(() => renderedFrameWindow.value.startIndex);
+const renderedFilteredFrames = computed(() => renderedFrameWindow.value.frames);
 
 // Aggregate stats over the full parsed set (not the filtered view).
-const totalBytes = computed(() => parsedFrames.value.reduce((sum, f) => sum + f.data.length, 0));
-const largestFrame = computed(() =>
-  parsedFrames.value.reduce((max, f) => Math.max(max, f.data.length), 0),
-);
+const stats = computed(() => parsedFrameStats(parsedFrames.value));
+const totalBytes = computed(() => stats.value.totalBytes);
+const largestFrame = computed(() => stats.value.largestFrame);
 
 const detailDump = computed(() =>
   selectedFrame.value ? hexDump(selectedFrame.value.data, 16) : [],
 );
 
 function truncateHex(s: string, max: number): string {
-  return s.length <= max ? s : s.slice(0, max) + '…';
+  return truncateHexPreview(s, max);
 }
 
 async function copyFrame(f: { data: Uint8Array }) {
@@ -405,8 +369,7 @@ async function copyFrame(f: { data: Uint8Array }) {
 
 async function copyAscii(f: { data: Uint8Array }) {
   try {
-    const text = Array.from(f.data, byteAscii).join('');
-    await navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(frameAsciiText(f));
     message.success(t('parser.copiedHex'));
   } catch {
     message.error(t('packet.copyFailed'));
