@@ -458,9 +458,16 @@ const waveformRef = ref<{ pushRegisterSample: (channel: number, value: number) =
   null,
 );
 const modbusBusy = ref(false);
-const modbusStatus = ref<{ kind: string; code?: number; count?: number; remaining?: number }>({
-  kind: 'idle',
-});
+const modbusStatus = ref<{
+  kind: string;
+  code?: number;
+  count?: number;
+  remaining?: number;
+  message?: string;
+  scope?: string;
+  delayMs?: number;
+  consecutiveFailures?: number;
+}>({ kind: 'idle' });
 
 const master = useModbusMaster({
   sessionId: props.session.id,
@@ -482,6 +489,10 @@ const master = useModbusMaster({
       code: 'code' in s ? s.code : undefined,
       count: 'count' in s ? s.count : undefined,
       remaining: 'remaining' in s ? s.remaining : undefined,
+      message: 'message' in s ? s.message : undefined,
+      scope: 'scope' in s ? s.scope : undefined,
+      delayMs: 'delayMs' in s ? s.delayMs : undefined,
+      consecutiveFailures: 'consecutiveFailures' in s ? s.consecutiveFailures : undefined,
     };
   },
 });
@@ -494,6 +505,13 @@ const modbusStatusText = computed(() => {
   if (s.kind === 'exception') return t('modbus.status.exception', { code: s.code ?? 0 });
   if (s.kind === 'crc-error') return t('modbus.status.crcError');
   if (s.kind === 'replaying') return t('modbus.status.replaying', { remaining: s.remaining ?? 0 });
+  if (s.kind === 'backoff')
+    return t('modbus.status.backoff', {
+      scope: s.scope === 'write' ? t('modbus.status.scopeWrite') : t('modbus.status.scopeRead'),
+      delay: s.delayMs ?? 0,
+      count: s.consecutiveFailures ?? 0,
+    });
+  if (s.kind === 'error') return t('modbus.status.error', { message: s.message ?? '' });
   return t('modbus.status.idle');
 });
 const modbusStatusClass = computed(() => modbusStatus.value.kind);
@@ -543,11 +561,12 @@ async function onModbusSendAll() {
     modbusBusy.value = false;
   }
 }
-async function onModbusSendRow(reg: ModbusRegister) {
+async function onModbusSendRow(reg: ModbusRegister): Promise<boolean> {
   modbusBusy.value = true;
   try {
-    const ok = await master.sendRow(reg);
-    if (!ok) message.warning(t('modbus.send'));
+    // Result is returned to ModbusPanel so it can flash the row on success or
+    // toast on failure — closer to the row the user acted on than a global bar.
+    return await master.sendRow(reg);
   } finally {
     modbusBusy.value = false;
   }

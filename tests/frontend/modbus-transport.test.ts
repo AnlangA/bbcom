@@ -84,6 +84,22 @@ test('scanResponse PDU holds buffer when below expectedLength', () => {
   assert.equal(remainder.length, 3);
 });
 
+test('scanResponse PDU emits short exception frames without waiting for normal length', () => {
+  // Exception response to FC03: [0x83][0x02], followed by a trailing byte.
+  const buf = new Uint8Array([0x83, 0x02, 0x99]);
+  const { frames, remainder } = scanResponse('pdu', buf, 7);
+  assert.equal(frames.length, 1);
+  assert.equal(asString(frames[0]), '83 02');
+  assert.equal(asString(remainder), '99');
+  const parsed = parseFrame('pdu', frames[0]);
+  assert.deepEqual(parsed, {
+    kind: 'exception',
+    slave: PDU_DEFAULT_SLAVE,
+    fc: 0x83,
+    code: 0x02,
+  });
+});
+
 test('parseFrame RTU decodes a read-regs response, PDU skips CRC', () => {
   const rtu = new Uint8Array([0x01, 0x03, 0x04, 0x12, 0x34, 0x56, 0x78, 0x81, 0x07]);
   const r = parseFrame('rtu', rtu);

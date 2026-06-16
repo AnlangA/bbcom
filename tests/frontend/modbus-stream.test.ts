@@ -79,6 +79,40 @@ test('parseStream skips blank and junk lines without throwing', () => {
   assert.equal(parsed[1].value, 9);
 });
 
+test('parseStream rejects out-of-range Modbus identity fields', () => {
+  const lines = [
+    '{"t":1,"slave":248,"fc":3,"addr":1,"type":"uint16","value":1}',
+    '{"t":1,"slave":1.5,"fc":3,"addr":1,"type":"uint16","value":1}',
+    '{"t":1,"slave":1,"fc":15,"addr":1,"type":"uint16","value":1}',
+    '{"t":1,"slave":1,"fc":3.5,"addr":1,"type":"uint16","value":1}',
+    '{"t":1,"slave":1,"fc":3,"addr":65536,"type":"uint16","value":1}',
+    '{"t":1,"slave":1,"fc":3,"addr":1.5,"type":"uint16","value":1}',
+    '{"t":-1,"slave":1,"fc":3,"addr":1,"type":"uint16","value":1}',
+    '{"t":1,"slave":0,"fc":16,"addr":65535,"type":"uint16","value":7}',
+  ];
+  const parsed = parseStream(lines.join('\n'));
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].slave, 0);
+  assert.equal(parsed[0].fc, 16);
+  assert.equal(parsed[0].addr, 65535);
+});
+
+test('parseStream keeps only valid waveform channels', () => {
+  const parsed = parseStream(
+    [
+      '{"t":1,"slave":1,"fc":3,"addr":1,"type":"uint16","value":1,"ch":7}',
+      '{"t":1,"slave":1,"fc":3,"addr":2,"type":"uint16","value":2,"ch":8}',
+      '{"t":1,"slave":1,"fc":3,"addr":3,"type":"uint16","value":3,"ch":1.5}',
+      '{"t":1,"slave":1,"fc":3,"addr":4,"type":"uint16","value":4,"ch":null}',
+    ].join('\n'),
+  );
+  assert.equal(parsed.length, 4);
+  assert.equal(parsed[0].ch, 7);
+  assert.equal(parsed[1].ch, undefined);
+  assert.equal(parsed[2].ch, undefined);
+  assert.equal(parsed[3].ch, null);
+});
+
 test('snapshotFromRegisters emits one record per valued row', () => {
   const regs: ModbusRegister[] = [
     {

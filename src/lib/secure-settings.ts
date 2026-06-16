@@ -1,11 +1,25 @@
 import { LazyStore } from '@tauri-apps/plugin-store';
 import { logger } from './logger';
 
-const store = new LazyStore('secure-settings.json');
+let store: LazyStore | null = null;
+
+function isTauriRuntime(): boolean {
+  if (typeof window === 'undefined') return false;
+  const w = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
+  return !!w.__TAURI_INTERNALS__ || !!w.__TAURI__;
+}
+
+function getStore(): LazyStore | null {
+  if (!isTauriRuntime()) return null;
+  store ??= new LazyStore('secure-settings.json');
+  return store;
+}
 
 export async function loadSecretString(key: string): Promise<string> {
+  const secureStore = getStore();
+  if (!secureStore) return '';
   try {
-    const value = await store.get<string>(key);
+    const value = await secureStore.get<string>(key);
     return typeof value === 'string' ? value : '';
   } catch (e) {
     logger.warn('secure-settings: load failed for', key, e);
@@ -14,9 +28,11 @@ export async function loadSecretString(key: string): Promise<string> {
 }
 
 export async function saveSecretString(key: string, value: string): Promise<boolean> {
+  const secureStore = getStore();
+  if (!secureStore) return false;
   try {
-    await store.set(key, value);
-    await store.save();
+    await secureStore.set(key, value);
+    await secureStore.save();
     return true;
   } catch (e) {
     logger.warn('secure-settings: save failed for', key, e);
@@ -25,9 +41,11 @@ export async function saveSecretString(key: string, value: string): Promise<bool
 }
 
 export async function clearSecretString(key: string): Promise<boolean> {
+  const secureStore = getStore();
+  if (!secureStore) return false;
   try {
-    await store.delete(key);
-    await store.save();
+    await secureStore.delete(key);
+    await secureStore.save();
     return true;
   } catch (e) {
     logger.warn('secure-settings: clear failed for', key, e);

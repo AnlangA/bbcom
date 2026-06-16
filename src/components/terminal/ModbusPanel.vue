@@ -161,7 +161,7 @@
         v-for="(reg, idx) in registers"
         :key="reg.id"
         class="mb-row"
-        :class="{ alt: idx % 2 === 1 }"
+        :class="{ alt: idx % 2 === 1, 'send-flash': flashRowId === reg.id }"
       >
         <span class="col col-name" :title="reg.name">
           <n-input
@@ -305,7 +305,7 @@
             type="button"
             :disabled="busy || !isConnected"
             :title="t('modbus.send')"
-            @click="onSendRow(reg)"
+            @click="handleSendRow(reg)"
           >
             <Send class="icon-sm" />
           </button>
@@ -321,63 +321,77 @@
       </div>
     </div>
 
-    <!-- Add-register form -->
+    <!-- Add-register form: shares the table's grid columns so each field sits
+         directly under its column header. The R/W and Value columns are omitted
+         here (they have no meaning until the row exists); the trailing Unit +
+         Add fields land in the last two columns. -->
     <div class="mb-add">
-      <n-input
-        v-model:value="draft.name"
-        size="tiny"
-        :placeholder="t('modbus.namePlaceholder')"
-        style="width: 130px"
-      />
-      <n-input-number
-        v-model:value="draft.slaveAddress"
-        size="tiny"
-        :min="0"
-        :max="247"
-        style="width: 76px"
-      />
-      <n-select
-        :value="draft.functionCode"
-        :options="fcOptions"
-        size="tiny"
-        style="width: 150px"
-        @update:value="setDraftFunctionCode"
-      />
-      <n-input-number
-        v-model:value="draft.address"
-        size="tiny"
-        :min="0"
-        :max="65535"
-        style="width: 92px"
-      />
-      <n-input-number
-        v-model:value="draft.quantity"
-        size="tiny"
-        :min="1"
-        :max="draftQuantityMax"
-        :disabled="!isDataCountEditable(draft.functionCode)"
-        :show-button="false"
-        style="width: 66px"
-      />
-      <n-select
-        :value="draft.type"
-        :options="typeOptionsFor(draft.functionCode)"
-        size="tiny"
-        :disabled="isBitFc(draft.functionCode)"
-        style="width: 88px"
-        @update:value="setDraftType"
-      />
-      <n-input v-model:value="draft.unit" size="tiny" placeholder="°C" style="width: 56px" />
-      <n-select
-        v-model:value="draft.waveformChannel"
-        :options="channelOptions"
-        size="tiny"
-        style="width: 60px"
-      />
-      <n-button size="tiny" type="primary" :disabled="!canAdd" @click="addRegister">
-        <template #icon><Plus class="icon-sm" /></template>
-        {{ t('modbus.addRegister') }}
-      </n-button>
+      <span class="col col-name">
+        <n-input
+          v-model:value="draft.name"
+          size="tiny"
+          :placeholder="t('modbus.namePlaceholder')"
+        />
+      </span>
+      <span class="col col-slave">
+        <n-input-number
+          v-model:value="draft.slaveAddress"
+          size="tiny"
+          :min="0"
+          :max="247"
+          :show-button="false"
+        />
+      </span>
+      <span class="col col-fc">
+        <n-select
+          :value="draft.functionCode"
+          :options="fcOptions"
+          size="tiny"
+          @update:value="setDraftFunctionCode"
+        />
+      </span>
+      <span class="col col-addr">
+        <n-input-number
+          v-model:value="draft.address"
+          size="tiny"
+          :min="0"
+          :max="65535"
+          :show-button="false"
+        />
+      </span>
+      <span class="col col-qty">
+        <n-input-number
+          v-model:value="draft.quantity"
+          size="tiny"
+          :min="1"
+          :max="draftQuantityMax"
+          :disabled="!isDataCountEditable(draft.functionCode)"
+          :show-button="false"
+        />
+      </span>
+      <span class="col col-type">
+        <n-select
+          :value="draft.type"
+          :options="typeOptionsFor(draft.functionCode)"
+          size="tiny"
+          :disabled="isBitFc(draft.functionCode)"
+          @update:value="setDraftType"
+        />
+      </span>
+      <span class="col col-ch">
+        <n-select v-model:value="draft.waveformChannel" :options="channelOptions" size="tiny" />
+      </span>
+      <span class="col col-rw"></span>
+      <span class="col col-value"></span>
+      <span class="col col-unit">
+        <n-input v-model:value="draft.unit" size="tiny" placeholder="°C" />
+      </span>
+      <span class="col col-actions">
+        <n-button size="tiny" type="primary" :disabled="!canAdd" @click="addRegister">
+          <template #icon><Plus class="icon-sm" /></template>
+          {{ t('modbus.addRegister') }}
+        </n-button>
+      </span>
     </div>
 
     <input ref="fileInput" type="file" accept=".bbreg,.jsonl,.txt" hidden @change="onFilePicked" />
@@ -385,7 +399,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, shallowReactive } from 'vue';
+import { computed, onUnmounted, ref, shallowReactive } from 'vue';
 import { NButton, NCheckbox, NInput, NInputNumber, NSelect, useMessage } from 'naive-ui';
 import {
   Cpu,
@@ -416,6 +430,7 @@ import {
   registerCountForValues,
   registerSpan,
 } from '../../lib/modbus';
+import { modbusWriteRowValues } from '../../lib/modbus-batches';
 import { t } from '../../lib/i18n';
 import type {
   ModbusFunctionCode,
@@ -438,7 +453,7 @@ const props = defineProps<{
   onReadAll: () => Promise<void>;
   onReadRow: (reg: ModbusRegister) => Promise<void>;
   onSendAll: () => Promise<void>;
-  onSendRow: (reg: ModbusRegister) => Promise<void>;
+  onSendRow: (reg: ModbusRegister) => Promise<boolean>;
   /** Begin replaying a parsed .bbreg stream onto write-rows. */
   onReplay: (records: ReturnType<typeof parseStream>) => void;
   /** Stop an in-flight replay. */
@@ -459,6 +474,23 @@ const emit = defineEmits<{
 const sessionStore = useSessionStore();
 const message = useMessage();
 const fileInput = ref<HTMLInputElement | null>(null);
+const valueDrafts = shallowReactive<Record<string, string>>({});
+
+// Per-row send-success flash. Mirrors SendPanel's send-flash sweep so a write
+// that landed gives the same immediate, non-modal confirmation as a serial TX.
+const flashRowId = ref<string | null>(null);
+let flashTimer: ReturnType<typeof setTimeout> | null = null;
+function triggerRowFlash(regId: string) {
+  flashRowId.value = regId;
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    flashRowId.value = null;
+  }, 320);
+}
+
+onUnmounted(() => {
+  if (flashTimer) clearTimeout(flashTimer);
+});
 
 const transportOptions = computed(() => [
   { label: t('modbus.transport.rtu'), value: 'rtu' },
@@ -549,6 +581,7 @@ function editRegisterAndClearValue(
   reg: ModbusRegister,
   patchValue: Partial<Omit<ModbusRegister, 'id'>>,
 ) {
+  delete valueDrafts[reg.id];
   editRegister(reg, {
     ...patchValue,
     value: null,
@@ -615,6 +648,9 @@ function setChannel(regId: string, ch: number) {
 }
 
 function editValueText(reg: ModbusRegister): string {
+  if (Object.prototype.hasOwnProperty.call(valueDrafts, reg.id)) {
+    return valueDrafts[reg.id];
+  }
   const values = Array.isArray(reg.values) && reg.values.length > 0 ? reg.values : null;
   if (values) return values.join(' ');
   return reg.value === null || !Number.isFinite(reg.value) ? '' : String(reg.value);
@@ -627,6 +663,7 @@ function valuePlaceholder(reg: ModbusRegister): string {
 }
 
 function editValue(reg: ModbusRegister, raw: string) {
+  valueDrafts[reg.id] = raw;
   const values = parseValueList(raw);
   const value = values[0] ?? null;
   const patch: Partial<Omit<ModbusRegister, 'id'>> = {
@@ -711,7 +748,26 @@ function formatNumber(value: number): string {
   return value.toFixed(2);
 }
 
+async function handleSendRow(reg: ModbusRegister) {
+  // Pre-check before hitting the master: an empty value never reaches the wire
+  // (the batch builder drops value-less rows), so reporting it as a send
+  // failure / "no ack" would be misleading. Treat it as missing input instead.
+  if (modbusWriteRowValues(reg).length === 0) {
+    message.warning(t('modbus.writeValueMissing'));
+    return;
+  }
+  const ok = await props.onSendRow(reg);
+  // Silent on success (row flash); toast only when it actually failed, so a
+  // green TX sweep and no popup means "it landed".
+  if (ok) {
+    triggerRowFlash(reg.id);
+  } else {
+    message.warning(t('modbus.sendFailed'));
+  }
+}
+
 function remove(regId: string) {
+  delete valueDrafts[regId];
   sessionStore.removeModbusRegister(props.sessionId, regId);
 }
 
@@ -900,9 +956,15 @@ function onFilePicked(e: Event) {
   color: var(--accent-green);
 }
 
+.mb-status.backoff {
+  color: var(--accent-amber);
+  background: var(--accent-amber-subtle);
+}
+
 .mb-status.timeout,
 .mb-status.exception,
-.mb-status.crc-error {
+.mb-status.crc-error,
+.mb-status.error {
   color: var(--accent-red);
   background: var(--accent-red-subtle);
 }
@@ -948,10 +1010,24 @@ function onFilePicked(e: Event) {
 }
 
 .mb-row {
+  position: relative;
+  overflow: hidden;
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
+}
+
+/* Send-success sweep across the row — same gradient + duration as the serial
+   SendPanel flash, so a Modbus write reads identically to a serial TX. */
+.mb-row.send-flash::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--color-primary-subtle), transparent);
+  animation: send-flash 320ms ease;
+  pointer-events: none;
+  z-index: 0;
 }
 
 .mb-row.alt {
@@ -1018,14 +1094,43 @@ function onFilePicked(e: Event) {
 }
 
 .mb-add {
-  display: flex;
+  /* Mirror the table's column grid so each form field lines up under its
+     column header, instead of using ad-hoc per-field widths. */
+  display: grid;
+  grid-template-columns:
+    minmax(82px, 1.2fr) 42px 126px 56px 54px 78px 60px 48px minmax(108px, 1fr)
+    44px 92px;
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
   border-top: 1px solid var(--border-subtle);
   background: var(--bg-secondary);
-  flex-wrap: wrap;
   flex-shrink: 0;
+}
+
+/* Drop the internal flex shrink that flex children inherited; grid cells fill
+   their column width. Let selects/inputs stretch to the cell. */
+.mb-add .col :deep(.n-input),
+.mb-add .col :deep(.n-base-selection),
+.mb-add .col :deep(.n-input-number) {
+  width: 100%;
+}
+
+/* The empty R/W and Value cells are visual spacers only — keep them empty so
+   the trailing Unit + Add fields land in the last two columns. */
+.mb-add .col-rw,
+.mb-add .col-value {
+  visibility: hidden;
+}
+
+/* Add button fills its actions column. */
+.mb-add .col-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.mb-add .col-actions :deep(.n-button) {
+  width: 100%;
 }
 
 /* Periodic read/write toggle chips. */

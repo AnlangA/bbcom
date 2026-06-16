@@ -127,7 +127,9 @@ export interface ScanResult {
  *   Min RTU ADU length is 4 (addr + fc + crc); max is 256.
  * - **PDU**: there is no delimiter or length field in the PDU alone, so the
  *   caller must pass `expectedLength` (derived from the outstanding request's
- *   FC). With it we slice fixed-length frames; without it we hold the buffer.
+ *   FC). Exception responses are always 2 bytes (`fc | 0x80`, code), so those
+ *   are emitted as soon as their short shape is visible; normal responses are
+ *   sliced by `expectedLength`.
  */
 export function scanResponse(
   transport: ModbusTransport,
@@ -135,6 +137,9 @@ export function scanResponse(
   expectedLength?: number,
 ): ScanResult {
   if (transport === 'pdu') {
+    if (buf.length >= 2 && (buf[0] & 0x80) !== 0) {
+      return { frames: [buf.subarray(0, 2)], remainder: buf.subarray(2) };
+    }
     if (expectedLength === undefined || buf.length < expectedLength) {
       return { frames: [], remainder: buf };
     }

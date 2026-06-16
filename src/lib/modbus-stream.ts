@@ -58,6 +58,10 @@ const VALUE_TYPES: ReadonlySet<ModbusValueType> = new Set([
   'float32-le',
 ]);
 
+const SUPPORTED_FUNCTION_CODES: ReadonlySet<ModbusFunctionCode> = new Set([
+  0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x10,
+]);
+
 /** Encode a list of records as a `.bbreg` JSONL string. */
 export function encodeStream(records: ModbusStreamRecord[]): string {
   const lines: string[] = [];
@@ -121,6 +125,19 @@ function normalizeRecord(raw: unknown): ModbusStreamRecord | null {
   ) {
     return null;
   }
+  if (
+    t < 0 ||
+    !Number.isInteger(slave) ||
+    slave < 0 ||
+    slave > 247 ||
+    !Number.isInteger(fc) ||
+    !SUPPORTED_FUNCTION_CODES.has(fc as ModbusFunctionCode) ||
+    !Number.isInteger(addr) ||
+    addr < 0 ||
+    addr > 0xffff
+  ) {
+    return null;
+  }
   if (typeof type !== 'string' || !VALUE_TYPES.has(type as ModbusValueType)) return null;
   const rec: ModbusStreamRecord = {
     t,
@@ -131,8 +148,9 @@ function normalizeRecord(raw: unknown): ModbusStreamRecord | null {
     value,
   };
   if (typeof r.name === 'string') rec.name = r.name;
-  if (typeof r.ch === 'number') rec.ch = r.ch;
-  else if (r.ch === null) rec.ch = null;
+  if (typeof r.ch === 'number' && Number.isInteger(r.ch) && r.ch >= 0 && r.ch <= 7) {
+    rec.ch = r.ch;
+  } else if (r.ch === null) rec.ch = null;
   if (typeof r.unit === 'string') rec.unit = r.unit;
   return rec;
 }

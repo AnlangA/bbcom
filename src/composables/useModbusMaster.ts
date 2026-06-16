@@ -1,37 +1,40 @@
-import { onUnmounted, ref, watch, type Ref } from 'vue';
-import { decodeValues, isBitFc, isReadFc, type ModbusResponse, type ReadFc } from '../lib/modbus';
+import { onScopeDispose, ref, watch, type Ref } from 'vue';
+import { isBitFc, isReadFc, type ModbusResponse, type ReadFc } from '../lib/modbus';
 import {
   buildModbusReadBatches,
   buildModbusWriteBatches,
   encodeModbusCoilWriteValues,
   encodeModbusRegisterWriteValues,
-  modbusDataValueCount,
   modbusReadRowCount,
   type ModbusReadBatch,
   type ModbusWriteBatch,
 } from '../lib/modbus-batches';
 import {
-  parseFrame,
   readRequest,
-  scanResponse,
   writeMultipleCoilsRequest,
   writeMultipleRegistersRequest,
   writeSingleCoilRequest,
   writeSingleRegisterRequest,
   type ModbusTransport,
 } from '../lib/modbus-transport';
+import { ModbusBackoff } from '../lib/modbus-backoff';
+import { ModbusLoopCoordinator } from '../lib/modbus-loop-coordinator';
+import {
+  isExpectedModbusWriteAck,
+  mapModbusReadResponse,
+  type ModbusSample,
+} from '../lib/modbus-response-mapper';
+import { ModbusReplayCoordinator } from '../lib/modbus-replay-coordinator';
+import {
+  ModbusTransactionRunner,
+  type ModbusTransactionStatus,
+} from '../lib/modbus-transaction-runner';
+import { isPeriodicWritableFc, ModbusWriteSource } from '../lib/modbus-write-source';
 import type { ModbusStreamRecord } from '../lib/modbus-stream';
 import { useSessionStore } from '../stores/sessions';
 import type { ModbusMasterConfig, ModbusRegister } from '../types';
 
-/** A decoded value ready to apply to a register row + feed the waveform. */
-export interface ModbusSample {
-  registerId: string;
-  /** Waveform channel from the row, or null. */
-  channel: number | null;
-  value: number;
-  ts: number;
-}
+export type { ModbusSample } from '../lib/modbus-response-mapper';
 
 interface UseModbusMasterOptions {
   sessionId: string;
@@ -57,7 +60,26 @@ export type ModbusMasterStatus =
   | { kind: 'exception'; code: number }
   | { kind: 'crc-error' }
   | { kind: 'replaying'; remaining: number }
+  | {
+      kind: 'backoff';
+      scope: 'read' | 'write';
+      delayMs: number;
+      consecutiveFailures: number;
+    }
   | { kind: 'error'; message: string };
+
+type PeriodicBackoffScope = 'read' | 'write';
+
+interface TransactionOutcome {
+  response: ModbusResponse | null;
+  failure: ModbusTransactionStatus | null;
+}
+
+interface ReplayQueueItem {
+  ts: number;
+  reg: ModbusRegister;
+  value: number;
+}
 
 /**
  * Per-session Modbus master. Owns two independent background loops plus the
@@ -87,44 +109,58 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
   const running = ref(false);
   const status = ref<ModbusMasterStatus>({ kind: 'idle' });
 
-  // RX accumulation state. One outstanding request at a time (RTU is
-  // half-duplex; the next request isn't sent until this resolves or times out).
-  let rxBuffer: Uint8Array = new Uint8Array(0);
-  let pending: {
-    batch: ModbusReadBatch | ModbusWriteBatch;
-    resolve: (response: ModbusResponse | null) => void;
-    timer: ReturnType<typeof setTimeout>;
-    /** Expected PDU length for the response (PDU transport needs this). */
-    expectedLen?: number;
-  } | null = null;
-  let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let writeTimer: ReturnType<typeof setTimeout> | null = null;
   let unlistenRx: (() => void) | null = null;
   let stopped = false;
-  /** Busy guard — see class doc. */
-  let busy = false;
+  let lastTransactionStatus: ModbusTransactionStatus | null = null;
 
-  // Replay state: a self-rescheduling writer that pushes a loaded .bbreg
-  // stream's values onto the device's registers at their recorded cadence.
-  let replayQueue: Array<{ ts: number; reg: ModbusRegister; value: number }> = [];
-  let replayTimer: ReturnType<typeof setTimeout> | null = null;
-  let replayBaseTs = 0;
-  let replayStartWall = 0;
   const replaying = ref(false);
 
-  // Periodic-write data source: a loaded `.bbreg` stream grouped into per-key
-  // value sequences. Each key maps to a write row by (slave, writeFc, addr);
-  // the FC-mapping mirrors replay (FC03→FC06, FC01→FC05). A cursor per key
-  // tracks the next value to send; it wraps to 0 at the end (fixed-interval loop).
   const writing = ref(false);
-  let writeSourceName: string | null = null;
-  let writeSequences: Map<string, number[]> = new Map();
-  let writeCursors: Map<string, number> = new Map();
+  const writeSource = new ModbusWriteSource();
 
   function emitStatus(s: ModbusMasterStatus) {
     status.value = s;
     opts.onStatus?.(s);
   }
+
+  const readBackoff = new ModbusBackoff();
+  const writeBackoff = new ModbusBackoff();
+
+  const transactions = new ModbusTransactionRunner<ModbusReadBatch | ModbusWriteBatch>({
+    sendBytes,
+    getTransport: () => config.value.transport,
+    getTimeoutMs: () => config.value.timeoutMs,
+    onStatus: (transactionStatus) => {
+      lastTransactionStatus = transactionStatus;
+      emitStatus(transactionStatus);
+    },
+  });
+
+  const loops = new ModbusLoopCoordinator({
+    shouldRunRead,
+    shouldRunWrite,
+    getReadIntervalMs: () => readBackoff.delayFor(config.value.pollIntervalMs),
+    getWriteIntervalMs: () => writeBackoff.delayFor(config.value.writeIntervalMs),
+    runRead: pollOnce,
+    runWrite: writeOnce,
+  });
+
+  const replayCoordinator = new ModbusReplayCoordinator<ReplayQueueItem>({
+    runItem: runReplayItem,
+    onProgress: (remaining) => {
+      replaying.value = true;
+      emitStatus({ kind: 'replaying', remaining });
+    },
+    onIdle: () => {
+      if (replaying.value) {
+        replaying.value = false;
+        emitStatus({ kind: 'idle' });
+      }
+    },
+    onError: (error) => {
+      emitStatus({ kind: 'error', message: errorMessage(error) });
+    },
+  });
 
   /**
    * Run an on-demand operation with the busy guard held. While held, neither
@@ -132,40 +168,13 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
    * for the single `pending` slot.
    */
   async function withBusy<T>(fn: () => Promise<T>): Promise<T> {
-    // Wait for any in-flight busy op (and any tick it's waiting out).
-    while (busy) await new Promise((r) => setTimeout(r, 5));
-    busy = true;
-    try {
-      return await fn();
-    } finally {
-      busy = false;
-    }
+    return loops.runExclusive(fn);
   }
 
   // --- RX subscription ---------------------------------------------------
 
   function handleRx(bytes: Uint8Array) {
-    if (!pending) {
-      // Unsolicited bytes (e.g. late echo, noise). Drop to avoid framing drift.
-      rxBuffer = new Uint8Array(0);
-      return;
-    }
-    const concat = new Uint8Array(rxBuffer.length + bytes.length);
-    concat.set(rxBuffer, 0);
-    concat.set(bytes, rxBuffer.length);
-    rxBuffer = concat;
-
-    const transport: ModbusTransport = config.value.transport;
-    const { frames, remainder } = scanResponse(transport, rxBuffer, pending.expectedLen);
-    rxBuffer = remainder;
-    if (frames.length > 0) {
-      const response = parseFrame(transport, frames[0]);
-      // Resolve + clear pending; any extra frames are spurious — drop them.
-      clearTimeout(pending.timer);
-      const p = pending;
-      pending = null;
-      p.resolve(response);
-    }
+    transactions.receive(bytes);
   }
 
   function startListening() {
@@ -206,33 +215,61 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
   }
 
   /** Send a framed request and resolve with the parsed response (or null on timeout). */
-  function transact(
+  async function transact(
     batch: ModbusReadBatch | ModbusWriteBatch,
     buildWire: () => Uint8Array,
     expectedLen: number | undefined,
+    periodicScope?: PeriodicBackoffScope,
   ): Promise<ModbusResponse | null> {
-    return new Promise<ModbusResponse | null>((resolve) => {
-      const timeoutMs = config.value.timeoutMs;
-      const timer = setTimeout(() => {
-        if (pending && pending.batch === batch) {
-          pending = null;
-          rxBuffer = new Uint8Array(0); // resync on timeout
-          emitStatus({ kind: 'timeout' });
-        }
-        resolve(null);
-      }, timeoutMs);
-      pending = { batch, resolve, timer, expectedLen };
-      rxBuffer = new Uint8Array(0);
-      void sendBytes(buildWire()).then((ok) => {
-        if (!ok) {
-          if (pending && pending.batch === batch) {
-            clearTimeout(pending.timer);
-            pending = null;
-          }
-          resolve(null);
-        }
-      });
+    const outcome = await transactDetailed(batch, buildWire, expectedLen);
+    if (periodicScope) recordPeriodicOutcome(periodicScope, outcome);
+    return outcome.response;
+  }
+
+  async function transactDetailed(
+    batch: ModbusReadBatch | ModbusWriteBatch,
+    buildWire: () => Uint8Array,
+    expectedLen: number | undefined,
+  ): Promise<TransactionOutcome> {
+    lastTransactionStatus = null;
+    const response = await transactions.transact(batch, buildWire, expectedLen);
+    if (response) resetBackoffs();
+    return { response, failure: response ? null : lastTransactionStatus };
+  }
+
+  function recordPeriodicOutcome(scope: PeriodicBackoffScope, outcome: TransactionOutcome): void {
+    const backoff = scope === 'read' ? readBackoff : writeBackoff;
+    if (outcome.response) {
+      backoff.recordSuccess();
+      return;
+    }
+    if (!shouldTrackBackoff(outcome.failure)) return;
+
+    backoff.recordFailure();
+    if (!backoff.isBackingOff()) return;
+
+    const baseDelayMs =
+      scope === 'read' ? config.value.pollIntervalMs : config.value.writeIntervalMs;
+    emitStatus({
+      kind: 'backoff',
+      scope,
+      delayMs: backoff.delayFor(baseDelayMs),
+      consecutiveFailures: backoff.getConsecutiveFailures(),
     });
+  }
+
+  function shouldTrackBackoff(failure: ModbusTransactionStatus | null): boolean {
+    return (
+      !stopped &&
+      config.value.enabled &&
+      isConnected.value &&
+      (failure?.kind === 'timeout' || failure?.kind === 'error')
+    );
+  }
+
+  function resetBackoffs(): void {
+    readBackoff.reset();
+    writeBackoff.reset();
   }
 
   /**
@@ -242,6 +279,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
    */
   async function sendWriteBatches(
     batches: ModbusWriteBatch[],
+    periodicScope?: PeriodicBackoffScope,
   ): Promise<{ sent: number; ok: number }> {
     const transport = config.value.transport;
     let ok = 0;
@@ -264,24 +302,12 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
             : writeMultipleRegistersRequest(transport, batch.slave, batch.start, values);
       }
       const expectedLen = expectedWriteResponseLength(batch, transport);
-      const response = await transact(batch, () => wire, expectedLen);
-      if (isExpectedWriteAck(response, batch, transport)) ok += batch.rows.length;
+      const response = await transact(batch, () => wire, expectedLen, periodicScope);
+      if (isExpectedModbusWriteAck(response, batch, transport)) ok += batch.rows.length;
       else if (response?.kind === 'exception')
         emitStatus({ kind: 'exception', code: response.code });
     }
     return { sent, ok };
-  }
-
-  function isExpectedWriteAck(
-    response: ModbusResponse | null,
-    batch: ModbusWriteBatch,
-    transport: ModbusTransport,
-  ): boolean {
-    if (response?.kind !== 'write-ack') return false;
-    if (transport === 'rtu' && response.slave !== (batch.slave & 0xff)) return false;
-    if (response.fc !== batch.fc || response.addr !== batch.start) return false;
-    const expectedCount = batch.fc === 0x05 || batch.fc === 0x06 ? 1 : batch.count;
-    return response.count === expectedCount;
   }
 
   // --- Read loop ---------------------------------------------------------
@@ -309,49 +335,15 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       if (stopped) return;
       const wire = readRequest(transport, batch.slave, batch.fc, batch.start, batch.count);
       const expectedLen = expectedReadResponseLength(batch, transport);
-      const response = await transact(batch, () => wire, expectedLen);
+      const response = await transact(batch, () => wire, expectedLen, 'read');
       if (!response) continue; // timeout / send failure → skip, next tick retries
       if (response.kind === 'exception') {
         emitStatus({ kind: 'exception', code: response.code });
         continue;
       }
-      if (response.kind === 'read-bits') {
-        for (const { reg, offset } of batch.rows) {
-          const dataCount = modbusDataValueCount(reg);
-          const values = response.bits
-            .slice(offset, offset + dataCount)
-            .map((bit) => (bit ? 1 : 0));
-          if (values.length === 0) continue;
-          const value = values[0];
-          valueUpdates.push({
-            id: reg.id,
-            value,
-            values: values.length > 1 ? values : null,
-            valueTs: now,
-          });
-          if (reg.waveformChannel !== null) {
-            samples.push({ registerId: reg.id, channel: reg.waveformChannel, value, ts: now });
-          }
-        }
-      } else if (response.kind === 'read-regs') {
-        for (const { reg, offset } of batch.rows) {
-          const registerCount = modbusReadRowCount(reg);
-          const dataCount = modbusDataValueCount(reg);
-          const window = response.regs.slice(offset, offset + registerCount);
-          const values = decodeValues(reg.type, window).slice(0, dataCount);
-          if (values.length === 0) continue;
-          const value = values[0];
-          valueUpdates.push({
-            id: reg.id,
-            value,
-            values: values.length > 1 ? values : null,
-            valueTs: now,
-          });
-          if (reg.waveformChannel !== null) {
-            samples.push({ registerId: reg.id, channel: reg.waveformChannel, value, ts: now });
-          }
-        }
-      }
+      const mapped = mapModbusReadResponse(batch, response, now);
+      valueUpdates.push(...mapped.valueUpdates);
+      samples.push(...mapped.samples);
     }
 
     if (valueUpdates.length > 0) {
@@ -372,24 +364,6 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     );
   }
 
-  function scheduleNextRead() {
-    if (stopped || !shouldRunRead()) return;
-    // Defer arm while an on-demand op holds the bus; re-evaluate on release.
-    if (busy) return;
-    const interval = Math.max(100, config.value.pollIntervalMs);
-    pollTimer = setTimeout(async () => {
-      pollTimer = null;
-      if (stopped) return;
-      if (busy) {
-        // The bus was claimed mid-wait; try again shortly after it releases.
-        scheduleNextRead();
-        return;
-      }
-      await withBusy(() => pollOnce());
-      scheduleNextRead();
-    }, interval);
-  }
-
   // --- Write loop (periodic write data source) ---------------------------
 
   /**
@@ -400,60 +374,36 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
    * sends the next value, wrapping to the start at the end (fixed-interval loop).
    */
   function loadWriteSource(records: ModbusStreamRecord[], name: string): void {
-    writeSequences = new Map();
-    writeCursors = new Map();
-    for (const rec of records) {
-      const writeFc = rec.fc === 0x03 ? 0x06 : rec.fc === 0x01 ? 0x05 : rec.fc;
-      const key = `${rec.slave}:${writeFc}:${rec.addr}`;
-      const seq = writeSequences.get(key);
-      if (seq) seq.push(rec.value);
-      else writeSequences.set(key, [rec.value]);
-    }
-    for (const key of writeSequences.keys()) writeCursors.set(key, 0);
-    writeSourceName = name;
+    writeSource.load(records, name);
   }
 
   function clearWriteSource(): void {
-    writeSequences = new Map();
-    writeCursors = new Map();
-    writeSourceName = null;
+    writeSource.clear();
   }
 
   async function writeOnce() {
-    const regs = registers.value.filter(
-      (r) =>
-        r.periodicWrite &&
-        (r.functionCode === 0x05 || r.functionCode === 0x06 || r.functionCode === 0x10),
-    );
-    if (regs.length === 0) {
+    const targets = writeSource.nextTargets(registers.value);
+    if (targets.length === 0) {
       if (status.value.kind === 'writing') emitStatus({ kind: 'idle' });
       return;
     }
-    // Advance each row's cursor; rows without a matching data-source sequence
-    // are skipped (no value to send) rather than aborting the whole tick.
-    const targets: Array<{ reg: ModbusRegister; value: number }> = [];
-    const now = Date.now();
-    for (const reg of regs) {
-      const key = `${reg.slaveAddress}:${reg.functionCode}:${reg.address}`;
-      const seq = writeSequences.get(key);
-      if (!seq || seq.length === 0) continue;
-      const cursor = writeCursors.get(key) ?? 0;
-      const value = seq[cursor] ?? seq[0];
-      writeCursors.set(key, (cursor + 1) % seq.length); // wrap → fixed-interval loop
-      targets.push({ reg, value });
-    }
-    if (targets.length === 0) return;
 
     // Mirror the loaded value into the table (runtime-only) so the UI shows
     // what is being pushed, then batch-send exactly like sendAll.
+    const now = Date.now();
     sessionStore.setModbusRegisterValues(
       sessionId,
       targets.map((t) => ({ id: t.reg.id, value: t.value, values: null, valueTs: now })),
     );
     emitStatus({ kind: 'writing', count: targets.length });
     const regsWithValues = targets.map((t) => ({ ...t.reg, value: t.value }));
-    await sendWriteBatches(buildModbusWriteBatches(regsWithValues));
-    if (status.value.kind === 'writing') emitStatus({ kind: 'idle' });
+    writing.value = true;
+    try {
+      await sendWriteBatches(buildModbusWriteBatches(regsWithValues), 'write');
+    } finally {
+      writing.value = false;
+      if (status.value.kind === 'writing') emitStatus({ kind: 'idle' });
+    }
   }
 
   function shouldRunWrite(): boolean {
@@ -461,35 +411,11 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       !stopped &&
       config.value.enabled &&
       isConnected.value &&
-      registers.value.some(
-        (r) =>
-          r.periodicWrite &&
-          (r.functionCode === 0x05 || r.functionCode === 0x06 || r.functionCode === 0x10),
-      )
+      registers.value.some((r) => r.periodicWrite && isPeriodicWritableFc(r.functionCode))
     );
   }
 
-  function scheduleNextWrite() {
-    if (stopped || !shouldRunWrite()) return;
-    if (busy) return;
-    const interval = Math.max(100, config.value.writeIntervalMs);
-    writeTimer = setTimeout(async () => {
-      writeTimer = null;
-      if (stopped) return;
-      if (busy) {
-        scheduleNextWrite();
-        return;
-      }
-      await withBusy(() => writeOnce());
-      scheduleNextWrite();
-    }, interval);
-  }
-
-  function stopWriteLoop() {
-    if (writeTimer) {
-      clearTimeout(writeTimer);
-      writeTimer = null;
-    }
+  function clearWritingState() {
     if (writing.value) {
       writing.value = false;
     }
@@ -499,25 +425,19 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     if (running.value) return;
     running.value = true;
     stopped = false;
+    resetBackoffs();
     startListening();
-    scheduleNextRead();
-    scheduleNextWrite();
+    loops.start();
   }
 
   function stop() {
     stopped = true;
     running.value = false;
+    loops.stop();
     stopReplay();
-    stopWriteLoop();
-    if (pollTimer) {
-      clearTimeout(pollTimer);
-      pollTimer = null;
-    }
-    if (pending) {
-      clearTimeout(pending.timer);
-      pending = null;
-    }
-    rxBuffer = new Uint8Array(0);
+    clearWritingState();
+    resetBackoffs();
+    transactions.cancel();
     stopListening();
     emitStatus({ kind: 'idle' });
   }
@@ -547,27 +467,10 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
         emitStatus({ kind: 'exception', code: response.code });
         return null;
       }
-      if (response.kind === 'read-bits') {
-        const dataCount = modbusDataValueCount(reg);
-        const values = response.bits.slice(0, dataCount).map((bit) => (bit ? 1 : 0));
-        if (values.length === 0) return null;
-        const value = values[0];
-        sessionStore.setModbusRegisterValues(sessionId, [
-          { id: reg.id, value, values: values.length > 1 ? values : null, valueTs: Date.now() },
-        ]);
-        return value;
-      }
-      if (response.kind === 'read-regs') {
-        const dataCount = modbusDataValueCount(reg);
-        const values = decodeValues(reg.type, response.regs.slice(0, count)).slice(0, dataCount);
-        if (values.length === 0) return null;
-        const value = values[0];
-        sessionStore.setModbusRegisterValues(sessionId, [
-          { id: reg.id, value, values: values.length > 1 ? values : null, valueTs: Date.now() },
-        ]);
-        return value;
-      }
-      return null;
+      const mapped = mapModbusReadResponse(batch, response, Date.now());
+      if (mapped.valueUpdates.length === 0) return null;
+      sessionStore.setModbusRegisterValues(sessionId, mapped.valueUpdates);
+      return mapped.valueUpdates[0].value;
     });
   }
 
@@ -580,7 +483,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     startListening();
     await withBusy(() => pollOnce());
     // Re-arm the read loop in case it was deferred while we held the bus.
-    if (shouldRunRead()) scheduleNextRead();
+    loops.resume();
   }
 
   /** Write a single row's value (FC05/06/10). */
@@ -610,14 +513,13 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
    * match or an unreceptive slave skips the record without aborting the replay.
    */
   function startReplay(records: ModbusStreamRecord[]): void {
-    stopReplay();
     const byKey = new Map<string, ModbusRegister>();
     for (const reg of registers.value) {
       if (reg.functionCode === 0x05 || reg.functionCode === 0x06 || reg.functionCode === 0x10) {
         byKey.set(`${reg.slaveAddress}:${reg.functionCode}:${reg.address}`, reg);
       }
     }
-    const queue: Array<{ ts: number; reg: ModbusRegister; value: number }> = [];
+    const queue: ReplayQueueItem[] = [];
     for (const rec of records) {
       // FC03 read records replay onto the matching FC06 write row at the same
       // address (a recorded sensor value becomes the setpoint to push back).
@@ -626,39 +528,15 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       if (!reg) continue;
       queue.push({ ts: rec.t, reg, value: rec.value });
     }
-    queue.sort((a, b) => a.ts - b.ts);
-    if (queue.length === 0) return;
-    replayQueue = queue;
-    replayBaseTs = queue[0].ts;
-    replayStartWall = Date.now();
-    replaying.value = true;
-    emitStatus({ kind: 'replaying', remaining: queue.length });
+    if (queue.length === 0) {
+      replayCoordinator.stop();
+      return;
+    }
     startListening();
-    scheduleReplayTick();
+    replayCoordinator.start(queue);
   }
 
-  function scheduleReplayTick() {
-    if (!replaying.value || replayQueue.length === 0) {
-      finishReplay();
-      return;
-    }
-    const next = replayQueue[0];
-    // Map the record's timestamp into wall-clock time since replay started.
-    const dueAt = replayStartWall + Math.max(0, next.ts - replayBaseTs);
-    const delay = Math.max(0, dueAt - Date.now());
-    replayTimer = setTimeout(() => {
-      replayTimer = null;
-      void runReplayOne();
-    }, delay);
-  }
-
-  async function runReplayOne() {
-    if (!replaying.value) return;
-    const item = replayQueue.shift();
-    if (!item) {
-      finishReplay();
-      return;
-    }
+  async function runReplayItem(item: ReplayQueueItem): Promise<void> {
     // Write the value; skip on failure (timeout/no-ack) but keep replaying.
     sessionStore.updateModbusRegister(sessionId, item.reg.id, {
       value: item.value,
@@ -666,32 +544,10 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       valueTs: Date.now(),
     });
     await sendRow({ ...item.reg, value: item.value });
-    emitStatus({ kind: 'replaying', remaining: replayQueue.length });
-    scheduleReplayTick();
   }
 
   function stopReplay(): void {
-    if (replayTimer) {
-      clearTimeout(replayTimer);
-      replayTimer = null;
-    }
-    replayQueue = [];
-    if (replaying.value) {
-      replaying.value = false;
-      emitStatus({ kind: 'idle' });
-    }
-  }
-
-  function finishReplay(): void {
-    replayQueue = [];
-    if (replayTimer) {
-      clearTimeout(replayTimer);
-      replayTimer = null;
-    }
-    if (replaying.value) {
-      replaying.value = false;
-      emitStatus({ kind: 'idle' });
-    }
+    replayCoordinator.stop();
   }
 
   // --- Lifecycle ---------------------------------------------------------
@@ -704,23 +560,21 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       if (enabled && connected) {
         // Listening is useful for reads, writes, and replay (all need acks).
         startListening();
-        scheduleNextRead();
-        scheduleNextWrite();
+        loops.resume();
       } else {
-        if (pollTimer) {
-          clearTimeout(pollTimer);
-          pollTimer = null;
-        }
-        if (writeTimer) {
-          clearTimeout(writeTimer);
-          writeTimer = null;
+        loops.pause();
+        resetBackoffs();
+        if (!connected) {
+          stopReplay();
+          transactions.cancel({ kind: 'error', message: 'connection closed' });
+          stopListening();
         }
       }
     },
     { immediate: true },
   );
 
-  onUnmounted(() => stop());
+  onScopeDispose(() => stop());
 
   return {
     running,
@@ -738,10 +592,14 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     loadWriteSource,
     clearWriteSource,
     /** Current write data-source filename (null when none loaded). */
-    getWriteSourceName: () => writeSourceName,
+    getWriteSourceName: () => writeSource.getName(),
     /** Allow the waveform sink to be attached after construction. */
     setOnSamples: (cb: (samples: ModbusSample[]) => void) => {
       opts.onSamples = cb;
     },
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
