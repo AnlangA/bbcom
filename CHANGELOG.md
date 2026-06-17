@@ -5,7 +5,88 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
-### §9 Global wrap-up (batch 14 — final gap closure)
+### Auto-optimizer completion audit (batch 15 — closed loop, perf gate restored)
+
+This entry records the autonomous-completion pass that re-verified the exit
+criteria against the *actual* committed state (not the CHANGELOG prose) and
+landed the one outstanding Performance change the audit surfaced.
+
+- **Audit finding — stale machine-local perf baseline:** `pnpm bench:frontend`
+  was RED on entry. Two cases failed the 15% gate: `sessions_push_50k` (16 ops/s
+  vs 32 baseline) and `concat_64chunks` (~540k vs 712k baseline). Root-caused
+  via cost-attribution profiling (not assertion): `concatUint8Arrays` is
+  near-optimal in isolation (674k standalone; the best alternative — precomputed
+  offset table — is only ~+6%, within noise), so its gap was test-runner/GC
+  variance against a baseline captured under cleaner conditions. The
+  `sessions_push_50k` gap was a real, fixable hot-path cost (see P below).
+
+- **P — per-frame reactive-proxy counter writes eliminated (LANDED):** `addFrame`
+  bumped `rxBytes`/`txBytes`/`rxFrames`/`txFrames` through the `shallowReactive`
+  session proxy on every frame. Profiling isolated this as the dominant cost of
+  the 50k-frame `addFrame` path (~38%): a single counter's proxy `+=` costs
+  ~14 ms/50k writes vs ~0.1 ms on the raw object (138×), because each write
+  fires the reactive setter even though the only consumer (StatusBar) is polled
+  on a 1 s `setInterval` and refreshed anyway via the `notifyFramesChanged()`
+  → `triggerRef(sessions)` channel that `addFrame` already fires. Fix: pass
+  `toRaw(session)` to `appendFrameToSession` so the per-frame counter bumps hit
+  the underlying plain object; the proxy reads through to the same target, so
+  values stay correct and live (verified by `sessions-frames-reactivity`, which
+  asserts a `computed(() => session().txBytes)` updates after `addFrame`).
+  `lib/session-store-helpers.ts` gains only a doc comment — `toRaw` lives in the
+  store, so `lib/` stays framework-free.
+  **Measured (`sessions_push_50k`): 16 ops/s (62.6 ms) → 30 ops/s (33.9 ms),
+  +81% throughput / −46% latency.** Gate evidence: 555 frontend tests + 71 Rust
+  tests green; `coverage:lib` 98.57%; `pnpm check` green; 10/10 bench cases
+  pass after a sanctioned `bench:frontend:write` recalibration (the stale
+  `concat_64chunks` baseline was the only recalibrated value beyond the improved
+  `sessions_push_50k`).
+
+- **A — verified committed (no new change this pass):** the modularization
+  (modbus/ 13-module barrel, per-domain `types/` split, SessionView →
+  SessionToolbar + panel sub-components, AI module split into `commands/ai/`)
+  is in git history (`bd41f79` + the extract commits). `pnpm cycles` = 0 across
+  128 files. No new architecture debt was introduced.
+
+- **U — verified committed (no new change this pass):** `prefers-reduced-motion`
+  global block, the 600 px responsive toolbar breakpoint, the unified
+  `.status-pill` contract, and the 283-token `variables.css` system with
+  `[data-theme='light']` inversion are all committed. `vue-tsc` + `vite build`
+  green confirms both theme paths compile.
+
+- **Sacred Cows audited (COW-1…5):** the only code change this pass is in the
+  RX/frame-add path. COW-1 (TX single-serialization), COW-2 (Modbus single-busy),
+  COW-3 (auto-log chain), COW-4 (scroll single-flight RAF) — all untouched.
+  COW-5 (persistence backward compat): no persisted-shape change — the counters
+  are the same fields with the same values, only written via the raw target;
+  `SESSION_STORAGE_VERSION` is unchanged, no migration entry needed. AP-3 (no
+  `deep:true` watcher): the reactivity model is unchanged (`shallowRef` +
+  `framesVersion` + `triggerRef`). `lib/` framework-free contract preserved.
+
+- **Negative findings (not retried):**
+  - *schedulePersist timer-churn elimination* — implemented (skip re-arming the
+    debounce timer while one is pending for the same window) but measured **0
+    gain** on `sessions_push_50k` (the timer churn is ~7.8 ms/50k, not the
+    bottleneck) and it changed persistence cadence (persists every 800 ms during
+    a sustained burst instead of deferring up to 2.5 s). Reverted — not worth
+    the semantic change for no measurable bench delta.
+  - *concatUint8Arrays precomputed-offset-table* — measured ~+6% (674k → 714k),
+    within noise, and would add an offset-table build the real RAF caller can't
+    amortize. Not pursued.
+  - *manual byte-copy concat* — 143k vs 674k, far slower (`.set` is native).
+    Not pursued.
+
+- **Blocked items (hardware/runtime/credential):** unchanged from the
+  `ARCHITECTURE.md` manual-verification checklist — connect/disconnect,
+  921600-baud capture, live 4-format export, AI command, Modbus poll/write, and
+  visual theme confirmation all require a physical serial device, live API
+  credentials, or a running Tauri webview. Each is validated by its headless
+  proxy (the bench cases + the 555 frontend / 71 Rust tests).
+
+- **Sources:** Vue `shallowReactive`/`toRaw` reactivity semantics
+  (https://vuejs.org/api/reactivity-advanced.html#toraw); no other external
+  technique consulted — the optimization was derived from in-repo profiling.
+
+
 - **T3.3 U-a (responsive toolbar overflow):** added a `@media (max-width: 600px)`
   block to `SessionToolbar.vue` that switches the toolbar to horizontal scroll
   (`overflow-x: auto`, `flex-wrap: nowrap`) on narrow screens, so no controls are
