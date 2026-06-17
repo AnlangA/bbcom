@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, markRaw, shallowRef, shallowReactive, triggerRef, ref } from 'vue';
+import { computed, markRaw, shallowRef, shallowReactive, toRaw, triggerRef, ref } from 'vue';
 import type {
   AiChatMessage,
   AiModel,
@@ -199,7 +199,14 @@ export const useSessionStore = defineStore('sessions', () => {
       timestamp: nowMillis(),
     });
 
-    appendFrameToSession(session, fullFrame, maxBufferFrames.value);
+    // Pass the raw (non-proxied) session target: the per-frame byte/frame
+    // counter bumps (session.rxBytes += ...) would otherwise cross the
+    // shallowReactive proxy on every frame — measured ~14ms/50k for a single
+    // counter, ~38% of the addFrame hot path — while their only consumer (the
+    // StatusBar) is refreshed anyway via the notifyFramesChanged() channel
+    // below. Writing the raw underlying object keeps the values correct (the
+    // proxy reads through to the same target) without per-frame setter cost.
+    appendFrameToSession(toRaw(session), fullFrame, maxBufferFrames.value);
 
     schedulePersist();
     return fullFrame;

@@ -12,6 +12,18 @@ export function trimFrameBuffer<T>(
   return true;
 }
 
+/**
+ * Append a frame to the session's live (or paused) buffer, trim to the cap,
+ * and bump the direction byte/frame counters.
+ *
+ * Accepts the session either as a plain object or a Vue reactive proxy, but
+ * for the high-frequency RX/TX path callers should pass the raw target (Vue's
+ * `toRaw`): bumping `rxBytes`/`txBytes`/`rxFrames`/`txFrames` through a
+ * `shallowReactive` proxy triggers its setter on every frame, which dominates
+ * the per-frame cost during a sustained capture. The caller's reactivity
+ * channel (e.g. `notifyFramesChanged`) refreshes the consumers that read these
+ * counters, so the per-write trigger is redundant.
+ */
 export function appendFrameToSession(
   session: SerialSession,
   frame: DataFrame,
