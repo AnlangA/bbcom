@@ -192,8 +192,8 @@ landed the one outstanding Performance change the audit surfaced.
   (compiled + launched + ran 35s without crash; macOS WindowServer accessible).
   Visual UI verification (screencapture) blocked by Screen Recording permission.
 - **T2.4 socat measurement — blocked:** `socat` is not installed on this machine;
-  the reproducible PTY procedure is documented in
-  `docs/high-baud-measurement.md`. The headless proxies
+  the F2/F3 config matrix and a reproducible PTY procedure are documented in the
+  manual-verification checklist of `ARCHITECTURE.md`. The headless proxies
   (`serialrxqueue_drop_512` +105%, `sessions_push_50k` −93%) validate the
   frontend hot paths that would be stressed at 921600 baud.
 - **T3.9 F-f (updater) — IMPLEMENTED:** added `tauri-plugin-updater` v2.10.1,
@@ -353,11 +353,11 @@ landed the one outstanding Performance change the audit surfaced.
   target)**, down from 762 — it is a thin layout orchestrator owning the
   connection/Modbus/export state and wiring toolbar events to the composables.
   All 476 frontend tests green; 0 circular dependencies.
-- **T2.4 — high-baud measurement closed out:** added
-  `docs/high-baud-measurement.md` documenting the F2/F3 config matrix
+- **T2.4 — high-baud measurement closed out:** the F2/F3 config matrix
   (`timeout`/`size`/baud sweep), a reproducible socat/PTY procedure, the pass
   criteria, and why the device-dependent end-to-end number is a manual checklist
-  item (CI has no serial device). The F5 `listen(cb, false)` audit is
+  item (CI has no serial device) are documented inline in the manual-verification
+  checklist of `ARCHITECTURE.md`. The F5 `listen(cb, false)` audit is
   code-verified; the headless proxies are the `serialrxqueue_drop_512` (T2.1)
   and `sessions_push_50k` (T2.2) benches.
 
