@@ -66,6 +66,29 @@ All notable changes to bbcom are documented here. The format is based on
     has an unblocked, positive-leverage extraction seam, so the architecture
     backlog is empty of actionable items.
 
+- **Negative findings this loop (not retried):**
+  - *Waveform render visibility-flags scratch reuse (P-axis):* the render loop
+    built `channelState.value.map((c) => c.visible)` per frame to pass to
+    `visibleChannelRangeInWindow`; hypothesis was that this per-frame
+    allocation was wasteful. Measured a headless proxy (200k iterations over
+    an 8-channel set): `.map()` = 58M ops/s, scratch-reuse = 42M ops/s — the
+    "optimization" was **0.73x (slower)**. V8 optimizes small-array `.map()`
+    better than a manual loop + `length` mutation, and the absolute cost is
+    nanoseconds/frame. Reverted; the `.map()` stays.
+  - *Bundle lazy-load split:* audited via the Vite config — the heavy dialogs
+    (CreateSessionDialog, SettingsModal, AiSettingsPanel) are already
+    `defineAsyncComponent`-lazy and vendor chunks (naive-ui, icons, ansi) are
+    already `manualChunks`-split. The 259 KB main `index-*.js` (79 KB gzip)
+    holds the app shell + first-paint terminal components — correct, not
+    oversize. No lazy-load seam remains.
+  - *formatHex/formatUtf8 hot path:* already at the optimization floor
+    (precomputed `BYTE_HEX_PAIRS_*` Uint8Array table + single native
+    `TextDecoder.decode`), explicitly optimized in a prior batch as "the
+    measured top frontend hot path." No further win.
+  - *Bench margins:* all 10 cases pass comfortably (tightest is
+    `serialrxqueue_drop_512` at ~1.02x baseline — high-variance microbench
+    noise, not a code deficiency). No case is a widening target.
+
 ### Auto-optimizer completion audit (batch 15 — closed loop, perf gate restored)
 
 This entry records the autonomous-completion pass that re-verified the exit
