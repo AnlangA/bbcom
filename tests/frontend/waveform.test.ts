@@ -27,6 +27,7 @@ import {
   thinWaveformSamplePoints,
   visibleChannelRange,
   visibleChannelRangeInWindow,
+  waveformSampleIndexWindow,
   waveformTimeRange,
   waveformFrameCursorAtEnd,
   zoomWaveformViewport,
@@ -145,6 +146,29 @@ test('visibleChannelRangeInWindow only autoscales the requested sample window', 
   const range = visibleChannelRangeInWindow(b, 2, [true, false], 1, 3);
   assert.ok(range[0] < 10 && range[1] > 20, `window padded: ${range}`);
   assert.ok(range[1] < 100, `hidden and out-of-window samples excluded: ${range}`);
+});
+
+test('waveformSampleIndexWindow includes neighbors for clipped line segments', () => {
+  assert.deepEqual(waveformSampleIndexWindow([], 10, 20), {
+    sampleStartIndex: 0,
+    sampleEndIndex: 0,
+    scanStartIndex: 0,
+    scanEndIndex: 0,
+  });
+
+  assert.deepEqual(waveformSampleIndexWindow([0, 10, 20, 30, 40], 15, 25), {
+    sampleStartIndex: 2,
+    sampleEndIndex: 3,
+    scanStartIndex: 1,
+    scanEndIndex: 4,
+  });
+
+  assert.deepEqual(waveformSampleIndexWindow([0, 10, 20, 30, 40], 11, 19), {
+    sampleStartIndex: 2,
+    sampleEndIndex: 2,
+    scanStartIndex: 1,
+    scanEndIndex: 3,
+  });
 });
 
 test('closestPointOnWaveformPath interpolates along a rendered segment', () => {
@@ -485,7 +509,7 @@ test('pushRegisterWaveformSample appends sparse register samples and updates lat
 
   result = pushRegisterWaveformSample(b, channels, 0, 7, false, 1016);
   channels = result.channels;
-  assert.deepEqual(b.samples[1], [7]);
+  assert.deepEqual(b.samples[1], [7, 0, 42]);
   assert.deepEqual(b.timestamps, [1000, 1016]);
   assert.equal(channels[0].latest, 7);
   assert.equal(channels[2].latest, 42);

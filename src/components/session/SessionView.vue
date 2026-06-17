@@ -226,6 +226,9 @@ const viewMode = ref<SessionViewMode>('terminal');
 // useSessionModbus so this component stays a thin orchestrator.
 const waveformRef = ref<{
   pushRegisterSample: (channel: number, value: number, timestamp?: number) => void;
+  pushRegisterSamples: (
+    samples: readonly { channel: number; value: number; timestamp?: number }[],
+  ) => void;
 } | null>(null);
 
 const {

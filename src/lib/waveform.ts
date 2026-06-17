@@ -104,6 +104,17 @@ export interface WaveformTimeRange {
   durationMs: number;
 }
 
+export interface WaveformSampleIndexWindow {
+  /** First sample whose timestamp is inside the visible time range. */
+  sampleStartIndex: number;
+  /** Exclusive end index for samples inside the visible time range. */
+  sampleEndIndex: number;
+  /** Inclusive scan start, including one leading sample for clipped segments. */
+  scanStartIndex: number;
+  /** Exclusive scan end, including one trailing sample for clipped segments. */
+  scanEndIndex: number;
+}
+
 export type WaveformZoomDirection = 'in' | 'out';
 export type WaveformPanDirection = 'left' | 'right';
 
@@ -223,7 +234,7 @@ export function pushRegisterWaveformSample(
   // Sparse sample: only the bound channel carries a new value; others hold
   // their previous latest so unrelated channels keep steady lines.
   const sample: number[] = [];
-  for (let i = 0; i <= channel; i += 1) {
+  for (let i = 0; i < next.length; i += 1) {
     sample[i] = i === channel ? value : (next[i]?.latest ?? 0);
   }
   pushSample(buf, sample, timestamp);
@@ -540,6 +551,27 @@ export function waveformTimeRange(timestamps: readonly number[]): WaveformTimeRa
   };
 }
 
+export function waveformSampleIndexWindow(
+  timestamps: readonly number[],
+  startMs: number,
+  endMs: number,
+): WaveformSampleIndexWindow {
+  const count = timestamps.length;
+  if (count === 0) {
+    return { sampleStartIndex: 0, sampleEndIndex: 0, scanStartIndex: 0, scanEndIndex: 0 };
+  }
+
+  const start = Number.isFinite(startMs) ? startMs : -Infinity;
+  const end = Number.isFinite(endMs) ? endMs : Infinity;
+  const normalizedStart = Math.min(start, end);
+  const normalizedEnd = Math.max(start, end);
+  const sampleStartIndex = lowerBoundTimestamp(timestamps, normalizedStart);
+  const sampleEndIndex = upperBoundTimestamp(timestamps, normalizedEnd);
+  const scanStartIndex = Math.max(0, sampleStartIndex - 1);
+  const scanEndIndex = Math.min(count, sampleEndIndex + (sampleEndIndex < count ? 1 : 0));
+  return { sampleStartIndex, sampleEndIndex, scanStartIndex, scanEndIndex };
+}
+
 export function normalizeWaveformTimeViewport(
   viewport: WaveformTimeViewport,
   timestamps: readonly number[],
@@ -718,6 +750,30 @@ function lastFiniteTimestamp(timestamps: readonly number[]): number | null {
     if (Number.isFinite(timestamp)) return timestamp;
   }
   return null;
+}
+
+function lowerBoundTimestamp(timestamps: readonly number[], target: number): number {
+  let lo = 0;
+  let hi = timestamps.length;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    const timestamp = timestamps[mid];
+    if (Number.isFinite(timestamp) && timestamp < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function upperBoundTimestamp(timestamps: readonly number[], target: number): number {
+  let lo = 0;
+  let hi = timestamps.length;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    const timestamp = timestamps[mid];
+    if (Number.isFinite(timestamp) && timestamp <= target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 export interface WaveformPathPoint {

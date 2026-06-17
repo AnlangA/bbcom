@@ -34,6 +34,9 @@ export interface UseSessionModbusOptions {
   /** Waveform panel ref, so decoded register samples can be pushed into it. */
   waveformRef: Ref<{
     pushRegisterSample: (channel: number, value: number, timestamp?: number) => void;
+    pushRegisterSamples: (
+      samples: readonly { channel: number; value: number; timestamp?: number }[],
+    ) => void;
   } | null>;
   /** Jump the view to the waveform (used by plot-in-waveform). */
   showWaveform: () => void;
@@ -69,10 +72,12 @@ export function useSessionModbus({
     isConnected,
     onSamples: (samples) => {
       if (session.value.waveformSourceMode !== 'register') return;
+      const waveformSamples: { channel: number; value: number; timestamp?: number }[] = [];
       for (const s of samples) {
         if (s.channel === null) continue;
-        waveformRef.value?.pushRegisterSample(s.channel, s.value, s.ts);
+        waveformSamples.push({ channel: s.channel, value: s.value, timestamp: s.ts });
       }
+      waveformRef.value?.pushRegisterSamples(waveformSamples);
     },
     onStatus: (s) => {
       modbusStatus.value = snapshotModbusStatus(s);

@@ -76,8 +76,9 @@ import {
   scaleWaveformTimeViewport,
   syncWaveformTimeViewportAfterSampleChange,
   thinWaveformSamplePoints,
-  visibleChannelRange,
+  visibleChannelRangeInWindow,
   waveformFrameCursorAtEnd,
+  waveformSampleIndexWindow,
   waveformTimeRange,
   DEFAULT_WAVEFORM_VIEWPORT_MIN_MS,
   type ChannelStats,
@@ -127,6 +128,12 @@ let frameCursor: WaveformFrameCursor = { consumed: 0, lastFrameId: null };
 // their samples are dropped — freezing the plot at its last position.
 const paused = ref(false);
 
+interface RegisterWaveformSampleInput {
+  channel: number;
+  value: number;
+  timestamp?: number;
+}
+
 /** Label for channel `i`: the register name in register mode, else 'Ch N'. */
 function channelLabel(i: number): string {
   const label = props.channelLabels?.[i];
@@ -140,23 +147,34 @@ function channelLabel(i: number): string {
  * fit the channel index and updates the legend readout.
  */
 function pushRegisterSample(channel: number, value: number, timestamp = Date.now()) {
+  pushRegisterSamples([{ channel, value, timestamp }]);
+}
+
+function pushRegisterSamples(samples: readonly RegisterWaveformSampleInput[]) {
+  if (samples.length === 0) return;
   const previousTimestamps = buffer.timestamps.slice();
-  const result = pushRegisterWaveformSample(
-    buffer,
-    channelState.value,
-    channel,
-    value,
-    paused.value,
-    timestamp,
-  );
-  channelState.value = result.channels;
-  if (result.pushed) {
+  let channels = channelState.value;
+  let pushed = false;
+  for (const sample of samples) {
+    const result = pushRegisterWaveformSample(
+      buffer,
+      channels,
+      sample.channel,
+      sample.value,
+      paused.value,
+      sample.timestamp,
+    );
+    channels = result.channels;
+    pushed = pushed || result.pushed;
+  }
+  channelState.value = channels;
+  if (pushed) {
     syncViewportAfterSampleChange(previousTimestamps);
     invalidateWaveform();
   }
 }
 
-defineExpose({ pushRegisterSample });
+defineExpose({ pushRegisterSample, pushRegisterSamples });
 
 const streamFileInput = ref<HTMLInputElement | null>(null);
 
@@ -175,12 +193,18 @@ function onStreamFilePicked(e: Event) {
       message.warning(t('waveform.noData'));
       return;
     }
+    const samples: RegisterWaveformSampleInput[] = [];
     for (const rec of records) {
       if (typeof rec.ch === 'number' && rec.ch >= 0) {
-        pushRegisterSample(rec.ch, rec.value, rec.t);
+        samples.push({ channel: rec.ch, value: rec.value, timestamp: rec.t });
       }
     }
-    message.success(t('waveform.exportedStream', { count: records.length }));
+    if (samples.length === 0) {
+      message.warning(t('waveform.noData'));
+      return;
+    }
+    pushRegisterSamples(samples);
+    message.success(t('waveform.exportedStream', { count: samples.length }));
   };
   reader.readAsText(file);
   input.value = '';
@@ -649,14 +673,15 @@ function render() {
 
   // Theme-aware grid (var reads from CSS so light/dark both look right). Grid
   // is drawn first so channel lines render on top.
-  refreshMonoFont();
-  const gridColor = readCssVar('--grid-line', 'rgba(255,255,255,0.04)');
-  const axisColor = readCssVar('--text-dim', 'rgba(255,255,255,0.3)');
-  const rulerColor = readCssVar('--border-color', 'rgba(255,255,255,0.1)');
-  const hoverLineColor = readCssVar('--color-warning', '#ffd84d');
-  const hoverBg = readCssVar('--bg-elevated', 'rgba(24,28,34,0.94)');
-  const hoverText = readCssVar('--text-primary', '#eef3f7');
-  const samplePointOutline = readCssVar('--bg-inset', '#11161c');
+  const {
+    axisColor,
+    gridColor,
+    hoverBg,
+    hoverLineColor,
+    hoverText,
+    samplePointOutline,
+    rulerColor,
+  } = readWaveformTheme();
   const { leftPad, plotX0, plotX1, plotTop, plotBottom, plotW, plotH } = calculatePlotLayout(
     cssW,
     cssH,
@@ -684,10 +709,13 @@ function render() {
   );
   const visibleStartMs = activeViewport.startMs;
   const visibleEndMs = visibleStartMs + activeViewport.durationMs;
-  const [vMin, vMax] = visibleChannelRange(
+  const visibleWindow = waveformSampleIndexWindow(buffer.timestamps, visibleStartMs, visibleEndMs);
+  const [vMin, vMax] = visibleChannelRangeInWindow(
     buffer,
     channelCount,
     channelState.value.map((channel) => channel.visible),
+    visibleWindow.scanStartIndex,
+    visibleWindow.scanEndIndex,
   );
   const span = vMax - vMin || 1;
   const firstTimestamp = visibleStartMs;
@@ -746,6 +774,8 @@ function render() {
     plotBottom,
     plotH,
     sampleX,
+    scanEndIndex: visibleWindow.scanEndIndex,
+    scanStartIndex: visibleWindow.scanStartIndex,
     span,
     startMs: visibleStartMs,
     vMin,
@@ -819,6 +849,8 @@ interface BuildChannelPathOptions {
   plotBottom: number;
   plotH: number;
   sampleX: (timestamp: number) => number;
+  scanEndIndex: number;
+  scanStartIndex: number;
   span: number;
   startMs: number;
   vMin: number;
@@ -835,8 +867,21 @@ interface HoverPointOptions {
 }
 
 function buildVisibleChannelPaths(options: BuildChannelPathOptions): RenderedChannelPath[] {
-  const { channelCount, endMs, plotBottom, plotH, sampleX, span, startMs, vMin } = options;
+  const {
+    channelCount,
+    endMs,
+    plotBottom,
+    plotH,
+    sampleX,
+    scanEndIndex,
+    scanStartIndex,
+    span,
+    startMs,
+    vMin,
+  } = options;
   const paths: RenderedChannelPath[] = [];
+  const scanStart = Math.max(0, Math.min(buffer.samples.length, scanStartIndex));
+  const scanEnd = Math.max(scanStart, Math.min(buffer.samples.length, scanEndIndex));
   for (let c = 0; c < channelCount; c += 1) {
     const channel = channelState.value[c];
     if (!channel?.visible) continue;
@@ -844,7 +889,7 @@ function buildVisibleChannelPaths(options: BuildChannelPathOptions): RenderedCha
     const samplePoints: WaveformPathPoint[] = [];
     let previous: { timestamp: number; value: number } | null = null;
 
-    for (let i = 0; i < buffer.samples.length; i += 1) {
+    for (let i = scanStart; i < scanEnd; i += 1) {
       const value = buffer.samples[i][c];
       if (value === undefined || !Number.isFinite(value)) continue;
       const timestamp = sampleTimestamp(i);
@@ -1237,20 +1282,46 @@ function drawYRuler(ctx: CanvasRenderingContext2D, options: YRulerDrawOptions) {
   ctx.restore();
 }
 
-function readCssVar(name: string, fallback: string): string {
-  if (typeof window === 'undefined') return fallback;
-  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  // getComputedStyle returns "" for unset vars; rgba()/hex values pass through.
-  return v || fallback;
+let monoFontStack = "ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace";
+
+interface WaveformCanvasTheme {
+  axisColor: string;
+  gridColor: string;
+  hoverBg: string;
+  hoverLineColor: string;
+  hoverText: string;
+  rulerColor: string;
+  samplePointOutline: string;
 }
 
-// Resolved once per render: the page's monospace family (e.g.
-// 'JetBrains Mono','SFMono-Regular',...). Canvas `font` can't take a CSS var,
-// so we read the resolved value. Falls back to a safe generic stack.
-let monoFontStack = "ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace";
-function refreshMonoFont() {
-  const resolved = readCssVar('--font-mono', monoFontStack);
-  if (resolved) monoFontStack = resolved;
+function readWaveformTheme(): WaveformCanvasTheme {
+  const fallback = {
+    axisColor: 'rgba(255,255,255,0.3)',
+    gridColor: 'rgba(255,255,255,0.04)',
+    hoverBg: 'rgba(24,28,34,0.94)',
+    hoverLineColor: '#ffd84d',
+    hoverText: '#eef3f7',
+    rulerColor: 'rgba(255,255,255,0.1)',
+    samplePointOutline: '#11161c',
+  };
+  if (typeof window === 'undefined') return fallback;
+
+  const styles = getComputedStyle(document.documentElement);
+  const readCssVar = (name: string, value: string): string =>
+    styles.getPropertyValue(name).trim() || value;
+
+  // Canvas 2D `font` does not resolve CSS variables, so keep the resolved
+  // monospace stack in sync with the app theme while reading the rest once.
+  monoFontStack = readCssVar('--font-mono', monoFontStack);
+  return {
+    axisColor: readCssVar('--text-dim', fallback.axisColor),
+    gridColor: readCssVar('--grid-line', fallback.gridColor),
+    hoverBg: readCssVar('--bg-elevated', fallback.hoverBg),
+    hoverLineColor: readCssVar('--color-warning', fallback.hoverLineColor),
+    hoverText: readCssVar('--text-primary', fallback.hoverText),
+    rulerColor: readCssVar('--border-color', fallback.rulerColor),
+    samplePointOutline: readCssVar('--bg-inset', fallback.samplePointOutline),
+  };
 }
 
 function observeCanvasResize() {
