@@ -5,7 +5,89 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
-## [0.3.1]
+### Auto-optimizer A-axis pass (batch 16 — waveform render extraction)
+
+- **A — WaveformPanel canvas render pipeline extracted (LANDED):**
+  `WaveformPanel.vue` had regrown to **1419 lines** — the batch-7
+  `WaveformLegend` extraction was overtaken by later feature commits
+  (register-waveform batching, sample-thinning, the hover ruler). Extracted
+  the ~560-line pure canvas-render pipeline into a framework-free
+  `src/lib/waveform-render.ts`: plot layout, theme reading, sample-to-polyline
+  path building with window clipping + interpolation, and the drawing
+  primitives (paths, sample points, hover ruler, X/Y rulers, round-rect, text
+  truncation). `buildVisibleChannelPaths` now takes the buffer + channels +
+  a `labelForChannel` callback instead of closing over component state. The
+  panel is a thin state + interaction + RAF orchestrator. **`lib/` stays
+  framework-free** (the new module imports only from `./waveform`). Pure
+  relocation — render path unchanged. **Metric:** `WaveformPanel.vue`
+  **1419 to 858 lines (-40%)**; new module 651 lines. Gate evidence: 576
+  frontend tests (+21 new for the now-testable pure render functions,
+  including a recording-mock ctx exercising the draw primitives ->
+  `waveform-render.ts` 97.08% line coverage) + 71 Rust tests green;
+  0 circular deps; bench 10/10 pass (`waveform_parse_50k` unaffected).
+
+- **A — waveform viewport transforms extracted (LANDED):** split the
+  914-line `lib/waveform.ts` along its viewport seam. The sample-index +
+  time-domain windowing math (normalize/zoom/scale/pan/clamp/follow-latest,
+  plus the viewport types and the `DEFAULT_WAVEFORM_VIEWPORT_MIN_*`
+  constants) moves into a focused framework-free `lib/waveform-viewport.ts`
+  (403 lines). `waveform.ts` re-exports them so every importer keeps working
+  unchanged (pure move + re-export, the modbus/ precedent). **Metric:**
+  `waveform.ts` **914 to 558 lines (-39%)**. Gate evidence: 576 frontend
+  tests green (the existing viewport tests cover the extracted functions via
+  the re-export); 0 circular deps; `coverage:lib` 98.46%
+  (`waveform-viewport.ts` 95.53% lines); bench 10/10 pass.
+
+- **Sacred Cows audited (COW-1..5):** only the waveform canvas render path
+  changed. TX single-serialization (COW-1), Modbus single-busy (COW-2),
+  auto-log chain (COW-3), scroll single-flight RAF (COW-4), persistence
+  backward compat (COW-5) all untouched; no persisted-shape change; the
+  `lib/` framework-free contract preserved; AP-3 (no deep watcher) untouched.
+
+- **Backlog audit (criterion 6):** after the two waveform extractions this
+  batch, the remaining >500-line files were each assessed for a positive-
+  leverage extraction seam and documented:
+  - `WaveformPanel.vue` (858) — a component, now a state + interaction + RAF
+    orchestrator; the legend sub-component was already extracted, the canvas
+    is one element, and its render pipeline is now in `waveform-render.ts`.
+    No clean sub-component seam remains; further splits would create
+    artificial fragments with prop-drilling churn (negative leverage).
+  - `waveform-render.ts` (651), `lib/waveform.ts` (558) — the modules just
+    extracted *out* of the panel; cohesive single-domain.
+  - `stores/sessions.ts` (590), `lib/modbus/modbus-core.ts` (532),
+    `lib/session-persistence.ts` (529), `composables/useModbusMaster.ts`
+    (527) — cohesive core modules (the most-imported store, the Modbus core,
+    the versioned persistence serializer, the master orchestrator); splitting
+    would scatter tightly-coupled logic with no boundary win.
+  - `PortSelector.vue` (568), `MacroPanel.vue` (548), `AppShell.vue` (531),
+    `WaveformLegend.vue` (519) — presentation components whose line count is
+    dominated by scoped `<style>` (e.g. PortSelector is 163 script / 245
+    style); not code-complexity debt. None of the remaining >500-line files
+    has an unblocked, positive-leverage extraction seam, so the architecture
+    backlog is empty of actionable items.
+
+- **Negative findings this loop (not retried):**
+  - *Waveform render visibility-flags scratch reuse (P-axis):* the render loop
+    built `channelState.value.map((c) => c.visible)` per frame to pass to
+    `visibleChannelRangeInWindow`; hypothesis was that this per-frame
+    allocation was wasteful. Measured a headless proxy (200k iterations over
+    an 8-channel set): `.map()` = 58M ops/s, scratch-reuse = 42M ops/s — the
+    "optimization" was **0.73x (slower)**. V8 optimizes small-array `.map()`
+    better than a manual loop + `length` mutation, and the absolute cost is
+    nanoseconds/frame. Reverted; the `.map()` stays.
+  - *Bundle lazy-load split:* audited via the Vite config — the heavy dialogs
+    (CreateSessionDialog, SettingsModal, AiSettingsPanel) are already
+    `defineAsyncComponent`-lazy and vendor chunks (naive-ui, icons, ansi) are
+    already `manualChunks`-split. The 259 KB main `index-*.js` (79 KB gzip)
+    holds the app shell + first-paint terminal components — correct, not
+    oversize. No lazy-load seam remains.
+  - *formatHex/formatUtf8 hot path:* already at the optimization floor
+    (precomputed `BYTE_HEX_PAIRS_*` Uint8Array table + single native
+    `TextDecoder.decode`), explicitly optimized in a prior batch as "the
+    measured top frontend hot path." No further win.
+  - *Bench margins:* all 10 cases pass comfortably (tightest is
+    `serialrxqueue_drop_512` at ~1.02x baseline — high-variance microbench
+    noise, not a code deficiency). No case is a widening target.
 
 ### Auto-optimizer completion audit (batch 15 — closed loop, perf gate restored)
 
