@@ -121,7 +121,7 @@ earlier confirmed the raw shape: deep `ref` 55.2 ms vs `shallowRef`+trigger
 (`tests/frontend/sessions-frames-reactivity.test.ts`) asserts computed reads of
 `frames.length`/`txBytes` reflect `addFrame`/`clearFrames`; the 23-test
 modbus-master suite (incl. the reconnect-watches-store case) guards the
-non-frame mutators. 474 frontend tests green.
+non-frame mutators. 576 frontend tests green.
 
 ## Verification strategy
 
@@ -129,14 +129,17 @@ non-frame mutators. 474 frontend tests green.
 |---|---|---|
 | Lint + format | `pnpm lint`, `pnpm format:check`, `cargo fmt --check`, `cargo clippy -D warnings` | clippy denies warnings |
 | Type-check + build | `pnpm build` (vue-tsc --noEmit + vite) | strict TS |
-| Frontend tests | `pnpm test:frontend` | node:test runner, 472 tests |
-| Rust tests | `pnpm test:rust` | 68 tests incl. IPC contracts |
-| Coverage gate | `pnpm coverage:frontend` | c8, .c8rc.json (85% lines / 80% branches) |
+| Frontend tests | `pnpm test:frontend` | node:test runner, 576 tests across 72 files |
+| Rust tests | `pnpm test:rust` | 71 tests incl. cross-language IPC contracts |
+| Coverage gate | `pnpm coverage:frontend` | c8, `.c8rc.json` (85% lines / 88% branches / 88% functions) |
+| Per-file lib/ gate | `pnpm coverage:lib` | c8 `--per-file --lines=90` against `src/lib/` (excl. Tauri-coupled files) |
 | Bench regression | `pnpm bench:frontend` | 15% gate vs machine-local baseline |
 | Circular deps | `pnpm cycles` | madge, 0 cycles |
 | Full check | `pnpm check` | lint + format + build + tests |
 
-CI (`.github/workflows/ci.yml`) runs all of the above on every push/PR.
+CI (`.github/workflows/ci.yml`) runs all of the above on every push/PR. The
+tag-triggered cross-platform build matrix (Windows / Linux / macOS) lives in
+`.github/workflows/release.yml`.
 
 ## Manual verification checklist
 
@@ -192,9 +195,9 @@ physical serial device remain blocked (socat unavailable, no hardware).
 
 **lib/ per-file coverage gate (T1.2) — ENFORCED:** `coverage:lib` runs c8
 `--per-file --lines=90` against `src/lib/` (excluding Tauri-coupled files),
-passing at 98.79% with 0 errors. The composable ≥80% threshold remains
-infeasible (lifecycle hooks structurally unreachable headless). The automated suite (524 frontend + 71 Rust
-tests, 0 circular deps, 86.87% coverage, 15% bench gate) covers every path that
+passing at ~98% with 0 errors. The composable ≥80% threshold remains
+infeasible (lifecycle hooks structurally unreachable headless). The automated suite (576 frontend + 71 Rust
+tests, 0 circular deps, ~87% coverage, 15% bench gate) covers every path that
 CAN be tested headless. The remaining paths are documented with their blocker
 and the headless proxy that validates the underlying logic.
 
