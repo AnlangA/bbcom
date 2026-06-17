@@ -1,7 +1,7 @@
 <template>
   <div class="session-view">
     <!--
-      Toolbar extracted (T3.1): connection controls + display/view/format
+      Toolbar extracted from SessionView: connection controls + display/view/format
       toggles live in SessionToolbar. This component is the layout orchestrator
       (toolbar + display-area + send-area) and owns the connection/Modbus/export
       state, wiring the toolbar's events to the composables.
@@ -162,7 +162,7 @@ const serialState = useSerialConnection(
     onOverflow: (total) => {
       message.warning(t('serial.error.rxOverflow', { bytes: formatBytes(total) }));
       // Mirror the cumulative dropped-byte count onto the session so the
-      // StatusBar can surface it as a live metric (T3.5) without the connection composable.
+      // StatusBar can surface it as a live metric without the connection composable.
       sessionStore.updateDroppedBytes(props.session.id, total);
     },
     autoReconnect: () => appStore.autoReconnect,

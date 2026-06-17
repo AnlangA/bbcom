@@ -1,5 +1,5 @@
 <!--
-  One register table row. Extracted from ModbusPanel (T3.2) so the panel stays
+  One register table row. Extracted from ModbusPanel so the panel stays
   under 400 lines. The row edits the store directly (it has the sessionId) and
   emits plot/read/send/remove for the few actions the parent wires to the master.
   Receives the shared option lists + the per-row send-success flash id.

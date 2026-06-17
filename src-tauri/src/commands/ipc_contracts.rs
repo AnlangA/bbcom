@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(req.session_meta.as_deref(), Some("COM1@115200"));
     }
 
-    // ---- export_data_from_capture_file: F12 IPC-bypass (T2.3) ----
+    // ---- export_data_from_capture_file: capture-file export ----
     // The frontend writes a JSONL temp file (one DataFrame/line) and passes only
     // the path; the wire shape is camelCase to match CaptureFileExportRequest.
 

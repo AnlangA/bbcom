@@ -1,11 +1,11 @@
 /**
- * AI model dispatch table (F13 / T3.8).
+ * AI model dispatch table.
  *
  * The Rust side (`commands/ai/service.rs` `send_chat_by_name`) already uses a
- * `match` dispatch-table (not `Box<dyn Model>` — AP-2: `ModelName: Into<String>`
+ * `match` dispatch-table (not `Box<dyn Model>` — `ModelName: Into<String>`
  * is not dyn-safe). This module is the frontend's mirror: the single source of
  * truth for which models exist, their display labels, and whether each supports
- * streaming (F14). The IPC layer validates model names against this table before
+ * streaming. The IPC layer validates model names against this table before
  * invoking the Rust command, so an unknown model is caught client-side.
  */
 
@@ -14,7 +14,7 @@ export interface AiModelEntry {
   id: string;
   /** Human-readable label for the settings dropdown. */
   label: string;
-  /** Whether this model supports SSE streaming output (F14). */
+  /** Whether this model supports SSE streaming output. */
   streaming: boolean;
 }
 
@@ -41,7 +41,7 @@ export function isValidAiModel(id: string): boolean {
   return AI_MODEL_IDS.includes(id);
 }
 
-/** True if `id` supports SSE streaming output (F14). */
+/** True if `id` supports SSE streaming output. */
 export function supportsStreaming(id: string): boolean {
   return AI_MODELS.find((m) => m.id === id)?.streaming ?? false;
 }

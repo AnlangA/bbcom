@@ -89,7 +89,7 @@ export interface PersistedSessionsFile {
 }
 
 /**
- * Versioned persistence migration (COW-5).
+ * Versioned persistence migration.
  *
  * Every persisted blob carries a `version` tag. When a shape change lands, bump
  * SESSION_STORAGE_VERSION and register a step here that upgrades a blob from the

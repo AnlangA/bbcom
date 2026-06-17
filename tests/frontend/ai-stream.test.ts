@@ -10,7 +10,7 @@ import {
 } from '../../src/lib/ai-models.ts';
 import { assembleStream, createStreamAccumulator, type SseDelta } from '../../src/lib/ai-stream.ts';
 
-// ---- F13: AI model dispatch table ----
+// ---- AI model dispatch table ----
 
 test('AI_MODELS: includes all models from the Rust match table', () => {
   const ids = AI_MODELS.map((m) => m.id);
@@ -30,7 +30,7 @@ test('isValidAiModel: rejects unknown model ids', () => {
   assert.equal(isValidAiModel(''), false);
 });
 
-test('supportsStreaming: all current models support streaming (F14)', () => {
+test('supportsStreaming: all current models support streaming', () => {
   for (const m of AI_MODELS) {
     assert.equal(supportsStreaming(m.id), true, `${m.id} supports streaming`);
   }
@@ -52,7 +52,7 @@ test('aiModelOptions: returns one entry per model with label+value', () => {
   }
 });
 
-// ---- F14: SSE streaming accumulator ----
+// ---- SSE streaming accumulator ----
 
 function delta(text: string, done = false): SseDelta {
   return { delta: text, done };

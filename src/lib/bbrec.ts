@@ -1,5 +1,5 @@
 /**
- * `.bbrec` raw byte-stream record / replay (T3.6).
+ * `.bbrec` raw byte-stream record / replay.
  *
  * A capture file records the raw RX/TX byte chunks (with direction + a relative
  * timestamp) exactly as they arrived on the wire, so a session can be replayed

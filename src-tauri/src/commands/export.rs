@@ -54,17 +54,17 @@ pub async fn export_data(request: ExportRequest) -> Result<(), AppError> {
     formatter::export(&request.frames, &request.format, &request.path).await
 }
 
-/// F12 IPC-bypass export (T2.3). The frontend serializes the capture to a
-/// JSONL temp file (one `DataFrame` per line — the same shape the JSONL export
-/// emits) and passes only the temp-file path through IPC, instead of pushing
-/// up to 100 000 `DataFrame` objects (each with a `data: Vec<u8>` that serde
-/// expands to a JSON number array) through `invoke`. The Rust side reads and
-/// parses the file in a `spawn_blocking` task, then runs the normal formatter.
+/// Capture-file export. The frontend serializes the capture to a JSONL temp
+/// file (one `DataFrame` per line — the same shape the JSONL export emits) and
+/// passes only the temp-file path through IPC, instead of pushing up to 100 000
+/// `DataFrame` objects (each with a `data: Vec<u8>` that serde expands to a JSON
+/// number array) through `invoke`. The Rust side reads and parses the file in a
+/// `spawn_blocking` task, then runs the normal formatter.
 ///
 /// This avoids the dominant export cost — serializing the `frames` argument
 /// across the IPC boundary — at the price of one temp-file write+read. For a
 /// 10k-frame capture the temp file is far cheaper to transfer than 10k JSON
-/// objects (F12: very-large transfers are fastest via temp file).
+/// objects.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureFileExportRequest {

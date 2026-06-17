@@ -1,4 +1,4 @@
-//! Auto-updater command (T3.9 F-f).
+//! Auto-updater command.
 //!
 //! Wraps `tauri-plugin-updater`'s check + download + install flow behind a
 //! typed command so the frontend can trigger "check for updates" without

@@ -1,6 +1,6 @@
 <!--
   Session toolbar: the connection controls + display/view/format toggles.
-  Extracted from SessionView (T3.1) so SessionView stays a thin layout
+  Extracted from SessionView so SessionView stays a thin layout
   orchestrator. The toolbar is purely presentational: it receives the reactive
   state it needs (serialState refs, the session, appStore flags, viewMode,
   isExporting) and emits one event per action — no business logic lives here.
@@ -482,7 +482,7 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   }
 }
 
-/* U-a (T3.3): on very narrow screens the toolbar switches to horizontal
+/* On very narrow screens the toolbar switches to horizontal
    scroll rather than wrapping/clipping, so no controls are hidden. */
 @media (max-width: 600px) {
   .session-toolbar {

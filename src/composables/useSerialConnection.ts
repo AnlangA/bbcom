@@ -19,8 +19,8 @@ const MAX_RX_QUEUE_CHUNKS = 512;
 const RECONNECT_INTERVAL_MS = 1500;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
-/** Result of validating + encoding a send payload (the input gate to COW-1's
- *  serialized write chain). Exported for unit testing. */
+/** Result of validating + encoding a send payload before it enters the
+ *  serialized write chain. Exported for unit testing. */
 export type SendPayloadResult =
   | { ok: true; payload: Uint8Array }
   | { ok: false; reason: 'empty' | 'bad-hex' | 'too-large' };

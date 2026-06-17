@@ -32,7 +32,7 @@ test('formatHexAscii: empty input produces empty string', () => {
   assert.equal(formatHexAscii(new Uint8Array(0)), '');
 });
 
-// ---- F8: Production-safe write chunking ----
+// ---- Production-safe write chunking ----
 
 test('chunkPayload: splits a payload into chunkSize pieces', () => {
   const payload = new Uint8Array(10000);

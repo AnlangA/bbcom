@@ -257,7 +257,7 @@ test('bench: LRU format cache hit rate (1000-entry, repeated display)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Bench blind spots (T1.4): the RX-queue overflow drop path, the 50k-frame
+// Bench blind spots: the RX-queue overflow drop path, the 50k-frame
 // session push, and Modbus read-batch composition. These are the three paths
 // previously uncovered by a microbench and most likely to regress silently.
 // ---------------------------------------------------------------------------

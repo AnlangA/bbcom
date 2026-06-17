@@ -50,19 +50,18 @@ jobs:
       - name: Benchmark smoke run
         run: pnpm run bench:frontend
 
-      # Coverage gate (T1.2): c8 enforces the configured line/branch/function
+      # Coverage gate: c8 enforces the configured line/branch/function
       # thresholds from .c8rc.json. Fails the job if coverage drops below them.
       - name: Coverage gate (overall >=85%)
         run: pnpm run coverage:frontend
 
-      # Per-domain coverage gate (T1.2): lib/ files must each meet >=90% line
+      # Per-domain coverage gate: lib/ files must each meet >=90% line
       # coverage (composables excluded — their onMounted/listen() lifecycle hooks
-      # are structurally unreachable in the headless test runner). Proven feasible
-      # at 98.79% overall lib/ line coverage.
+      # are structurally unreachable in the headless test runner).
       - name: Coverage gate (lib/ per-file >=90%)
         run: pnpm run coverage:lib
 
-      # Circular-dependency gate (T2.7): madge fails if any new import cycle is
+      # Circular-dependency gate: madge fails if any new import cycle is
       # introduced. Scans the TS source (Vue SFCs excluded — babel can't parse
       # them; their script blocks share the same module graph).
       - name: Circular-dependency gate
@@ -99,7 +98,7 @@ jobs:
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      # Rust coverage report (T1.2): cargo-tarpaulin runs only on Linux. Reported
+      # Rust coverage report: cargo-tarpaulin runs only on Linux. Reported
       # as a build artifact; not yet a hard gate (no committed threshold), but
       # surfaces coverage drift on the Rust side alongside the frontend c8 gate.
       - name: Rust coverage report (tarpaulin)

@@ -1,7 +1,7 @@
 <!--
   Modbus panel header: identity + transport + master enable + status, the
   timing inputs (poll/write/timeout + write-source), and the action buttons
-  (read-all / send-all / replay / load / save). Extracted from ModbusPanel (T3.2)
+  (read-all / send-all / replay / load / save). Extracted from ModbusPanel
   so the panel stays under 400 lines. Presentational: receives config + flags,
   emits one event per action and a `patch` event for config edits.
 -->

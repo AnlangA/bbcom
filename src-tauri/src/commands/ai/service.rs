@@ -2,8 +2,8 @@
 //!
 //! The model dispatch is a `match` (a dispatch-table), not `Box<dyn Model>` —
 //! `zai_rs`'s `ModelName: Into<String>` is not dyn-safe, so each supported model
-//! is a concrete arm (see F13 in the project research). `send_chat` is the single
-//! generic hot point that builds the `ChatCompletion` for a concrete model type.
+//! is a concrete arm. `send_chat` is the single generic hot point that builds
+//! the `ChatCompletion` for a concrete model type.
 
 use serde::Serialize;
 use serde_json::Value;

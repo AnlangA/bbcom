@@ -4,8 +4,8 @@
  * Aggregates the previously-flat `modbus-*.ts` modules into a single import
  * surface so callers can `import { ... } from '@/lib/modbus'` (or
  * `'.../lib/modbus'`) instead of reaching into individual files. This is pure
- * re-export — no logic, no new symbols — so the consolidation is a move +
- * re-export (AP-9).
+ * re-export — no logic, no new symbols — so callers get a stable domain entry
+ * point without coupling to the internal module split.
  *
  * Domain grouping (informal):
  *   - core/PDU ....... modbus-core, modbus-batches, modbus-request-builder,

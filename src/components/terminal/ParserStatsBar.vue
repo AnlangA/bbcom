@@ -1,6 +1,6 @@
 <!--
   Parser stats + search bar: live frame count, total bytes, throughput, largest
-  frame, and the filter search box. Extracted from ParserPanel (T3.2).
+  frame, and the filter search box. Extracted from ParserPanel.
   Presentational; search is two-way bound via v-model:search-term.
 -->
 <template>

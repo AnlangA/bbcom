@@ -112,7 +112,7 @@ watch(
             txRate.value = Math.round(txDelta / elapsed);
             rxRate.value = Math.round(rxDelta / elapsed);
           }
-          // Frames-per-second: sample the live frame count delta (T3.5).
+          // Frames-per-second: sample the live frame count delta.
           let frameDelta = props.session.frames.length - prevFrames;
           if (frameDelta < 0) frameDelta = props.session.frames.length;
           frameRate.value = Math.round(frameDelta / elapsed);
@@ -161,14 +161,14 @@ const duration = computed(() => {
   return formatDuration(now.value - props.session.startTime);
 });
 
-/** Buffer level: how full the rolling frame buffer is (T3.5). */
+/** Buffer level: how full the rolling frame buffer is. */
 const bufferLevel = computed(() => {
   if (!props.session) return '';
   const pct = Math.round((props.session.frames.length / maxBufferFrames.value) * 100);
   return `${props.session.frames.length}/${maxBufferFrames.value} (${pct}%)`;
 });
 
-/** Cumulative dropped bytes this connection (T3.5). */
+/** Cumulative dropped bytes this connection. */
 const droppedDisplay = computed(() => {
   if (!props.session || props.session.droppedBytes === 0) return '';
   return formatBytes(props.session.droppedBytes);
@@ -195,7 +195,7 @@ const droppedDisplay = computed(() => {
 
 .stat,
 .status-pill {
-  /* U-b (T3.3): unified status-pill base — every metric chip (port, rate,
+  /* Unified status-pill base — every metric chip (port, rate,
      frames/s, buffer, dropped, TX/RX) shares this contract so the StatusBar
      has one visual rhythm instead of two subtly-different ones. */
   display: flex;

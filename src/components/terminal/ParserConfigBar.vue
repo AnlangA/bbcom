@@ -1,6 +1,6 @@
 <!--
   Parser config bar: title + preset/kind/delimiter/fixed/length config inputs +
-  close button. Extracted from ParserPanel (T3.2). Two-way binds the config
+  close button. Extracted from ParserPanel. Two-way binds the config
   fields via v-model so the parent owns the parser-config state.
 -->
 <template>

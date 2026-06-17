@@ -29,10 +29,10 @@ export interface UseExportDeps {
   /** Invoke the Rust export command (legacy: frames cross IPC as a JSON array). */
   exportFrames?: (frames: DataFrame[], format: ExportFormat, path: string) => Promise<void>;
   /**
-   * F12 IPC-bypass export path (T2.3): write the frames to a JSONL temp file
-   * and invoke `export_data_from_capture_file`. When provided, this is preferred
-   * over `exportFrames` because it avoids serializing the frames array through
-   * the `invoke` argument. Defaults to the real temp-file write + command.
+   * Capture-file export path: write the frames to a JSONL temp file and invoke
+   * `export_data_from_capture_file`. When provided, this is preferred over
+   * `exportFrames` because it avoids serializing the frames array through the
+   * `invoke` argument. Defaults to the real temp-file write + command.
    */
   exportViaCaptureFile?: (
     frames: DataFrame[],
@@ -40,9 +40,9 @@ export interface UseExportDeps {
     targetPath: string,
   ) => Promise<void>;
   /**
-   * Whether to use the F12 capture-file bypass (production default). Set to
+   * Whether to use the capture-file export path (production default). Set to
    * false to force the legacy exportFrames path (used by unit tests that stub
-   * exportFrames, and as a fallback if the bypass is unavailable).
+   * exportFrames, and as a fallback if the capture-file path is unavailable).
    */
   useCaptureFileBypass?: boolean;
 }
@@ -63,8 +63,8 @@ export function useExport(deps: UseExportDeps = {}) {
       if (!path) return { ok: false };
 
       const format = resolveExportFormat(choice, displayMode);
-      // Prefer the F12 IPC-bypass path (production default): it writes the
-      // frames to a JSONL temp file and sends only the path, avoiding
+      // Prefer the capture-file path (production default): it writes the frames
+      // to a JSONL temp file and sends only the path, avoiding
       // serialization of up to 100k frames through the invoke argument. A caller
       // forces the legacy exportFrames path by passing useCaptureFileBypass:
       // false (or by stubbing exportFrames, e.g. in unit tests).
@@ -105,13 +105,12 @@ async function defaultPromptSave(choice: ExportChoice): Promise<string | null> {
 }
 
 /**
- * Default F12 IPC-bypass export: write each frame as one JSONL line to a temp
+ * Default capture-file export: write each frame as one JSONL line to a temp
  * file (via the stateless append_log command), then invoke
- * export_data_from_capture_file which reads+parses it on the Rust side. The
- * temp file lives in the system temp dir; the filename is unique per call.
+ * export_data_from_capture_file which reads+parses it on the Rust side.
  *
  * Each frame crosses IPC as a small text append rather than as an element of a
- * giant JSON array on the invoke argument — the dominant export cost (F12).
+ * giant JSON array on the invoke argument — the dominant export cost.
  */
 async function defaultExportViaCaptureFile(
   frames: DataFrame[],
@@ -134,7 +133,7 @@ async function defaultExportViaCaptureFile(
   }
 }
 
-/** Resolve a unique temp-file path for the F12 capture. The path is constructed
+/** Resolve a unique temp-file path for the capture. The path is constructed
  *  in the OS temp dir with a timestamp+random suffix to avoid collisions. */
 async function defaultCaptureFilePath(): Promise<string> {
   // The frontend cannot directly access the OS temp dir without the fs plugin,

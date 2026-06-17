@@ -1,5 +1,5 @@
 /**
- * Transport-agnostic protocol engine interface (T3.6).
+ * Transport-agnostic protocol engine interface.
  *
  * A `ProtocolEngine` consumes an arbitrary RX byte stream and emits discrete
  * frames. It is the abstraction every protocol implementation satisfies, so the
