@@ -311,7 +311,6 @@ bbcom/
 │   └── dev.sh                  # Dev helper script
 ├── tests/frontend/             # Frontend unit tests (72 files, node:test runner)
 │   └── perf.bench.ts           #   regression-gated microbenchmarks
-├── docs/                       # Supplementary docs (e.g. high-baud measurement)
 ├── images/                     # Screenshots
 ├── .github/workflows/          # ci.yml (lint/build/test/coverage/cycles) + release.yml
 ├── .c8rc.json                  # c8 coverage gate (85% lines / 88% branches)

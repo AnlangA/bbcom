@@ -310,7 +310,6 @@ bbcom/
 │   └── dev.sh                  # 开发辅助脚本
 ├── tests/frontend/             # 前端单元测试（72 个文件，node:test 运行器）
 │   └── perf.bench.ts           #   回归门控微基准
-├── docs/                       # 补充文档（如高波特率测量）
 ├── images/                     # 截图
 ├── .github/workflows/          # ci.yml（lint/build/test/coverage/cycles）+ release.yml
 ├── .c8rc.json                  # c8 覆盖率门（85% 行 / 88% 分支）

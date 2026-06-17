@@ -154,12 +154,11 @@ status and the reason it cannot be automated here.
       end-to-end port-open/listen/write loop is driver-dependent.
       **Status: ❌ — hardware/runtime-dependent.**
 - ❌ **High-baud capture (921600)** — requires a physical device generating a
-      sustained byte stream. See
-      [`docs/high-baud-measurement.md`](docs/high-baud-measurement.md) for the
-      F2/F3 config matrix and a reproducible socat/PTY procedure. Headless
-      proxies: `serialrxqueue_drop_512` (T2.1, +105%), `sessions_push_50k`
-      (T2.2, 2→32 ops/s). **Status: ❌ — hardware-dependent (no device
-      available).**
+      sustained byte stream. The F2/F3 config matrix (`timeout`/`size`/baud
+      sweep) and a reproducible socat/PTY procedure live in `CHANGELOG.md`
+      (T2.4). Headless proxies: `serialrxqueue_drop_512` (T2.1, +105%),
+      `sessions_push_50k` (T2.2, 2→32 ops/s). **Status: ❌ — hardware-dependent
+      (no device available).**
 - ❌ **4-format export** — requires a live capture to export. The export path is
       covered by the Rust formatter tests (8), the IPC contract tests (3), and
       the F12 capture-file contract tests (3); the F12 path is verified to
