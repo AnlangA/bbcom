@@ -26,6 +26,18 @@ All notable changes to bbcom are documented here. The format is based on
   `waveform-render.ts` 97.08% line coverage) + 71 Rust tests green;
   0 circular deps; bench 10/10 pass (`waveform_parse_50k` unaffected).
 
+- **A — waveform viewport transforms extracted (LANDED):** split the
+  914-line `lib/waveform.ts` along its viewport seam. The sample-index +
+  time-domain windowing math (normalize/zoom/scale/pan/clamp/follow-latest,
+  plus the viewport types and the `DEFAULT_WAVEFORM_VIEWPORT_MIN_*`
+  constants) moves into a focused framework-free `lib/waveform-viewport.ts`
+  (403 lines). `waveform.ts` re-exports them so every importer keeps working
+  unchanged (pure move + re-export, the modbus/ precedent). **Metric:**
+  `waveform.ts` **914 to 558 lines (-39%)**. Gate evidence: 576 frontend
+  tests green (the existing viewport tests cover the extracted functions via
+  the re-export); 0 circular deps; `coverage:lib` 98.46%
+  (`waveform-viewport.ts` 95.53% lines); bench 10/10 pass.
+
 - **Sacred Cows audited (COW-1..5):** only the waveform canvas render path
   changed. TX single-serialization (COW-1), Modbus single-busy (COW-2),
   auto-log chain (COW-3), scroll single-flight RAF (COW-4), persistence
