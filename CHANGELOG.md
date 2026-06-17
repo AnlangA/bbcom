@@ -5,7 +5,37 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
-## [0.3.1]
+### Auto-optimizer A-axis pass (batch 16 — waveform render extraction)
+
+- **A — WaveformPanel canvas render pipeline extracted (LANDED):**
+  `WaveformPanel.vue` had regrown to **1419 lines** — the batch-7
+  `WaveformLegend` extraction was overtaken by later feature commits
+  (register-waveform batching, sample-thinning, the hover ruler). Extracted
+  the ~560-line pure canvas-render pipeline into a framework-free
+  `src/lib/waveform-render.ts`: plot layout, theme reading, sample-to-polyline
+  path building with window clipping + interpolation, and the drawing
+  primitives (paths, sample points, hover ruler, X/Y rulers, round-rect, text
+  truncation). `buildVisibleChannelPaths` now takes the buffer + channels +
+  a `labelForChannel` callback instead of closing over component state. The
+  panel is a thin state + interaction + RAF orchestrator. **`lib/` stays
+  framework-free** (the new module imports only from `./waveform`). Pure
+  relocation — render path unchanged. **Metric:** `WaveformPanel.vue`
+  **1419 to 858 lines (-40%)**; new module 651 lines. Gate evidence: 576
+  frontend tests (+21 new for the now-testable pure render functions,
+  including a recording-mock ctx exercising the draw primitives ->
+  `waveform-render.ts` 97.08% line coverage) + 71 Rust tests green;
+  0 circular deps; bench 10/10 pass (`waveform_parse_50k` unaffected).
+
+- **Sacred Cows audited (COW-1..5):** only the waveform canvas render path
+  changed. TX single-serialization (COW-1), Modbus single-busy (COW-2),
+  auto-log chain (COW-3), scroll single-flight RAF (COW-4), persistence
+  backward compat (COW-5) all untouched; no persisted-shape change; the
+  `lib/` framework-free contract preserved; AP-3 (no deep watcher) untouched.
+
+- **Backlog re-ranked:** the next A-axis candidate is `lib/waveform.ts`
+  (914 lines) — a cohesive single-domain waveform math module; lower
+  leverage than the render extraction just landed, and the next loop
+  iteration rather than a blocker.
 
 ### Auto-optimizer completion audit (batch 15 — closed loop, perf gate restored)
 
