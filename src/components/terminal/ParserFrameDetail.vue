@@ -1,6 +1,6 @@
 <!--
   Parser frame detail panel: hex/ascii dump of the selected parsed frame, plus
-  the empty state. Extracted from ParserPanel (T3.2). Receives the selected
+  the empty state. Extracted from ParserPanel. Receives the selected
   frame (or null) and the pre-computed dump rows; emits copy / copy-ascii.
 -->
 <template>

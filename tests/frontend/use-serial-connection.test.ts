@@ -4,7 +4,7 @@ import { buildSendPayload } from '../../src/composables/useSerialConnection.ts';
 import { encodeUtf8 } from '../../src/lib/format.ts';
 
 // buildSendPayload is the pure input gate every TX passes before entering the
-// serialized write chain (COW-1). It must reject empty/malformed/oversized
+// serialized write chain. It must reject empty/malformed/oversized
 // payloads and otherwise return the exact bytes to write.
 
 test('buildSendPayload: text mode encodes UTF-8 and accepts non-empty input', () => {

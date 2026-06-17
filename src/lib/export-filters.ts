@@ -1,5 +1,5 @@
 /**
- * Export filtering helpers (F-e / T3.9).
+ * Export filtering helpers.
  *
  * Filters captured frames by a time range (start/end in ms) and/or direction,
  * so a user can export just the relevant portion of a long capture. Pure so it

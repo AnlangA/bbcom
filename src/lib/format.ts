@@ -237,9 +237,8 @@ export function formatAscii(data: Uint8Array): string {
 /**
  * Format bytes as a hex-editor dual view: hex pairs on the left, ASCII
  * representation on the right, grouped 16 bytes per line. This is the
- * professional-hex-editor display mode (F-h / T3.9) that shows both the
- * raw byte values and their decoded characters side by side, so a user can
- * inspect a binary protocol without toggling modes.
+ * professional hex-editor display mode: raw byte values and decoded characters
+ * side by side, so a user can inspect a binary protocol without toggling modes.
  */
 export function formatHexAscii(data: Uint8Array, bytesPerLine = 16): string {
   const lines: string[] = [];

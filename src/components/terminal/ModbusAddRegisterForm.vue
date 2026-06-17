@@ -1,7 +1,7 @@
 <!--
   Add-register form: shares the table's grid columns so each field sits directly
   under its column header. Owns the draft state and emits `add` with the new
-  register's fields. Extracted from ModbusPanel (T3.2). The R/W and Value
+  register's fields. Extracted from ModbusPanel. The R/W and Value
   columns are omitted (no meaning until the row exists); the trailing Unit +
   Add fields land in the last two columns.
 -->

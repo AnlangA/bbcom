@@ -11,7 +11,7 @@
  * hundred strings. The lookup is O(1) and the catalog is tree-shakeable.
  *
  * The locale catalogs live in `i18n/en.ts` and `i18n/zh.ts` (split by file so
- * each is independently editable; T3.4). This module owns the runtime: the
+ * each is independently editable). This module owns the runtime: the
  * active locale ref, `t`, `setLocale`, and the parity-check helpers the tests
  * use as a missing-key compile-time gate.
  */

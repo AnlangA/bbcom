@@ -1,5 +1,5 @@
 /**
- * SSE streaming token accumulator (F14 / T3.8).
+ * SSE streaming token accumulator.
  *
  * The Rust AI command streams response tokens via `enable_stream().stream_sse_for_each`
  * (zai-rs 0.1.15). On the frontend, these tokens arrive incrementally (via a Tauri
@@ -11,7 +11,7 @@
  * without a live SSE connection.
  */
 
-/** One incremental token from the SSE stream (delta.content, per F14). */
+/** One incremental token from the SSE stream (`delta.content`). */
 export interface SseDelta {
   /** The incremental text token (may be empty for keep-alive). */
   delta: string;

@@ -1,6 +1,6 @@
 <!--
   Waveform legend + actions + per-channel stats. Extracted from WaveformPanel
-  (T3.2). Presentational: receives the channel state + stats, emits per-channel
+  Presentational: receives the channel state + stats, emits per-channel
   toggle and the toolbar actions (toggle-mode/pause/clear/load/export). Pause
   is two-way bound.
 -->

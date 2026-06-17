@@ -1,11 +1,11 @@
 /**
- * Production-safe write chunking (F8 / T3.9).
+ * Production-safe write chunking.
  *
  * serialplugin issue #29: release-build writes may silently truncate large
  * payloads (works in dev). This module splits a large TX payload into chunks
  * below a safe per-write ceiling, and provides a retry-with-backoff sender that
  * writes each chunk through the caller's `writeChunk` (which must route through
- * the COW-1 serialized write chain — never bypasses `send`/`sendBytes`).
+ * the serial connection's write chain — never bypasses `send`/`sendBytes`).
  *
  * The chunk ceiling is conservative (4 KiB) because the truncation threshold is
  * not precisely known and varies by driver/OS. Chunks are written sequentially;
@@ -14,7 +14,7 @@
  * Pure split logic (no DOM/Vue deps) so it is fully unit-testable.
  */
 
-/** Conservative per-write byte ceiling for production safety (F8). */
+/** Conservative per-write byte ceiling for production safety. */
 export const WRITE_CHUNK_SIZE = 4096;
 
 /** Default retry count per chunk. */
@@ -56,7 +56,7 @@ export interface ChunkedSendResult {
 /**
  * Write `payload` in chunks through `writeChunk`, retrying each failed chunk up
  * to `maxRetries` times with exponential backoff. The chunks are written
- * sequentially (the caller's `writeChunk` must serialize through COW-1).
+ * sequentially (the caller's `writeChunk` must serialize through the port write chain).
  *
  * `writeChunk` resolves `true` on success; `false` or a throw triggers a retry.
  */

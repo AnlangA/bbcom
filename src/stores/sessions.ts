@@ -69,7 +69,7 @@ export const useSessionStore = defineStore('sessions', () => {
    * plain ref bumped on every frame-affecting mutation; consumers may depend on
    * it directly, and `triggerRef(sessions)` re-runs any effect/computed that
    * read `sessions.value` (the path templates take). Together they replace the
-   * implicit deep-reactivity of the old `ref` without a deep:true watcher (AP-3).
+   * implicit deep-reactivity of the old `ref` without a deep:true watcher.
    */
   const framesVersion = ref(0);
   function notifyFramesChanged(): void {
@@ -79,12 +79,13 @@ export const useSessionStore = defineStore('sessions', () => {
 
   /**
    * Wrap a plain session record in a shallowReactive proxy. This is the crux of
-   * the T2.2 reactivity model: the sessions array is a shallowRef (so pushing
-   * 100k+ frames never builds deep per-byte traps), but each session's scalar
-   * config fields (sendDraft, modbusConfig, isConnected, ...) must stay reactive
-   * so a `session.sendDraft = x` write flows to the component reading it WITHOUT
-   * relying on activeSession's computed cache (which returns the same proxy ref
-   * and therefore would not invalidate downstream render effects on its own).
+   * the high-volume frame reactivity model: the sessions array is a shallowRef
+   * (so pushing 100k+ frames never builds deep per-byte traps), but each
+   * session's scalar config fields (sendDraft, modbusConfig, isConnected, ...)
+   * must stay reactive so a `session.sendDraft = x` write flows to the component
+   * reading it without relying on activeSession's computed cache (which returns
+   * the same proxy ref and therefore would not invalidate downstream render
+   * effects on its own).
    *
    * shallowReactive makes only the top-level keys reactive: nested objects
    * (frames, modbusRegisters, logAiMessages) are kept raw, which is exactly what
@@ -102,8 +103,8 @@ export const useSessionStore = defineStore('sessions', () => {
       activeSessionId: null,
       sessions: [],
     });
-    // COW-5: run the persisted blob through the versioned migration chain before
-    // hydrating, so a future shape change lands forward-compatible and testable.
+    // Run the persisted blob through the versioned migration chain before
+    // hydrating, so future shape changes stay forward-compatible and testable.
     const saved = migratePersistedFile(raw);
     if (!Array.isArray(saved.sessions)) {
       loaded = true;
@@ -227,7 +228,7 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   /** Mirror the SerialRxQueue's cumulative dropped-byte count onto the session
-   *  so the StatusBar can surface it as a live metric (T3.5). Runtime-only. */
+   *  so the StatusBar can surface it as a live runtime metric. */
   function updateDroppedBytes(sessionId: string, total: number) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;

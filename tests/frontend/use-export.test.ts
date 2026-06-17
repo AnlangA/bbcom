@@ -22,7 +22,7 @@ function legacyDeps(overrides: {
   return {
     calls,
     api: useExport({
-      // Legacy path only: explicitly disable the F12 capture-file bypass so
+      // Legacy path only: explicitly disable the capture-file bypass so
       // exportFrames is the path under test.
       exportViaCaptureFile: undefined,
       promptSave: async () => (overrides.savePath === undefined ? '/tmp/out.txt' : overrides.savePath),
@@ -35,7 +35,7 @@ function legacyDeps(overrides: {
   };
 }
 
-/** Deps that route through the F12 capture-file bypass (the production default). */
+/** Deps that route through the capture-file bypass (the production default). */
 function f12Deps(overrides: {
   savePath?: string | null;
   exportViaCaptureFile?: (frames: DataFrame[], format: ExportFormat, path: string) => Promise<void>;
@@ -86,16 +86,16 @@ test('useExport (legacy): backend error is surfaced as ok:false with a message',
   assert.equal(result.error!.includes('too many frames'), true, 'error text propagated');
 });
 
-// ---- F12 capture-file path (production default) ----
+// ---- Capture-file path (production default) ----
 
-test('useExport (F12): prefers exportViaCaptureFile over exportFrames when provided', async () => {
+test('useExport: prefers exportViaCaptureFile over exportFrames when provided', async () => {
   const { api, calls } = f12Deps({ savePath: '/tmp/out.jsonl' });
   const frames = [frame('RX', [1, 2, 3])];
 
   const result = await api.exportData(frames, 'jsonl', 'UTF8' as DisplayMode);
 
   assert.deepEqual(result, { ok: true });
-  assert.equal(calls.length, 1, 'F12 path invoked');
+  assert.equal(calls.length, 1, 'capture-file path invoked');
   assert.equal(calls[0].path, '/tmp/out.jsonl');
   assert.deepEqual(
     calls[0].frames.map((f) => f.direction),
@@ -104,7 +104,7 @@ test('useExport (F12): prefers exportViaCaptureFile over exportFrames when provi
   );
 });
 
-test('useExport (F12): a failing capture-file export surfaces as ok:false', async () => {
+test('useExport: a failing capture-file export surfaces as ok:false', async () => {
   const { api } = f12Deps({
     exportViaCaptureFile: async () => {
       throw new Error('capture read failed');
@@ -112,7 +112,7 @@ test('useExport (F12): a failing capture-file export surfaces as ok:false', asyn
   });
   const result = await api.exportData([frame('RX', [1])], 'jsonl', 'UTF8' as DisplayMode);
   assert.equal(result.ok, false);
-  assert.ok(result.error!.includes('capture read failed'), 'F12 error propagated');
+  assert.ok(result.error!.includes('capture read failed'), 'capture-file error propagated');
 });
 
 // ---- Shared behavior ----

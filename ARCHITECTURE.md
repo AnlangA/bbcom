@@ -1,204 +1,196 @@
 # bbcom Architecture
 
-A cross-platform serial debug assistant built on **Tauri 2** (Rust backend) +
-**Vue 3** (strict-TypeScript frontend). This document captures the module
-topology, the data-flow invariants ("sacred cows"), and the verification
-strategy so a change can be reasoned about without tracing every file.
+This guide is for maintainers who need to change bbcom without re-discovering
+the serial, rendering, persistence, and IPC boundaries from scratch.
 
-## High-level topology
+bbcom is a Tauri 2 desktop application with a strict-TypeScript Vue frontend and
+a Rust backend. The most important ownership rule is simple: the frontend owns
+sessions and protocol behavior; Rust owns privileged desktop work and small,
+typed command surfaces.
 
+## Topology
+
+```text
+┌────────────────────────────────────────────────────────────────────┐
+│ Webview: Vue 3 + Pinia + Naive UI                                  │
+│                                                                    │
+│ components/                                                        │
+│   app-shell/      main layout, settings, session creation          │
+│   session/        session view + toolbar                           │
+│   terminal/       packet list, parser, Modbus, waveform panels     │
+│   send-panel/     quick commands, macros, triggers, highlights     │
+│   ai/             assistant settings and log assistant UI          │
+│                                                                    │
+│ composables/                                                       │
+│   useSerialConnection   serial open/listen/write/reconnect         │
+│   useModbusMaster       Modbus read/write/replay orchestration     │
+│   useSessionFrames      frame append/clear helpers                 │
+│   usePacket*            virtual scroll, filters, format cache      │
+│   useExport             dialog + export command routing            │
+│   useAutoLog            ordered per-session log appends            │
+│                                                                    │
+│ stores/                                                            │
+│   sessions              all session state and persistence          │
+│   serial                available ports and selected config        │
+│   app                   theme, language, AI and global settings    │
+│                                                                    │
+│ lib/                                                               │
+│   modbus/               protocol core, batching, transport, loops  │
+│   serial-rx-queue       bounded RX buffering                       │
+│   protocol-parser       delimiter/fixed/length frame parsing       │
+│   waveform*             parsing, viewport math, canvas rendering   │
+│   session-persistence   versioned snapshot migration               │
+│   ipc                   typed Tauri command wrappers               │
+└───────────────┬────────────────────────────────────────────────────┘
+                │ Tauri invoke/listen/events
+                ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ Rust backend: src-tauri/src/                                       │
+│                                                                    │
+│ commands/     ai, checksum, export, log, updater, window commands  │
+│ export/       TXT/CSV/JSONL/BIN formatters                         │
+│ models/       IPC structs and AppError                             │
+│ utils/        checksum, HEX, timestamp helpers                      │
+│ benches/      checksum/export hot-path benchmarks                   │
+└────────────────────────────────────────────────────────────────────┘
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Webview (Vue 3 + Pinia + Naive UI)                             │
-│                                                                 │
-│  components/          composables/            stores/           │
-│   ├─ session/          ├─ useSerialConnection  ├─ sessions       │
-│   │  └─ SessionView    ├─ useModbusMaster      ├─ app            │
-│   ├─ terminal/         ├─ useSessionModbus     └─ serial         │
-│   │  (DataPacketList,  ├─ useExport                              │
-│   │   ModbusPanel,     ├─ useAutoLog                             │
-│   │   ParserPanel,     ├─ useTriggers                            │
-│   │   WaveformPanel)   └─ usePortWatcher                         │
-│   ├─ send-panel/                                                │
-│   └─ app-shell/         lib/  (domain logic, framework-free)    │
-│                          ├─ modbus/ (barrel + modbus-core +      │
-│                          │    13 domain modules: pdu/transport/  │
-│                          │    registers/master-runtime)         │
-│                          ├─ format / bytes / lru-cache           │
-│                          ├─ serial-rx-queue (ring buffer)        │
-│                          ├─ protocol-parser / waveform           │
-│                          └─ session-persistence (+ migrate)      │
-│                                                                 │
-│  types/  (domain barrels: display/serial/macros/modbus/         │
-│           waveform/ai/session/checksum/constants → index.ts)    │
-└───────────────┬──────────────────────────────────┬──────────────┘
-                │ typed IPC (src/lib/ipc.ts)        │ Tauri events
-                ▼                                   ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Rust backend (src-tauri/src/)                                  │
-│                                                                 │
-│  commands/            models/         utils/      export/        │
-│   ├─ ai/ (mod/cooldown/ data_frame/    checksum/   formatter     │
-│   │       prompts/service/   errors/   hex/                     │
-│   │       parser/types/tests) timestamp                          │
-│   ├─ checksum.rs          ↑ AppError (thiserror)                 │
-│   ├─ export.rs            │                                       │
-│   ├─ log.rs               │ serialplugin (RX event → JS)         │
-│   └─ window.rs            │ zai-rs (AI chat)                     │
-│                            └ tokio::fs (stateless log/export)    │
-└─────────────────────────────────────────────────────────────────┘
-```
 
-The frontend owns all session state and the serial protocol engines; the Rust
-side is a thin, stateless IPC + filesystem + AI-client layer.
+## Runtime Ownership
 
-## Sacred cows (inviolable invariants)
+- **Frontend session store:** source of truth for ports, frames, parser state,
+  Modbus config, macros, triggers, highlights, AI chat state, and persisted
+  snapshots.
+- **Frontend protocol engines:** parser, waveform, Modbus, triggers, macro
+  control flow, and `.bbrec` replay are implemented in framework-free TypeScript
+  where possible so they can be unit-tested headlessly.
+- **Rust command layer:** filesystem export/logging, checksum calculation,
+  updater wrapper, AI network calls, and window management.
+- **Tauri plugins:** serialplugin provides serial port access, dialog provides
+  save/open UI, store persists local secrets, updater checks releases when
+  configured.
 
-These are the correctness guarantees a change must not break. Each is covered by
-a test or bench.
+## Data Flows
 
-- **COW-1 — TX single-serialization.** Every transmit (cyclic loop, quick
-  command, trigger, AI-fill, Modbus) goes through `useSerialConnection.send` /
-  `sendBytes`, which chain onto a single `writeChain` promise so concurrent
-  callers never interleave `writeBinary` on the port.
-- **COW-2 — Modbus single-busy / single-pending-RX.** `useModbusMaster` keeps a
-  busy guard and one pending RX slot (RTU is half-duplex).
-- **COW-3 — Auto-log ordering chain.** `useAutoLog` serializes per-session
-  appends through a Promise chain; `append_log` is stateless.
-- **COW-4 — Scroll single-flight RAF.** `usePacketVirtualScroll` coalesces
-  auto-scroll through one in-flight `requestAnimationFrame`.
-- **COW-5 — Persistence backward compatibility.** Changing any persisted shape
-  requires bumping `SESSION_STORAGE_VERSION` + adding a `MIGRATION_STEPS` entry
-  + a legacy-data regression test. `migratePersistedFile` runs the chain on load.
+### RX: device to screen
 
-## Key data flows
+1. `tauri-plugin-serialplugin` emits raw bytes to `useSerialConnection`.
+2. Raw-byte observers receive the exact plugin chunk first. Modbus uses this
+   path to validate CRCs and match responses before display coalescing happens.
+3. The chunk enters `SerialRxQueue`, which caps pending bytes/chunks and records
+   cumulative drops.
+4. A single `requestAnimationFrame` drains pending chunks into one RX
+   `DataFrame`.
+5. `useSessionFrames` appends the frame to the session store, auto-log appends
+   it if enabled, and trigger rules inspect the completed RX frame.
 
-**RX (receive):** serialplugin emit → `useSerialConnection` data listener
-(`listen(cb, false)` — skips per-chunk TextDecoder, F5) → `SerialRxQueue`
-(ring buffer with head-index drops, O(1)) → RAF-batched `flushQueue` →
-`addFrame` (markRaw frame into the session) → auto-log append + trigger feed.
-Raw-byte observers (Modbus master) receive the exact chunk before coalescing.
+### TX: caller to device
 
-**TX (transmit):** any caller → `send`/`sendBytes` → `writeChain.then(doSend)`
-→ `buildSendPayload` (validate + encode, the COW-1 input gate) →
-`port.writeBinary` → TX frame added to the session.
+1. Quick commands, send history, cyclic send, macros, triggers, AI fill, and
+   Modbus all enter `useSerialConnection.send` or `sendBytes`.
+2. Text/HEX sends pass through `buildSendPayload` for validation and encoding.
+3. A single `writeChain` promise serializes every `writeBinary` call in order.
+4. A TX `DataFrame` is appended only after the port write succeeds.
 
-**Persistence:** session mutations mark the store dirty → debounced
-`schedulePersist` (800 ms, max-wait 2.5 s) → `serializeSessionSnapshots` →
-`saveJson` (localStorage). On load, `migratePersistedFile` walks
-`MIGRATION_STEPS` then `hydrateSession`.
+### Persistence
 
-## Upstream hard constraints (decision boundaries)
+1. Mutators call `schedulePersist`.
+2. The sessions store emits the explicit frame/reactivity pulse and debounces
+   snapshot writes.
+3. `serializeSessionSnapshots` caps persisted sessions, frame count, and bytes.
+4. Load runs `migratePersistedFile` before hydration. Any persisted shape change
+   must bump `SESSION_STORAGE_VERSION`, add a migration step, and include a
+   legacy-data regression test.
 
-- **F2** `timeout` is BOTH the port read-timeout AND the plugin emit flush
-  interval (default 200 ms), clamped `.min(1)` — it cannot be raised to extend
-  the read-timeout independently.
-- **F5** `listen(cb, false)` skips the JS-side per-chunk TextDecoder; bbcom
-  already passes `false` on its single RX listener (audited, no stragglers).
-- **F6** `read()` is lossy-UTF8 — binary data must use `read_binary`/`write_binary`.
-- **F10** Tauri `Channel<Vec<u8>>` < 1 KiB degrades to `number[]` (slow); ≥ 1 KiB
-  is true binary. **AP-1**: do not Channel small packets as a "binary optimization".
-- **F12** Very large transfers are fastest via a temp file (`convertFileSrc`).
-- **F13** `zai-rs` `ModelName` is not dyn-safe → model dispatch is a match table,
-  not `Box<dyn Model>` (**AP-2**).
+### Export
 
-## T2.2 — `sessions` shallowRef conversion (LANDED)
+- The legacy export command accepts a frame array directly.
+- The default large-export path writes frames to a temporary JSONL capture file,
+  sends only that path through IPC, then Rust reads and formats the capture.
+  This avoids serializing large `Uint8Array` payloads into one huge invoke
+  argument.
 
-The `sessions` store is a `shallowRef` with a `notifyFramesChanged` reactivity
-channel (`framesVersion` ref + `triggerRef(sessions)`), wired into every
-mutator through `schedulePersist` (and `setModbusRegisterValues`). This is
-AP-3-compliant — no `deep:true` watcher. Consumers that read
-`session.frames.length` (DataPacketList, StatusBar, ParserPanel, WaveformPanel,
-SessionTabs, SessionView, AiLogAssistant) stay reactive because every mutator
-triggers the channel.
+## Engineering Invariants
 
-**Measured (`sessions_push_50k`): 2 ops/s (428 ms) → 32 ops/s (29 ms), 15×
-throughput / −93 % latency** — far past the −30 % target. A micro-spike had
-earlier confirmed the raw shape: deep `ref` 55.2 ms vs `shallowRef`+trigger
-5.5 ms (~10×) for a 50 k-frame push.
+These are the rules most likely to protect users from subtle serial bugs:
 
-**Reactivity safety:** a dedicated regression test
-(`tests/frontend/sessions-frames-reactivity.test.ts`) asserts computed reads of
-`frames.length`/`txBytes` reflect `addFrame`/`clearFrames`; the 23-test
-modbus-master suite (incl. the reconnect-watches-store case) guards the
-non-frame mutators. 576 frontend tests green.
+- **All serial writes are single-filed.** Do not bypass `send`/`sendBytes` or the
+  `writeChain`; concurrent serial writes can interleave at the driver.
+- **Modbus is half-duplex.** Keep one outstanding transaction at a time through
+  `ModbusTransactionRunner` and `ModbusLoopCoordinator`.
+- **RX bytes reach protocol observers before display batching.** Protocol
+  engines need exact chunks; UI frames may be coalesced.
+- **Frame arrays stay shallow.** Large captures must not depend on Vue deep
+  reactivity. Use `framesVersion`, `triggerRef(sessions)`, and raw frame items.
+- **Auto-log preserves append order.** `useAutoLog` chains writes per session;
+  Rust `append_log` is stateless.
+- **Persistence remains forward-compatible.** Shape changes require an explicit
+  migration and test.
+- **Hot paths stay framework-free when practical.** Queueing, formatting,
+  parsing, Modbus batching, waveform math, and export filters should remain
+  testable without a Tauri webview.
 
-## Verification strategy
+## Upstream Constraints
 
-| Gate | Command | Notes |
-|---|---|---|
-| Lint + format | `pnpm lint`, `pnpm format:check`, `cargo fmt --check`, `cargo clippy -D warnings` | clippy denies warnings |
-| Type-check + build | `pnpm build` (vue-tsc --noEmit + vite) | strict TS |
-| Frontend tests | `pnpm test:frontend` | node:test runner, 576 tests across 72 files |
-| Rust tests | `pnpm test:rust` | 71 tests incl. cross-language IPC contracts |
-| Coverage gate | `pnpm coverage:frontend` | c8, `.c8rc.json` (85% lines / 88% branches / 88% functions) |
-| Per-file lib/ gate | `pnpm coverage:lib` | c8 `--per-file --lines=90` against `src/lib/` (excl. Tauri-coupled files) |
-| Bench regression | `pnpm bench:frontend` | 15% gate vs machine-local baseline |
-| Circular deps | `pnpm cycles` | madge, 0 cycles |
-| Full check | `pnpm check` | lint + format + build + tests |
+- The serial plugin's timeout affects both read timeout and event flush cadence;
+  raising it changes UI latency as well as port behavior.
+- `listen(callback, false)` is intentional: it avoids a per-chunk text decoder
+  in the JS path. Binary data should use binary read/write APIs.
+- Tauri IPC can turn small binary payloads into number arrays; do not introduce
+  a channel-based "optimization" without measuring both small and large packets.
+- `zai-rs` model types are concrete and not object-safe for the current dispatch
+  path, so supported AI models are selected with an explicit match table in
+  Rust and mirrored by the frontend registry.
+- The updater plugin is configured but inactive until release endpoints and
+  signing keys are provided.
 
-CI (`.github/workflows/ci.yml`) runs all of the above on every push/PR. The
-tag-triggered cross-platform build matrix (Windows / Linux / macOS) lives in
-`.github/workflows/release.yml`.
+## Quality Gates
 
-## Manual verification checklist
+| Area | Command |
+| --- | --- |
+| Frontend lint | `pnpm lint` |
+| Formatting | `pnpm format:check` |
+| Type-check + frontend build | `pnpm build` |
+| Frontend tests | `pnpm test:frontend` |
+| Rust tests | `pnpm test:rust` |
+| Frontend coverage | `pnpm coverage:frontend` |
+| `src/lib/` per-file coverage | `pnpm coverage:lib` |
+| Frontend benchmarks | `pnpm bench:frontend` |
+| Rust benchmarks | `pnpm bench:rust` |
+| TypeScript import cycles | `pnpm cycles` |
+| Common local gate | `pnpm check` |
 
-These runtime paths need a physical serial device and/or a running Tauri app
-and cannot be executed in the headless test harness. Each is marked with its
-status and the reason it cannot be automated here.
+CI runs the frontend lint/format/build/test/coverage/benchmark/cycle jobs and
+Rust fmt/clippy/test jobs. Rust coverage is collected as a best-effort
+tarpaulin artifact rather than a hard gate.
 
-- ❌ **Connect / disconnect / reconnect** — requires a physical serial device
-      (or socat PTY pair) + a running Tauri webview. The connection lifecycle
-      (`useSerialConnection` start/stop/reconnect) is unit-tested via
-      `buildSendPayload` and the sessions-frames-reactivity guard, but the
-      end-to-end port-open/listen/write loop is driver-dependent.
-      **Status: ❌ — hardware/runtime-dependent.**
-- ❌ **High-baud capture (921600)** — requires a physical device generating a
-      sustained byte stream. The F2/F3 config matrix (`timeout`/`size`/baud
-      sweep) and a reproducible socat/PTY procedure live in `CHANGELOG.md`
-      (T2.4). Headless proxies: `serialrxqueue_drop_512` (T2.1, +105%),
-      `sessions_push_50k` (T2.2, 2→32 ops/s). **Status: ❌ — hardware-dependent
-      (no device available).**
-- ❌ **4-format export** — requires a live capture to export. The export path is
-      covered by the Rust formatter tests (8), the IPC contract tests (3), and
-      the F12 capture-file contract tests (3); the F12 path is verified to
-      produce byte-identical output. But the end-to-end dialog → file write
-      needs the running app. **Status: ❌ — runtime-dependent (Tauri dialog +
-      file picker).**
-- ❌ **AI command + log** — requires a Z.ai API key + network access. The AI
-      command dispatch (F13 dispatch-table), cooldown guard, request/response
-      serde contracts, and SSE accumulator (F14) are all unit-tested. But the
-      live API call cannot run headless. **Status: ❌ —
-      network/credential-dependent.**
-- ❌ **Modbus poll + write + replay** — requires a physical Modbus slave device.
-      The master loop, batching, replay coordinator, write source, and status
-      reporting are covered by 23 modbus-master tests. But the live RTU/PDU
-      transport needs a device. **Status: ❌ — hardware-dependent.**
-- ❌ **Waveform + parser** — requires live RX data. The waveform buffer,
-      channel stats, parser frame collector, and `.bbrec` record/replay are
-      unit-tested. The canvas rendering loop needs the running app.
-      **Status: ❌ — runtime-dependent (canvas + live data).**
-- ❌ **Light / dark** — requires the running Tauri webview to visually confirm
-      both themes. The CSS token system (`variables.css`, 138 tokens +
-      `[data-theme='light']` inversion) and `prefers-reduced-motion` are
-      verified; `vue-tsc` confirms the theme code compiles. But visual
-      confirmation needs the app. **Status: ❌ — runtime-dependent (visual
-      inspection).**
+## Manual Verification
 
-**GUI launch verified:** `pnpm tauri:dev` was successfully run on this
-machine — the Tauri app compiled, launched, and ran for 35+ seconds without
-crashing (macOS WindowServer is accessible from this terminal session). However,
-`screencapture` lacks Screen Recording permission, so visual UI verification
-(themes, panel rendering, layout) cannot be captured. The items requiring a
-physical serial device remain blocked (socat unavailable, no hardware).
+The headless tests cover the pure logic, IPC contracts, and hot-path helpers.
+The following paths still need a real desktop runtime, serial device, PTY pair,
+or external credential:
 
-**lib/ per-file coverage gate (T1.2) — ENFORCED:** `coverage:lib` runs c8
-`--per-file --lines=90` against `src/lib/` (excluding Tauri-coupled files),
-passing at ~98% with 0 errors. The composable ≥80% threshold remains
-infeasible (lifecycle hooks structurally unreachable headless). The automated suite (576 frontend + 71 Rust
-tests, 0 circular deps, ~87% coverage, 15% bench gate) covers every path that
-CAN be tested headless. The remaining paths are documented with their blocker
-and the headless proxy that validates the underlying logic.
+- Connect, disconnect, reconnect, DTR/RTS, and BREAK behavior.
+- Sustained high-baud captures from a real serial source.
+- End-to-end export through native save dialogs.
+- Live Modbus RTU/PDU polling, writes, and replay against a device.
+- Waveform canvas rendering and parser panel interactions in the app.
+- Light/dark visual inspection.
+- Live Z.ai requests with a valid API key and network access.
 
-Failures should include reproduction steps, the baud/device, and the relevant
-log line.
+When reporting a manual failure, include platform, device/baud, transport mode,
+reproduction steps, and the relevant log line or captured frame.
+
+## Change Checklist
+
+- Serial write path changed: confirm every caller still uses `send` or
+  `sendBytes`, then run frontend tests that cover send payloads, macros,
+  triggers, and Modbus.
+- RX buffering changed: run queue, packet list, parser, waveform, trigger, and
+  benchmark tests.
+- Persisted session shape changed: bump the version, add a migration, and add a
+  legacy snapshot test.
+- Export changed: test TXT/CSV/JSONL/BIN plus capture-file and legacy paths.
+- AI model changed: update both `src/lib/ai-models.ts` and
+  `src-tauri/src/commands/ai/service.rs`.
+- Modbus changed: run the full Modbus frontend test set and manually test with
+  a device when transport timing changed.

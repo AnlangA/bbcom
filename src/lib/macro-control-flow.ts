@@ -1,5 +1,5 @@
 /**
- * Conditional macro control-flow engine (T3.7).
+ * Conditional macro control-flow engine.
  *
  * Extends the flat send+delay macro model with Tera-Term-TTL-style control
  * flow: `wait` (block until an RX pattern appears, with a timeout), `if`

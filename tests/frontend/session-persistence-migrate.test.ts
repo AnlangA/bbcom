@@ -8,7 +8,7 @@ import {
 } from '../../src/lib/session-persistence.ts';
 
 /**
- * COW-5 regression guard: the persisted-sessions file must be forward-compatible.
+ * Regression guard: the persisted-sessions file must be forward-compatible.
  * Any blob recorded at an older version must migrate up to the current shape and
  * be re-stamped, so a user upgrading the app never loses their session snapshots.
  */
