@@ -5,6 +5,8 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-17
+
 ### Auto-optimizer A-axis pass (batch 16 — waveform render extraction)
 
 - **A — WaveformPanel canvas render pipeline extracted (LANDED):**
