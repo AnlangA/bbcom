@@ -40,10 +40,7 @@ export function isPinnedToBottom(
  * instant jump (no animation) so it tracks the data rate instead of lagging it
  * — the behavior of every professional serial terminal.
  */
-export function usePacketVirtualScroll({
-  frameCount,
-  autoScroll,
-}: PacketVirtualScrollOptions) {
+export function usePacketVirtualScroll({ frameCount, autoScroll }: PacketVirtualScrollOptions) {
   const scrollRef = ref<HTMLDivElement | null>(null);
   const shouldAutoScroll = ref(true);
 

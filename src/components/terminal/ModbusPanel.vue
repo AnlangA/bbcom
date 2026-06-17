@@ -187,7 +187,9 @@ const typeOptions = computed(() =>
     ] as ModbusValueType[]
   ).map((tp) => ({ label: t(`modbus.type.${tp}`), value: tp })),
 );
-const bitTypeOptions = computed(() => [{ label: t('modbus.type.bool'), value: 'bool' as ModbusValueType }]);
+const bitTypeOptions = computed(() => [
+  { label: t('modbus.type.bool'), value: 'bool' as ModbusValueType },
+]);
 const channelOptions = computed(() => [
   { label: t('modbus.channel.off'), value: -1 },
   ...Array.from({ length: 8 }, (_, i) => ({ label: `${i}`, value: i })),
