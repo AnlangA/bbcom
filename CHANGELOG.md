@@ -5,6 +5,8 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.1]
+
 ### Auto-optimizer completion audit (batch 15 — closed loop, perf gate restored)
 
 This entry records the autonomous-completion pass that re-verified the exit
