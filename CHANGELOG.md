@@ -44,10 +44,27 @@ All notable changes to bbcom are documented here. The format is based on
   backward compat (COW-5) all untouched; no persisted-shape change; the
   `lib/` framework-free contract preserved; AP-3 (no deep watcher) untouched.
 
-- **Backlog re-ranked:** the next A-axis candidate is `lib/waveform.ts`
-  (914 lines) — a cohesive single-domain waveform math module; lower
-  leverage than the render extraction just landed, and the next loop
-  iteration rather than a blocker.
+- **Backlog audit (criterion 6):** after the two waveform extractions this
+  batch, the remaining >500-line files were each assessed for a positive-
+  leverage extraction seam and documented:
+  - `WaveformPanel.vue` (858) — a component, now a state + interaction + RAF
+    orchestrator; the legend sub-component was already extracted, the canvas
+    is one element, and its render pipeline is now in `waveform-render.ts`.
+    No clean sub-component seam remains; further splits would create
+    artificial fragments with prop-drilling churn (negative leverage).
+  - `waveform-render.ts` (651), `lib/waveform.ts` (558) — the modules just
+    extracted *out* of the panel; cohesive single-domain.
+  - `stores/sessions.ts` (590), `lib/modbus/modbus-core.ts` (532),
+    `lib/session-persistence.ts` (529), `composables/useModbusMaster.ts`
+    (527) — cohesive core modules (the most-imported store, the Modbus core,
+    the versioned persistence serializer, the master orchestrator); splitting
+    would scatter tightly-coupled logic with no boundary win.
+  - `PortSelector.vue` (568), `MacroPanel.vue` (548), `AppShell.vue` (531),
+    `WaveformLegend.vue` (519) — presentation components whose line count is
+    dominated by scoped `<style>` (e.g. PortSelector is 163 script / 245
+    style); not code-complexity debt. None of the remaining >500-line files
+    has an unblocked, positive-leverage extraction seam, so the architecture
+    backlog is empty of actionable items.
 
 ### Auto-optimizer completion audit (batch 15 — closed loop, perf gate restored)
 
