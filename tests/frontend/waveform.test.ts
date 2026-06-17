@@ -7,6 +7,7 @@ import {
   channelStats,
   closestPointOnWaveformPath,
   createBuffer,
+  DEFAULT_WAVEFORM_SAMPLE_POINT_MIN_DISTANCE_PX,
   ensureWaveformChannels,
   formatWaveformNumber,
   ingestWaveformTextFrames,
@@ -23,6 +24,7 @@ import {
   scaleWaveformViewport,
   syncWaveformTimeViewportAfterSampleChange,
   syncWaveformViewportAfterSampleChange,
+  thinWaveformSamplePoints,
   visibleChannelRange,
   visibleChannelRangeInWindow,
   waveformTimeRange,
@@ -171,6 +173,47 @@ test('closestPointOnWaveformPath handles a single point path', () => {
     timestamp: 20,
     distanceSq: 8,
   });
+});
+
+test('thinWaveformSamplePoints keeps sparse real sample markers', () => {
+  const points = [
+    { x: 0, y: 0, value: 0, timestamp: 0 },
+    { x: DEFAULT_WAVEFORM_SAMPLE_POINT_MIN_DISTANCE_PX, y: 0, value: 1, timestamp: 1 },
+    { x: DEFAULT_WAVEFORM_SAMPLE_POINT_MIN_DISTANCE_PX * 2, y: 0, value: 2, timestamp: 2 },
+  ];
+
+  assert.deepEqual(thinWaveformSamplePoints(points), points);
+});
+
+test('thinWaveformSamplePoints removes overlapping markers without inventing samples', () => {
+  const points = [0, 1, 2, 3, 4, 12].map((x) => ({
+    x,
+    y: 0,
+    value: x,
+    timestamp: x,
+  }));
+
+  const thinned = thinWaveformSamplePoints(points, 4);
+
+  assert.deepEqual(
+    thinned.map((point) => point.timestamp),
+    [0, 4, 12],
+  );
+  assert.ok(thinned.every((point) => points.includes(point)));
+});
+
+test('thinWaveformSamplePoints keeps the newest marker visible in a dense tail', () => {
+  const points = [0, 4, 5, 6, 7].map((x) => ({
+    x,
+    y: 0,
+    value: x,
+    timestamp: x,
+  }));
+
+  assert.deepEqual(
+    thinWaveformSamplePoints(points, 4).map((point) => point.timestamp),
+    [0, 7],
+  );
 });
 
 test('planWaveformFrameIngest starts at zero for a fresh frame window', () => {

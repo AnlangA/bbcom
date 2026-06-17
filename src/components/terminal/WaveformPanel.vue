@@ -75,6 +75,7 @@ import {
   pushRegisterWaveformSample,
   scaleWaveformTimeViewport,
   syncWaveformTimeViewportAfterSampleChange,
+  thinWaveformSamplePoints,
   visibleChannelRange,
   waveformFrameCursorAtEnd,
   waveformTimeRange,
@@ -999,16 +1000,24 @@ function drawSamplePoints(ctx: CanvasRenderingContext2D, options: SamplePointDra
   const { outlineColor, paths } = options;
   const radius = 3;
   const haloRadius = radius + 1.2;
+  const renderPaths = paths.map((path) => ({
+    ...path,
+    samplePoints: thinWaveformSamplePoints(path.samplePoints),
+  }));
 
   ctx.save();
-  for (const path of paths) {
+  for (const path of renderPaths) {
     for (const point of path.samplePoints) {
       ctx.fillStyle = outlineColor;
       ctx.beginPath();
       ctx.arc(point.x, point.y, haloRadius, 0, Math.PI * 2);
       ctx.fill();
+    }
+  }
 
-      ctx.fillStyle = path.color;
+  for (const path of renderPaths) {
+    ctx.fillStyle = path.color;
+    for (const point of path.samplePoints) {
       ctx.beginPath();
       ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
       ctx.fill();

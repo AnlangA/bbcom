@@ -114,6 +114,7 @@ export interface WaveformRegisterSampleResult {
 
 export const DEFAULT_WAVEFORM_VIEWPORT_MIN_SAMPLES = 8;
 export const DEFAULT_WAVEFORM_VIEWPORT_MIN_MS = 1;
+export const DEFAULT_WAVEFORM_SAMPLE_POINT_MIN_DISTANCE_PX = 6;
 
 /** Per-channel statistics computed across the live buffer. Cheap (O(n·c)) and
  * re-derived on demand — the buffer is bounded by CAPACITY. */
@@ -728,6 +729,41 @@ export interface WaveformPathPoint {
 
 export interface WaveformHoverPathPoint extends WaveformPathPoint {
   distanceSq: number;
+}
+
+export function thinWaveformSamplePoints(
+  points: readonly WaveformPathPoint[],
+  minDistancePx = DEFAULT_WAVEFORM_SAMPLE_POINT_MIN_DISTANCE_PX,
+): WaveformPathPoint[] {
+  const distance = Number.isFinite(minDistancePx)
+    ? Math.max(0, minDistancePx)
+    : DEFAULT_WAVEFORM_SAMPLE_POINT_MIN_DISTANCE_PX;
+  if (distance === 0) return points.filter(isFinitePathPoint);
+
+  const minDistanceSq = distance * distance;
+  const out: WaveformPathPoint[] = [];
+  let lastFinite: WaveformPathPoint | null = null;
+
+  for (const point of points) {
+    if (!isFinitePathPoint(point)) continue;
+    lastFinite = point;
+    const previous = out[out.length - 1];
+    if (!previous || distanceSq(previous.x, previous.y, point.x, point.y) >= minDistanceSq) {
+      out.push(point);
+    }
+  }
+
+  if (lastFinite && out.length > 0 && out[out.length - 1] !== lastFinite) {
+    const previous = out.length > 1 ? out[out.length - 2] : null;
+    if (
+      !previous ||
+      distanceSq(previous.x, previous.y, lastFinite.x, lastFinite.y) >= minDistanceSq
+    ) {
+      out[out.length - 1] = lastFinite;
+    }
+  }
+
+  return out;
 }
 
 /**
