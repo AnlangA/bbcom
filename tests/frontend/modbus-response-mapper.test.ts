@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {
   isExpectedModbusWriteAck,
   mapModbusReadResponse,
-} from '../../src/lib/modbus-response-mapper.ts';
-import type { ModbusReadBatch, ModbusWriteBatch } from '../../src/lib/modbus-batches.ts';
-import type { ModbusResponse } from '../../src/lib/modbus.ts';
+} from '../../src/lib/modbus';
+import type { ModbusReadBatch, ModbusWriteBatch } from '../../src/lib/modbus';
+import type { ModbusResponse } from '../../src/lib/modbus';
 import type { ModbusFunctionCode, ModbusRegister, ModbusValueType } from '../../src/types/index.ts';
 
 function reg(

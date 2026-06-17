@@ -15,6 +15,49 @@ interface AiSessionUpdateEvent {
   value: unknown;
 }
 
+/**
+ * Apply a single AI-window session-update event to the session store. Extracted
+ * as a pure dispatcher so the action routing is unit-testable without the Tauri
+ * event bus. Each arm maps an `action` string to the corresponding store mutator.
+ */
+export function applyAiSessionUpdate(
+  event: AiSessionUpdateEvent,
+  sessionStore: {
+    setTerminalAiModel: (id: string, model: AiModel) => void;
+    setLogAiModel: (id: string, model: AiModel) => void;
+    setLogAiContextMode: (id: string, mode: LogAiContextMode) => void;
+    setLogAiFrameLimit: (id: string, limit: number) => void;
+    addLogAiMessage: (id: string, message: Omit<AiChatMessage, 'id' | 'timestamp'>) => void;
+    clearLogAiMessages: (id: string) => void;
+  },
+): void {
+  switch (event.action) {
+    case 'setTerminalAiModel':
+      sessionStore.setTerminalAiModel(event.sessionId, event.value as AiModel);
+      break;
+    case 'setLogAiModel':
+      sessionStore.setLogAiModel(event.sessionId, event.value as AiModel);
+      break;
+    case 'setLogAiContextMode':
+      sessionStore.setLogAiContextMode(event.sessionId, event.value as LogAiContextMode);
+      break;
+    case 'setLogAiFrameLimit':
+      sessionStore.setLogAiFrameLimit(event.sessionId, Number(event.value));
+      break;
+    case 'addLogAiMessage':
+      sessionStore.addLogAiMessage(
+        event.sessionId,
+        event.value as Omit<AiChatMessage, 'id' | 'timestamp'>,
+      );
+      break;
+    case 'clearLogAiMessages':
+      sessionStore.clearLogAiMessages(event.sessionId);
+      break;
+    default:
+      break;
+  }
+}
+
 export function useAiSessionBridge() {
   const sessionStore = useSessionStore();
   const appStore = useAppStore();
@@ -43,7 +86,7 @@ export function useAiSessionBridge() {
       );
       unlisteners.push(
         await listen<AiSessionUpdateEvent>('ai-session-update', (event) => {
-          applyUpdate(event.payload);
+          applyAiSessionUpdate(event.payload, sessionStore);
           void sendSnapshot();
         }),
       );
@@ -71,32 +114,4 @@ export function useAiSessionBridge() {
       void sendSnapshot();
     },
   );
-
-  function applyUpdate(event: AiSessionUpdateEvent) {
-    switch (event.action) {
-      case 'setTerminalAiModel':
-        sessionStore.setTerminalAiModel(event.sessionId, event.value as AiModel);
-        break;
-      case 'setLogAiModel':
-        sessionStore.setLogAiModel(event.sessionId, event.value as AiModel);
-        break;
-      case 'setLogAiContextMode':
-        sessionStore.setLogAiContextMode(event.sessionId, event.value as LogAiContextMode);
-        break;
-      case 'setLogAiFrameLimit':
-        sessionStore.setLogAiFrameLimit(event.sessionId, Number(event.value));
-        break;
-      case 'addLogAiMessage':
-        sessionStore.addLogAiMessage(
-          event.sessionId,
-          event.value as Omit<AiChatMessage, 'id' | 'timestamp'>,
-        );
-        break;
-      case 'clearLogAiMessages':
-        sessionStore.clearLogAiMessages(event.sessionId);
-        break;
-      default:
-        break;
-    }
-  }
 }

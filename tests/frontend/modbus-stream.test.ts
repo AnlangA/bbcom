@@ -6,7 +6,7 @@ import {
   recordsToRegisterDefs,
   snapshotFromRegisters,
   type ModbusStreamRecord,
-} from '../../src/lib/modbus-stream.ts';
+} from '../../src/lib/modbus';
 import type { ModbusRegister } from '../../src/types/index.ts';
 
 const sample: ModbusStreamRecord = {

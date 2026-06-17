@@ -6,37 +6,34 @@ import {
   modbusReadRowCount,
   type ModbusReadBatch,
   type ModbusWriteBatch,
-} from '../lib/modbus-batches';
+} from '../lib/modbus';
 import {
   runModbusReadBatches,
   runModbusWriteBatches,
   type ModbusPeriodicBatchContext,
   type ModbusBatchStatusEvent,
-} from '../lib/modbus-batch-runner';
-import { ModbusLoopCoordinator } from '../lib/modbus-loop-coordinator';
+} from '../lib/modbus';
+import { ModbusLoopCoordinator } from '../lib/modbus';
 import {
   ModbusPeriodicOutcomeTracker,
   type ModbusPeriodicScope,
   type ModbusTransactionOutcome,
-} from '../lib/modbus-periodic-outcome';
-import { buildModbusReadWireRequest } from '../lib/modbus-request-builder';
-import { mapModbusReadResponse, type ModbusSample } from '../lib/modbus-response-mapper';
-import { ModbusReplayCoordinator } from '../lib/modbus-replay-coordinator';
-import {
-  ModbusTransactionRunner,
-  type ModbusTransactionStatus,
-} from '../lib/modbus-transaction-runner';
+} from '../lib/modbus';
+import { buildModbusReadWireRequest } from '../lib/modbus';
+import { mapModbusReadResponse, type ModbusSample } from '../lib/modbus';
+import { ModbusReplayCoordinator } from '../lib/modbus';
+import { ModbusTransactionRunner, type ModbusTransactionStatus } from '../lib/modbus';
 import {
   buildModbusReplayWriteTargets,
   hasPeriodicWritableRows,
   ModbusWriteSource,
   type ModbusReplayWriteTarget,
-} from '../lib/modbus-write-source';
-import type { ModbusStreamRecord } from '../lib/modbus-stream';
+} from '../lib/modbus';
+import type { ModbusStreamRecord } from '../lib/modbus';
 import { useSessionStore } from '../stores/sessions';
 import type { ModbusMasterConfig, ModbusRegister } from '../types';
 
-export type { ModbusSample } from '../lib/modbus-response-mapper';
+export type { ModbusSample } from '../lib/modbus';
 
 interface UseModbusMasterOptions {
   sessionId: string;

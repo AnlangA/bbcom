@@ -13,9 +13,16 @@ import type { DataFrame } from '../types';
 // line and there is no file handle to leak.
 const pendingAppends = new Map<string, Promise<void>>();
 
-export function useAutoLog() {
+/** Injectable append sink (defaults to the real IPC) so the serialization chain
+ *  is unit-testable without a Tauri runtime. */
+export interface UseAutoLogDeps {
+  appendLog?: (path: string, line: string) => Promise<void>;
+}
+
+export function useAutoLog(deps: UseAutoLogDeps = {}) {
   const sessionStore = useSessionStore();
   const appStore = useAppStore();
+  const doAppend = deps.appendLog ?? invokeAppendLog;
 
   /**
    * Prompt for a log file and start auto-logging TX/RX frames to it. Returns
@@ -50,7 +57,7 @@ export function useAutoLog() {
 
     const prev = pendingAppends.get(sessionId) ?? Promise.resolve();
     const next = prev
-      .then(() => invokeAppendLog(path, line))
+      .then(() => doAppend(path, line))
       .catch((e) => {
         logger.warn('auto-log append failed for', sessionId, e);
       });

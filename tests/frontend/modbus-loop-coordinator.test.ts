@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ModbusLoopCoordinator } from '../../src/lib/modbus-loop-coordinator.ts';
+import { ModbusLoopCoordinator } from '../../src/lib/modbus';
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

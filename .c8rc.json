@@ -1,0 +1,20 @@
+{
+  "reporter": ["text", "text-summary", "html"],
+  "include": ["src/**"],
+  "exclude": [
+    "src/main.ts",
+    "src/**/*.vue",
+    "src/AiWindow.vue",
+    "src/App.vue",
+    "tests/**",
+    "src/**/*.d.ts",
+    "src/types/**"
+  ],
+  "all": true,
+  "check-coverage": true,
+  "branches": 88,
+  "functions": 88,
+  "lines": 85,
+  "statements": 85,
+  "report-dir": "coverage/frontend"
+}

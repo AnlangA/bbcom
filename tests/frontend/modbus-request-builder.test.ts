@@ -5,14 +5,14 @@ import {
   buildModbusWriteWireRequest,
   expectedReadResponseLength,
   expectedWriteResponseLength,
-} from '../../src/lib/modbus-request-builder.ts';
-import { buildModbusWriteBatches, type ModbusReadBatch } from '../../src/lib/modbus-batches.ts';
+} from '../../src/lib/modbus';
+import { buildModbusWriteBatches, type ModbusReadBatch } from '../../src/lib/modbus';
 import {
   readRequest,
   writeMultipleCoilsRequest,
   writeMultipleRegistersRequest,
   writeSingleRegisterRequest,
-} from '../../src/lib/modbus-transport.ts';
+} from '../../src/lib/modbus';
 import type { ModbusFunctionCode, ModbusRegister, ModbusValueType } from '../../src/types/index.ts';
 
 function reg(

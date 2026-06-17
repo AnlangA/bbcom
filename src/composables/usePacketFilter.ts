@@ -3,6 +3,7 @@ import type { DataFrame, DirectionFilter, PacketViewMode, SearchMode } from '../
 
 interface PacketFilterOptions {
   frames: Ref<DataFrame[]>;
+  framesVersion?: Readonly<Ref<unknown>>;
   searchMode: Ref<SearchMode>;
   packetViewMode: Ref<PacketViewMode>;
   getHexSearchData: (frame: DataFrame) => string;
@@ -13,6 +14,7 @@ const SEARCH_DEBOUNCE_MS = 150;
 
 export function usePacketFilter({
   frames,
+  framesVersion,
   searchMode,
   packetViewMode,
   getHexSearchData,
@@ -53,6 +55,11 @@ export function usePacketFilter({
   });
 
   const filteredFrames = computed(() => {
+    // Store-backed frame arrays are intentionally mutated in place for high
+    // baud-rate performance. The optional version ref is the explicit pulse
+    // that tells this computed to re-check the same array reference.
+    void framesVersion?.value;
+
     const query = searchQuery.value.trim().toLowerCase();
     const hasDirection = directionFilter.value !== 'ALL';
     const hasSearch = query.length > 0;
@@ -141,6 +148,16 @@ export function usePacketFilter({
     return merged;
   });
 
+  const filteredFrameCount = computed(() => {
+    void framesVersion?.value;
+    return filteredFrames.value.length;
+  });
+
+  const visibleFrameCount = computed(() => {
+    void framesVersion?.value;
+    return visibleFrames.value.length;
+  });
+
   onScopeDispose(() => {
     if (searchTimer) clearTimeout(searchTimer);
   });
@@ -149,6 +166,8 @@ export function usePacketFilter({
     directionFilter,
     searchInput,
     filteredFrames,
+    filteredFrameCount,
     visibleFrames,
+    visibleFrameCount,
   };
 }

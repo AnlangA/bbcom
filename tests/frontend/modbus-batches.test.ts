@@ -5,7 +5,7 @@ import {
   buildModbusWriteBatches,
   encodeModbusRegisterWriteValues,
   modbusDataValueCount,
-} from '../../src/lib/modbus-batches.ts';
+} from '../../src/lib/modbus';
 import type { ModbusFunctionCode, ModbusRegister, ModbusValueType } from '../../src/types/index.ts';
 
 function reg(

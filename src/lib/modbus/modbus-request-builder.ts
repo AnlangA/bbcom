@@ -1,4 +1,4 @@
-import { isBitFc } from './modbus';
+import { isBitFc } from './modbus-core';
 import {
   encodeModbusCoilWriteValues,
   encodeModbusRegisterWriteValues,

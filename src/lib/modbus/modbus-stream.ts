@@ -19,8 +19,8 @@
  * Pure TS (no Vue/DOM) → unit-testable under the `node --test` runner.
  */
 
-import { registerSpan } from './modbus';
-import type { ModbusFunctionCode, ModbusRegister, ModbusValueType } from '../types';
+import { registerSpan } from './modbus-core';
+import type { ModbusFunctionCode, ModbusRegister, ModbusValueType } from '../../types';
 
 /** One decoded sample of one register. */
 export interface ModbusStreamRecord {

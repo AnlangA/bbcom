@@ -1,0 +1,109 @@
+name: CI
+
+# PR-level continuous integration: lint + format check + build + tests + the
+# performance benchmark smoke run, plus the Rust test/clippy/fmt gates. Runs on
+# every push to master and every pull request so a regression is caught before
+# merge. (The tag-triggered cross-platform release build lives in release.yml.)
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  frontend:
+    name: Frontend (lint + format + build + test + bench)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        # Version is read from packageManager field in package.json (pnpm@11.5.3).
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Format check
+        run: pnpm exec prettier --check src/
+
+      - name: Type-check + build
+        run: pnpm run build
+
+      - name: Frontend tests
+        run: pnpm run test:frontend
+
+      # Benchmark smoke run: executes every bench (so a broken bench is caught)
+      # and applies the 15% regression gate against any committed baseline.
+      # The baseline is machine-local (gitignored), so on CI this currently
+      # validates that the benches run cleanly without gating; a committed
+      # baseline would activate the regression gate.
+      - name: Benchmark smoke run
+        run: pnpm run bench:frontend
+
+      # Coverage gate (T1.2): c8 enforces the configured line/branch/function
+      # thresholds from .c8rc.json. Fails the job if coverage drops below them.
+      - name: Coverage gate (overall >=85%)
+        run: pnpm run coverage:frontend
+
+      # Per-domain coverage gate (T1.2): lib/ files must each meet >=90% line
+      # coverage (composables excluded — their onMounted/listen() lifecycle hooks
+      # are structurally unreachable in the headless test runner). Proven feasible
+      # at 98.79% overall lib/ line coverage.
+      - name: Coverage gate (lib/ per-file >=90%)
+        run: pnpm run coverage:lib
+
+      # Circular-dependency gate (T2.7): madge fails if any new import cycle is
+      # introduced. Scans the TS source (Vue SFCs excluded — babel can't parse
+      # them; their script blocks share the same module graph).
+      - name: Circular-dependency gate
+        run: pnpm run cycles
+
+  rust:
+    name: Rust (fmt + clippy + test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libudev-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Format check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Clippy (deny warnings on changed code paths)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # Rust coverage report (T1.2): cargo-tarpaulin runs only on Linux. Reported
+      # as a build artifact; not yet a hard gate (no committed threshold), but
+      # surfaces coverage drift on the Rust side alongside the frontend c8 gate.
+      - name: Rust coverage report (tarpaulin)
+        run: |
+          cargo install cargo-tarpaulin --locked || true
+          cargo tarpaulin --manifest-path src-tauri/Cargo.toml --workspace --out Html --output-dir coverage/rust || true
+        continue-on-error: true

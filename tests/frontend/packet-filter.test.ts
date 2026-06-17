@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { effectScope, nextTick, ref } from 'vue';
+import { effectScope, nextTick, ref, shallowRef } from 'vue';
 import { formatHex, formatUtf8 } from '../../src/lib/format.ts';
 import { usePacketFilter } from '../../src/composables/usePacketFilter.ts';
 import type { DataFrame, PacketViewMode, SearchMode } from '../../src/types/index.ts';
@@ -147,6 +147,41 @@ test('frame view reflects frames appended after the initial compute', async () =
 
     assert.equal(filter.visibleFrames.value.length, 2);
     assert.deepEqual(Array.from(filter.visibleFrames.value[1].data), [2]);
+  });
+  scope.stop();
+});
+
+test('frame view follows an explicit version tick when the same frames array is mutated', async () => {
+  const scope = effectScope();
+  await scope.run(async () => {
+    const frames = shallowRef([makeFrame('1', 'RX', [1])]);
+    const framesVersion = ref(0);
+    const searchMode = ref<SearchMode>('TEXT');
+    const packetViewMode = ref<PacketViewMode>('FRAME');
+    const filter = usePacketFilter({
+      frames,
+      framesVersion,
+      searchMode,
+      packetViewMode,
+      getHexSearchData: (frame) => formatHex(frame.data).replace(/\s/g, '').toLowerCase(),
+      getTextSearchData: (frame) => formatUtf8(frame.data).toLowerCase(),
+    });
+
+    assert.equal(filter.visibleFrames.value.length, 1);
+    assert.equal(filter.filteredFrameCount.value, 1);
+    assert.equal(filter.visibleFrameCount.value, 1);
+
+    frames.value.push(makeFrame('2', 'TX', [2]));
+    framesVersion.value += 1;
+    await nextTick();
+
+    assert.equal(filter.visibleFrames.value.length, 2);
+    assert.equal(filter.filteredFrameCount.value, 2);
+    assert.equal(filter.visibleFrameCount.value, 2);
+    assert.deepEqual(
+      filter.visibleFrames.value.map((frame) => frame.id),
+      ['1', '2'],
+    );
   });
   scope.stop();
 });

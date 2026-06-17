@@ -26,8 +26,12 @@ import { concatUint8Arrays } from '../../src/lib/bytes.ts';
 import { LRUCache } from '../../src/lib/lru-cache.ts';
 import { ProtocolParser } from '../../src/lib/protocol-parser.ts';
 import { decodeFrameText, parseSampleLine } from '../../src/lib/waveform.ts';
+import { SerialRxQueue } from '../../src/lib/serial-rx-queue.ts';
+import { buildModbusReadBatches } from '../../src/lib/modbus';
+import { createPinia, setActivePinia } from 'pinia';
+import { useSessionStore } from '../../src/stores/sessions.ts';
 import { markRaw } from 'vue';
-import type { DataFrame } from '../../src/types.ts';
+import type { DataFrame, ModbusRegister, PortConfig } from '../../src/types.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = resolve(__dirname, '.perf-baseline.json');
@@ -247,6 +251,84 @@ test('bench: LRU format cache hit rate (1000-entry, repeated display)', () => {
       if (v === undefined) cache.set(key, formatHex(f.data));
     }
   }, 100);
+  console.log(`[bench] ${summarize(r)}`);
+  recordResult(r.name, r.opsPerSec);
+  assertNoRegression(r.name, r.opsPerSec);
+});
+
+// ---------------------------------------------------------------------------
+// Bench blind spots (T1.4): the RX-queue overflow drop path, the 50k-frame
+// session push, and Modbus read-batch composition. These are the three paths
+// previously uncovered by a microbench and most likely to regress silently.
+// ---------------------------------------------------------------------------
+
+test('bench: SerialRxQueue drop path (512 sustained overflowing enqueues)', () => {
+  // Tight queue so every enqueue after saturation exercises the head-drop path
+  // (shift + recordDrop) — the backpressure safety net for high-baud bursts.
+  const queue = new SerialRxQueue({ maxBytes: 64 * 1024, maxChunks: 512 });
+  const chunk = new Uint8Array(256);
+  const r = benchMedian('serialrxqueue_drop_512', () => {
+    queue.reset();
+    for (let i = 0; i < 512; i++) queue.enqueue(chunk);
+  }, 50);
+  console.log(`[bench] ${summarize(r)} | dropped ${queue.totalDroppedBytes} bytes`);
+  recordResult(r.name, r.opsPerSec);
+  assertNoRegression(r.name, r.opsPerSec);
+});
+
+test('bench: sessions store 50k-frame push (addFrame hot path)', () => {
+  // The per-frame store mutation that dominates a long capture. Uses a fresh
+  // store per iteration to measure allocation + bounded-buffer trim, not the
+  // persistence debounce (which is async and would add noise).
+  const cfg: PortConfig = {
+    baudRate: 115200,
+    dataBits: 8,
+    stopBits: 1,
+    parity: 'none',
+    flowControl: 'none',
+    dtr: false,
+    rts: false,
+  };
+  const seed: Array<{ direction: DataFrame['direction']; data: Uint8Array }> = FRAMES.map((f) => ({
+    direction: f.direction,
+    data: f.data,
+  }));
+  const r = benchMedian('sessions_push_50k', () => {
+    setActivePinia(createPinia());
+    const store = useSessionStore();
+    const id = store.createSession('BENCH', cfg);
+    for (let i = 0; i < seed.length; i++) {
+      store.addFrame(id, { direction: seed[i].direction, data: seed[i].data });
+    }
+  }, 1);
+  console.log(`[bench] ${summarize(r)}`);
+  recordResult(r.name, r.opsPerSec);
+  assertNoRegression(r.name, r.opsPerSec);
+});
+
+test('bench: Modbus read-batch composition (256 contiguous holding regs)', () => {
+  // Batching turns a flat register table into the minimal set of PDU read
+  // requests. With contiguous rows this collapses to a handful of batches; with
+  // fragmented rows it stays linear. Measure the contiguous best case (the
+  // common polling layout) so a regression in the coalescing loop is caught.
+  const regs: ModbusRegister[] = Array.from({ length: 256 }, (_, i) => ({
+    id: `r${i}`,
+    name: `reg${i}`,
+    slaveAddress: 1,
+    functionCode: 3,
+    address: i,
+    quantity: 1,
+    type: 'uint16',
+    waveformChannel: null,
+    value: null,
+    valueTs: null,
+    periodicRead: true,
+    periodicWrite: false,
+  }));
+  const r = benchMedian('modbus_readbatch_256', () => {
+    const batches = buildModbusReadBatches(regs);
+    if (batches.length === 0) throw new Error('expected at least one batch');
+  }, 200);
   console.log(`[bench] ${summarize(r)}`);
   recordResult(r.name, r.opsPerSec);
   assertNoRegression(r.name, r.opsPerSec);

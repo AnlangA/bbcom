@@ -7,7 +7,7 @@ import {
   frameRequest,
   readRequest,
   writeSingleRegisterRequest,
-} from '../../src/lib/modbus-transport.ts';
+} from '../../src/lib/modbus';
 import { useSessionStore } from '../../src/stores/sessions.ts';
 import type {
   ModbusFunctionCode,

@@ -3,13 +3,24 @@ import { listen } from '@tauri-apps/api/event';
 import { getAiWindowState, hideAiWindow, showAiWindow, type AiWindowState } from '../lib/ipc';
 import { logger } from '../lib/logger';
 
-export function useAiWindowState() {
+/** Injectable AI-window control surface so the toggle/refresh logic is
+ *  unit-testable without a Tauri runtime. Defaults wire through to the real IPC. */
+export interface UseAiWindowStateDeps {
+  getState?: () => Promise<AiWindowState>;
+  show?: () => Promise<void>;
+  hide?: () => Promise<void>;
+}
+
+export function useAiWindowState(deps: UseAiWindowStateDeps = {}) {
   const visible = ref(false);
   let unlisten: (() => void) | null = null;
+  const getState = deps.getState ?? getAiWindowState;
+  const showWindow = deps.show ?? showAiWindow;
+  const hideWindow = deps.hide ?? hideAiWindow;
 
   async function refresh() {
     try {
-      const state = await getAiWindowState();
+      const state = await getState();
       visible.value = state.visible;
     } catch (e) {
       logger.debug('ai-window state query failed:', e);
@@ -20,10 +31,10 @@ export function useAiWindowState() {
   async function toggle() {
     try {
       if (visible.value) {
-        await hideAiWindow();
+        await hideWindow();
         visible.value = false;
       } else {
-        await showAiWindow();
+        await showWindow();
         visible.value = true;
       }
     } catch (e) {

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { computed } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import { useSessionStore } from '../../src/stores/sessions.ts';
 import { setMaxBufferFrames } from '../../src/lib/buffer-config.ts';
@@ -300,6 +301,35 @@ test('modbus register edits are normalized after a row is added', async () => {
     assert.deepEqual(reg.values, [1, 2]);
     assert.equal(reg.valueTs, 123);
   });
+});
+
+test('modbus register additions notify consumers holding the session object', () => {
+  const s = store();
+  const id = s.createSession('COM13', cfg);
+  const session = s.sessions[0];
+  const registerCount = computed(() => session.modbusRegisters.length);
+  const firstName = computed(() => session.modbusRegisters[0]?.name ?? '');
+
+  assert.equal(session.isConnected, false);
+  assert.equal(registerCount.value, 0);
+
+  const regId = s.addModbusRegister(id, {
+    name: 'Offline temperature',
+    slaveAddress: 1,
+    functionCode: 0x03,
+    address: 10,
+    type: 'uint16',
+    waveformChannel: null,
+    periodicRead: true,
+    periodicWrite: false,
+  });
+
+  assert.ok(regId);
+  assert.equal(registerCount.value, 1);
+  assert.equal(firstName.value, 'Offline temperature');
+
+  s.updateModbusRegister(id, regId, { name: 'Edited offline temperature' });
+  assert.equal(firstName.value, 'Edited offline temperature');
 });
 
 test('modbus config is clamped to valid ranges on hydration', async () => {

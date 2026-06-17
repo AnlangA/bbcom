@@ -9,7 +9,7 @@ import {
   writeSingleRegisterRequest,
   writeMultipleRegistersRequest,
   type ModbusTransport,
-} from '../../src/lib/modbus-transport.ts';
+} from '../../src/lib/modbus';
 
 function asString(u: Uint8Array): string {
   return Array.from(u, (b) => b.toString(16).padStart(2, '0')).join(' ');

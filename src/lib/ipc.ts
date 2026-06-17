@@ -46,6 +46,38 @@ export async function invokeExportData(frames: DataFrame[], format: ExportFormat
   });
 }
 
+/**
+ * Serialize one DataFrame as a single JSONL line matching the Rust `DataFrame`
+ * serde shape ({"id","direction","timestamp","data":[...]}). Used by the F12
+ * IPC-bypass export path so each frame crosses IPC as a small text append
+ * (via append_log) instead of as a JSON object on the `frames` invoke argument.
+ */
+export function frameToJsonlLine(frame: DataFrame): string {
+  return JSON.stringify({
+    id: frame.id,
+    direction: frame.direction,
+    timestamp: frame.timestamp,
+    data: Array.from(frame.data),
+  });
+}
+
+/**
+ * F12 IPC-bypass export (T2.3). `captureFile` is a JSONL temp file the caller
+ * has already written (one DataFrame per line, via repeated invokeAppendLog).
+ * The Rust side reads+parses it, avoiding serialization of up to 100k DataFrame
+ * objects through the `invoke` argument. The wire shape is camelCase to match
+ * the Rust `CaptureFileExportRequest` (`#[serde(rename_all = "camelCase")]`).
+ */
+export async function invokeExportDataFromCaptureFile(
+  captureFile: string,
+  format: ExportFormat,
+  path: string,
+) {
+  return invoke<void>('export_data_from_capture_file', {
+    request: { captureFile, format, path },
+  });
+}
+
 /** Append a chunk of text to the auto-log file (created if missing). Stateless
  * on the Rust side; the caller serializes calls to preserve order. */
 export async function invokeAppendLog(path: string, content: string) {

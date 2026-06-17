@@ -29,6 +29,21 @@
         <span class="stat-label">{{ t('status.rate') }}</span>
         <span class="stat-value rate">{{ dataRate }}</span>
       </div>
+      <span v-if="session.isConnected && frameRate > 0" class="divider">|</span>
+      <div v-if="session.isConnected && frameRate > 0" class="stat" :title="t('status.frameRate')">
+        <span class="stat-label">{{ t('status.frameRate') }}</span>
+        <span class="stat-value">{{ frameRate }}/s</span>
+      </div>
+      <span v-if="bufferLevel" class="divider">|</span>
+      <div v-if="bufferLevel" class="stat" :title="t('status.bufferLevel')">
+        <span class="stat-label">{{ t('status.bufferLevel') }}</span>
+        <span class="stat-value">{{ bufferLevel }}</span>
+      </div>
+      <span v-if="droppedDisplay" class="divider">|</span>
+      <div v-if="droppedDisplay" class="stat" :title="t('status.dropped')">
+        <span class="stat-label">{{ t('status.dropped') }}</span>
+        <span class="stat-value dropped">{{ droppedDisplay }}</span>
+      </div>
       <span class="divider">|</span>
       <div class="stat">
         <span class="stat-label">{{ t('status.duration') }}</span>
@@ -58,13 +73,17 @@ const props = defineProps<{
   session: SerialSession | null;
 }>();
 
+import { maxBufferFrames } from '../../lib/buffer-config';
+
 const now = ref(Date.now());
 let timer: ReturnType<typeof setInterval> | null = null;
 let prevTxBytes = 0;
 let prevRxBytes = 0;
+let prevFrames = 0;
 let lastSampleTime = 0;
 const txRate = ref(0);
 const rxRate = ref(0);
+const frameRate = ref(0);
 
 watch(
   () => props.session?.isConnected,
@@ -76,6 +95,7 @@ watch(
     if (connected) {
       prevTxBytes = props.session?.txBytes ?? 0;
       prevRxBytes = props.session?.rxBytes ?? 0;
+      prevFrames = props.session?.frames.length ?? 0;
       lastSampleTime = Date.now();
       timer = setInterval(() => {
         now.value = Date.now();
@@ -92,8 +112,13 @@ watch(
             txRate.value = Math.round(txDelta / elapsed);
             rxRate.value = Math.round(rxDelta / elapsed);
           }
+          // Frames-per-second: sample the live frame count delta (T3.5).
+          let frameDelta = props.session.frames.length - prevFrames;
+          if (frameDelta < 0) frameDelta = props.session.frames.length;
+          frameRate.value = Math.round(frameDelta / elapsed);
           prevTxBytes = props.session.txBytes;
           prevRxBytes = props.session.rxBytes;
+          prevFrames = props.session.frames.length;
           lastSampleTime = now.value;
         }
       }, 1000);
@@ -111,9 +136,11 @@ watch(
     now.value = Date.now();
     prevTxBytes = props.session?.txBytes ?? 0;
     prevRxBytes = props.session?.rxBytes ?? 0;
+    prevFrames = props.session?.frames.length ?? 0;
     lastSampleTime = Date.now();
     txRate.value = 0;
     rxRate.value = 0;
+    frameRate.value = 0;
   },
 );
 
@@ -132,6 +159,19 @@ const dataRate = computed(() => {
 const duration = computed(() => {
   if (!props.session?.startTime) return '--:--:--';
   return formatDuration(now.value - props.session.startTime);
+});
+
+/** Buffer level: how full the rolling frame buffer is (T3.5). */
+const bufferLevel = computed(() => {
+  if (!props.session) return '';
+  const pct = Math.round((props.session.frames.length / maxBufferFrames.value) * 100);
+  return `${props.session.frames.length}/${maxBufferFrames.value} (${pct}%)`;
+});
+
+/** Cumulative dropped bytes this connection (T3.5). */
+const droppedDisplay = computed(() => {
+  if (!props.session || props.session.droppedBytes === 0) return '';
+  return formatBytes(props.session.droppedBytes);
 });
 </script>
 
@@ -153,7 +193,11 @@ const duration = computed(() => {
   overflow-y: hidden;
 }
 
-.stat {
+.stat,
+.status-pill {
+  /* U-b (T3.3): unified status-pill base — every metric chip (port, rate,
+     frames/s, buffer, dropped, TX/RX) shares this contract so the StatusBar
+     has one visual rhythm instead of two subtly-different ones. */
   display: flex;
   align-items: center;
   gap: 5px;
@@ -188,6 +232,11 @@ const duration = computed(() => {
   font-size: 11px;
 }
 
+.stat-value.dropped {
+  color: var(--accent-amber);
+  font-weight: 600;
+}
+
 .traffic-stats {
   display: inline-flex;
   align-items: center;
@@ -199,7 +248,8 @@ const duration = computed(() => {
   border-radius: var(--radius-md);
 }
 
-.mini-stat {
+.mini-stat,
+.status-pill.traffic {
   display: inline-flex;
   align-items: center;
   gap: 5px;

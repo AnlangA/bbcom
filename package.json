@@ -19,7 +19,10 @@
     "bench:frontend:write": "BENCH_WRITE=1 node --test --experimental-strip-types --import ./tests/frontend/register-loader.mjs tests/frontend/perf.bench.ts",
     "bench:rust": "cargo bench --manifest-path src-tauri/Cargo.toml",
     "test": "pnpm run test:frontend && pnpm run test:rust",
-    "check": "pnpm run lint && pnpm run format:check && pnpm run build && pnpm run test"
+    "coverage:frontend": "c8 pnpm run test:frontend",
+    "cycles": "madge --circular --extensions ts --ts-config tsconfig.json src/",
+    "check": "pnpm run lint && pnpm run format:check && pnpm run build && pnpm run test",
+    "coverage:lib": "c8 --per-file --include='src/lib/**' --exclude='src/lib/ipc.ts' --exclude='src/lib/version.ts' --exclude='src/lib/storage.ts' --exclude='src/lib/secure-settings.ts' --exclude='src/lib/buffer-config.ts' --exclude='src/lib/locales/**' --lines=90 --branches=0 --functions=0 --statements=0 pnpm run test:frontend"
   },
   "dependencies": {
     "@tanstack/vue-virtual": "^3.0.0",
@@ -37,9 +40,11 @@
     "@eslint/js": "^9.39.4",
     "@tauri-apps/cli": "^2.0.0",
     "@vitejs/plugin-vue": "^5.0.0",
+    "c8": "^11.0.0",
     "eslint": "^9.0.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-vue": "^9.0.0",
+    "madge": "^8.0.0",
     "prettier": "^3.8.4",
     "rollup-plugin-visualizer": "^7.0.1",
     "typescript": "^5.6.0",

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ModbusTransactionRunner } from '../../src/lib/modbus-transaction-runner.ts';
-import { frameRequest, readRequest } from '../../src/lib/modbus-transport.ts';
-import type { ModbusTransactionStatus } from '../../src/lib/modbus-transaction-runner.ts';
+import { ModbusTransactionRunner } from '../../src/lib/modbus';
+import { frameRequest, readRequest } from '../../src/lib/modbus';
+import type { ModbusTransactionStatus } from '../../src/lib/modbus';
 
 function rtuReadRegs(slave: number, fc: number, regs: number[]): Uint8Array {
   const pdu = new Uint8Array(2 + regs.length * 2);

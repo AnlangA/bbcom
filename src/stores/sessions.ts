@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, markRaw, ref } from 'vue';
+import { computed, markRaw, shallowRef, shallowReactive, triggerRef, ref } from 'vue';
 import type {
   AiChatMessage,
   AiModel,
@@ -22,7 +22,7 @@ import {
   cloneModbusConfig,
   normalizeModbusRegister,
   normalizeModbusRegisters,
-} from '../lib/modbus-registers';
+} from '../lib/modbus';
 import {
   MAX_PERSISTED_SESSIONS,
   SESSION_STORAGE_KEY,
@@ -30,6 +30,7 @@ import {
   cloneParserConfig,
   createSessionRecord,
   hydrateSession,
+  migratePersistedFile,
   serializeSessionSnapshots,
   type PersistedSessionsFile,
 } from '../lib/session-persistence';
@@ -49,7 +50,7 @@ const PERSIST_DEBOUNCE_MS = 800;
 const PERSIST_MAX_WAIT_MS = 2_500;
 
 export const useSessionStore = defineStore('sessions', () => {
-  const sessions = ref<SerialSession[]>([]);
+  const sessions = shallowRef<SerialSession[]>([]);
   const activeSessionId = ref<string | null>(null);
   const cleanupFns = new Map<string, () => Promise<void>>();
   let loaded = false;
@@ -60,12 +61,50 @@ export const useSessionStore = defineStore('sessions', () => {
     () => sessions.value.find((s) => s.id === activeSessionId.value) ?? null,
   );
 
+  /**
+   * Reactivity signal for frame-count consumers. `sessions` is a shallowRef, so
+   * mutating `session.frames` (a plain array) does NOT auto-trigger the
+   * dependents that read `session.frames.length` (DataPacketList, StatusBar,
+   * ParserPanel, WaveformPanel, SessionTabs, SessionView). `framesVersion` is a
+   * plain ref bumped on every frame-affecting mutation; consumers may depend on
+   * it directly, and `triggerRef(sessions)` re-runs any effect/computed that
+   * read `sessions.value` (the path templates take). Together they replace the
+   * implicit deep-reactivity of the old `ref` without a deep:true watcher (AP-3).
+   */
+  const framesVersion = ref(0);
+  function notifyFramesChanged(): void {
+    framesVersion.value += 1;
+    triggerRef(sessions);
+  }
+
+  /**
+   * Wrap a plain session record in a shallowReactive proxy. This is the crux of
+   * the T2.2 reactivity model: the sessions array is a shallowRef (so pushing
+   * 100k+ frames never builds deep per-byte traps), but each session's scalar
+   * config fields (sendDraft, modbusConfig, isConnected, ...) must stay reactive
+   * so a `session.sendDraft = x` write flows to the component reading it WITHOUT
+   * relying on activeSession's computed cache (which returns the same proxy ref
+   * and therefore would not invalidate downstream render effects on its own).
+   *
+   * shallowReactive makes only the top-level keys reactive: nested objects
+   * (frames, modbusRegisters, logAiMessages) are kept raw, which is exactly what
+   * we want — those are mutated in bulk and surfaced via notifyFramesChanged /
+   * triggerRef(sessions) rather than per-element traps. Frame items are already
+   * markRaw'd at creation, so wrapping is a no-op for them.
+   */
+  function wrapSession(session: SerialSession): SerialSession {
+    return shallowReactive(session);
+  }
+
   function loadPersistedSessions() {
-    const saved = loadJson<PersistedSessionsFile>(SESSION_STORAGE_KEY, {
+    const raw = loadJson<PersistedSessionsFile>(SESSION_STORAGE_KEY, {
       version: SESSION_STORAGE_VERSION,
       activeSessionId: null,
       sessions: [],
     });
+    // COW-5: run the persisted blob through the versioned migration chain before
+    // hydrating, so a future shape change lands forward-compatible and testable.
+    const saved = migratePersistedFile(raw);
     if (!Array.isArray(saved.sessions)) {
       loaded = true;
       return;
@@ -74,7 +113,8 @@ export const useSessionStore = defineStore('sessions', () => {
     const restored = saved.sessions
       .slice(0, MAX_PERSISTED_SESSIONS)
       .map((raw) => hydrateSession(raw, { decorateFrame: markRaw }))
-      .filter((s): s is SerialSession => s !== null);
+      .filter((s): s is SerialSession => s !== null)
+      .map((session) => wrapSession(session));
     sessions.value = restored;
     activeSessionId.value =
       typeof saved.activeSessionId === 'string' &&
@@ -99,6 +139,9 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   function schedulePersist() {
+    // Always notify shallowRef consumers (every mutator calls this); the guard
+    // below only short-circuits the persistence debounce, not reactivity.
+    notifyFramesChanged();
     if (!loaded || !isLocalStorageAvailable()) return;
     const now = nowMillis();
     if (firstDirtyAt === 0) firstDirtyAt = now;
@@ -110,7 +153,7 @@ export const useSessionStore = defineStore('sessions', () => {
 
   function createSession(portName: string, portConfig: SerialSession['portConfig']): string {
     const id = crypto.randomUUID();
-    sessions.value.push(createSessionRecord(id, portName, portConfig));
+    sessions.value.push(wrapSession(createSessionRecord(id, portName, portConfig)));
     activeSessionId.value = id;
     schedulePersist();
     return id;
@@ -174,6 +217,15 @@ export const useSessionStore = defineStore('sessions', () => {
       session.startTime = null;
     }
     schedulePersist();
+  }
+
+  /** Mirror the SerialRxQueue's cumulative dropped-byte count onto the session
+   *  so the StatusBar can surface it as a live metric (T3.5). Runtime-only. */
+  function updateDroppedBytes(sessionId: string, total: number) {
+    const session = sessions.value.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.droppedBytes = total;
+    notifyFramesChanged();
   }
 
   function clearFrames(sessionId: string) {
@@ -326,9 +378,10 @@ export const useSessionStore = defineStore('sessions', () => {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return undefined;
     const id = crypto.randomUUID();
-    session.modbusRegisters.push(
+    session.modbusRegisters = [
+      ...session.modbusRegisters,
       normalizeModbusRegister({ ...reg, id, value: null, values: null, valueTs: null }),
-    );
+    ];
     schedulePersist();
     return id;
   }
@@ -342,11 +395,9 @@ export const useSessionStore = defineStore('sessions', () => {
     if (!session) return;
     const idx = session.modbusRegisters.findIndex((r) => r.id === regId);
     if (idx === -1) return;
-    session.modbusRegisters[idx] = normalizeModbusRegister({
-      ...session.modbusRegisters[idx],
-      ...patch,
-      id: session.modbusRegisters[idx].id,
-    });
+    session.modbusRegisters = session.modbusRegisters.map((reg, index) =>
+      index === idx ? normalizeModbusRegister({ ...reg, ...patch, id: reg.id }) : reg,
+    );
     schedulePersist();
   }
 
@@ -394,6 +445,7 @@ export const useSessionStore = defineStore('sessions', () => {
         valueTs: hit.valueTs,
       };
     });
+    notifyFramesChanged();
   }
 
   function setModbusConfig(sessionId: string, patch: Partial<ModbusMasterConfig>) {
@@ -483,12 +535,17 @@ export const useSessionStore = defineStore('sessions', () => {
     sessions,
     activeSessionId,
     activeSession,
+    // Reactivity signal: bump on every frame-affecting mutation. Consumers that
+    // read session.frames.length through the shallowRef sessions should track
+    // this (or rely on the triggerRef), since the frames array is non-reactive.
+    framesVersion,
     createSession,
     removeSession,
     setActiveSession,
     registerCleanup,
     addFrame,
     setConnected,
+    updateDroppedBytes,
     clearFrames,
     setCapturePaused,
     addSendHistory,

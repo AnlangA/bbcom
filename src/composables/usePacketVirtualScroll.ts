@@ -1,14 +1,26 @@
 import { computed, onUnmounted, ref, watch, type Ref } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
-import type { DataFrame } from '../types';
 
 interface PacketVirtualScrollOptions {
-  visibleFrames: Ref<DataFrame[]>;
   frameCount: Ref<number>;
   autoScroll: Ref<boolean>;
 }
 
 const ROW_HEIGHT = 28;
+
+/**
+ * Pure threshold test for "user is parked near the bottom of the scroll area",
+ * exported for unit testing. New frames should auto-scroll only when this is
+ * true. The 2× row-height slack lets the user scroll up a little without
+ * immediately losing auto-follow.
+ */
+export function isPinnedToBottom(
+  scrollTop: number,
+  scrollHeight: number,
+  clientHeight: number,
+): boolean {
+  return scrollHeight - scrollTop - clientHeight < ROW_HEIGHT * 2;
+}
 
 /**
  * Virtual scrolling for the packet list.
@@ -29,7 +41,6 @@ const ROW_HEIGHT = 28;
  * — the behavior of every professional serial terminal.
  */
 export function usePacketVirtualScroll({
-  visibleFrames,
   frameCount,
   autoScroll,
 }: PacketVirtualScrollOptions) {
@@ -38,7 +49,7 @@ export function usePacketVirtualScroll({
 
   const virtualizer = useVirtualizer(
     computed(() => ({
-      count: visibleFrames.value.length,
+      count: frameCount.value,
       getScrollElement: () => scrollRef.value,
       estimateSize: () => ROW_HEIGHT,
       overscan: 15,
@@ -54,7 +65,7 @@ export function usePacketVirtualScroll({
     // Track whether the user is parked near the bottom so new frames can
     // auto-scroll only when appropriate. The virtualizer handles its own range
     // updates on scroll — we do NOT remeasure here.
-    shouldAutoScroll.value = scrollHeight - scrollTop - clientHeight < ROW_HEIGHT * 2;
+    shouldAutoScroll.value = isPinnedToBottom(scrollTop, scrollHeight, clientHeight);
   }
 
   // Single-flight auto-scroll: a non-null rafId means a pin-to-bottom is

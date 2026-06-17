@@ -1,4 +1,4 @@
-import type { ModbusResponse } from './modbus';
+import type { ModbusResponse } from './modbus-core';
 import { ModbusBackoff, type ModbusBackoffOptions } from './modbus-backoff';
 import type { ModbusTransactionStatus } from './modbus-transaction-runner';
 

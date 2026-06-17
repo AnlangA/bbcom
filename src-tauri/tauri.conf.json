@@ -7,9 +7,7 @@
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
     "devUrl": "http://localhost:5173",
-    "frontendDist": "../dist",
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build"
+    "frontendDist": "../dist"
   },
   "app": {
     "windows": [
@@ -21,7 +19,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173 https://open.bigmodel.cn https://api.bigmodel.cn"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173"
     }
   },
   "bundle": {
@@ -34,5 +32,12 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "active": false,
+      "endpoints": [],
+      "pubkey": ""
+    }
   }
 }

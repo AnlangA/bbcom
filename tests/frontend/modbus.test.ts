@@ -22,7 +22,7 @@ import {
   registerCountForValues,
   registerSpan,
   verifyCrc,
-} from '../../src/lib/modbus.ts';
+} from '../../src/lib/modbus';
 
 function hex(...bytes: number[]): Uint8Array {
   return new Uint8Array(bytes);

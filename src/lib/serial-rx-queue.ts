@@ -22,12 +22,21 @@ export interface SerialRxQueueDrainResult {
  * Small, deterministic RX buffer used by the serial connection composable.
  * It keeps the newest bytes when the UI cannot flush fast enough and reports
  * exactly how much data was discarded.
+ *
+ * Implementation note: drops advance a `head` index (O(1)) rather than calling
+ * `Array.shift()` (O(n) re-index). This is the difference between an O(n²) and
+ * O(n) steady-state overflow loop at high baud, where every enqueue drops one
+ * chunk from the front. The live region is `[head, chunks.length)`; it is
+ * compacted when the dead prefix exceeds half the array so memory stays bounded
+ * without paying the copy on every drop.
  */
 export class SerialRxQueue {
   readonly maxBytes: number;
   readonly maxChunks: number;
 
   private chunks: Uint8Array[] = [];
+  /** Index of the oldest live chunk. Chunks in `[0, head)` are dropped/dead. */
+  private head = 0;
   private byteLength = 0;
   private droppedSinceDrainBytes = 0;
   private totalDropped = 0;
@@ -38,12 +47,17 @@ export class SerialRxQueue {
     this.maxChunks = positiveInteger('maxChunks', options.maxChunks);
   }
 
+  /** Number of live chunks (excluding the dropped prefix). */
+  private get liveCount(): number {
+    return this.chunks.length - this.head;
+  }
+
   get pendingBytes(): number {
     return this.byteLength;
   }
 
   get pendingChunks(): number {
-    return this.chunks.length;
+    return this.liveCount;
   }
 
   get droppedSinceDrain(): number {
@@ -59,11 +73,12 @@ export class SerialRxQueue {
     const wasOverflowNotified = this.overflowNotified;
 
     while (
-      this.chunks.length > 0 &&
-      (this.byteLength + bytes.length > this.maxBytes || this.chunks.length >= this.maxChunks)
+      this.liveCount > 0 &&
+      (this.byteLength + bytes.length > this.maxBytes || this.liveCount >= this.maxChunks)
     ) {
-      const dropped = this.chunks.shift();
-      if (!dropped) break;
+      const dropped = this.chunks[this.head];
+      this.chunks[this.head] = undefined as unknown as Uint8Array; // release reference
+      this.head += 1;
       this.byteLength -= dropped.length;
       this.recordDrop(dropped.length);
     }
@@ -71,10 +86,10 @@ export class SerialRxQueue {
     if (bytes.length > this.maxBytes) {
       const retained = bytes.slice(bytes.length - this.maxBytes);
       this.recordDrop(bytes.length - retained.length);
-      this.chunks.push(retained);
+      this.pushLive(retained);
       this.byteLength += retained.length;
     } else {
-      this.chunks.push(bytes);
+      this.pushLive(bytes);
       this.byteLength += bytes.length;
     }
 
@@ -84,15 +99,26 @@ export class SerialRxQueue {
       totalDroppedBytes: this.totalDropped,
       overflowStarted: !wasOverflowNotified && this.overflowNotified,
       pendingBytes: this.byteLength,
-      pendingChunks: this.chunks.length,
+      pendingChunks: this.liveCount,
     };
   }
 
+  /** Push a chunk, compacting the dead prefix first when it has grown past
+   *  half the backing array — bounds memory while keeping drops O(1) amortized. */
+  private pushLive(chunk: Uint8Array): void {
+    if (this.head > 0 && this.head >= this.chunks.length / 2) {
+      this.chunks = this.chunks.slice(this.head);
+      this.head = 0;
+    }
+    this.chunks.push(chunk);
+  }
+
   drain(): SerialRxQueueDrainResult {
-    const chunks = this.chunks;
+    const chunks = this.head === 0 ? this.chunks : this.chunks.slice(this.head);
     const byteLength = this.byteLength;
     const droppedSinceDrain = this.droppedSinceDrainBytes;
     this.chunks = [];
+    this.head = 0;
     this.byteLength = 0;
     this.droppedSinceDrainBytes = 0;
     return { chunks, byteLength, droppedSinceDrain };
@@ -100,6 +126,7 @@ export class SerialRxQueue {
 
   clearPending(): void {
     this.chunks = [];
+    this.head = 0;
     this.byteLength = 0;
     this.droppedSinceDrainBytes = 0;
   }

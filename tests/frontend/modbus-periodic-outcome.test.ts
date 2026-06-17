@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {
   ModbusPeriodicOutcomeTracker,
   isTrackablePeriodicFailure,
-} from '../../src/lib/modbus-periodic-outcome.ts';
-import type { ModbusResponse } from '../../src/lib/modbus.ts';
+} from '../../src/lib/modbus';
+import type { ModbusResponse } from '../../src/lib/modbus';
 
 const successResponse: ModbusResponse = {
   kind: 'write-ack',

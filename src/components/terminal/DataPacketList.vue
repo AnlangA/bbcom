@@ -50,16 +50,16 @@
         <n-dropdown
           :options="copyOptions"
           @select="handleCopySelect"
-          :disabled="filteredFrames.length === 0"
+          :disabled="filteredFrameCount === 0"
         >
-          <n-button size="tiny" quaternary :disabled="filteredFrames.length === 0">
+          <n-button size="tiny" quaternary :disabled="filteredFrameCount === 0">
             <template #icon>
               <Copy class="icon-sm" />
             </template>
             {{ t('packet.copy') }}
           </n-button>
         </n-dropdown>
-        <span class="frame-count">{{ filteredFrames.length }} / {{ frames.length }}</span>
+        <span class="frame-count">{{ filteredFrameCount }} / {{ totalFrameCount }}</span>
       </div>
     </div>
     <div class="packet-row packet-header" :style="{ gridTemplateColumns: columns }">
@@ -75,8 +75,8 @@
       @scroll.passive="onScroll"
       @keydown="onKeydown"
     >
-      <div v-if="visibleFrames.length === 0" class="packet-empty">
-        {{ frames.length === 0 ? t('packet.empty') : t('packet.noMatch') }}
+      <div v-if="visibleFrameCount === 0" class="packet-empty">
+        {{ totalFrameCount === 0 ? t('packet.empty') : t('packet.noMatch') }}
       </div>
       <div :style="{ height: `${totalSize}px`, width: '100%', position: 'relative' }">
         <PacketRow
@@ -122,6 +122,7 @@ import { computed, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, NSelect, useMessage } from 'naive-ui';
 import { Copy, Search } from 'lucide-vue-next';
 import { useAppStore } from '../../stores/app';
+import { useSessionStore } from '../../stores/sessions';
 import { usePacketFilter } from '../../composables/usePacketFilter';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
 import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
@@ -151,8 +152,14 @@ const props = defineProps<{
 }>();
 
 const appStore = useAppStore();
+const sessionStore = useSessionStore();
 const message = useMessage();
 const framesRef = toRef(props, 'frames');
+const framesVersion = computed(() => sessionStore.framesVersion);
+const totalFrameCount = computed(() => {
+  void framesVersion.value;
+  return props.frames.length;
+});
 
 const ctxShow = ref(false);
 const ctxX = ref(0);
@@ -190,16 +197,24 @@ const { formatFrame, getHexSearchData, getTextSearchData, stripAnsi, clearCaches
   });
 
 watch(
-  () => props.frames.length,
-  (newLen, oldLen) => {
+  () => [framesVersion.value, props.frames.length] as const,
+  ([, newLen], [, oldLen]) => {
     if (newLen < oldLen) {
       clearCaches();
     }
   },
 );
 
-const { directionFilter, searchInput, filteredFrames, visibleFrames } = usePacketFilter({
+const {
+  directionFilter,
+  searchInput,
+  filteredFrames,
+  filteredFrameCount,
+  visibleFrames,
+  visibleFrameCount,
+} = usePacketFilter({
   frames: framesRef,
+  framesVersion,
   searchMode: computed(() => appStore.searchMode),
   packetViewMode: computed(() => appStore.packetViewMode),
   getHexSearchData,
@@ -207,8 +222,7 @@ const { directionFilter, searchInput, filteredFrames, visibleFrames } = usePacke
 });
 
 const { scrollRef, virtualItems, totalSize, onScroll } = usePacketVirtualScroll({
-  visibleFrames,
-  frameCount: computed(() => props.frames.length),
+  frameCount: visibleFrameCount,
   autoScroll: computed(() => appStore.autoScroll),
 });
 
@@ -223,6 +237,12 @@ const useHtml = computed(() => packetUsesHtml(appStore.displayMode, appStore.ans
 // string; combined with v-memo on <PacketRow>, unchanged rows skip the v-html
 // diff entirely when only the buffer grows.
 const rows = computed<PacketRowData[]>(() => {
+  // The frames array is mutated in place, so row construction must depend on
+  // the explicit frame pulse even when the array reference and length are stable
+  // after buffer trimming.
+  void framesVersion.value;
+  void visibleFrameCount.value;
+
   return buildPacketRows({
     virtualItems: virtualItems.value,
     frames: visibleFrames.value,

@@ -1,5 +1,5 @@
 import { parseFrame, scanResponse, type ModbusTransport } from './modbus-transport';
-import type { ModbusResponse } from './modbus';
+import type { ModbusResponse } from './modbus-core';
 
 export type ModbusTransactionStatus = { kind: 'timeout' } | { kind: 'error'; message: string };
 

@@ -3,7 +3,7 @@ import type {
   ModbusMasterConfig,
   ModbusRegister,
   ModbusValueType,
-} from '../types';
+} from '../../types';
 import {
   MODBUS_LIMITS,
   isBitFc,
@@ -11,7 +11,7 @@ import {
   maxValueCountForRegisters,
   registerCountForValues,
   registerSpan,
-} from './modbus';
+} from './modbus-core';
 
 export const DEFAULT_MODBUS_CONFIG: ModbusMasterConfig = {
   transport: 'rtu',

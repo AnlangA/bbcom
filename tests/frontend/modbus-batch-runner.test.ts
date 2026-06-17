@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runModbusReadBatches, runModbusWriteBatches } from '../../src/lib/modbus-batch-runner.ts';
-import type { ModbusReadBatch, ModbusWriteBatch } from '../../src/lib/modbus-batches.ts';
+import { runModbusReadBatches, runModbusWriteBatches } from '../../src/lib/modbus';
+import type { ModbusReadBatch, ModbusWriteBatch } from '../../src/lib/modbus';
 import type { ModbusFunctionCode, ModbusRegister, ModbusValueType } from '../../src/types/index.ts';
 
 function reg(

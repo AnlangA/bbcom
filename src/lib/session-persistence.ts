@@ -27,7 +27,7 @@ import {
   normalizeModbusConfig,
   normalizeModbusRegisters,
   persistableModbusRegisters,
-} from './modbus-registers';
+} from './modbus';
 
 export const SESSION_STORAGE_KEY = 'bbcom-session-snapshots';
 export const SESSION_STORAGE_VERSION = 1;
@@ -86,6 +86,44 @@ export interface PersistedSessionsFile {
   version: number;
   activeSessionId: string | null;
   sessions: PersistedSession[];
+}
+
+/**
+ * Versioned persistence migration (COW-5).
+ *
+ * Every persisted blob carries a `version` tag. When a shape change lands, bump
+ * SESSION_STORAGE_VERSION and register a step here that upgrades a blob from the
+ * previous version to the new one. `migratePersistedFile` walks the chain from
+ * the blob's recorded version up to the current one, then re-stamps the version.
+ *
+ * This keeps backward compatibility explicit and testable: a legacy-data
+ * regression test only has to assert that an old blob migrates forward to the
+ * current shape (see session-persistence migration tests). Unknown/future
+ * versions (e.g. a downgrade) fall back to the last-known shape and are
+ * re-stamped rather than silently read as-is.
+ */
+export type MigrationStep = (raw: PersistedSessionsFile) => PersistedSessionsFile;
+
+/**
+ * Ordered migration steps. Index N upgrades a version-(N) blob to version-(N+1).
+ * Add a new entry at the end (and bump SESSION_STORAGE_VERSION) for each shape
+ * change. Currently empty: version 1 is the first versioned shape.
+ */
+export const MIGRATION_STEPS: readonly MigrationStep[] = [];
+
+/** Walk the migration chain from the blob's recorded version to the current one. */
+export function migratePersistedFile(raw: PersistedSessionsFile): PersistedSessionsFile {
+  let current = raw;
+  const startVersion = typeof raw.version === 'number' ? raw.version : 0;
+  // Run every step from the blob's version up to the latest known. Steps beyond
+  // the recorded version (a forward-compatible downgrade) are intentionally
+  // skipped — the blob is re-stamped to the latest step we actually applied.
+  const maxStep = Math.min(MIGRATION_STEPS.length, Math.max(0, startVersion));
+  for (let v = maxStep; v < MIGRATION_STEPS.length; v += 1) {
+    current = MIGRATION_STEPS[v](current);
+  }
+  current.version = SESSION_STORAGE_VERSION;
+  return current;
 }
 
 interface SessionPersistenceOptions {
@@ -193,6 +231,7 @@ export function createSessionRecord(
     rxBytes: 0,
     txFrames: 0,
     rxFrames: 0,
+    droppedBytes: 0,
     startTime: null,
     sendHistory: [],
     sendDraft: '',

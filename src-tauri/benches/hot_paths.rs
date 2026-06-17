@@ -81,7 +81,7 @@ fn bench_export(c: &mut Criterion) {
                     for frame in frames {
                         let s = hex::format_hex(&frame.data);
                         use std::io::Write;
-                        write!(&mut buf, "[{}] {} | {}\n", frame.timestamp, "TX", s).unwrap();
+                        writeln!(&mut buf, "[{}] TX | {}", frame.timestamp, s).unwrap();
                     }
                     black_box(buf);
                 });

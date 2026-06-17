@@ -184,6 +184,7 @@ pnpm tauri:build    # Tauri packaging
 | `pnpm format:check`  | Check formatting without writing              |
 | `pnpm test:frontend` | Run frontend unit tests with Node test runner |
 | `pnpm test:rust`     | Run Rust unit tests                           |
+| `pnpm coverage:frontend` | Run frontend tests under `c8` with a coverage gate (`.c8rc.json`) |
 | `pnpm bench:frontend`| Run frontend hot-path microbenchmarks (regression-gated) |
 | `pnpm bench:rust`    | Run Rust `criterion` benchmarks (CRC, export) |
 | `pnpm check`         | Run format check, lint, build, and all tests  |
@@ -193,7 +194,7 @@ pnpm tauri:build    # Tauri packaging
 The hot paths are covered by regression-gated benchmarks so a performance drop
 fails CI just like a test failure:
 
-- **Frontend** (`pnpm bench:frontend`, `tests/frontend/perf.bench.ts`) — measures the per-frame formatting pipeline (`formatHex` / `formatUtf8`), the RX-flush `concatUint8Arrays`, the MERGED-view rebuild, and the LRU format-cache hit rate over 50 000 frames. A baseline is stored in `tests/frontend/.perf-baseline.json` (machine-local, git-ignored); refresh it with `pnpm bench:frontend:write` after an intentional optimization. A regression > 15 % fails the run.
+- **Frontend** (`pnpm bench:frontend`, `tests/frontend/perf.bench.ts`) — measures the per-frame formatting pipeline (`formatHex` / `formatUtf8`), the RX-flush `concatUint8Arrays`, the MERGED-view rebuild, the LRU format-cache hit rate, the `SerialRxQueue` overflow drop path, the 50 000-frame session push, and the Modbus read-batch composition. A baseline is stored in `tests/frontend/.perf-baseline.json` (machine-local, git-ignored); refresh it with `pnpm bench:frontend:write` after an intentional optimization. A regression > 15 % fails the run.
 - **Rust** (`pnpm bench:rust`, `src-tauri/benches/hot_paths.rs`) — `criterion` benchmarks for the checksum algorithms (sum8 / CRC-8 / CRC-16 / CRC-32), `format_hex`, and the export formatter (JSONL / TXT-HEX at 1 k and 10 k frames). Reports ns/µs/ms with statistical confidence.
 - **Bundle** — `ANALYZE=1 pnpm build` emits `dist/stats.html` (treemap) for chunk-size auditing.
 
@@ -204,7 +205,7 @@ bbcom/
 ├── src-tauri/                  # Rust backend
 │   ├── src/
 │   │   ├── commands/           # Tauri IPC commands
-│   │   │   ├── ai.rs           #   AI command generation + log analysis
+│   │   │   ├── ai/             #   AI command generation + log analysis (mod/cooldown/prompts/service/parser)
 │   │   │   ├── checksum.rs     #   Checksum / CRC calculation
 │   │   │   ├── export.rs       #   Data export entry point
 │   │   │   └── window.rs       #   AI assistant window commands

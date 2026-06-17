@@ -1,118 +1,29 @@
 <template>
   <div class="parser-panel">
-    <div class="parser-header">
-      <span class="pp-title">
-        <Binary class="icon-sm" />
-        {{ t('parser.title') }}
-      </span>
-      <div class="pp-config">
-        <n-select
-          :value="presetId"
-          :options="presetOptions"
-          :placeholder="t('parser.presetPlaceholder')"
-          size="tiny"
-          style="width: 150px"
-          @update:value="applyPreset"
-        />
-        <n-select
-          v-model:value="configKind"
-          :options="kindOptions"
-          size="tiny"
-          style="width: 96px"
-        />
-        <n-input
-          v-if="configKind === 'delimiter'"
-          v-model:value="delimiterHex"
-          size="tiny"
-          :placeholder="t('parser.delimiterPlaceholder')"
-          style="width: 130px"
-        />
-        <n-checkbox
-          v-if="configKind === 'delimiter'"
-          v-model:checked="includeDelimiter"
-          size="small"
-        >
-          {{ t('parser.includeDelimiter') }}
-        </n-checkbox>
-        <n-input-number
-          v-if="configKind === 'fixed'"
-          v-model:value="fixedSize"
-          size="tiny"
-          :min="1"
-          :max="65535"
-          style="width: 110px"
-        >
-          <template #suffix>B</template>
-        </n-input-number>
-        <template v-if="configKind === 'length'">
-          <n-input-number
-            v-model:value="lenOffset"
-            size="tiny"
-            :min="0"
-            :max="255"
-            style="width: 90px"
-          >
-            <template #suffix>off</template>
-          </n-input-number>
-          <n-select
-            v-model:value="lenSize"
-            :options="lenSizeOptions"
-            size="tiny"
-            style="width: 70px"
-          />
-          <n-checkbox v-model:checked="lenBigEndian" size="small">BE</n-checkbox>
-          <n-input-number
-            v-model:value="lenAdjust"
-            size="tiny"
-            :min="0"
-            :max="65535"
-            style="width: 90px"
-          >
-            <template #suffix>adj</template>
-          </n-input-number>
-        </template>
-      </div>
-      <button class="pp-close" type="button" :title="t('parser.close')" @click="emit('close')">
-        <X class="icon-sm" />
-      </button>
-    </div>
+    <ParserConfigBar
+      :preset-id="presetId"
+      :preset-options="presetOptions"
+      :kind-options="kindOptions"
+      :len-size-options="lenSizeOptions"
+      v-model:kind="configKind"
+      v-model:delimiter-hex="delimiterHex"
+      v-model:include-delimiter="includeDelimiter"
+      v-model:fixed-size="fixedSize"
+      v-model:len-offset="lenOffset"
+      v-model:len-size="lenSize"
+      v-model:len-big-endian="lenBigEndian"
+      v-model:len-adjust="lenAdjust"
+      @close="emit('close')"
+      @apply-preset="applyPreset"
+    />
 
-    <!-- Live stats row: frame count, total bytes, throughput, largest frame. -->
-    <div class="pp-stats">
-      <span class="stat">
-        <span class="stat-label">{{ t('session.stats.frames') }}</span>
-        <span class="stat-val">{{ parsedFrames.length }}</span>
-      </span>
-      <span class="stat">
-        <span class="stat-label">{{ t('common.bytes') }}</span>
-        <span class="stat-val">{{
-          t('parser.totalBytes', { bytes: formatBytes(totalBytes) })
-        }}</span>
-      </span>
-      <span v-if="throughputBps > 0" class="stat">
-        <span class="stat-label">{{ t('status.rate') }}</span>
-        <span class="stat-val">{{
-          t('parser.throughput', { rate: formatBytes(throughputBps) })
-        }}</span>
-      </span>
-      <span v-if="largestFrame > 0" class="stat">
-        <span class="stat-label">{{ t('parser.largestFrame') }}</span>
-        <span class="stat-val">{{ t('parser.largest', { bytes: largestFrame }) }}</span>
-      </span>
-      <div class="pp-search">
-        <n-input
-          v-model:value="searchTerm"
-          size="tiny"
-          :placeholder="t('parser.search')"
-          clearable
-          style="width: 180px"
-        >
-          <template #prefix>
-            <Search class="icon-sm search-icon" />
-          </template>
-        </n-input>
-      </div>
-    </div>
+    <ParserStatsBar
+      :frame-count="parsedFrames.length"
+      :total-bytes="totalBytes"
+      :throughput-bps="throughputBps"
+      :largest-frame="largestFrame"
+      v-model:search-term="searchTerm"
+    />
 
     <!-- Split body: frame list (left) + hex/ascii detail of the selected frame (right). -->
     <div class="parser-body">
@@ -141,48 +52,19 @@
           </button>
         </div>
       </div>
-      <div v-if="selectedFrame" class="pp-detail scrollbar-thin">
-        <div class="detail-head">
-          <span class="detail-title">{{ t('parser.detail') }}</span>
-          <span class="detail-meta">
-            {{ t('parser.detail.offset') }} {{ selectedFrame.offset }} ·
-            {{ t('parser.detail.bytes', { count: selectedFrame.data.length }) }}
-          </span>
-          <button
-            class="detail-copy"
-            type="button"
-            :title="t('parser.copy')"
-            @click="copyFrame(selectedFrame)"
-          >
-            <Copy class="icon-sm" />
-          </button>
-          <button
-            class="detail-copy"
-            type="button"
-            :title="t('parser.detail.copyAscii')"
-            @click="copyAscii(selectedFrame)"
-          >
-            <FileText class="icon-sm" />
-          </button>
-        </div>
-        <div v-for="row in detailDump" :key="row.offset" class="detail-row">
-          <span class="dump-offset">{{ row.offset.toString(16).padStart(4, '0') }}</span>
-          <span class="dump-hex">{{ row.hex }}</span>
-          <span class="dump-ascii">{{ row.ascii }}</span>
-        </div>
-      </div>
-      <div v-else class="pp-detail pp-detail-empty">
-        <Binary class="icon-lg detail-icon" />
-        <span>{{ t('parser.detail') }}</span>
-      </div>
+      <ParserFrameDetail
+        :frame="selectedFrame"
+        :dump="detailDump"
+        @copy="copyFrame(selectedFrame!)"
+        @copy-ascii="copyAscii(selectedFrame!)"
+      />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { NCheckbox, NInput, NInputNumber, NSelect, useMessage } from 'naive-ui';
-import { Binary, Copy, FileText, Search, X } from 'lucide-vue-next';
+import { useMessage } from 'naive-ui';
 import { hexDump, type ParserConfig, type ParserKind } from '../../lib/protocol-parser';
 import {
   ParserFrameCollector,
@@ -207,10 +89,14 @@ import {
   renderedParsedFrameWindow,
   truncateHexPreview,
 } from '../../lib/parser-panel';
-import { formatBytes, formatHex } from '../../lib/format';
+import { formatHex } from '../../lib/format';
 import { t } from '../../lib/i18n';
 import type { DataFrame } from '../../types';
 import { useSessionStore } from '../../stores/sessions';
+import ParserConfigBar from './ParserConfigBar.vue';
+import ParserStatsBar from './ParserStatsBar.vue';
+import ParserFrameDetail from './ParserFrameDetail.vue';
+import { Copy } from 'lucide-vue-next';
 
 const props = defineProps<{
   sessionId: string;
@@ -386,93 +272,6 @@ async function copyAscii(f: { data: Uint8Array }) {
   min-height: 0;
 }
 
-.parser-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-secondary);
-  font-size: 10px;
-  color: var(--text-muted);
-  flex-wrap: wrap;
-  flex-shrink: 0;
-}
-
-.pp-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 600;
-}
-
-.pp-config {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  flex-wrap: wrap;
-}
-
-.pp-close {
-  width: 18px;
-  height: 18px;
-  display: grid;
-  place-items: center;
-  background: transparent;
-  border: 0;
-  color: var(--text-dim);
-  cursor: pointer;
-  padding: 0;
-  border-radius: var(--radius-sm);
-}
-
-.pp-close:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.pp-stats {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-tertiary);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  flex-wrap: wrap;
-  flex-shrink: 0;
-}
-
-.stat {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  white-space: nowrap;
-}
-
-.stat-label {
-  color: var(--text-dim);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.stat-val {
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-}
-
-.pp-search {
-  margin-left: auto;
-}
-
-.search-icon {
-  color: var(--text-dim);
-}
-
 .parser-body {
   flex: 1;
   display: flex;
@@ -567,108 +366,5 @@ async function copyAscii(f: { data: Uint8Array }) {
 .pp-copy:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
-}
-
-.pp-detail {
-  width: 340px;
-  flex-shrink: 0;
-  overflow-y: auto;
-  padding: 6px 8px;
-  background: var(--bg-primary);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.pp-detail-empty {
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  color: var(--text-dim);
-  font-size: 11px;
-  text-align: center;
-}
-
-.detail-icon {
-  width: 32px;
-  height: 32px;
-  color: var(--text-dim);
-}
-
-.detail-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-bottom: 6px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid var(--border-subtle);
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.detail-title {
-  font-weight: 700;
-  color: var(--text-secondary);
-}
-
-.detail-meta {
-  flex: 1;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-dim);
-  text-transform: none;
-  letter-spacing: 0;
-}
-
-.detail-copy {
-  width: 18px;
-  height: 18px;
-  display: grid;
-  place-items: center;
-  background: transparent;
-  border: 0;
-  color: var(--text-dim);
-  cursor: pointer;
-  padding: 0;
-  border-radius: var(--radius-sm);
-}
-
-.detail-copy:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.detail-row {
-  display: grid;
-  grid-template-columns: 52px 1fr auto;
-  gap: 8px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 18px;
-  align-items: baseline;
-}
-
-.dump-offset {
-  color: var(--text-dim);
-}
-
-.dump-hex {
-  color: var(--accent-blue);
-  letter-spacing: 0.5px;
-  white-space: pre;
-  overflow-x: auto;
-}
-
-.dump-ascii {
-  color: var(--text-secondary);
-  white-space: pre;
-}
-
-@media (max-width: 720px) {
-  .pp-detail {
-    display: none;
-  }
 }
 </style>

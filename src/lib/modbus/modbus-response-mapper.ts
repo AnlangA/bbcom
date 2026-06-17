@@ -1,4 +1,4 @@
-import { decodeValues, type ModbusResponse } from './modbus';
+import { decodeValues, type ModbusResponse } from './modbus-core';
 import {
   modbusDataValueCount,
   modbusReadRowCount,

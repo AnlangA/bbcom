@@ -234,6 +234,34 @@ export function formatAscii(data: Uint8Array): string {
   return asciiDecoder.decode(data);
 }
 
+/**
+ * Format bytes as a hex-editor dual view: hex pairs on the left, ASCII
+ * representation on the right, grouped 16 bytes per line. This is the
+ * professional-hex-editor display mode (F-h / T3.9) that shows both the
+ * raw byte values and their decoded characters side by side, so a user can
+ * inspect a binary protocol without toggling modes.
+ */
+export function formatHexAscii(data: Uint8Array, bytesPerLine = 16): string {
+  const lines: string[] = [];
+  for (let offset = 0; offset < data.length; offset += bytesPerLine) {
+    const slice = data.subarray(offset, Math.min(offset + bytesPerLine, data.length));
+    let hex = '';
+    let ascii = '';
+    for (let i = 0; i < bytesPerLine; i += 1) {
+      if (i < slice.length) {
+        const b = slice[i];
+        hex += b.toString(16).padStart(2, '0').toUpperCase() + ' ';
+        ascii += b >= 0x20 && b <= 0x7e ? String.fromCharCode(b) : '.';
+      } else {
+        hex += '   ';
+        ascii += ' ';
+      }
+    }
+    lines.push(`${hex.trimEnd()}  |${ascii}|`);
+  }
+  return lines.join('\n');
+}
+
 export function encodeUtf8(data: string): Uint8Array {
   return textEncoder.encode(data);
 }
@@ -258,6 +286,8 @@ export function formatFrameData(data: Uint8Array, displayMode: DisplayMode): str
   switch (displayMode) {
     case 'HEX':
       return formatHex(data);
+    case 'HEXASCII':
+      return formatHexAscii(data);
     case 'UTF8':
       return formatUtf8(data);
     case 'ASCII':

@@ -54,6 +54,87 @@ pub async fn export_data(request: ExportRequest) -> Result<(), AppError> {
     formatter::export(&request.frames, &request.format, &request.path).await
 }
 
+/// F12 IPC-bypass export (T2.3). The frontend serializes the capture to a
+/// JSONL temp file (one `DataFrame` per line — the same shape the JSONL export
+/// emits) and passes only the temp-file path through IPC, instead of pushing
+/// up to 100 000 `DataFrame` objects (each with a `data: Vec<u8>` that serde
+/// expands to a JSON number array) through `invoke`. The Rust side reads and
+/// parses the file in a `spawn_blocking` task, then runs the normal formatter.
+///
+/// This avoids the dominant export cost — serializing the `frames` argument
+/// across the IPC boundary — at the price of one temp-file write+read. For a
+/// 10k-frame capture the temp file is far cheaper to transfer than 10k JSON
+/// objects (F12: very-large transfers are fastest via temp file).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureFileExportRequest {
+    /// Path to a JSONL temp file written by the frontend (one DataFrame/line).
+    pub capture_file: String,
+    pub format: ExportFormat,
+    pub path: String,
+}
+
+#[tauri::command]
+pub async fn export_data_from_capture_file(
+    request: CaptureFileExportRequest,
+) -> Result<(), AppError> {
+    let fmt = request.format;
+    let target = request.path.clone();
+    let capture_file = request.capture_file.clone();
+
+    // Validate the target path + read+parse the capture file off the async
+    // worker (blocking fs + parse work).
+    let parsed = tokio::task::spawn_blocking(move || -> Result<Vec<DataFrame>, AppError> {
+        validate_export_path(&target, fmt)?;
+        read_capture_file(&capture_file, &target)
+    })
+    .await
+    .map_err(|e| AppError::ExportError {
+        message: format!("capture-file export task failed: {e}"),
+        format: "unknown".to_string(),
+        path: request.path.clone(),
+    })??;
+
+    if parsed.len() > MAX_EXPORT_FRAMES {
+        return Err(AppError::ValidationError {
+            message: format!(
+                "too many frames: {} (max {})",
+                parsed.len(),
+                MAX_EXPORT_FRAMES
+            ),
+            field: "frames".to_string(),
+        });
+    }
+
+    formatter::export(&parsed, &request.format, &request.path).await
+}
+
+/// Read a JSONL capture file (one `DataFrame` per line) into a `Vec<DataFrame>`.
+/// Empty lines are skipped; a malformed line yields an ExportError. The `target`
+/// is used only for a more helpful error message.
+fn read_capture_file(capture_file: &str, target: &str) -> Result<Vec<DataFrame>, AppError> {
+    let content = std::fs::read_to_string(capture_file).map_err(|e| AppError::ExportError {
+        message: format!("failed to read capture file '{capture_file}': {e}"),
+        format: "jsonl".to_string(),
+        path: target.to_string(),
+    })?;
+    let mut frames = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let frame: DataFrame =
+            serde_json::from_str(trimmed).map_err(|e| AppError::ExportError {
+                message: format!("capture file line {} is not a valid frame: {e}", i + 1),
+                format: "jsonl".to_string(),
+                path: target.to_string(),
+            })?;
+        frames.push(frame);
+    }
+    Ok(frames)
+}
+
 fn validate_export_path(path: &str, format: ExportFormat) -> Result<(), AppError> {
     if path.trim().is_empty() {
         return Err(AppError::ValidationError {

@@ -9,7 +9,7 @@ import {
   writeSourceKey,
   writeSourceRecordKey,
   writeSourceRegisterKey,
-} from '../../src/lib/modbus-write-source.ts';
+} from '../../src/lib/modbus';
 import type { ModbusRegister } from '../../src/types/index.ts';
 
 function reg(

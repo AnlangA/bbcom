@@ -6,8 +6,8 @@ import {
   maxValueCountForRegisters,
   registerCountForValues,
   type ReadFc,
-} from './modbus';
-import type { ModbusRegister } from '../types';
+} from './modbus-core';
+import type { ModbusRegister } from '../../types';
 
 /** A grouped, contiguous read request the master will emit in one transaction. */
 export interface ModbusReadBatch {

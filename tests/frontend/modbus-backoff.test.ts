@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ModbusBackoff } from '../../src/lib/modbus-backoff.ts';
+import { ModbusBackoff } from '../../src/lib/modbus';
 
 test('keeps the base cadence for a single transient failure', () => {
   const backoff = new ModbusBackoff({ failureThreshold: 2, maxDelayMs: 1_000 });

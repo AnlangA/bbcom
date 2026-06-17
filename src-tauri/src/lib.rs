@@ -72,12 +72,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_serialplugin::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::ai::log_ai_assist,
             commands::ai::terminal_ai_assist,
             commands::checksum::calculate_checksum,
             commands::export::export_data,
+            commands::export::export_data_from_capture_file,
             commands::log::append_log,
+            commands::updater::check_for_updates,
             commands::window::get_ai_window_state,
             commands::window::hide_ai_window,
             commands::window::resize_ai_window,

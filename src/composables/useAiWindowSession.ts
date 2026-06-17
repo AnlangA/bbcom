@@ -11,10 +11,17 @@ interface PendingSnapshotResolver {
   timer: ReturnType<typeof setTimeout>;
 }
 
-export function useAiWindowSession() {
+/** Injectable Tauri event emitter so the session-mutation + emission logic is
+ *  unit-testable without the Tauri event bus. Defaults to the real `emit`. */
+export interface UseAiWindowSessionDeps {
+  emit?: (event: string, payload?: unknown) => Promise<void>;
+}
+
+export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
   const session = ref<SerialSession | null>(null);
   const unlisteners: Array<() => void> = [];
   const pendingSnapshotResolvers: PendingSnapshotResolver[] = [];
+  const doEmit = deps.emit ?? emit;
 
   onMounted(async () => {
     unlisteners.push(
@@ -34,7 +41,7 @@ export function useAiWindowSession() {
 
   async function refreshSession(timeoutMs = 1000): Promise<SerialSession | null> {
     const pending = waitForSnapshot(timeoutMs);
-    await emit('ai-session-snapshot-request');
+    await doEmit('ai-session-snapshot-request');
     return pending;
   }
 
@@ -66,7 +73,7 @@ export function useAiWindowSession() {
   }
 
   async function applyCommand(command: string) {
-    await emit('ai-command-apply', { command });
+    await doEmit('ai-command-apply', { command });
   }
 
   async function setTerminalAiModel(model: AiModel) {
@@ -111,7 +118,7 @@ export function useAiWindowSession() {
 
   async function emitUpdate(action: string, value: unknown) {
     if (!session.value) return;
-    await emit('ai-session-update', {
+    await doEmit('ai-session-update', {
       sessionId: session.value.id,
       action,
       value,

@@ -60,9 +60,9 @@ async fn export_text(frames: &[DataFrame], path: &str, ascii: bool) -> Result<()
         let data_str = data_to_string(&frame.data, ascii);
         // Vec<u8> implements std::fmt::Write, so write! appends UTF-8 bytes
         // without allocating a per-frame String.
-        write!(
+        writeln!(
             &mut buf,
-            "[{}] {} | {}\n",
+            "[{}] {} | {}",
             timestamp::format_timestamp(frame.timestamp),
             dir_label(&frame.direction),
             data_str
@@ -86,9 +86,9 @@ async fn export_csv(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
         // hex output is [0-9A-F ]+ — it never contains quotes, so the previous
         // unconditional replace('"', "\"\"") was dead work; drop it.
         let data_str = hex::format_hex(&frame.data);
-        write!(
+        writeln!(
             &mut buf,
-            "{},{},\"{}\"\n",
+            "{},{},\"{}\"",
             timestamp::format_timestamp(frame.timestamp),
             dir_label(&frame.direction),
             data_str

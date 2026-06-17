@@ -26,6 +26,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "time"] }
 zai-rs = "0.1.14"
+tauri-plugin-updater = "2.10.1"
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }

@@ -1,4 +1,4 @@
-import type { ModbusResponse } from './modbus';
+import type { ModbusResponse } from './modbus-core';
 import type { ModbusReadBatch, ModbusWriteBatch } from './modbus-batches';
 import {
   modbusPeriodicReadBatchKey,

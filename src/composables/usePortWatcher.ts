@@ -4,14 +4,22 @@ import { useSerialStore } from '../stores/serial';
 import { isRealSerialPort, mergePortLists } from '../lib/serial-utils';
 import { logger } from '../lib/logger';
 
-export function usePortWatcher(interval = 1500) {
+/** Injectable port enumerator so the refresh logic is unit-testable without a
+ *  Tauri serial runtime. Defaults to the real plugin. */
+export interface UsePortWatcherOptions {
+  /** Returns the raw available-ports map from the plugin. */
+  enumerate?: () => Promise<Record<string, unknown>>;
+}
+
+export function usePortWatcher(interval = 1500, options: UsePortWatcherOptions = {}) {
   const ports = ref<string[]>([]);
   const serialStore = useSerialStore();
   let timer: ReturnType<typeof setInterval> | null = null;
+  const enumerate = options.enumerate ?? (() => SerialPort.available_ports());
 
   async function refresh() {
     try {
-      const available = await SerialPort.available_ports();
+      const available = await enumerate();
       const detectedPaths = Object.keys(available).filter(isRealSerialPort);
 
       const newPorts = mergePortLists(ports.value, detectedPaths);

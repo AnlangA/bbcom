@@ -16,7 +16,7 @@ import {
   normalizeModbusRegisters,
   parseModbusValueInput,
   persistableModbusRegisters,
-} from '../../src/lib/modbus-registers.ts';
+} from '../../src/lib/modbus';
 import type { ModbusRegister } from '../../src/types/index.ts';
 
 test('normalizeModbusRegister clamps identity fields and preserves runtime values', () => {

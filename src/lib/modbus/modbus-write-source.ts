@@ -1,5 +1,5 @@
 import type { ModbusStreamRecord } from './modbus-stream';
-import type { ModbusFunctionCode, ModbusRegister } from '../types';
+import type { ModbusFunctionCode, ModbusRegister } from '../../types';
 
 export interface ModbusWriteTarget {
   reg: ModbusRegister;

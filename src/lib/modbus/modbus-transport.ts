@@ -23,7 +23,7 @@ import {
   parseResponse,
   type ModbusResponse,
   type ReadFc,
-} from './modbus';
+} from './modbus-core';
 
 export type ModbusTransport = 'rtu' | 'pdu';
 

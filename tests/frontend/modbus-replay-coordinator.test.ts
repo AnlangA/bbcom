@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ModbusReplayCoordinator } from '../../src/lib/modbus-replay-coordinator.ts';
+import { ModbusReplayCoordinator } from '../../src/lib/modbus';
 
 interface TestReplayItem {
   ts: number;

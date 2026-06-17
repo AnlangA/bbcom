@@ -19,6 +19,35 @@ const MAX_RX_QUEUE_CHUNKS = 512;
 const RECONNECT_INTERVAL_MS = 1500;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
+/** Result of validating + encoding a send payload (the input gate to COW-1's
+ *  serialized write chain). Exported for unit testing. */
+export type SendPayloadResult =
+  | { ok: true; payload: Uint8Array }
+  | { ok: false; reason: 'empty' | 'bad-hex' | 'too-large' };
+
+/**
+ * Validate and encode a `send(data, isHex)` call into a binary payload, without
+ * touching the port. Returns `ok:false` (with a reason) for empty input,
+ * unparseable/empty hex, or payloads exceeding MAX_INPUT_SIZE. Pure — the sole
+ * input gate every TX passes before entering the serialized write chain.
+ */
+export function buildSendPayload(data: string, isHex: boolean): SendPayloadResult {
+  let payload: Uint8Array;
+  if (isHex) {
+    try {
+      payload = parseHex(data);
+    } catch {
+      return { ok: false, reason: 'bad-hex' };
+    }
+    if (payload.length === 0) return { ok: false, reason: 'empty' };
+  } else {
+    if (data.length === 0) return { ok: false, reason: 'empty' };
+    payload = encodeUtf8(data);
+  }
+  if (payload.length > MAX_INPUT_SIZE) return { ok: false, reason: 'too-large' };
+  return { ok: true, payload };
+}
+
 interface SerialConnectionOptions {
   onDisconnect?: () => void;
   /** Fired once per connection when RX data is first dropped due to overflow. */
@@ -290,26 +319,9 @@ export function useSerialConnection(
   async function doSend(data: string, isHex: boolean): Promise<boolean> {
     if (!port.value) return false;
 
-    let payload: Uint8Array;
-    if (isHex) {
-      try {
-        payload = new Uint8Array(parseHex(data));
-      } catch {
-        return false;
-      }
-      if (payload.length === 0) {
-        return false;
-      }
-    } else {
-      if (data.length === 0) {
-        return false;
-      }
-      payload = encodeUtf8(data);
-    }
-
-    if (payload.length > MAX_INPUT_SIZE) {
-      return false;
-    }
+    const built = buildSendPayload(data, isHex);
+    if (!built.ok) return false;
+    const payload = built.payload;
 
     try {
       // writeBinary accepts Uint8Array directly and converts internally, so no

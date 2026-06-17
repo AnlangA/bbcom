@@ -178,3 +178,18 @@ pre {
 .animate-scale-in {
   animation: scale-in 300ms ease;
 }
+
+/* prefers-reduced-motion (T3.3 U-f): users who request reduced motion get
+   instant transitions and no keyframe animations. Covers the send-flash sweep,
+   fade/slide/scale entrances, the green connection pulse, and the toolbar /
+   sidebar transitions. Applied globally so every scoped animation is honored. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
