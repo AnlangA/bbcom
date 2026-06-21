@@ -119,6 +119,22 @@ export function crc16Modbus(bytes: Uint8Array): number {
   return crc & 0xffff;
 }
 
+/**
+ * Fold one byte into a running CRC-16/Modbus value. O(1) — exactly one step of
+ * the inner loop in `crc16Modbus`. Lets the RTU response scanner incrementally
+ * extend its CRC candidate as it grows the trial length, turning a per-offset
+ * O(upper²) full-rescan into O(upper). `crc16Modbus(bytes)` is equivalent to
+ * folding each byte in order starting from `0xffff`.
+ */
+export function crc16ModbusFoldByte(crc: number, byte: number): number {
+  crc ^= byte & 0xff;
+  for (let _b = 0; _b < 8; _b += 1) {
+    if (crc & 1) crc = (crc >>> 1) ^ 0xa001;
+    else crc >>>= 1;
+  }
+  return crc & 0xffff;
+}
+
 /** True if `frame` carries a valid CRC over all but the last two bytes. */
 export function verifyCrc(frame: Uint8Array): boolean {
   if (frame.length < 4) return false; // min ADU: addr + fc + crc(2)

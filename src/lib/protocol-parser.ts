@@ -53,9 +53,16 @@ export interface ParsedFrame {
 /**
  * A stateful byte-stream → frame parser. Feed RX bytes via `feed()`; each call
  * returns zero or more complete frames that were finalized in that batch.
+ *
+ * Backed by a growable `Uint8Array` with a `consumed` head index. Bytes are
+ * appended whole-chunk via `set()` (no per-byte push) and frame scanning reads
+ * the live window through a zero-copy `subarray` — the prior `number[]`-backed
+ * design pushed one boxed number per byte and sliced the live region on every
+ * extraction, which made a single feed carrying K frames over N buffered bytes
+ * cost O(K·N). This design is O(N) per feed regardless of frame count.
  */
 export class ProtocolParser {
-  private buffer: number[] = [];
+  private buffer: Uint8Array = new Uint8Array(0);
   private consumed = 0;
   readonly config: ParserConfig;
 
@@ -70,13 +77,43 @@ export class ProtocolParser {
 
   /** Append bytes and return any frames that became complete. */
   feed(input: Uint8Array): ParsedFrame[] {
-    for (let i = 0; i < input.length; i += 1) this.buffer.push(input[i]);
+    if (input.length === 0) return [];
+    this.append(input);
     return this.drain();
   }
 
   /** Drop all buffered bytes (e.g. on a user-requested flush). */
   reset(): void {
-    this.buffer = [];
+    this.buffer = new Uint8Array(0);
+    this.consumed = 0;
+  }
+
+  /**
+   * Append `input` to the live tail. Always produces a fresh backing array
+   * holding exactly `[live][input]` with `consumed` reset to 0 — a single
+   * allocation per feed regardless of input size. Capacity is doubled when it
+   * would help amortize growth across many small feeds.
+   */
+  private append(input: Uint8Array): void {
+    const live = this.buffer.length - this.consumed;
+    const need = live + input.length;
+    // Pick a capacity with room to grow so a stream of small feeds doesn't
+    // reallocate every time; never smaller than exactly what we need.
+    const cap = need > 64 && need <= this.buffer.length * 2 ? this.buffer.length * 2 : need;
+    const grown = new Uint8Array(cap);
+    grown.set(this.buffer.subarray(this.consumed), 0);
+    grown.set(input, live);
+    this.buffer = grown;
+    this.consumed = 0;
+  }
+
+  /** Drop the consumed head, shifting live bytes to the front. */
+  private compact(): void {
+    if (this.consumed === 0) return;
+    const live = this.buffer.subarray(this.consumed);
+    const fresh = new Uint8Array(live.length);
+    fresh.set(live);
+    this.buffer = fresh;
     this.consumed = 0;
   }
 
@@ -96,17 +133,17 @@ export class ProtocolParser {
     // Compact the buffer occasionally so it doesn't grow without bound when no
     // delimiter ever arrives (e.g. misconfigured length field).
     if (this.consumed > 0 && this.consumed >= this.buffer.length) {
-      this.buffer = [];
+      this.buffer = new Uint8Array(0);
       this.consumed = 0;
     } else if (this.consumed > 4096) {
-      this.buffer = this.buffer.slice(this.consumed);
-      this.consumed = 0;
+      this.compact();
     }
     return out;
   }
 
-  private view(): number[] {
-    return this.consumed === 0 ? this.buffer : this.buffer.slice(this.consumed);
+  /** Live window `[consumed, length)` — zero-copy; do not retain across appends. */
+  private view(): Uint8Array {
+    return this.consumed === 0 ? this.buffer : this.buffer.subarray(this.consumed);
   }
 
   private extractOne(): ParsedFrame | null {
@@ -116,7 +153,7 @@ export class ProtocolParser {
     if (this.config.kind === 'fixed') {
       const size = this.config.frameSize;
       if (view.length < size) return null;
-      const data = new Uint8Array(view.slice(0, size));
+      const data = sliceCopy(view, 0, size);
       this.consumed += size;
       return { data, offset: offsetBase };
     }
@@ -124,10 +161,10 @@ export class ProtocolParser {
     if (this.config.kind === 'delimiter') {
       const delim = this.config.delimiter;
       if (delim.length === 0) return null;
-      const idx = indexOfSubarray(view, delim);
+      const idx = indexOfSubarrayBytes(view, delim);
       if (idx === -1) return null;
       const end = this.config.includeDelimiter ? idx + delim.length : idx;
-      const data = new Uint8Array(view.slice(0, end));
+      const data = sliceCopy(view, 0, end);
       this.consumed += idx + delim.length;
       return { data, offset: offsetBase };
     }
@@ -154,10 +191,44 @@ export class ProtocolParser {
       return null;
     }
     if (view.length < total) return null;
-    const data = new Uint8Array(view.slice(0, total));
+    const data = sliceCopy(view, 0, total);
     this.consumed += total;
     return { data, offset: offsetBase };
   }
+}
+
+/** Copy `[start, start+len)` of `src` into a fresh standalone Uint8Array. */
+function sliceCopy(src: Uint8Array, start: number, len: number): Uint8Array {
+  const out = new Uint8Array(len);
+  out.set(src.subarray(start, start + len));
+  return out;
+}
+
+/**
+ * Find the first index of `needle` within `haystack` (subarray search), for the
+ * typed-array hot path. Fast-rejects on first/last byte before the inner compare
+ * loop so most non-matching offsets skip after 1–2 reads.
+ */
+export function indexOfSubarrayBytes(haystack: Uint8Array, needle: ArrayLike<number>): number {
+  const nLen = needle.length;
+  if (nLen === 0) return 0;
+  if (nLen > haystack.length) return -1;
+  const last = haystack.length - nLen;
+  const first = needle[0];
+  const final = needle[nLen - 1];
+  for (let i = 0; i <= last; i += 1) {
+    if (haystack[i] !== first) continue;
+    if (haystack[i + nLen - 1] !== final) continue;
+    let match = true;
+    for (let j = 1; j < nLen - 1; j += 1) {
+      if (haystack[i + j] !== needle[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return i;
+  }
+  return -1;
 }
 
 /** Find the first index of `needle` within `haystack` (subarray search). */
