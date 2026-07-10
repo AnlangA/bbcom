@@ -9,4 +9,10 @@ ignore = [
     # Deep transitive dep: gtk-rs 0.18 → wry → tauri-runtime-wry → tauri (Linux only)
     # Cannot update without tauri upstream
     "RUSTSEC-2024-0429",
+
+    # proc-macro-error 1.0.4 — unmaintained
+    # Deep transitive dep: glib-macros 0.18 → gtk-rs 0.18 → wry → tauri (Linux
+    # build-time proc-macro only). Same upstream root as RUSTSEC-2024-0429;
+    # cannot replace without bumping tauri/gtk-rs major versions.
+    "RUSTSEC-2024-0370",
 ]
