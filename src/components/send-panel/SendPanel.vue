@@ -98,12 +98,14 @@ import { useAppStore } from '../../stores/app';
 import { useSessionStore } from '../../stores/sessions';
 import { calculateChecksum } from '../../lib/ipc';
 import { t } from '../../lib/i18n';
-import { AsyncSendLoop } from '../../features/serial/application/async-send-loop';
 import type { ChecksumType, LineEnding, QuickCommand, SendHistoryEntry } from '../../types';
 import ToolsTabs from './ToolsTabs.vue';
 
 const props = defineProps<{
   onSend: (data: string, isHex: boolean) => Promise<boolean>;
+  onStartLoop: (data: string, isHex: boolean) => boolean;
+  onStopLoop: () => void;
+  looping: boolean;
   modelValue: string;
   disabled?: boolean;
   history: SendHistoryEntry[];
@@ -134,14 +136,9 @@ const loopInterval = computed({
   set: (value) => appStore.setLoopIntervalMs(value ?? 1000),
 });
 const appendChecksum = ref<'none' | ChecksumType>('none');
-const looping = ref(false);
+const looping = computed(() => props.looping);
 const showFlash = ref(false);
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
-const sendLoop = new AsyncSendLoop(
-  () => handleSend(),
-  () => loopInterval.value,
-  () => message.error(t('send.error.failed')),
-);
 
 const lineEndingOptions = computed(() => [
   { label: t('send.lineEnding.none'), value: 'none' },
@@ -185,7 +182,7 @@ const canSend = computed(() => {
 watch(
   () => props.disabled,
   (disabled) => {
-    if (disabled && looping.value) stopLoop();
+    if (disabled && looping.value) props.onStopLoop();
   },
 );
 
@@ -203,7 +200,6 @@ watch(
 );
 
 onUnmounted(() => {
-  stopLoop();
   if (flashTimer) clearTimeout(flashTimer);
 });
 
@@ -264,21 +260,16 @@ function triggerFlash() {
 
 function toggleLoop() {
   if (looping.value) {
-    stopLoop();
+    props.onStopLoop();
   } else {
-    startLoop();
+    void startLoop();
   }
 }
 
-function startLoop() {
-  if (!canSend.value || sendLoop.isRunning) return;
-  looping.value = true;
-  sendLoop.start();
-}
-
-function stopLoop() {
-  sendLoop.stop();
-  looping.value = false;
+async function startLoop() {
+  if (!canSend.value || looping.value) return;
+  const data = await buildData();
+  if (data !== null) props.onStartLoop(data, isHex.value);
 }
 
 function applyAiCommand(command: string) {

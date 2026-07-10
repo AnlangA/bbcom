@@ -1,5 +1,4 @@
 import { ref } from 'vue';
-import { save } from '@tauri-apps/plugin-dialog';
 import type { DataFrame, DisplayMode } from '../types';
 import {
   getCommandErrorMessage,
@@ -7,16 +6,18 @@ import {
   invokeAppendExportBatch,
   invokeBeginExport,
   invokeFinishExport,
+  requestSaveTarget,
   type ExportFramePayload,
+  type SaveTargetPurpose,
 } from '../lib/ipc';
 import { resolveExportFormat, type ExportChoice, type ExportFormat } from '../lib/constants';
 import { t } from '../lib/i18n';
 
-const EXT_MAP: Record<ExportChoice, { name: string; ext: string }> = {
-  txt: { name: 'TXT', ext: 'txt' },
-  csv: { name: 'CSV', ext: 'csv' },
-  jsonl: { name: 'JSONL', ext: 'jsonl' },
-  bin: { name: 'BIN', ext: 'bin' },
+const EXT_MAP: Record<ExportChoice, string> = {
+  txt: 'txt',
+  csv: 'csv',
+  jsonl: 'jsonl',
+  bin: 'bin',
 };
 
 /** `ok:true` on success; `ok:false` with no `error` when the user cancelled the save dialog. */
@@ -27,7 +28,7 @@ export const EXPORT_BATCH_MAX_BYTES = 4 * 1024 * 1024;
 export const EXPORT_FRAME_MAX_BYTES = 2 * 1024 * 1024;
 
 export interface ExportSessionClient {
-  begin(format: ExportFormat, path: string): Promise<string>;
+  begin(format: ExportFormat, targetGrant: string): Promise<string>;
   append(exportId: string, frames: ExportFramePayload[]): Promise<void>;
   finish(exportId: string): Promise<void>;
   abort(exportId: string): Promise<void>;
@@ -36,10 +37,11 @@ export interface ExportSessionClient {
 /** Injectable side-effects so the export flow can be unit-tested without a
  *  Tauri runtime. Defaults wire through to the real dialog + IPC. */
 export interface UseExportDeps {
-  /** Resolve a save path (or null when the user cancels). */
-  promptSave?: (choice: ExportChoice) => Promise<string | null>;
-  /** Explicit legacy test seam. Production uses the bounded session protocol. */
-  exportFrames?: (frames: DataFrame[], format: ExportFormat, path: string) => Promise<void>;
+  /** Backend save-dialog grant request seam used by tests. */
+  requestTarget?: (
+    purpose: SaveTargetPurpose,
+    suggestedName: string,
+  ) => ReturnType<typeof requestSaveTarget>;
   /** Injectable bounded-export client for unit tests. */
   sessionClient?: ExportSessionClient;
 }
@@ -61,17 +63,20 @@ export function useExport(deps: UseExportDeps = {}) {
   ): Promise<ExportResult> {
     isExporting.value = true;
     try {
-      const path = deps.promptSave
-        ? await deps.promptSave(choice)
-        : await defaultPromptSave(choice);
-      if (!path) return { ok: false };
-
       const format = resolveExportFormat(choice, displayMode);
-      if (deps.exportFrames) {
-        await deps.exportFrames(frames, format, path);
-      } else {
-        await exportWithSession(frames, format, path, deps.sessionClient ?? DEFAULT_SESSION_CLIENT);
-      }
+      const targetGrant = await requestExportTarget(
+        choice,
+        format,
+        deps.requestTarget ?? requestSaveTarget,
+      );
+      if (!targetGrant) return { ok: false };
+
+      await exportWithSession(
+        frames,
+        format,
+        targetGrant,
+        deps.sessionClient ?? DEFAULT_SESSION_CLIENT,
+      );
       return { ok: true };
     } catch (e) {
       // Surface the typed Rust error (path validation, IO, too-many-frames) instead
@@ -88,16 +93,29 @@ export function useExport(deps: UseExportDeps = {}) {
   };
 }
 
-async function defaultPromptSave(choice: ExportChoice): Promise<string | null> {
-  const filter = EXT_MAP[choice];
-  return save({
-    filters: [
-      {
-        name: filter.name,
-        extensions: [filter.ext],
-      },
-    ],
-  });
+async function requestExportTarget(
+  choice: ExportChoice,
+  format: ExportFormat,
+  requestTarget: typeof requestSaveTarget,
+): Promise<string | null> {
+  const suggestedName = `bbcom-export-${Date.now()}.${EXT_MAP[choice]}`;
+  const grant = await requestTarget(savePurposeForFormat(format), suggestedName);
+  return grant?.token ?? null;
+}
+
+export function savePurposeForFormat(format: ExportFormat): SaveTargetPurpose {
+  switch (format) {
+    case 'txt-hex':
+      return 'export-txt-hex';
+    case 'txt-ascii':
+      return 'export-txt-ascii';
+    case 'csv':
+      return 'export-csv';
+    case 'jsonl':
+      return 'export-jsonl';
+    case 'bin':
+      return 'export-bin';
+  }
 }
 
 /** Lazily convert frames into bounded IPC payloads so only one batch is
@@ -138,10 +156,10 @@ export function* createExportBatches(
 async function exportWithSession(
   frames: readonly DataFrame[],
   format: ExportFormat,
-  path: string,
+  targetGrant: string,
   client: ExportSessionClient,
 ): Promise<void> {
-  const exportId = await client.begin(format, path);
+  const exportId = await client.begin(format, targetGrant);
   let finished = false;
   try {
     for (const batch of createExportBatches(frames)) {

@@ -1,4 +1,4 @@
-import { ref, onUnmounted } from 'vue';
+import { ref } from 'vue';
 import { SerialPort } from 'tauri-plugin-serialplugin-api';
 import type { WatchHandle } from 'tauri-plugin-serialplugin-api';
 import { useSessionStore } from '../stores/sessions';
@@ -440,10 +440,6 @@ export function useSerialConnection(
     isConnected.value = false;
     sessionStore.setConnected(sessionId, false);
   }
-
-  onUnmounted(() => {
-    void stop();
-  });
 
   return {
     port,

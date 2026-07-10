@@ -38,8 +38,29 @@ export async function calculateChecksum(data: ArrayLike<number>, algorithm: Chec
 
 export type ExportFramePayload = Omit<DataFrame, 'data'> & { data: number[] };
 
-export async function invokeBeginExport(format: ExportFormat, path: string): Promise<string> {
-  return invoke<string>('begin_export', { request: { format, path } });
+export type SaveTargetPurpose =
+  'export-txt-hex' | 'export-txt-ascii' | 'export-csv' | 'export-jsonl' | 'export-bin' | 'auto-log';
+
+export interface SaveTargetGrant {
+  token: string;
+  displayPath: string;
+}
+
+export async function requestSaveTarget(
+  purpose: SaveTargetPurpose,
+  suggestedName: string,
+): Promise<SaveTargetGrant | null> {
+  return invoke<SaveTargetGrant | null>('request_save_target', {
+    request: { purpose, suggestedName },
+  });
+}
+
+export async function revokeFileGrant(token: string): Promise<void> {
+  return invoke<void>('revoke_file_grant', { request: { token } });
+}
+
+export async function invokeBeginExport(format: ExportFormat, token: string): Promise<string> {
+  return invoke<string>('begin_export', { request: { format, token } });
 }
 
 export async function invokeAppendExportBatch(
@@ -57,10 +78,10 @@ export async function invokeAbortExport(exportId: string): Promise<void> {
   return invoke<void>('abort_export', { request: { exportId } });
 }
 
-/** Append a chunk of text to the auto-log file (created if missing). Stateless
- * on the Rust side; the caller serializes calls to preserve order. */
-export async function invokeAppendLog(path: string, content: string) {
-  return invoke<void>('append_log', { path, content });
+/** Append text through a backend-issued auto-log grant. The filesystem path
+ * never crosses this command boundary. */
+export async function invokeAppendLog(token: string, content: string) {
+  return invoke<void>('append_log', { request: { token, content } });
 }
 
 export async function terminalAiAssist(request: TerminalAiRequest) {

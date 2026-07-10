@@ -2,13 +2,134 @@ import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
 import { loadJson, loadString, saveJson, saveString } from '../lib/storage';
-import { clearSecretString, loadSecretString, saveSecretString } from '../lib/secure-settings';
+import {
+  clearSecretString,
+  loadSecretStringState,
+  migrateSecretStringIfMissing,
+  saveSecretString,
+  type SecretStringLoadResult,
+} from '../lib/secure-settings';
 import { maxBufferFrames, setMaxBufferFrames } from '../lib/buffer-config';
 import { locale, setLocale } from '../lib/i18n';
 
 const STORAGE_KEY = 'bbcom-app-settings';
 const AI_API_KEY_STORAGE_KEY = `${STORAGE_KEY}:ai-api-key`;
 const AI_API_KEY_SECRET_KEY = 'ai-api-key';
+
+export interface SerializedLatestValueOptions {
+  initialPersistedValue: string;
+  applyValue(value: string): void;
+  setReady(ready: boolean): void;
+}
+
+export interface LegacySecretMigrationOptions {
+  readLegacyValue(): string;
+  clearLegacyValue(): void;
+  loadSecureValue(): Promise<SecretStringLoadResult>;
+  migrateIfMissing(value: string): Promise<SecretStringLoadResult>;
+}
+
+/**
+ * Resolves a legacy localStorage value without treating a failed native read
+ * as absence. Only an explicit `missing` result is allowed to start migration.
+ */
+export async function loadAndMigrateLegacySecret(
+  options: LegacySecretMigrationOptions,
+): Promise<string> {
+  const legacyValue = options.readLegacyValue();
+  const secureResult = await options.loadSecureValue();
+
+  if (secureResult.nativeState === 'present') {
+    if (legacyValue) options.clearLegacyValue();
+    return secureResult.value;
+  }
+
+  if (secureResult.nativeState === 'unavailable') {
+    return secureResult.value || legacyValue;
+  }
+
+  if (!legacyValue) return '';
+
+  const migration = await options.migrateIfMissing(legacyValue);
+  if (migration.nativeState === 'present') {
+    options.clearLegacyValue();
+    return migration.value;
+  }
+
+  return migration.value || legacyValue;
+}
+
+/**
+ * Serializes an initial read/migration and every later write while allowing
+ * the UI to show the newest requested value optimistically.
+ */
+export function createSerializedLatestValueQueue(options: SerializedLatestValueOptions) {
+  let tail: Promise<void> = Promise.resolve();
+  let latestGeneration = 0;
+  let persistedValue = options.initialPersistedValue;
+
+  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = tail.then(operation);
+    tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  function beginOperation(): number {
+    const generation = (latestGeneration += 1);
+    options.setReady(false);
+    return generation;
+  }
+
+  function finishOperation(generation: number) {
+    if (generation === latestGeneration) options.setReady(true);
+  }
+
+  function load(readPersistedValue: () => Promise<string>): Promise<boolean> {
+    const generation = beginOperation();
+    return enqueue(async () => {
+      try {
+        const value = await readPersistedValue();
+        persistedValue = value;
+        if (generation === latestGeneration) options.applyValue(value);
+        return true;
+      } catch {
+        if (generation === latestGeneration) options.applyValue(persistedValue);
+        return false;
+      } finally {
+        finishOperation(generation);
+      }
+    });
+  }
+
+  function set(value: string, persist: (value: string) => Promise<boolean>): Promise<boolean> {
+    const generation = beginOperation();
+    options.applyValue(value);
+
+    return enqueue(async () => {
+      try {
+        let persisted = false;
+        try {
+          persisted = await persist(value);
+        } catch {
+          persisted = false;
+        }
+
+        if (persisted) persistedValue = value;
+        if (generation === latestGeneration) {
+          options.applyValue(persisted ? value : persistedValue);
+        }
+        return persisted;
+      } finally {
+        finishOperation(generation);
+      }
+    });
+  }
+
+  return { load, set };
+}
 
 export const useAppStore = defineStore('app', () => {
   const displayMode = ref<DisplayMode>('HEX');
@@ -22,7 +143,8 @@ export const useAppStore = defineStore('app', () => {
   const ansiColorEnabled = ref(true);
   const autoReconnect = ref(false);
   const theme = ref<'dark' | 'light'>('dark');
-  const aiApiKey = ref('');
+  const initialAiApiKey = loadString(AI_API_KEY_STORAGE_KEY);
+  const aiApiKey = ref(initialAiApiKey);
   const aiEnableCodingPlan = ref(false);
   const aiCommandDraft = ref('');
   const aiCommandSeq = ref(0);
@@ -31,7 +153,16 @@ export const useAppStore = defineStore('app', () => {
   const sidebarWidth = ref(292);
   const sidebarCollapsed = ref(false);
   let loaded = false;
-  let aiKeyLoadSeq = 0;
+
+  const aiKeyOperations = createSerializedLatestValueQueue({
+    initialPersistedValue: initialAiApiKey,
+    applyValue: (value) => {
+      aiApiKey.value = value;
+    },
+    setReady: (ready) => {
+      aiApiKeyLoaded.value = ready;
+    },
+  });
 
   // Single source of truth for every persisted (non-secret) setting.
   //
@@ -194,9 +325,8 @@ export const useAppStore = defineStore('app', () => {
       const raw = (saved as Record<string, unknown>)[s.key];
       if (s.validate(raw)) s.apply(raw);
     }
-    aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
-    void loadAiApiKey();
+    void aiKeyOperations.load(readAndMigrateAiApiKey);
   }
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -254,13 +384,7 @@ export const useAppStore = defineStore('app', () => {
 
   async function setAiApiKey(value: string): Promise<boolean> {
     const normalized = value.trim();
-    const previous = aiApiKey.value;
-    aiApiKey.value = normalized;
-    const ok = await persistAiApiKey(normalized);
-    if (!ok) {
-      aiApiKey.value = previous;
-    }
-    return ok;
+    return aiKeyOperations.set(normalized, persistAiApiKey);
   }
 
   function setAiEnableCodingPlan(value: boolean) {
@@ -294,39 +418,25 @@ export const useAppStore = defineStore('app', () => {
     sidebarCollapsed.value = !sidebarCollapsed.value;
   }
 
-  async function loadAiApiKey() {
-    const seq = (aiKeyLoadSeq += 1);
-    aiApiKeyLoaded.value = false;
-    try {
-      const legacyValue = loadString(AI_API_KEY_STORAGE_KEY);
-      const storedValue = await loadSecretString(AI_API_KEY_SECRET_KEY);
-      if (seq !== aiKeyLoadSeq) return;
-
-      if (storedValue) {
-        aiApiKey.value = storedValue;
-        if (legacyValue) saveString(AI_API_KEY_STORAGE_KEY, '');
-        return;
-      }
-
-      if (legacyValue) {
-        aiApiKey.value = legacyValue;
-        const migrated = await saveSecretString(AI_API_KEY_SECRET_KEY, legacyValue);
-        if (migrated) saveString(AI_API_KEY_STORAGE_KEY, '');
-      }
-    } finally {
-      if (seq === aiKeyLoadSeq) {
-        aiApiKeyLoaded.value = true;
-      }
-    }
+  async function readAndMigrateAiApiKey(): Promise<string> {
+    return loadAndMigrateLegacySecret({
+      readLegacyValue: () => loadString(AI_API_KEY_STORAGE_KEY),
+      clearLegacyValue: () => {
+        saveString(AI_API_KEY_STORAGE_KEY, '');
+      },
+      loadSecureValue: () => loadSecretStringState(AI_API_KEY_SECRET_KEY),
+      migrateIfMissing: (value) => migrateSecretStringIfMissing(AI_API_KEY_SECRET_KEY, value),
+    });
   }
 
   async function persistAiApiKey(value: string): Promise<boolean> {
     const storeOk = value
       ? await saveSecretString(AI_API_KEY_SECRET_KEY, value)
       : await clearSecretString(AI_API_KEY_SECRET_KEY);
-
-    const fallbackOk = saveString(AI_API_KEY_STORAGE_KEY, storeOk ? '' : value);
-    return storeOk || fallbackOk;
+    // Single-write policy: never fall back to plaintext persistence. Remove a
+    // legacy localStorage value only after native secure storage confirms it.
+    if (!value || storeOk) saveString(AI_API_KEY_STORAGE_KEY, '');
+    return storeOk;
   }
 
   load();

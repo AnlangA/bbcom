@@ -1,21 +1,32 @@
 <template>
   <div class="session-runtime-host">
-    <SessionView
+    <SessionRuntime
       v-for="session in residentSessions"
-      v-show="session.id === activeSessionId"
       :key="session.id"
       :session="session"
-      :active="session.id === activeSessionId"
-      :data-session-runtime-id="session.id"
+      @ready="registerRuntime"
+      @dispose="unregisterRuntime"
+    />
+    <SessionView
+      v-if="activeBinding"
+      :key="activeBinding.runtime.instanceId"
+      :session="activeBinding.session"
+      :runtime="activeBinding.runtime"
+      :data-session-view-id="activeBinding.session.id"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, ref, shallowReactive, watch } from 'vue';
 import SessionView from '../../../components/session/SessionView.vue';
 import type { SerialSession } from '../../../types';
-import { reconcileResidentSessionIds } from '../runtime/session-residency';
+import SessionRuntime from './SessionRuntime.vue';
+import type { SessionRuntimeController } from '../runtime/session-runtime-controller';
+import {
+  reconcileResidentSessionIds,
+  resolveActiveSessionRuntime,
+} from '../runtime/session-residency';
 
 const props = defineProps<{
   sessions: readonly SerialSession[];
@@ -23,6 +34,7 @@ const props = defineProps<{
 }>();
 
 const residentSessionIds = ref<string[]>([]);
+const runtimes = shallowReactive(new Map<string, SessionRuntimeController>());
 
 watch(
   () => [props.sessions, props.activeSessionId] as const,
@@ -43,6 +55,18 @@ const residentSessions = computed(() => {
     return session ? [session] : [];
   });
 });
+
+const activeBinding = computed(() =>
+  resolveActiveSessionRuntime(props.sessions, runtimes, props.activeSessionId),
+);
+
+function registerRuntime(runtime: SessionRuntimeController) {
+  runtimes.set(runtime.sessionId, runtime);
+}
+
+function unregisterRuntime(runtime: SessionRuntimeController) {
+  if (runtimes.get(runtime.sessionId) === runtime) runtimes.delete(runtime.sessionId);
+}
 </script>
 
 <style scoped>
