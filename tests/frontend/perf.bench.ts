@@ -6,14 +6,16 @@
  * the pure TS functions that dominate the per-frame cost at high baud:
  *   - formatHex / formatUtf8 (per-frame formatting, LRU-cached in the app)
  *   - concatUint8Arrays (the RX flush path that coalesces a RAF batch)
- *   - the MERGED-view rebuild (visibleFrames in usePacketFilter)
+ *   - the MERGED-view projection (visibleFrames in usePacketFilter)
  *
  * Run: pnpm run bench:frontend
  *
- * A failure here is a *regression gate*: if a number regresses beyond the
- * baseline ratio the test fails, so CI catches perf drops. The first run
- * records no baseline — it just prints. To lock a baseline, set the env var
- * BENCH_WRITE=1 to emit/refresh tests/frontend/.perf-baseline.json.
+ * Every case warms the code path for a fixed minimum duration, calibrates to
+ * at least 100 ms, then records seven rounds and rejects a coefficient of
+ * variation above 10%.
+ * CI sets BENCH_OUTPUT to
+ * collect structured results from three independent base/head processes. For
+ * local one-shot comparisons, BENCH_WRITE=1 refreshes the legacy baseline.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,10 +30,17 @@ import { ProtocolParser } from '../../src/lib/protocol-parser.ts';
 import { decodeFrameText, parseSampleLine } from '../../src/lib/waveform.ts';
 import { SerialRxQueue } from '../../src/lib/serial-rx-queue.ts';
 import { buildModbusReadBatches } from '../../src/lib/modbus';
+import { usePacketFilter } from '../../src/composables/usePacketFilter.ts';
 import { createPinia, setActivePinia } from 'pinia';
 import { useSessionStore } from '../../src/stores/sessions.ts';
-import { markRaw } from 'vue';
-import type { DataFrame, ModbusRegister, PortConfig } from '../../src/types.ts';
+import { effectScope, markRaw, ref, shallowRef } from 'vue';
+import type {
+  DataFrame,
+  ModbusRegister,
+  PacketViewMode,
+  PortConfig,
+  SearchMode,
+} from '../../src/types.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = resolve(__dirname, '.perf-baseline.json');
@@ -55,6 +64,10 @@ const N = 50_000;
 const FRAMES: DataFrame[] = Array.from({ length: N }, (_, i) =>
   makeFrame(i, i % 5 === 0 ? 'TX' : 'RX'),
 );
+// The high-baud terminal case is a long uninterrupted direction run. It is
+// where a full re-concatenation becomes quadratic as new data arrives and is
+// the fixed v0.5 performance target for the rope projection.
+const MERGED_FRAMES: DataFrame[] = FRAMES.map((frame) => markRaw({ ...frame, direction: 'RX' }));
 const TOTAL_BYTES = FRAMES.reduce((s, f) => s + f.data.length, 0);
 const WAVEFORM_FRAMES: DataFrame[] = Array.from({ length: N }, (_, i) =>
   markRaw({
@@ -69,17 +82,61 @@ interface BenchResult {
   name: string;
   /** operations per second */
   opsPerSec: number;
-  /** total ms for the measured block */
+  /** Median duration of one measured round. */
   ms: number;
+  iterations: number;
+  samples: Array<{ opsPerSec: number; ms: number }>;
+  cv: number;
 }
 
-function bench(name: string, fn: () => void, iters: number): BenchResult {
-  // warmup
-  for (let i = 0; i < Math.min(1000, iters); i++) fn();
+interface BenchCollection {
+  schemaVersion: 2;
+  rounds: number;
+  minSampleMs: number;
+  minWarmupMs: number;
+  calibrationTargetMs: number;
+  maxCv: number;
+  cases: Record<string, BenchResult>;
+}
+
+const BENCH_ROUNDS = 7;
+const MIN_SAMPLE_MS = 100;
+const MIN_WARMUP_MS = 1000;
+// A one-second target makes a normal scheduler timeslice materially smaller
+// than one sample and amortizes short GC/scheduling pauses. The contract
+// remains "at least 100 ms"; this deliberately exceeds that floor for a
+// repeatable 3 x 7 base/head gate.
+const CALIBRATION_TARGET_MS = 1000;
+const MAX_CV = 0.1;
+const BENCH_OUTPUT = process.env.BENCH_OUTPUT?.trim();
+
+if (BENCH_OUTPUT && process.env.BENCH_WRITE) {
+  throw new Error('BENCH_OUTPUT and BENCH_WRITE are mutually exclusive');
+}
+
+const collection: BenchCollection = {
+  schemaVersion: 2,
+  rounds: BENCH_ROUNDS,
+  minSampleMs: MIN_SAMPLE_MS,
+  minWarmupMs: MIN_WARMUP_MS,
+  calibrationTargetMs: CALIBRATION_TARGET_MS,
+  maxCv: MAX_CV,
+  cases: {},
+};
+if (BENCH_OUTPUT) writeFileSync(BENCH_OUTPUT, `${JSON.stringify(collection, null, 2)}\n`);
+
+function measure(fn: () => unknown, iterations: number): { opsPerSec: number; ms: number } {
   const t0 = performance.now();
-  for (let i = 0; i < iters; i++) fn();
+  for (let i = 0; i < iterations; i++) fn();
   const ms = performance.now() - t0;
-  return { name, opsPerSec: (iters / ms) * 1000, ms };
+  return { opsPerSec: (iterations / ms) * 1000, ms };
+}
+
+function warmUp(fn: () => unknown): void {
+  const deadline = performance.now() + MIN_WARMUP_MS;
+  do {
+    fn();
+  } while (performance.now() < deadline);
 }
 
 function median(samples: number[]): number {
@@ -87,22 +144,56 @@ function median(samples: number[]): number {
   return s[Math.floor(s.length / 2)];
 }
 
-/** Run `fn` `rounds` times and return the median ops/sec. */
-function benchMedian(name: string, fn: () => unknown, iters: number, rounds = 5): BenchResult {
-  const ops: number[] = [];
-  let lastMs = 0;
-  for (let r = 0; r < rounds; r++) {
-    const res = bench(
-      name,
-      () => {
-        fn();
-      },
-      iters,
-    );
-    ops.push(res.opsPerSec);
-    lastMs = res.ms;
+function coefficientOfVariation(samples: number[]): number {
+  const mean = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  const variance = samples.reduce((sum, value) => sum + (value - mean) ** 2, 0) / samples.length;
+  return Math.sqrt(variance) / mean;
+}
+
+function calibratedIterations(fn: () => unknown, initialIterations: number): number {
+  let iterations = Math.max(1, Math.floor(initialIterations));
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const { ms } = measure(fn, iterations);
+    assert.ok(Number.isFinite(ms) && ms > 0, 'benchmark calibration produced no samples');
+    if (ms >= CALIBRATION_TARGET_MS) return iterations;
+    const scale = Math.max(2, Math.ceil((CALIBRATION_TARGET_MS / ms) * 1.1));
+    const next = iterations * scale;
+    assert.ok(Number.isSafeInteger(next), 'benchmark calibration iteration count overflowed');
+    iterations = next;
   }
-  return { name, opsPerSec: median(ops), ms: lastMs };
+  assert.fail(`benchmark could not calibrate to ${CALIBRATION_TARGET_MS} ms`);
+}
+
+/** Calibrate, then run exactly seven independently measured rounds. */
+function benchMedian(name: string, fn: () => unknown, initialIterations: number): BenchResult {
+  // Warm before calibration: cold-start tiering otherwise makes two identical
+  // processes choose materially different batch sizes. The warmup is never
+  // included in a sample and all seven samples remain mandatory.
+  warmUp(fn);
+  const iterations = calibratedIterations(fn, initialIterations);
+  const samples = Array.from({ length: BENCH_ROUNDS }, () => measure(fn, iterations));
+  for (const sample of samples) {
+    assert.ok(Number.isFinite(sample.opsPerSec) && sample.opsPerSec > 0, `${name} has no samples`);
+    assert.ok(
+      Number.isFinite(sample.ms) && sample.ms >= MIN_SAMPLE_MS,
+      `${name} measured only ${sample.ms.toFixed(1)} ms; minimum is ${MIN_SAMPLE_MS} ms`,
+    );
+  }
+  const ops = samples.map((sample) => sample.opsPerSec);
+  const cv = coefficientOfVariation(ops);
+  assert.ok(Number.isFinite(cv), `${name} produced a non-finite coefficient of variation`);
+  assert.ok(
+    cv <= MAX_CV,
+    `${name} CV ${(cv * 100).toFixed(2)}% exceeds 10%; samples=${ops.map((sample) => sample.toFixed(2)).join(',')}`,
+  );
+  return {
+    name,
+    opsPerSec: median(ops),
+    ms: median(samples.map((sample) => sample.ms)),
+    iterations,
+    samples,
+    cv,
+  };
 }
 
 function loadBaseline(): Record<string, number> {
@@ -114,14 +205,20 @@ function loadBaseline(): Record<string, number> {
   }
 }
 
-function recordResult(name: string, opsPerSec: number): void {
-  if (!process.env.BENCH_WRITE) return;
-  const all = loadBaseline();
-  all[name] = opsPerSec;
-  writeFileSync(BASELINE_PATH, JSON.stringify(all, null, 2) + '\n');
+function recordResult(result: BenchResult): void {
+  if (BENCH_OUTPUT) {
+    collection.cases[result.name] = result;
+    writeFileSync(BENCH_OUTPUT, `${JSON.stringify(collection, null, 2)}\n`);
+  }
+  if (process.env.BENCH_WRITE) {
+    const all = loadBaseline();
+    all[result.name] = result.opsPerSec;
+    writeFileSync(BASELINE_PATH, `${JSON.stringify(all, null, 2)}\n`);
+  }
 }
 
 function assertNoRegression(name: string, opsPerSec: number): void {
+  if (BENCH_OUTPUT) return;
   const baseline = loadBaseline()[name];
   if (baseline === undefined) return; // no baseline yet — first run
   const ratio = opsPerSec / baseline;
@@ -140,7 +237,7 @@ function fmt(n: number): string {
 }
 
 function summarize(r: BenchResult): string {
-  return `${r.name}: ${fmt(r.opsPerSec)} ops/s (${r.ms.toFixed(1)} ms)`;
+  return `${r.name}: ${fmt(r.opsPerSec)} ops/s (${r.ms.toFixed(1)} ms, CV ${(r.cv * 100).toFixed(2)}%)`;
 }
 
 test('bench: formatHex over 50k frames', () => {
@@ -152,7 +249,7 @@ test('bench: formatHex over 50k frames', () => {
     1,
   );
   console.log(`[bench] ${summarize(r)} | ${fmt(TOTAL_BYTES)} bytes total`);
-  recordResult(r.name, r.opsPerSec);
+  recordResult(r);
   assertNoRegression(r.name, r.opsPerSec);
 });
 
@@ -165,7 +262,7 @@ test('bench: formatUtf8 over 50k frames', () => {
     1,
   );
   console.log(`[bench] ${summarize(r)}`);
-  recordResult(r.name, r.opsPerSec);
+  recordResult(r);
   assertNoRegression(r.name, r.opsPerSec);
 });
 
@@ -181,48 +278,33 @@ test('bench: concatUint8Arrays (RX flush, 64-chunk batch)', () => {
     10000,
   );
   console.log(`[bench] ${summarize(r)}`);
-  recordResult(r.name, r.opsPerSec);
+  recordResult(r);
   assertNoRegression(r.name, r.opsPerSec);
 });
 
-test('bench: MERGED-view rebuild over 50k frames', () => {
-  // Mirrors the visibleFrames() MERGED path: group consecutive same-direction
-  // frames and concat. This is the per-render cost when packetViewMode=MERGED.
-  function rebuildMerged(): DataFrame[] {
-    const merged: DataFrame[] = [];
-    let curDir: DataFrame['direction'] | null = null;
-    let curTs = 0;
-    let curId = '';
-    let chunks: Uint8Array[] = [];
-    let size = 0;
-    function flush() {
-      if (!curDir) return;
-      const data = new Uint8Array(size);
-      let off = 0;
-      for (const c of chunks) {
-        data.set(c, off);
-        off += c.length;
-      }
-      merged.push(markRaw({ id: `merged-${curId}`, direction: curDir, timestamp: curTs, data }));
-    }
-    for (const f of FRAMES) {
-      if (curDir !== f.direction) {
-        flush();
-        curDir = f.direction;
-        curTs = f.timestamp;
-        curId = f.id;
-        chunks = [];
-        size = 0;
-      }
-      chunks.push(f.data);
-      size += f.data.length;
-    }
-    flush();
-    return merged;
+test('bench: MERGED-view projection over 50k frames', () => {
+  // Exercise the real composable in both base and head. The base revision
+  // materializes every direction run; the rope revision builds descriptors
+  // only. Constructing the scope is intentionally part of the operation, but
+  // source-frame creation is not.
+  function projectMerged(): void {
+    const scope = effectScope();
+    scope.run(() => {
+      const filter = usePacketFilter({
+        frames: shallowRef(MERGED_FRAMES),
+        framesVersion: ref(0),
+        searchMode: ref<SearchMode>('TEXT'),
+        packetViewMode: ref<PacketViewMode>('MERGED'),
+        getHexSearchData: () => '',
+        getTextSearchData: () => '',
+      });
+      if (filter.visibleFrames.value.length === 0) throw new Error('merged view emitted no rows');
+    });
+    scope.stop();
   }
-  const r = benchMedian('merged_rebuild_50k', rebuildMerged, 1);
+  const r = benchMedian('merged_projection_50k', projectMerged, 1);
   console.log(`[bench] ${summarize(r)}`);
-  recordResult(r.name, r.opsPerSec);
+  recordResult(r);
   assertNoRegression(r.name, r.opsPerSec);
 });
 
@@ -240,7 +322,7 @@ test('bench: protocol parser feed over 50k frames', () => {
     1,
   );
   console.log(`[bench] ${summarize(r)}`);
-  recordResult(r.name, r.opsPerSec);
+  recordResult(r);
   assertNoRegression(r.name, r.opsPerSec);
 });
 
@@ -257,7 +339,7 @@ test('bench: waveform decode/parse over 50k frames', () => {
     1,
   );
   console.log(`[bench] ${summarize(r)}`);
-  recordResult(r.name, r.opsPerSec);
+  recordResult(r);
   assertNoRegression(r.name, r.opsPerSec);
 });
 
@@ -280,7 +362,7 @@ test('bench: LRU format cache hit rate (1000-entry, repeated display)', () => {
     100,
   );
   console.log(`[bench] ${summarize(r)}`);
-  recordResult(r.name, r.opsPerSec);
+  recordResult(r);
   assertNoRegression(r.name, r.opsPerSec);
 });
 
@@ -304,7 +386,7 @@ test('bench: SerialRxQueue drop path (512 sustained overflowing enqueues)', () =
     50,
   );
   console.log(`[bench] ${summarize(r)} | dropped ${queue.totalDroppedBytes} bytes`);
-  recordResult(r.name, r.opsPerSec);
+  recordResult(r);
   assertNoRegression(r.name, r.opsPerSec);
 });
 
@@ -338,7 +420,7 @@ test('bench: sessions store 50k-frame push (addFrame hot path)', () => {
     1,
   );
   console.log(`[bench] ${summarize(r)}`);
-  recordResult(r.name, r.opsPerSec);
+  recordResult(r);
   assertNoRegression(r.name, r.opsPerSec);
 });
 
@@ -370,6 +452,6 @@ test('bench: Modbus read-batch composition (256 contiguous holding regs)', () =>
     200,
   );
   console.log(`[bench] ${summarize(r)}`);
-  recordResult(r.name, r.opsPerSec);
+  recordResult(r);
   assertNoRegression(r.name, r.opsPerSec);
 });

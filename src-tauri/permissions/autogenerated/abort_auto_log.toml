@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-abort-auto-log"
+description = "Enables the abort_auto_log command without any pre-configured scope."
+commands.allow = ["abort_auto_log"]
+
+[[permission]]
+identifier = "deny-abort-auto-log"
+description = "Denies the abort_auto_log command without any pre-configured scope."
+commands.deny = ["abort_auto_log"]

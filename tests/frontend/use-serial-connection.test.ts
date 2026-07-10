@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { buildSendPayload } from '../../src/composables/useSerialConnection.ts';
 import { encodeUtf8 } from '../../src/lib/format.ts';

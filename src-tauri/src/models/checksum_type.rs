@@ -6,6 +6,7 @@ pub enum ChecksumType {
     Checksum,
     Crc8,
     Crc16,
+    Crc16Modbus,
     Crc32,
 }
 
@@ -29,6 +30,10 @@ mod tests {
             "\"CRC16\""
         );
         assert_eq!(
+            serde_json::to_string(&ChecksumType::Crc16Modbus).unwrap(),
+            "\"CRC16_MODBUS\""
+        );
+        assert_eq!(
             serde_json::to_string(&ChecksumType::Crc32).unwrap(),
             "\"CRC32\""
         );
@@ -47,6 +52,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ChecksumType>("\"CRC16\"").unwrap(),
             ChecksumType::Crc16
+        );
+        assert_eq!(
+            serde_json::from_str::<ChecksumType>("\"CRC16_MODBUS\"").unwrap(),
+            ChecksumType::Crc16Modbus
         );
         assert_eq!(
             serde_json::from_str::<ChecksumType>("\"CRC32\"").unwrap(),

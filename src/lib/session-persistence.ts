@@ -30,7 +30,9 @@ import {
 } from './modbus';
 
 export const SESSION_STORAGE_KEY = 'bbcom-session-snapshots';
-export const SESSION_STORAGE_VERSION = 1;
+export const SESSION_STORAGE_FUTURE_BACKUP_KEY = `${SESSION_STORAGE_KEY}-future-backup`;
+export const SESSION_STORAGE_VERSION = 2;
+/** Number of most-recently-used sessions whose capture tails are retained. */
 export const MAX_PERSISTED_SESSIONS = 8;
 export const MAX_PERSISTED_FRAMES_PER_SESSION = 2_000;
 export const MAX_PERSISTED_BYTES_PER_SESSION = 1_000_000;
@@ -54,14 +56,16 @@ export const DEFAULT_PARSER_STATE: SessionParserState = {
   presetId: 'at-crlf',
 };
 
-interface PersistedFrame {
+export interface PersistedFrame {
   id: string;
   direction: Direction;
   timestamp: number;
-  dataHex: string;
+  data: Uint8Array;
+  txStatus?: DataFrame['txStatus'];
+  requestedBytes?: number;
 }
 
-interface PersistedSession {
+export interface PersistedSession {
   id: string;
   portName: string;
   portConfig: PortConfig;
@@ -85,6 +89,7 @@ interface PersistedSession {
 export interface PersistedSessionsFile {
   version: number;
   activeSessionId: string | null;
+  mruSessionIds?: string[];
   sessions: PersistedSession[];
 }
 
@@ -96,34 +101,96 @@ export interface PersistedSessionsFile {
  * previous version to the new one. `migratePersistedFile` walks the chain from
  * the blob's recorded version up to the current one, then re-stamps the version.
  *
- * This keeps backward compatibility explicit and testable: a legacy-data
- * regression test only has to assert that an old blob migrates forward to the
- * current shape (see session-persistence migration tests). Unknown/future
- * versions (e.g. a downgrade) fall back to the last-known shape and are
- * re-stamped rather than silently read as-is.
+ * Future versions are rejected rather than re-stamped, preventing an older app
+ * from silently overwriting data it does not understand.
  */
 export type MigrationStep = (raw: PersistedSessionsFile) => PersistedSessionsFile;
 
 /**
- * Ordered migration steps. Index N upgrades a version-(N) blob to version-(N+1).
- * Add a new entry at the end (and bump SESSION_STORAGE_VERSION) for each shape
- * change. Currently empty: version 1 is the first versioned shape.
+ * Ordered migration steps. Entry zero upgrades the original v1 shape to v2;
+ * versionless legacy files take the same path after their implicit v1 stamp.
+ * Add one entry and bump SESSION_STORAGE_VERSION for every later shape change.
  */
-export const MIGRATION_STEPS: readonly MigrationStep[] = [];
+export const MIGRATION_STEPS: readonly MigrationStep[] = [
+  (raw) => ({
+    ...raw,
+    version: 2,
+    mruSessionIds: normalizePersistedMruSessionIds(
+      raw.sessions,
+      raw.activeSessionId,
+      raw.mruSessionIds,
+    ),
+  }),
+];
+
+export class UnsupportedSessionStorageVersionError extends Error {
+  readonly storedVersion: number;
+
+  constructor(storedVersion: number) {
+    super(
+      `session storage version ${storedVersion} is newer than supported version ${SESSION_STORAGE_VERSION}`,
+    );
+    this.name = 'UnsupportedSessionStorageVersionError';
+    this.storedVersion = storedVersion;
+  }
+}
 
 /** Walk the migration chain from the blob's recorded version to the current one. */
-export function migratePersistedFile(raw: PersistedSessionsFile): PersistedSessionsFile {
-  let current = raw;
-  const startVersion = typeof raw.version === 'number' ? raw.version : 0;
-  // Run every step from the blob's version up to the latest known. Steps beyond
-  // the recorded version (a forward-compatible downgrade) are intentionally
-  // skipped — the blob is re-stamped to the latest step we actually applied.
-  const maxStep = Math.min(MIGRATION_STEPS.length, Math.max(0, startVersion));
-  for (let v = maxStep; v < MIGRATION_STEPS.length; v += 1) {
-    current = MIGRATION_STEPS[v](current);
+export function migratePersistedFile(raw: unknown): PersistedSessionsFile {
+  const source = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const startVersion =
+    typeof source.version === 'number' && Number.isInteger(source.version) && source.version >= 0
+      ? source.version
+      : 0;
+  if (startVersion > SESSION_STORAGE_VERSION) {
+    throw new UnsupportedSessionStorageVersionError(startVersion);
   }
-  current.version = SESSION_STORAGE_VERSION;
-  return current;
+
+  let current: PersistedSessionsFile = {
+    version: startVersion,
+    activeSessionId: typeof source.activeSessionId === 'string' ? source.activeSessionId : null,
+    mruSessionIds: Array.isArray(source.mruSessionIds)
+      ? source.mruSessionIds.filter((id): id is string => typeof id === 'string')
+      : undefined,
+    sessions: Array.isArray(source.sessions) ? ([...source.sessions] as PersistedSession[]) : [],
+  };
+  // Missing-version blobs are the implicit v1 shape. Migration entry zero is
+  // therefore applied for both version 0 and version 1 inputs.
+  const firstStep = Math.max(0, startVersion - 1);
+  for (let step = firstStep; step < MIGRATION_STEPS.length; step += 1) {
+    current = MIGRATION_STEPS[step](current);
+  }
+  return {
+    ...current,
+    version: SESSION_STORAGE_VERSION,
+    mruSessionIds: normalizePersistedMruSessionIds(
+      current.sessions,
+      current.activeSessionId,
+      current.mruSessionIds,
+    ),
+  };
+}
+
+export function normalizePersistedMruSessionIds(
+  sessions: readonly Pick<PersistedSession, 'id'>[],
+  activeSessionId: string | null,
+  requested: readonly string[] | undefined,
+): string[] {
+  const validIds = new Set(sessions.map((session) => session.id));
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  const candidates = [
+    activeSessionId,
+    ...(requested ?? []),
+    ...sessions.map((session) => session.id),
+  ];
+  for (const id of candidates) {
+    if (typeof id !== 'string' || !validIds.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    ordered.push(id);
+    if (ordered.length >= MAX_PERSISTED_SESSIONS) break;
+  }
+  return ordered;
 }
 
 interface SessionPersistenceOptions {
@@ -169,6 +236,7 @@ export function cloneParserConfig(config: ParserConfig): ParserConfig {
         ? config.delimiter
             .filter((b) => Number.isFinite(b))
             .map((b) => Math.max(0, Math.min(255, Math.floor(b))))
+            .slice(0, 256)
         : [0x0d, 0x0a],
       includeDelimiter: config.includeDelimiter === true,
     };
@@ -277,7 +345,8 @@ function persistedFrameTail(frames: DataFrame[]): DataFrame[] {
   for (let i = frames.length - 1; i >= 0; i -= 1) {
     const frame = frames[i];
     if (selected.length >= MAX_PERSISTED_FRAMES_PER_SESSION) break;
-    if (selected.length > 0 && bytes + frame.data.length > MAX_PERSISTED_BYTES_PER_SESSION) {
+    if (frame.data.length > MAX_PERSISTED_BYTES_PER_SESSION) continue;
+    if (bytes + frame.data.length > MAX_PERSISTED_BYTES_PER_SESSION) {
       break;
     }
     selected.push(frame);
@@ -291,31 +360,88 @@ function serializeFrame(frame: DataFrame): PersistedFrame {
     id: frame.id,
     direction: frame.direction,
     timestamp: frame.timestamp,
-    dataHex: toContinuousHex(frame.data),
+    data: frame.data,
+    ...(frame.txStatus ? { txStatus: frame.txStatus } : {}),
+    ...(frame.requestedBytes !== undefined ? { requestedBytes: frame.requestedBytes } : {}),
   };
 }
 
-function deserializeFrame(raw: unknown, options: SessionPersistenceOptions): DataFrame | null {
+interface PersistedFrameCandidate {
+  id: string | null;
+  direction: Direction;
+  timestamp: number | null;
+  data: Uint8Array;
+  txStatus?: DataFrame['txStatus'];
+  requestedBytes?: number;
+}
+
+function deserializeFrameCandidate(raw: unknown): PersistedFrameCandidate | null {
   if (!raw || typeof raw !== 'object') return null;
-  const frame = raw as Partial<PersistedFrame>;
+  const frame = raw as Partial<PersistedFrame> & { dataHex?: unknown };
   if (frame.direction !== 'TX' && frame.direction !== 'RX') return null;
-  if (typeof frame.dataHex !== 'string') return null;
+  let data: Uint8Array;
   try {
-    return decorateFrame(
-      {
-        id: typeof frame.id === 'string' ? frame.id : createId(options),
-        direction: frame.direction,
-        timestamp:
-          typeof frame.timestamp === 'number' && Number.isFinite(frame.timestamp)
-            ? frame.timestamp
-            : now(options),
-        data: parseHex(frame.dataHex),
-      },
-      options,
-    );
+    if (frame.data instanceof Uint8Array) {
+      data = frame.data;
+    } else if (typeof frame.dataHex === 'string') {
+      if (frame.dataHex.length > MAX_PERSISTED_BYTES_PER_SESSION * 3) return null;
+      data = parseHex(frame.dataHex);
+    } else {
+      return null;
+    }
   } catch {
     return null;
   }
+  if (data.length > MAX_PERSISTED_BYTES_PER_SESSION) return null;
+  const requestedBytes =
+    typeof frame.requestedBytes === 'number' &&
+    Number.isFinite(frame.requestedBytes) &&
+    frame.requestedBytes >= data.length
+      ? Math.floor(frame.requestedBytes)
+      : undefined;
+  return {
+    id: typeof frame.id === 'string' ? frame.id : null,
+    direction: frame.direction,
+    timestamp:
+      typeof frame.timestamp === 'number' && Number.isFinite(frame.timestamp)
+        ? frame.timestamp
+        : null,
+    data,
+    txStatus:
+      frame.direction === 'TX' &&
+      (frame.txStatus === 'complete' || frame.txStatus === 'partial-unknown')
+        ? frame.txStatus
+        : undefined,
+    requestedBytes: frame.direction === 'TX' ? requestedBytes : undefined,
+  };
+}
+
+function deserializeFrameTail(raw: unknown, options: SessionPersistenceOptions): DataFrame[] {
+  if (!Array.isArray(raw)) return [];
+  const selected: PersistedFrameCandidate[] = [];
+  let bytes = 0;
+  for (let index = raw.length - 1; index >= 0; index -= 1) {
+    if (selected.length >= MAX_PERSISTED_FRAMES_PER_SESSION) break;
+    const frame = deserializeFrameCandidate(raw[index]);
+    if (!frame) continue;
+    if (bytes + frame.data.length > MAX_PERSISTED_BYTES_PER_SESSION) break;
+    selected.push(frame);
+    bytes += frame.data.length;
+  }
+  selected.reverse();
+  return selected.map((frame) =>
+    decorateFrame(
+      {
+        id: frame.id ?? createId(options),
+        direction: frame.direction,
+        timestamp: frame.timestamp ?? now(options),
+        data: frame.data,
+        ...(frame.txStatus ? { txStatus: frame.txStatus } : {}),
+        ...(frame.requestedBytes !== undefined ? { requestedBytes: frame.requestedBytes } : {}),
+      },
+      options,
+    ),
+  );
 }
 
 function normalizeSendHistory(raw: unknown): SendHistoryEntry[] {
@@ -461,11 +587,7 @@ export function hydrateSession(
   const saved = raw as Partial<PersistedSession>;
   if (typeof saved.portName !== 'string' || saved.portName.length === 0) return null;
 
-  const frames = Array.isArray(saved.frames)
-    ? saved.frames
-        .map((frame) => deserializeFrame(frame, options))
-        .filter((f): f is DataFrame => f !== null)
-    : [];
+  const frames = deserializeFrameTail(saved.frames, options);
   const totals = countFrameTotals(frames);
   return createSessionRecord(
     typeof saved.id === 'string' ? saved.id : createId(options),
@@ -498,12 +620,22 @@ export function hydrateSession(
 export function serializeSessionSnapshots(
   sessions: SerialSession[],
   activeSessionId: string | null,
+  options: { mruSessionIds?: readonly string[]; includeFrames?: boolean } = {},
 ): PersistedSessionsFile {
+  const mruSessionIds = normalizePersistedMruSessionIds(
+    sessions,
+    activeSessionId,
+    options.mruSessionIds,
+  );
+  const frameSessionIds = new Set(options.includeFrames === false ? [] : mruSessionIds);
   return {
     version: SESSION_STORAGE_VERSION,
     activeSessionId,
-    sessions: sessions.slice(0, MAX_PERSISTED_SESSIONS).map((session) => {
-      const frames = persistedFrameTail([...session.frames, ...session.pausedFrames]);
+    mruSessionIds,
+    sessions: sessions.map((session) => {
+      const frames = frameSessionIds.has(session.id)
+        ? persistedFrameTail([...session.frames, ...session.pausedFrames])
+        : [];
       return {
         id: session.id,
         portName: session.portName,
@@ -525,5 +657,27 @@ export function serializeSessionSnapshots(
         logAiFrameLimit: session.logAiFrameLimit,
       };
     }),
+  };
+}
+
+/**
+ * Compatibility encoder used only when Worker/IndexedDB is unavailable. v2
+ * IndexedDB stores structured-cloned Uint8Array payloads; the legacy fallback
+ * remains JSON-safe so older/browser-test environments can still recover it.
+ */
+export function sessionSnapshotsForLocalStorage(file: PersistedSessionsFile): unknown {
+  return {
+    ...file,
+    sessions: file.sessions.map((session) => ({
+      ...session,
+      frames: session.frames.map((frame) => ({
+        id: frame.id,
+        direction: frame.direction,
+        timestamp: frame.timestamp,
+        dataHex: toContinuousHex(frame.data),
+        ...(frame.txStatus ? { txStatus: frame.txStatus } : {}),
+        ...(frame.requestedBytes !== undefined ? { requestedBytes: frame.requestedBytes } : {}),
+      })),
+    })),
   };
 }

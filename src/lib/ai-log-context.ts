@@ -1,8 +1,8 @@
 import type { DataFrame, LogAiContextMode, SerialSession } from '../types';
 import { formatHex, formatTimestamp, formatUtf8 } from './format';
 
-const LATEST_CHAR_LIMIT = 10_000;
-const FULL_CHAR_LIMIT = 50_000;
+/** One capped tail scan; context modes control frame selection, never size. */
+const AI_CONTEXT_CHAR_LIMIT = 50_000;
 
 export interface LogAiContextResult {
   text: string;
@@ -13,7 +13,7 @@ export interface LogAiContextResult {
 
 export function buildLogAiContext(session: SerialSession): LogAiContextResult {
   const mode = session.logAiContextMode;
-  const charLimit = mode === 'full-capped' ? FULL_CHAR_LIMIT : LATEST_CHAR_LIMIT;
+  const charLimit = AI_CONTEXT_CHAR_LIMIT;
   const frameStart = selectedFrameStart(session.frames.length, mode, session.logAiFrameLimit);
   const frameCount = session.frames.length - frameStart;
   const linesFromEnd: string[] = [];

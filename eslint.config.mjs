@@ -10,9 +10,17 @@ export default [
   ...pluginVue.configs['flat/essential'],
   prettier,
   {
-    files: ['src/**/*.{ts,vue}'],
+    files: [
+      'src/**/*.{ts,vue}',
+      'tests/frontend/**/*.ts',
+      'scripts/**/*.{ts,mjs}',
+      '*.config.{ts,mjs}',
+    ],
     languageOptions: {
-      globals: globals.browser,
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+      },
       parserOptions: {
         parser: tseslint.parser,
       },
@@ -31,8 +39,43 @@ export default [
     },
   },
   {
+    // Promise and discriminated-union handling are too error-prone for a
+    // desktop app to leave to convention. Type-aware analysis applies to the
+    // production TS, tests, and executable config; Vue templates retain the
+    // Vue parser configuration above.
+    files: ['src/**/*.ts', 'scripts/**/*.ts', '*.config.ts'],
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: {
+        project: './tsconfig.eslint.json',
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/switch-exhaustiveness-check': 'error',
+    },
+  },
+  {
     // The logger is the single sanctioned console surface in src/.
     files: ['src/lib/logger.ts'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+  {
+    files: ['tests/frontend/**', 'scripts/**', '*.config.{ts,mjs}'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+  {
+    files: ['tests/e2e/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        ...globals.mocha,
+      },
+    },
     rules: {
       'no-console': 'off',
     },

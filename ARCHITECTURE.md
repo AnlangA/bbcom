@@ -47,7 +47,7 @@ typed command surfaces.
 ┌────────────────────────────────────────────────────────────────────┐
 │ Rust backend: src-tauri/src/                                       │
 │                                                                    │
-│ commands/     ai, checksum, export, log, updater, window commands  │
+│ commands/     ai, checksum, export/log session, window commands    │
 │ export/       TXT/CSV/JSONL/BIN formatters                         │
 │ models/       IPC structs and AppError                             │
 │ utils/        checksum, HEX, timestamp helpers                      │
@@ -60,54 +60,57 @@ typed command surfaces.
 - **Frontend session store:** source of truth for ports, frames, parser state,
   Modbus config, macros, triggers, highlights, AI chat state, and persisted
   snapshots.
-- **Frontend protocol engines:** parser, waveform, Modbus, triggers, macro
-  control flow, and `.bbrec` replay are implemented in framework-free TypeScript
-  where possible so they can be unit-tested headlessly.
-- **Rust command layer:** filesystem export/logging, checksum calculation,
-  updater wrapper, AI network calls, and window management.
-- **Tauri plugins:** serialplugin provides serial port access, dialog provides
-  save/open UI, store persists local secrets, updater checks releases when
-  configured.
+- **Frontend protocol engines:** parser, waveform, Modbus, triggers, and simple
+  send/delay macros are implemented in framework-free TypeScript where possible
+  so they can be unit-tested headlessly.
+- **Rust command layer:** opaque file grants, streaming export/logging,
+  checksum calculation, bounded AI network calls, OS credential storage, and
+  window management.
+- **Tauri plugins:** serialplugin provides binary serial channels. Native save
+  dialogs and credential access remain behind allowlisted Rust commands; no
+  updater plugin is shipped.
 
 ## Data Flows
 
 ### RX: device to screen
 
-1. `tauri-plugin-serialplugin` emits raw bytes to `useSerialConnection`.
+1. `tauri-plugin-serialplugin` delivers raw binary channel data to the resident
+   session runtime.
 2. Raw-byte observers receive the exact plugin chunk first. Modbus uses this
    path to validate CRCs and match responses before display coalescing happens.
-3. The chunk enters `SerialRxQueue`, which caps pending bytes/chunks and records
+3. The chunk enters `SerialRxQueue`, capped at 2 MiB/512 chunks, which records
    cumulative drops.
-4. A single `requestAnimationFrame` drains pending chunks into one RX
-   `DataFrame`.
-5. `useSessionFrames` appends the frame to the session store, auto-log appends
-   it if enabled, and trigger rules inspect the completed RX frame.
+4. The runtime drains at 64 KiB, 64 chunks, or 16 ms; protocol, trigger,
+   Modbus, and logging consumers therefore do not depend on animation frames.
+5. `useSessionFrames` appends the coalesced display frame and increments only
+   that session's frame version. UI painting is throttled separately.
 
 ### TX: caller to device
 
 1. Quick commands, send history, cyclic send, macros, triggers, AI fill, and
-   Modbus all enter `useSerialConnection.send` or `sendBytes`.
+   Modbus all enter the session's `SerialWriteScheduler`.
 2. Text/HEX sends pass through `buildSendPayload` for validation and encoding.
-3. A single `writeChain` promise serializes every `writeBinary` call in order.
-4. A TX `DataFrame` is appended only after the port write succeeds.
+3. One bounded FIFO operation owns a logical send and writes 4096-byte chunks;
+   writers cannot interleave and failed chunks are never retried automatically.
+4. A complete TX frame is appended only after full success. A failed write
+   records only its confirmed prefix and an explicit partial status.
 
 ### Persistence
 
 1. Mutators call `schedulePersist`.
-2. The sessions store emits the explicit frame/reactivity pulse and debounces
-   snapshot writes.
+2. Frame mutations increment a per-session version; config mutations do not
+   invalidate unrelated frame consumers.
 3. `serializeSessionSnapshots` caps persisted sessions, frame count, and bytes.
-4. Load runs `migratePersistedFile` before hydration. Any persisted shape change
-   must bump `SESSION_STORAGE_VERSION`, add a migration step, and include a
-   legacy-data regression test.
+4. Load validates and migrates before hydration. A future schema is copied to a
+   recovery key and persistence becomes read-only instead of overwriting it.
 
 ### Export
 
-- The legacy export command accepts a frame array directly.
-- The default large-export path writes frames to a temporary JSONL capture file,
-  sends only that path through IPC, then Rust reads and formats the capture.
-  This avoids serializing large `Uint8Array` payloads into one huge invoke
-  argument.
+- The main window requests an opaque, purpose-bound save grant; frontend code
+  never sends an arbitrary output path to Rust.
+- `begin/append/finish/abort` export sessions accept at most 256 frames and
+  512 KiB of raw payload per batch. Rust formats incrementally into a sibling
+  part file and atomically replaces the target only after a successful finish.
 
 ## Engineering Invariants
 
@@ -119,12 +122,12 @@ These are the rules most likely to protect users from subtle serial bugs:
   `ModbusTransactionRunner` and `ModbusLoopCoordinator`.
 - **RX bytes reach protocol observers before display batching.** Protocol
   engines need exact chunks; UI frames may be coalesced.
-- **Frame arrays stay shallow.** Large captures must not depend on Vue deep
-  reactivity. Use `framesVersion`, `triggerRef(sessions)`, and raw frame items.
-- **Auto-log preserves append order.** `useAutoLog` chains writes per session;
-  Rust `append_log` is stateless.
-- **Persistence remains forward-compatible.** Shape changes require an explicit
-  migration and test.
+- **Frame arrays stay shallow and bounded.** Use per-session frame versions and
+  raw frame items; limits are 64 MiB per session and 256 MiB globally.
+- **Auto-log preserves append order.** Bounded per-session queues append to a
+  backend log session; overflow or the first disk error stops logging visibly.
+- **Persistence remains migration-safe.** Shape changes require an explicit
+  migration and test; future schemas are never re-stamped by older builds.
 - **Hot paths stay framework-free when practical.** Queueing, formatting,
   parsing, Modbus batching, waveform math, and export filters should remain
   testable without a Tauri webview.
@@ -133,35 +136,38 @@ These are the rules most likely to protect users from subtle serial bugs:
 
 - The serial plugin's timeout affects both read timeout and event flush cadence;
   raising it changes UI latency as well as port behavior.
-- `listen(callback, false)` is intentional: it avoids a per-chunk text decoder
-  in the JS path. Binary data should use binary read/write APIs.
+- Serial `watch({ decode: false })` is intentional: it avoids a per-chunk text
+  decoder. Every reconnect must unwatch and close the previous handle first.
 - Tauri IPC can turn small binary payloads into number arrays; do not introduce
   a channel-based "optimization" without measuring both small and large packets.
 - `zai-rs` model types are concrete and not object-safe for the current dispatch
   path, so supported AI models are selected with an explicit match table in
   Rust and mirrored by the frontend registry.
-- The updater plugin is configured but inactive until release endpoints and
-  signing keys are provided.
+- Automatic updates remain out of scope until signed update metadata, rollback,
+  and endpoint operations are designed as a separate feature.
 
 ## Quality Gates
 
-| Area | Command |
-| --- | --- |
-| Frontend lint | `pnpm lint` |
-| Formatting | `pnpm format:check` |
-| Type-check + frontend build | `pnpm build` |
-| Frontend tests | `pnpm test:frontend` |
-| Rust tests | `pnpm test:rust` |
-| Frontend coverage | `pnpm coverage:frontend` |
-| `src/lib/` per-file coverage | `pnpm coverage:lib` |
-| Frontend benchmarks | `pnpm bench:frontend` |
-| Rust benchmarks | `pnpm bench:rust` |
-| TypeScript import cycles | `pnpm cycles` |
-| Common local gate | `pnpm check` |
+| Area                         | Command                  |
+| ---------------------------- | ------------------------ |
+| Frontend lint                | `pnpm lint`              |
+| Formatting                   | `pnpm format:check`      |
+| Type-check + frontend build  | `pnpm build`             |
+| Frontend tests               | `pnpm test:frontend`     |
+| Rust tests                   | `pnpm test:rust`         |
+| Frontend coverage            | `pnpm coverage:frontend` |
+| `src/lib/` per-file coverage | `pnpm coverage:lib`      |
+| Frontend benchmarks          | `pnpm bench:frontend`    |
+| Rust benchmarks              | `pnpm bench:rust`        |
+| TypeScript import cycles     | `pnpm cycles`            |
+| Common local gate            | `pnpm check`             |
 
-CI runs the frontend lint/format/build/test/coverage/benchmark/cycle jobs and
-Rust fmt/clippy/test jobs. Rust coverage is collected as a best-effort
-tarpaulin artifact rather than a hard gate.
+CI preserves the branch-protection job names while enforcing dependency audits,
+Vitest V8 coverage, Rust fmt/Clippy/tests, and llvm-cov line/function
+thresholds. The benchmark gate alternates three independent base/head processes;
+each case runs seven rounds of at least 100 ms, rejects CV above 10%, and rejects
+a head/base median below 0.85. No audit, coverage, or benchmark command may fail
+open.
 
 ## Manual Verification
 
@@ -189,7 +195,8 @@ reproduction steps, and the relevant log line or captured frame.
   benchmark tests.
 - Persisted session shape changed: bump the version, add a migration, and add a
   legacy snapshot test.
-- Export changed: test TXT/CSV/JSONL/BIN plus capture-file and legacy paths.
+- Export changed: test TXT/CSV/JSONL/BIN plus grant/session limits, cancellation,
+  disk failure, and atomic target preservation.
 - AI model changed: update both `src/lib/ai-models.ts` and
   `src-tauri/src/commands/ai/service.rs`.
 - Modbus changed: run the full Modbus frontend test set and manually test with

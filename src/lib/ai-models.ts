@@ -1,57 +1,31 @@
 /**
- * AI model dispatch table.
- *
- * The Rust side (`commands/ai/service.rs` `send_chat_by_name`) already uses a
- * `match` dispatch-table (not `Box<dyn Model>` — `ModelName: Into<String>`
- * is not dyn-safe). This module is the frontend's mirror: the single source of
- * truth for which models exist, their display labels, and whether each supports
- * streaming. The IPC layer validates model names against this table before
- * invoking the Rust command, so an unknown model is caught client-side.
+ * Canonical non-streaming Z.ai model registry. `as const` keeps the model type,
+ * dropdown options, and frontend validation tied to exactly these four IDs.
+ * Rust mirrors the list in `send_chat_by_name` and exercises it in contract
+ * tests; no model declares or enables SSE support in v0.5.
  */
+export const AI_MODELS = [
+  { id: 'glm-4.5-air', label: 'GLM-4.5 Air' },
+  { id: 'glm-4.7', label: 'GLM-4.7' },
+  { id: 'glm-5-turbo', label: 'GLM-5 Turbo' },
+  { id: 'glm-5.1', label: 'GLM-5.1' },
+] as const;
 
-export interface AiModelEntry {
-  /** The model identifier sent to Rust (matches the match arms in service.rs). */
-  id: string;
-  /** Human-readable label for the settings dropdown. */
-  label: string;
-  /** Whether this model supports SSE streaming output. */
-  streaming: boolean;
+export type RegisteredAiModel = (typeof AI_MODELS)[number]['id'];
+export const DEFAULT_AI_MODEL: RegisteredAiModel = 'glm-4.5-air';
+export const AI_MODEL_IDS = AI_MODELS.map((model) => model.id) as RegisteredAiModel[];
+
+export function isValidAiModel(value: string): value is RegisteredAiModel {
+  return (AI_MODEL_IDS as readonly string[]).includes(value);
 }
 
-/**
- * The canonical model registry. Adding a model here AND in the Rust
- * `send_chat_by_name` match extends the AI pipeline. The `streaming` flag
- * drives whether the frontend uses the streaming IPC endpoint.
- */
-export const AI_MODELS: readonly AiModelEntry[] = [
-  { id: 'glm-4.5-air', label: 'GLM-4.5 Air', streaming: true },
-  { id: 'glm-4.7', label: 'GLM-4.7', streaming: true },
-  { id: 'glm-5-turbo', label: 'GLM-5 Turbo', streaming: true },
-  { id: 'glm-5.1', label: 'GLM-5.1', streaming: true },
-];
-
-/** The default model (used when the user hasn't configured one). */
-export const DEFAULT_AI_MODEL = 'glm-4.5-air';
-
-/** All valid model IDs (for the AiModel type + validation). */
-export const AI_MODEL_IDS: readonly string[] = AI_MODELS.map((m) => m.id);
-
-/** True if `id` is a known model. */
-export function isValidAiModel(id: string): boolean {
-  return AI_MODEL_IDS.includes(id);
-}
-
-/** True if `id` supports SSE streaming output. */
-export function supportsStreaming(id: string): boolean {
-  return AI_MODELS.find((m) => m.id === id)?.streaming ?? false;
-}
-
-/** Get the display label for a model, or the id itself if unknown. */
 export function aiModelLabel(id: string): string {
-  return AI_MODELS.find((m) => m.id === id)?.label ?? id;
+  return AI_MODELS.find((model) => model.id === id)?.label ?? id;
 }
 
-/** Dropdown options for the model selector. */
-export function aiModelOptions(): Array<{ label: string; value: string }> {
-  return AI_MODELS.map((m) => ({ label: m.label, value: m.id }));
+export function getAiModelOptions(): Array<{ label: string; value: RegisteredAiModel }> {
+  return AI_MODELS.map((model) => ({ label: model.label, value: model.id }));
 }
+
+/** @deprecated Prefer `getAiModelOptions`; retained for existing dropdown imports. */
+export const aiModelOptions = getAiModelOptions;

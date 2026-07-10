@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-append-auto-log-batch"
+description = "Enables the append_auto_log_batch command without any pre-configured scope."
+commands.allow = ["append_auto_log_batch"]
+
+[[permission]]
+identifier = "deny-append-auto-log-batch"
+description = "Denies the append_auto_log_batch command without any pre-configured scope."
+commands.deny = ["append_auto_log_batch"]

@@ -10,13 +10,15 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::ai::{LogAiRequest, TerminalAiRequest};
+    use crate::commands::ai::{AiRequestKind, RunAiRequest};
     use crate::commands::checksum::{ChecksumRequest, calculate_checksum};
     use crate::commands::export::{
         AppendExportBatchRequest, BeginExportRequest, ExportSessionRequest,
     };
     use crate::commands::file_grants::{FileGrantManager, SaveTargetPurpose};
-    use crate::commands::log::AppendLogRequest;
+    use crate::commands::log::{
+        AppendAutoLogBatchRequest, AutoLogFormat, AutoLogSessionRequest, BeginAutoLogRequest,
+    };
     use crate::export::session::ExportSessionManager;
     use crate::models::checksum_type::ChecksumType;
 
@@ -47,8 +49,15 @@ mod tests {
         let json = r#"{"data":[49,50,51,52,53,54,55,56,57],"algorithm":"CRC16"}"#;
         let req: ChecksumRequest = serde_json::from_str(json).expect("checksum payload shape");
 
-        // "123456789" CRC-16/Modbus is the canonical 0x906E.
+        // Keep the legacy CRC16 wire tag and CRC-16/X-25 result stable.
         assert_eq!(calculate_checksum(req).unwrap().result, "906E");
+    }
+
+    #[test]
+    fn checksum_deserializes_modbus_tag_and_returns_wire_order() {
+        let json = r#"{"data":[49,50,51,52,53,54,55,56,57],"algorithm":"CRC16_MODBUS"}"#;
+        let req: ChecksumRequest = serde_json::from_str(json).expect("Modbus checksum payload");
+        assert_eq!(calculate_checksum(req).unwrap().result, "374B");
     }
 
     #[test]
@@ -58,6 +67,7 @@ mod tests {
             (ChecksumType::Checksum, "checksum"),
             (ChecksumType::Crc8, "crc8"),
             (ChecksumType::Crc16, "crc16"),
+            (ChecksumType::Crc16Modbus, "crc16-modbus"),
             (ChecksumType::Crc32, "crc32"),
         ] {
             let tag_str = serde_json::to_string(&tag).unwrap();
@@ -78,15 +88,25 @@ mod tests {
         assert!(serde_json::from_str::<ChecksumRequest>(json).is_err());
     }
 
-    // ---- append_log: frontend sends an opaque grant token, never a path ----
+    // ---- auto-log session: grant appears only in begin; batches use logId ----
 
     #[test]
-    fn append_log_deserializes_tokenized_frontend_payload() {
-        let json = r#"{"token":"opaque-grant","content":"hello\n"}"#;
-        let request: AppendLogRequest =
-            serde_json::from_str(json).expect("append_log payload shape");
-        assert_eq!(request.token, "opaque-grant");
-        assert_eq!(request.content, "hello\n");
+    fn auto_log_session_payloads_match_frontend_camel_case() {
+        let begin: BeginAutoLogRequest =
+            serde_json::from_str(r#"{"token":"0123456789abcdef0123456789abcdef","format":"hex"}"#)
+                .expect("begin_auto_log payload shape");
+        assert_eq!(begin.format, AutoLogFormat::Hex);
+
+        let append: AppendAutoLogBatchRequest = serde_json::from_str(
+            r#"{"logId":"0123456789abcdef0123456789abcdef","frames":[{"id":"1","direction":"RX","timestamp":1,"data":[65]}]}"#,
+        )
+        .expect("append_auto_log_batch payload shape");
+        assert_eq!(append.frames.len(), 1);
+
+        let finish: AutoLogSessionRequest =
+            serde_json::from_str(r#"{"logId":"0123456789abcdef0123456789abcdef"}"#)
+                .expect("finish_auto_log payload shape");
+        assert_eq!(finish.log_id, append.log_id);
     }
 
     // ---- streamed export: begin -> append batches -> finish ----
@@ -100,11 +120,13 @@ mod tests {
             .await
             .unwrap();
         let begin_json = format!(
-            r#"{{"format":"txt-ascii","token":{token_json}}}"#,
+            r#"{{"format":"txt-ascii","token":{token_json},"expectedFrames":1,"expectedRawBytes":2}}"#,
             token_json = serde_json::to_string(&token).unwrap()
         );
         let begin: BeginExportRequest =
             serde_json::from_str(&begin_json).expect("begin export payload shape");
+        assert_eq!(begin.expected_frames, 1);
+        assert_eq!(begin.expected_raw_bytes, 2);
         let target = grants
             .consume_export(&begin.token, begin.format)
             .await
@@ -140,44 +162,43 @@ mod tests {
         );
     }
 
-    // ---- AI request validation at the contract boundary (no network) ----
-    // The AI commands hit the network, so a full contract test is impractical
-    // here. Instead, assert the exact frontend wire shape deserializes into the
-    // request structs and that the validation gate rejects bad input BEFORE any
-    // rate-limit or network call. This catches a camelCase field rename.
+    // ---- v0.5 AI request boundary (no credential DTO) ----
 
     #[test]
-    fn terminal_ai_request_deserializes_frontend_camel_case_payload() {
-        // ipc.ts TerminalAiRequest uses camelCase keys; the Rust struct is
-        // #[serde(rename_all = "camelCase")]. A missing optional must default.
-        let json = r#"{"prompt":"list files","apiKey":"sk-test","model":"glm-4.5-air","enableCodingPlan":true,"shell":"linux/busybox","context":"$ ls"}"#;
-        let req: TerminalAiRequest = serde_json::from_str(json).expect("terminal AI payload shape");
+    fn run_ai_request_deserializes_credential_free_terminal_payload() {
+        let json = r#"{"requestId":"req-1","kind":"terminal","prompt":"list files","model":"glm-4.5-air","shell":"linux/busybox","context":"$ ls"}"#;
+        let req: RunAiRequest = serde_json::from_str(json).expect("v0.5 terminal AI payload shape");
+        assert_eq!(req.request_id, "req-1");
+        assert_eq!(req.kind, AiRequestKind::Terminal);
         assert_eq!(req.prompt, "list files");
-        assert_eq!(req.api_key, "sk-test");
         assert_eq!(req.model.as_deref(), Some("glm-4.5-air"));
-        assert_eq!(req.enable_coding_plan, Some(true));
         assert_eq!(req.shell.as_deref(), Some("linux/busybox"));
         assert_eq!(req.context.as_deref(), Some("$ ls"));
     }
 
     #[test]
-    fn terminal_ai_request_optionals_default_to_none_when_omitted() {
-        let json = r#"{"prompt":"hi","apiKey":"k"}"#;
-        let req: TerminalAiRequest = serde_json::from_str(json).unwrap();
+    fn run_ai_request_optionals_default_to_none_when_omitted() {
+        let json = r#"{"requestId":"req-2","kind":"terminal","prompt":"hi"}"#;
+        let req: RunAiRequest = serde_json::from_str(json).unwrap();
         assert!(req.model.is_none());
-        assert!(req.enable_coding_plan.is_none());
         assert!(req.shell.is_none());
         assert!(req.context.is_none());
     }
 
     #[test]
-    fn log_ai_request_deserializes_frontend_camel_case_payload() {
-        let json = r#"{"prompt":"summarize","apiKey":"sk","model":"glm-4.5-air","enableCodingPlan":false,"context":"log lines","contextMode":"latest-10k","contextTruncated":true,"sessionMeta":"COM1@115200"}"#;
-        let req: LogAiRequest = serde_json::from_str(json).expect("log AI payload shape");
+    fn run_ai_request_rejects_an_attempt_to_include_api_key() {
+        let json = r#"{"requestId":"req-3","kind":"log","prompt":"summarize","apiKey":"must-not-cross-ipc","context":"log lines"}"#;
+        assert!(serde_json::from_str::<RunAiRequest>(json).is_err());
+    }
+
+    #[test]
+    fn run_ai_request_deserializes_log_context_metadata() {
+        let json = r#"{"requestId":"req-4","kind":"log","prompt":"summarize","model":"glm-4.5-air","context":"log lines","contextMode":"latest-10k","sessionMeta":"COM1@115200"}"#;
+        let req: RunAiRequest = serde_json::from_str(json).expect("log AI payload shape");
+        assert_eq!(req.kind, AiRequestKind::Log);
         assert_eq!(req.prompt, "summarize");
-        assert_eq!(req.context, "log lines");
+        assert_eq!(req.context.as_deref(), Some("log lines"));
         assert_eq!(req.context_mode.as_deref(), Some("latest-10k"));
-        assert_eq!(req.context_truncated, Some(true));
         assert_eq!(req.session_meta.as_deref(), Some("COM1@115200"));
     }
 }

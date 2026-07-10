@@ -71,6 +71,8 @@ import { t } from '../../lib/i18n';
 
 const props = defineProps<{
   session: SerialSession | null;
+  /** Invalidates template reads from the session's raw frame arrays/counters. */
+  framesVersion: number;
 }>();
 
 import { maxBufferFrames } from '../../lib/buffer-config';

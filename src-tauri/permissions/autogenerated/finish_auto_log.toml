@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-finish-auto-log"
+description = "Enables the finish_auto_log command without any pre-configured scope."
+commands.allow = ["finish_auto_log"]
+
+[[permission]]
+identifier = "deny-finish-auto-log"
+description = "Denies the finish_auto_log command without any pre-configured scope."
+commands.deny = ["finish_auto_log"]

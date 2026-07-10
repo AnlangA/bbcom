@@ -1,10 +1,15 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { computed } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import { useSessionStore } from '../../src/stores/sessions.ts';
 import { setMaxBufferFrames } from '../../src/lib/buffer-config.ts';
 import { MAX_FRAMES } from '../../src/types/index.ts';
+import {
+  SESSION_STORAGE_FUTURE_BACKUP_KEY,
+  SESSION_STORAGE_KEY,
+  SESSION_STORAGE_VERSION,
+} from '../../src/lib/session-persistence.ts';
 import type { PortConfig } from '../../src/types/index.ts';
 
 interface LocalStorageLike {
@@ -112,6 +117,13 @@ test('trim respects configurable maxBufferFrames', () => {
   }
   // trim threshold is 500, so once length exceeds 1000 + 500 it drops to 1000
   assert.equal(s.sessions[0].frames.length, 1000);
+  assert.equal(s.sessions[0].droppedBytes, 501, 'frame-buffer evictions count as dropped bytes');
+  s.updateDroppedBytes(id, 3);
+  assert.equal(
+    s.sessions[0].droppedBytes,
+    504,
+    'RX-queue and frame-buffer drops remain independently cumulative',
+  );
   setMaxBufferFrames(MAX_FRAMES);
 });
 
@@ -188,6 +200,27 @@ test('session snapshots are bounded to the recent frame tail', async () => {
     const restored = store();
     assert.equal(restored.sessions[0].frames.length, 2000);
     assert.deepEqual(Array.from(restored.sessions[0].frames[0].data), [105]);
+  });
+});
+
+test('future session snapshots are backed up and persistence becomes read-only', async () => {
+  await withLocalStorageMock(async () => {
+    const future = JSON.stringify({
+      version: SESSION_STORAGE_VERSION + 1,
+      activeSessionId: 'future',
+      sessions: [{ id: 'future', portName: 'COM99' }],
+    });
+    localStorage.setItem(SESSION_STORAGE_KEY, future);
+
+    const s = store();
+    assert.equal(s.persistenceReadOnly, true);
+    assert.deepEqual(s.sessions, []);
+    assert.equal(localStorage.getItem(SESSION_STORAGE_KEY), future, 'original blob is untouched');
+    assert.equal(localStorage.getItem(SESSION_STORAGE_FUTURE_BACKUP_KEY), future);
+
+    s.createSession('COM1', cfg);
+    s.flushPersistedSessions();
+    assert.equal(localStorage.getItem(SESSION_STORAGE_KEY), future, 'read-only mode blocks writes');
   });
 });
 

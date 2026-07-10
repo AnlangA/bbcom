@@ -59,3 +59,15 @@ export function saveString(key: string, value: string): boolean {
     return false;
   }
 }
+
+export function removeString(key: string): boolean {
+  try {
+    const storage = getLocalStorage();
+    if (!storage) return false;
+    storage.removeItem(key);
+    return true;
+  } catch (e) {
+    logger.warn('storage: removeString failed for', key, e);
+    return false;
+  }
+}

@@ -24,50 +24,67 @@ export interface TriggerFire {
   responseIsHex: boolean;
 }
 
-/** Parse a hex pattern string ("AA BB", "AABB") into a byte array. Empty/invalid → []. */
+/**
+ * Parse a trigger HEX pattern without silently discarding invalid characters.
+ *
+ * Send input intentionally remains lenient for backwards compatibility, but
+ * a matcher must never turn `AA-XX-BB` into a different byte sequence. Only
+ * ASCII whitespace may separate byte pairs here.
+ */
 export function parseHexPattern(input: string): number[] {
-  const cleaned = input.replace(/[^0-9a-fA-F]/g, '');
-  const out: number[] = [];
-  for (let i = 0; i + 1 < cleaned.length; i += 2) {
-    out.push(parseInt(cleaned.slice(i, i + 2), 16));
+  const compact = input.replace(/[\t\n\r ]/g, '');
+  if (compact.length === 0 || compact.length % 2 !== 0 || !/^[\da-fA-F]+$/.test(compact)) {
+    return [];
+  }
+
+  const out = new Array<number>(compact.length / 2);
+  for (let index = 0; index < compact.length; index += 2) {
+    const parsed = Number.parseInt(compact.slice(index, index + 2), 16);
+    // The regexp above makes this branch defensive rather than expected.
+    if (!Number.isInteger(parsed)) return [];
+    out[index / 2] = parsed;
   }
   return out;
 }
 
-/** Decode RX bytes to text for text-mode matching (UTF-8, non-fatal). */
-const textDecoder = new TextDecoder('utf-8', { fatal: false });
-
 export class TriggerEngine {
-  private readonly triggers: Trigger[];
+  private triggers: Trigger[];
   /** Rolling tail of RX bytes, bounded to the longest pattern length. */
   private byteTail: number[] = [];
   /** Rolling tail of decoded text, bounded similarly. */
   private textTail = '';
-  private maxPatternLen = 0;
+  /** One decoder per session engine; decode must remain streaming across chunks. */
+  private textDecoder = new TextDecoder('utf-8', { fatal: false });
+  private maxBytePatternLen = 1;
+  private maxTextPatternLen = 1;
   private lastFiredAt = new Map<string, number>();
 
   constructor(triggers: Trigger[]) {
-    this.triggers = triggers;
+    this.triggers = [...triggers];
     this.recomputeLimits();
   }
 
   /** Replace the trigger set (e.g. after an edit). Resets the rolling buffers. */
   setTriggers(triggers: Trigger[]): void {
-    this.triggers.length = 0;
-    for (const t of triggers) this.triggers.push(t);
+    this.triggers = [...triggers];
     this.recomputeLimits();
-    this.byteTail = [];
-    this.textTail = '';
+    this.reset();
   }
 
   private recomputeLimits(): void {
-    let max = 1;
+    let maxByte = 1;
+    let maxText = 1;
     for (const t of this.triggers) {
       if (!t.enabled) continue;
-      const len = t.matchMode === 'hex' ? parseHexPattern(t.pattern).length : t.pattern.length;
-      if (len > max) max = len;
+      if (t.matchMode === 'hex') {
+        const length = parseHexPattern(t.pattern).length;
+        if (length > maxByte) maxByte = length;
+      } else if (t.pattern.length > maxText) {
+        maxText = t.pattern.length;
+      }
     }
-    this.maxPatternLen = max;
+    this.maxBytePatternLen = maxByte;
+    this.maxTextPatternLen = maxText;
   }
 
   /** Feed RX bytes; returns any triggers that fired (caller sends the responses).
@@ -80,7 +97,7 @@ export class TriggerEngine {
     // before checking would drop a match that arrived in this very batch when
     // the batch is longer than the longest pattern.
     for (let i = 0; i < bytes.length; i += 1) this.byteTail.push(bytes[i]);
-    this.textTail += textDecoder.decode(bytes);
+    this.textTail += this.textDecoder.decode(bytes, { stream: true });
 
     const now = Date.now();
     for (const t of this.triggers) {
@@ -98,12 +115,13 @@ export class TriggerEngine {
 
     // Now bound memory: keep only the tail needed to catch a match that spans
     // the next chunk. Keep one extra byte of slack for safety.
-    const keep = this.maxPatternLen + 1;
-    if (this.byteTail.length > keep) {
-      this.byteTail.splice(0, this.byteTail.length - keep);
+    const byteKeep = this.maxBytePatternLen + 1;
+    if (this.byteTail.length > byteKeep) {
+      this.byteTail.splice(0, this.byteTail.length - byteKeep);
     }
-    if (this.textTail.length > keep) {
-      this.textTail = this.textTail.slice(this.textTail.length - keep);
+    const textKeep = this.maxTextPatternLen + 1;
+    if (this.textTail.length > textKeep) {
+      this.textTail = this.textTail.slice(this.textTail.length - textKeep);
     }
     return fires;
   }
@@ -123,6 +141,8 @@ export class TriggerEngine {
   reset(): void {
     this.byteTail = [];
     this.textTail = '';
+    // Discard a partial UTF-8 code point from the prior logical stream.
+    this.textDecoder = new TextDecoder('utf-8', { fatal: false });
     this.lastFiredAt.clear();
   }
 }

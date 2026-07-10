@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { effectScope } from 'vue';
 import { useAiWindowSession } from '../../src/composables/useAiWindowSession.ts';
@@ -71,15 +71,15 @@ test('useAiWindowSession: setTerminalAiModel mutates the session and emits an up
   const { api, emitted } = setup();
   api.session.value = fakeSession();
 
-  await api.setTerminalAiModel('glm-4.6');
+  await api.setTerminalAiModel('glm-4.7');
 
-  assert.equal(api.session.value!.terminalAiModel, 'glm-4.6', 'session field updated');
+  assert.equal(api.session.value!.terminalAiModel, 'glm-4.7', 'session field updated');
   assert.equal(emitted.length, 1, 'exactly one emit');
   assert.equal(emitted[0].event, 'ai-session-update');
   assert.deepEqual(emitted[0].payload, {
     sessionId: 'sess-1',
     action: 'setTerminalAiModel',
-    value: 'glm-4.6',
+    value: 'glm-4.7',
   });
 });
 
@@ -139,8 +139,8 @@ test('useAiWindowSession: clearLogAiMessages empties the list and emits', async 
 test('useAiWindowSession: every setter is a no-op when no session is loaded', async () => {
   const { api, emitted } = setup();
   // session.value is null (default) — setters must not emit or throw.
-  await api.setTerminalAiModel('glm-4.6');
-  await api.setLogAiModel('glm-4.6');
+  await api.setTerminalAiModel('glm-4.7');
+  await api.setLogAiModel('glm-4.7');
   await api.setLogAiContextMode('latest-n-frames');
   await api.setLogAiFrameLimit(500);
   await api.addLogAiMessage({ role: 'user', content: 'x' });

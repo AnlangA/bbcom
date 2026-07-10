@@ -5,6 +5,53 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-11
+
+### Changed
+
+- Moved serial connections, reconnects, RX draining, triggers, Modbus, cyclic
+  sends, and logging into resident per-session runtimes. Switching tabs no
+  longer disconnects background sessions.
+- Replaced parser storage with a bounded typed-array valid window, absolute
+  stream offsets, strict configuration validation, and deterministic delimiter
+  overflow recovery.
+- Serialized logical writes through a bounded FIFO with 4096-byte chunks. A
+  failed chunk is not retransmitted automatically; partial outcomes remain
+  explicit.
+- Replaced path-based/whole-capture export and append-per-line logging with
+  opaque save grants and bounded backend sessions using part files and atomic
+  replacement.
+- Moved AI keys to the OS credential store, separated trusted instructions from
+  untrusted serial context, bounded requests, and added explicit cancellation.
+- Isolated frame invalidation by session and enforced 64 MiB per-session and
+  256 MiB global capture budgets with visible dropped-byte accounting.
+- Pinned Node 22.23.1, pnpm 11.5.3, and Rust 1.88.0. CI now preserves the two
+  required branch-protection job names and treats audits, coverage, and
+  same-runner performance comparisons as hard gates.
+- Migrated functional frontend tests to Vitest 4.1.10 with V8 coverage. The
+  standalone performance gate alternates three base/head processes, measures
+  seven rounds of at least 100 ms per case, and rejects excessive variance.
+- Added WebdriverIO 9.29.1 browser-mock and scheduled native smoke tests using
+  Jasmine, avoiding the vulnerable legacy Mocha dependency chain.
+- Release tags must be exact `vX.Y.Z` tags on protected master. The release
+  workflow produces a draft with signed Windows NSIS, notarized macOS arm64
+  DMG, Linux AppImage/deb, checksums, SBOM/license metadata, Sigstore bundles,
+  and GitHub provenance.
+
+### Added
+
+- CRC-16/Modbus wire-order checksum support while preserving the legacy
+  `CRC16` tag and CRC-16/X-25 output.
+- Read-only recovery for session snapshots written by a newer schema version.
+
+### Removed
+
+- Removed unintegrated `.bbrec`, advanced macro-control-flow, protocol-adapter,
+  and AI SSE prototype modules and their delivery claims. Simple send/delay
+  macros and bounded non-streaming AI requests remain supported.
+- Removed the inactive updater plugin and permissions. v0.5.0 does not perform
+  automatic update checks.
+
 ## [0.4.0] - 2026-06-17
 
 ### Auto-optimizer A-axis pass (batch 16 — waveform render extraction)
@@ -55,7 +102,7 @@ All notable changes to bbcom are documented here. The format is based on
     No clean sub-component seam remains; further splits would create
     artificial fragments with prop-drilling churn (negative leverage).
   - `waveform-render.ts` (651), `lib/waveform.ts` (558) — the modules just
-    extracted *out* of the panel; cohesive single-domain.
+    extracted _out_ of the panel; cohesive single-domain.
   - `stores/sessions.ts` (590), `lib/modbus/modbus-core.ts` (532),
     `lib/session-persistence.ts` (529), `composables/useModbusMaster.ts`
     (527) — cohesive core modules (the most-imported store, the Modbus core,
@@ -69,7 +116,7 @@ All notable changes to bbcom are documented here. The format is based on
     backlog is empty of actionable items.
 
 - **Negative findings this loop (not retried):**
-  - *Waveform render visibility-flags scratch reuse (P-axis):* the render loop
+  - _Waveform render visibility-flags scratch reuse (P-axis):_ the render loop
     built `channelState.value.map((c) => c.visible)` per frame to pass to
     `visibleChannelRangeInWindow`; hypothesis was that this per-frame
     allocation was wasteful. Measured a headless proxy (200k iterations over
@@ -77,24 +124,24 @@ All notable changes to bbcom are documented here. The format is based on
     "optimization" was **0.73x (slower)**. V8 optimizes small-array `.map()`
     better than a manual loop + `length` mutation, and the absolute cost is
     nanoseconds/frame. Reverted; the `.map()` stays.
-  - *Bundle lazy-load split:* audited via the Vite config — the heavy dialogs
+  - _Bundle lazy-load split:_ audited via the Vite config — the heavy dialogs
     (CreateSessionDialog, SettingsModal, AiSettingsPanel) are already
     `defineAsyncComponent`-lazy and vendor chunks (naive-ui, icons, ansi) are
     already `manualChunks`-split. The 259 KB main `index-*.js` (79 KB gzip)
     holds the app shell + first-paint terminal components — correct, not
     oversize. No lazy-load seam remains.
-  - *formatHex/formatUtf8 hot path:* already at the optimization floor
+  - _formatHex/formatUtf8 hot path:_ already at the optimization floor
     (precomputed `BYTE_HEX_PAIRS_*` Uint8Array table + single native
     `TextDecoder.decode`), explicitly optimized in a prior batch as "the
     measured top frontend hot path." No further win.
-  - *Bench margins:* all 10 cases pass comfortably (tightest is
+  - _Bench margins:_ all 10 cases pass comfortably (tightest is
     `serialrxqueue_drop_512` at ~1.02x baseline — high-variance microbench
     noise, not a code deficiency). No case is a widening target.
 
 ### Auto-optimizer completion audit (batch 15 — closed loop, perf gate restored)
 
 This entry records the autonomous-completion pass that re-verified the exit
-criteria against the *actual* committed state (not the CHANGELOG prose) and
+criteria against the _actual_ committed state (not the CHANGELOG prose) and
 landed the one outstanding Performance change the audit surfaced.
 
 - **Audit finding — stale machine-local perf baseline:** `pnpm bench:frontend`
@@ -149,16 +196,16 @@ landed the one outstanding Performance change the audit surfaced.
   `framesVersion` + `triggerRef`). `lib/` framework-free contract preserved.
 
 - **Negative findings (not retried):**
-  - *schedulePersist timer-churn elimination* — implemented (skip re-arming the
+  - _schedulePersist timer-churn elimination_ — implemented (skip re-arming the
     debounce timer while one is pending for the same window) but measured **0
     gain** on `sessions_push_50k` (the timer churn is ~7.8 ms/50k, not the
     bottleneck) and it changed persistence cadence (persists every 800 ms during
     a sustained burst instead of deferring up to 2.5 s). Reverted — not worth
     the semantic change for no measurable bench delta.
-  - *concatUint8Arrays precomputed-offset-table* — measured ~+6% (674k → 714k),
+  - _concatUint8Arrays precomputed-offset-table_ — measured ~+6% (674k → 714k),
     within noise, and would add an offset-table build the real RAF caller can't
     amortize. Not pursued.
-  - *manual byte-copy concat* — 143k vs 674k, far slower (`.set` is native).
+  - _manual byte-copy concat_ — 143k vs 674k, far slower (`.set` is native).
     Not pursued.
 
 - **Blocked items (hardware/runtime/credential):** unchanged from the
@@ -171,7 +218,6 @@ landed the one outstanding Performance change the audit surfaced.
 - **Sources:** Vue `shallowReactive`/`toRaw` reactivity semantics
   (https://vuejs.org/api/reactivity-advanced.html#toraw); no other external
   technique consulted — the optimization was derived from in-repo profiling.
-
 
 - **T3.3 U-a (responsive toolbar overflow):** added a `@media (max-width: 600px)`
   block to `SessionToolbar.vue` that switches the toolbar to horizontal scroll
@@ -196,15 +242,9 @@ landed the one outstanding Performance change the audit surfaced.
   manual-verification checklist of `ARCHITECTURE.md`. The headless proxies
   (`serialrxqueue_drop_512` +105%, `sessions_push_50k` −93%) validate the
   frontend hot paths that would be stressed at 921600 baud.
-- **T3.9 F-f (updater) — IMPLEMENTED:** added `tauri-plugin-updater` v2.10.1,
-  initialized the plugin in `lib.rs`, added the `updater:default` permission to
-  `capabilities/default.json`, and registered a `check_for_updates` Tauri command
-  (`commands/updater.rs`) that wraps the plugin's check flow behind a typed
-  `UpdateInfo` response. Without a configured update endpoint + signing key in
-  `tauri.conf.json`, `check` gracefully returns `available: false`. 71 Rust
-  tests pass; build + clippy clean.
 
 ### §9 Global wrap-up
+
 - **Manual verification checklist:** every item in `ARCHITECTURE.md` is now
   marked ❌ with its specific blocker (hardware-dependent, runtime-dependent,
   network/credential-dependent) and the headless proxy that validates the
@@ -215,26 +255,18 @@ landed the one outstanding Performance change the audit surfaced.
   is confirmed as the architecture deliverable, updated to reflect the current
   module layout (modbus/ subdirectory, ai/ submodules, locales/ split,
   SessionToolbar/ModbusHeader/ParserFrameDetail/WaveformLegend sub-components).
-- **T3.9 updater (F-f) — deferred:** the auto-updater requires the
-  `tauri-plugin-updater` crate + a signing key + a release-hosted update JSON —
-  infrastructure that doesn't exist in this project and is orthogonal to the
-  five-axis optimization (performance/architecture/features/UI/testing). It is
-  explicitly out of scope for this work and noted for a future infrastructure
-  task.
 
 ### Features (batch 13)
+
 - **T3.9 — export enhancements + display-mode completion + production-write
   chunking (final T-item):**
   - **F-h (HEX+ASCII dual display):** added a `HEXASCII` display mode + the
     `formatHexAscii` formatter — a hex-editor dual view (hex pairs left, ASCII
     right, 16 bytes/line, non-printables as dots). Added to the `DisplayMode`
     type, `formatFrameData`, and the toolbar dropdown. 4 tests.
-  - **F8 (production-write chunking):** added `src/lib/write-chunking.ts` —
-    `chunkPayload` splits a large TX into ≤4 KiB chunks (serialplugin #29:
-    release builds may truncate large writes), and `sendChunked` writes each
-    chunk through the caller's serialized write path (COW-1) with retry +
-    exponential backoff. 7 tests cover splitting, retry-then-succeed,
-    max-retries-give-up, and throw-as-failure.
+  - The original standalone write-chunking prototype was superseded in v0.5.0
+    by `SerialWriteScheduler`; current writes are serialized in 4 KiB chunks
+    and deliberately do not retry an ambiguous partial write.
   - **F-e (export time-range filter):** added `src/lib/export-filters.ts` —
     `filterFramesByTimeRange` filters frames by `[startMs, endMs)` + optional
     direction, for exporting just the relevant portion of a capture. 4 tests
@@ -242,59 +274,8 @@ landed the one outstanding Performance change the audit surfaced.
     input immutability.
   - Frontend suite 509 → 524; 0 circular dependencies.
 
-### Features (batch 12)
-- **T3.8 — AI dispatch-table (F13) + SSE streaming (F14):**
-  - **F13 dispatch-table (verified + frontend registry):** the Rust
-    `send_chat_by_name` match-table (in `commands/ai/service.rs`, split out in
-    T2.6) is the canonical model dispatch — not `Box<dyn Model>` (AP-2). Added a
-    frontend mirror `src/lib/ai-models.ts`: the single source of truth for model
-    IDs, display labels, streaming capability, validation
-    (`isValidAiModel`), and dropdown options. 6 tests cover registry completeness,
-    validation, label fallback, and the streaming flag.
-  - **F14 SSE streaming accumulator:** added `src/lib/ai-stream.ts` — a pure,
-    testable accumulator (`createStreamAccumulator` / `assembleStream`) that
-    reconstructs the full AI response from incremental SSE delta tokens
-    (`delta.content`, per F14), tracks completion, handles keep-alive (empty)
-    deltas, and supports mid-stream abort. Decoupled from the Tauri event layer
-    so the assembly logic is unit-testable. zai-rs 0.1.15's `enable_stream()
-    .stream_sse_for_each` is the upstream API this consumes. 6 tests cover full
-    reconstruction, empty-delta handling, post-done/post-abort ignoring, and the
-    empty-stream case. Frontend suite 497 → 509; 0 circular dependencies.
-
-### Features (batch 11)
-- **T3.7 — conditional macros with control flow (Tera Term TTL gap closed):**
-  added `src/lib/macro-control-flow.ts` — a pure, step-indexed interpreter for
-  extended macros with `wait` (block until an RX pattern arrives, with a
-  timeout), `if`/`else` (conditional branch on the last RX text), `goto`/`label`
-  (jump), and a per-run `maxSteps` anti-loop guard (`DEFAULT_MAX_STEPS` = 10 000).
-  The interpreter operates on a discriminated-union `ControlStep` type
-  (`send | delay | label | goto | wait | if`) through injectable side-effects
-  (`send`, `delay`, `lastRxText`, `onRxBytes`) — no DOM/Vue deps, fully unit-
-  testable. **12 unit tests** cover: send+delay ordering, send-failure stop,
-  wait (immediate match / timeout / async match), if/then, if/else, goto/label
-  bounded loop + maxSteps guard, unknown-label stop, and a full bring-up script
-  (send AT → wait OK → if OK send CMD else send RETRY). Frontend suite 485 → 497;
-  0 circular dependencies.
-
-### Features (batch 10)
-- **T3.6 — transport-agnostic protocol interface + .bbrec record/replay:**
-  - Added the `ProtocolEngine` interface (`src/lib/protocol-engine.ts`) — a
-    transport-agnostic abstraction (`feed(bytes) → frames`, `reset()`, `name`,
-    `pending`) that any protocol implementation can satisfy. The existing
-    `ProtocolParser` is adapted via `toProtocolEngine`, so future engines (CAN,
-    custom binary) can plug into the frame pipeline uniformly.
-  - Added `.bbrec` raw byte-stream record/replay (`src/lib/bbrec.ts`): encodes
-    captured RX/TX byte chunks (direction + relative timestamp + hex payload) as
-    a versioned JSONL file with a magic header; parses it back; and a
-    `replayBbrec` function feeds the RX records through any `ProtocolEngine` to
-    reproduce the original framing. This enables capture-then-reparse workflows
-    (re-run a capture with a different protocol config) and regression testing.
-  - **9 unit tests** (`tests/frontend/bbrec.test.ts`) covering hex round-trip,
-    encode/parse parity, magic-header validation, malformed-record rejection,
-    the engine adapter, and a full record → encode → parse → replay round-trip
-    that asserts byte-level fidelity. Frontend suite 476 → 485; 0 circular deps.
-
 ### Features (batch 9)
+
 - **T3.5 — StatusBar live metrics:** the status bar now shows, in addition to
   the existing cumulative TX/RX byte counts and the B/s data rate:
   - **frames/s** — a rolling per-second frame-rate sampled from the live frame
@@ -304,10 +285,11 @@ landed the one outstanding Performance change the audit surfaced.
   - **cumulative dropped bytes** — mirrored from the `SerialRxQueue` overflow
     counter onto the session (new runtime-only `droppedBytes` field, never
     persisted) via `sessionStore.updateDroppedBytes`, surfaced only when > 0.
-  Added 3 i18n keys (`status.frameRate`/`bufferLevel`/`dropped`) to both locales
-  (parity test green). 476 tests pass; 0 circular dependencies.
+    Added 3 i18n keys (`status.frameRate`/`bufferLevel`/`dropped`) to both locales
+    (parity test green). 476 tests pass; 0 circular dependencies.
 
 ### UI / experience (batch 8)
+
 - **T3.4 — i18n split + missing-key check:** `src/lib/i18n.ts` reduced from
   **940 → 72 lines** by extracting the locale catalogs to `locales/en.ts`,
   `locales/zh.ts`, and a shared `locales/catalog.ts` type module (breaks the
@@ -318,7 +300,7 @@ landed the one outstanding Performance change the audit surfaced.
   be empty) serve as the compile-time missing-key gate. 476 tests green.
 - **T3.3 — UI polish:**
   - **prefers-reduced-motion (U-f):** added a global `@media
-    (prefers-reduced-motion: reduce)` block in `global.css` that collapses all
+(prefers-reduced-motion: reduce)` block in `global.css` that collapses all
     animation/transition durations to ~0 and disables smooth scroll — covers the
     send-flash sweep, fade/slide/scale entrances, the connection pulse, and
     sidebar/toolbar transitions (§7.3 UI-touch requirement).
@@ -330,6 +312,7 @@ landed the one outstanding Performance change the audit surfaced.
     a `[data-theme='light']` inversion block — verified, no scattered literals.
 
 ### UI / architecture (batch 7)
+
 - **T3.2 — large-component split (all three targets met):**
   - **ModbusPanel 1162 → 376 lines** via three extracted sub-components:
     `ModbusHeader` (identity + timing + actions), `ModbusAddRegisterForm` (draft
@@ -346,6 +329,7 @@ landed the one outstanding Performance change the audit surfaced.
     so the parents remain the state owners.
 
 ### UI / architecture (batch 6)
+
 - **T3.1 — SessionView decomposed (target met):** extracted the connection +
   display/view/format toolbar into a dedicated `SessionToolbar.vue`
   component (presentational — receives reactive state, emits one event per
@@ -362,20 +346,13 @@ landed the one outstanding Performance change the audit surfaced.
   and `sessions_push_50k` (T2.2) benches.
 
 ### Performance (batch 5)
-- **T2.3 — F12 IPC-bypass export LANDED:** added a new Rust command
-  `export_data_from_capture_file` (`commands/export.rs`) that reads + parses a
-  JSONL temp file of frames instead of receiving up to 100 000 `DataFrame`
-  objects through the `invoke` argument. The frontend writes each frame as one
-  JSONL line (new `frameToJsonlLine` serializer) via the stateless `append_log`,
-  then invokes the capture-file command with just the path — so the dominant
-  export cost (serializing the `frames` array across IPC) is avoided (F12). The
-  `useExport` composable now defaults to this bypass path (opt out via
-  `useCaptureFileBypass: false` or by stubbing `exportFrames`). Verified by 3 new
-  Rust contract tests (`ipc_contracts.rs`: round-trip, missing-file, blank-line
-  handling) and 4 frontend tests (legacy path + F12 path + shared). Rust suite
-  68 → 71; the legacy `export_data` path is retained as a fallback.
+
+- **T2.3 historical export bypass:** this intermediate capture-file path was
+  superseded in v0.5.0 by opaque grants and bounded begin/append/finish/abort
+  sessions; neither the capture-file command nor whole-array fallback remains.
 
 ### Architecture & modularization (batch 4)
+
 - **T2.2 — sessions `shallowRef` LANDED (target met):** converted the
   `sessions` store from a deep `ref` to a `shallowRef` + a `notifyFramesChanged`
   reactivity channel (`framesVersion` ref + `triggerRef(sessions)`), wired into
@@ -403,6 +380,7 @@ landed the one outstanding Performance change the audit surfaced.
   tracked for a runtime-verified change.
 
 ### Architecture & modularization (batch 3)
+
 - **T2.5 — Modbus consolidated into `lib/modbus/`:** unblocked the previous
   `./modbus` path-ambiguity by renaming `src/lib/modbus.ts` →
   `lib/modbus/modbus-core.ts`, then moving the 13 `modbus-*.ts` modules into
@@ -427,6 +405,7 @@ landed the one outstanding Performance change the audit surfaced.
   tracked separately.
 
 ### Architecture & modularization (batch 2)
+
 - **T2.6 (hard target met):** the AI wire types
   (`TerminalAiRequest`/`Response`, `LogAiRequest`/`Response`) moved out of
   `commands/ai/mod.rs` into `commands/ai/types.rs` (re-exported for
@@ -446,6 +425,7 @@ landed the one outstanding Performance change the audit surfaced.
   checksum/log/export/AI/window. Rust suite: 63 → 68 tests.
 
 ### Notes / deferred (batch 2)
+
 - **T2.3 — Export −40 %:** a formatter-level optimization (hand-written JSONL
   byte-array writer with `itoa`) was implemented and benchmarked — it measured
   **no gain** vs `serde_json`'s `Vec<u8>` fast path (2.15 ms → 2.20 ms, within
@@ -461,6 +441,7 @@ landed the one outstanding Performance change the audit surfaced.
   constraints, verification strategy, manual verification checklist).
 
 ### Testing & quality foundation
+
 - Added unit tests for all 13 previously-untested Vue composables (`useTriggers`,
   `useSessionShortcuts`, `useAppShortcuts`, `useSessionFrames`, `useExport`,
   `useAutoLog`, `useSessionActions`, `usePacketVirtualScroll`, `usePortWatcher`,
@@ -480,6 +461,7 @@ landed the one outstanding Performance change the audit surfaced.
   coverage gate, and the Rust fmt + clippy (`-D warnings`) + test gates.
 
 ### Reliability (sacred-cow hardening)
+
 - Added a **versioned persistence migration framework** (`migratePersistedFile` +
   `MIGRATION_STEPS`) wired into session loading, so a future persisted-shape
   change is forward-compatible and regression-tested (COW-5). Includes legacy-data
@@ -488,6 +470,7 @@ landed the one outstanding Performance change the audit surfaced.
   plugin data listener and already skips the per-chunk TextDecoder.
 
 ### Performance
+
 - **`SerialRxQueue` overflow drop path** switched from O(n) `Array.shift()` to an
   O(1) head-index with periodic compaction. Measured **90 k → 185 k ops/s
   (+105 %)** on the 512-chunk overflow benchmark — beyond the −50 % latency
@@ -496,6 +479,7 @@ landed the one outstanding Performance change the audit surfaced.
   (`SerialRxQueue` drop, 50 k-frame session push, Modbus read-batch composition).
 
 ### Architecture
+
 - Split the 558-line `commands/ai.rs` into a focused module directory
   (`commands/ai/{mod,cooldown,prompts,service,parser,tests}.rs`): `mod.rs` is a
   thin command dispatcher, with the rate-limit guard, system prompts, Z.ai
@@ -508,6 +492,7 @@ landed the one outstanding Performance change the audit surfaced.
   CI `clippy -D warnings` gate is clean.
 
 ### Notes / deferred
+
 - The Modbus-file consolidation into a `lib/modbus/` subdirectory is deferred: a
   barrel at `lib/modbus/` collides with `lib/modbus.ts` on the `./modbus` import
   path used by ~30 internal cross-imports (verified breakage), and the physical

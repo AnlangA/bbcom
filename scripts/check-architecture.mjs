@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
@@ -30,11 +30,15 @@ function resolveSourceImport(fromFile, specifier) {
     ...[...sourceExtensions].map((extension) => `${base}${extension}`),
     ...[...sourceExtensions].map((extension) => join(base, `index${extension}`)),
   ].map(normalize);
-  return candidates.find((candidate) => fileSet.has(candidate) || existsSync(candidate)) ?? null;
+  // The graph contains source modules only. Do not stop on a directory such as
+  // `features/sessions` before reaching its `index.ts` barrel.
+  return candidates.find((candidate) => fileSet.has(candidate)) ?? null;
 }
 
 function importsOf(file) {
-  const source = readFileSync(file, 'utf8');
+  const source = readFileSync(file, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
   const imports = [];
   for (const match of source.matchAll(importPattern)) imports.push(match[1] ?? match[2]);
   return imports;
@@ -97,7 +101,47 @@ for (const file of files) {
   }
 }
 
-if (cycles.length || boundaryViolations.length) {
+// Lower layers must never reach back into a Vue component or feature UI. This
+// makes data-plane code safe to run from the session runtime and Worker
+// without accidentally importing a renderer concern.
+for (const file of files) {
+  const portablePath = file.split(sep).join('/');
+  const isLib = portablePath.includes('/src/lib/');
+  const isRuntime = portablePath.includes('/features/') && portablePath.includes('/runtime/');
+  if (!isLib && !isRuntime) continue;
+  for (const specifier of importsOf(file)) {
+    const target = resolveSourceImport(file, specifier);
+    const targetPath = target?.split(sep).join('/') ?? '';
+    if (
+      targetPath.includes('/src/components/') ||
+      (targetPath.includes('/features/') && targetPath.includes('/ui/'))
+    ) {
+      boundaryViolations.push(`${relative(root, file)} -> ${specifier} (lower layer into UI)`);
+    }
+  }
+}
+
+// Production modules must be reachable from a window entry point or an
+// explicitly allowed Worker. This catches “completed” prototypes that have no
+// shipping call site while leaving generated declarations and Worker entry
+// points out of the result.
+const entryFiles = [join(sourceRoot, 'main.ts')].map(normalize).filter((file) => fileSet.has(file));
+const workerFiles = files.filter((file) => file.split(sep).join('/').includes('/src/workers/'));
+const reachable = new Set();
+function markReachable(file) {
+  if (reachable.has(file)) return;
+  reachable.add(file);
+  for (const dependency of graph.get(file) ?? []) markReachable(dependency);
+}
+for (const entry of [...entryFiles, ...workerFiles]) markReachable(entry);
+
+const orphans = files
+  .filter((file) => !reachable.has(file))
+  .filter((file) => !file.endsWith('.d.ts'))
+  .filter((file) => !file.split(sep).join('/').includes('/src/workers/'))
+  .map((file) => relative(root, file));
+
+if (cycles.length || boundaryViolations.length || orphans.length) {
   if (cycles.length) {
     console.error('Circular dependencies:');
     for (const cycle of cycles) {
@@ -107,6 +151,10 @@ if (cycles.length || boundaryViolations.length) {
   if (boundaryViolations.length) {
     console.error('Domain boundary violations:');
     for (const violation of boundaryViolations) console.error(`  ${violation}`);
+  }
+  if (orphans.length) {
+    console.error('Production orphan modules:');
+    for (const orphan of orphans) console.error(`  ${orphan}`);
   }
   process.exitCode = 1;
 } else {

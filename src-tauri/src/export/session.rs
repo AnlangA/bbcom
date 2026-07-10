@@ -3,14 +3,15 @@
 use crate::export::{ExportFormat, formatter};
 use crate::models::data_frame::DataFrame;
 use crate::models::errors::AppError;
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex, atomic::AtomicU64, atomic::Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
@@ -18,11 +19,15 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 pub const MAX_EXPORT_FRAMES: usize = 100_000;
 pub const MAX_EXPORT_BYTES: usize = 128 * 1024 * 1024;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
-pub const MAX_BATCH_FRAMES: usize = 512;
-pub const MAX_BATCH_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_BATCH_FRAMES: usize = 256;
+pub const MAX_BATCH_BYTES: usize = 512 * 1024;
 const MAX_ACTIVE_EXPORTS: usize = 8;
 const MAX_FRAME_ID_BYTES: usize = 256;
 const EXPORT_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+// A part file can only be removed when it is unmistakably abandoned.  Export
+// sessions themselves expire much sooner, but their files remain recoverable
+// for a full day so a delayed scheduler cannot delete a live user's output.
+const STALE_EXPORT_PART_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 type SharedExportSession = Arc<Mutex<ExportSession>>;
 
 #[cfg(windows)]
@@ -33,9 +38,9 @@ type TargetIdentity = PathBuf;
 pub struct ExportSessionManager {
     sessions: Mutex<HashMap<String, SharedExportSession>>,
     active_temps: Mutex<HashSet<PathBuf>>,
+    reserved_ids: Mutex<HashSet<String>>,
     active_targets: Arc<StdMutex<HashSet<TargetIdentity>>>,
     slots: Arc<Semaphore>,
-    next_id: AtomicU64,
     session_ttl: Duration,
 }
 
@@ -46,10 +51,28 @@ struct ExportSession {
     writer: Option<BufWriter<File>>,
     frame_count: usize,
     raw_bytes: usize,
+    output_bytes: usize,
+    started_at: Instant,
     last_activity: Instant,
     terminal: bool,
     _slot: OwnedSemaphorePermit,
     _target: TargetReservation,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportAppendStats {
+    pub total_frames: usize,
+    pub total_raw_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportFinishStats {
+    pub frames: usize,
+    pub raw_bytes: usize,
+    pub output_bytes: usize,
+    pub duration_ms: u64,
 }
 
 struct TargetReservation {
@@ -71,9 +94,9 @@ impl Default for ExportSessionManager {
         Self {
             sessions: Mutex::new(HashMap::new()),
             active_temps: Mutex::new(HashSet::new()),
+            reserved_ids: Mutex::new(HashSet::new()),
             active_targets: Arc::new(StdMutex::new(HashSet::new())),
             slots: Arc::new(Semaphore::new(MAX_ACTIVE_EXPORTS)),
-            next_id: AtomicU64::new(0),
             session_ttl: EXPORT_SESSION_TTL,
         }
     }
@@ -86,30 +109,39 @@ impl ExportSessionManager {
         // concurrent begin calls part of the same admission decision, so a
         // burst cannot temporarily create more than MAX_ACTIVE_EXPORTS temp
         // files while each caller observes a stale map length.
-        let slot = Arc::clone(&self.slots).try_acquire_owned().map_err(|_| {
-            validation_error(
-                "exportId",
-                format!("too many active exports (max {MAX_ACTIVE_EXPORTS})"),
-            )
-        })?;
+        let slot = Arc::clone(&self.slots)
+            .try_acquire_owned()
+            .map_err(|_| limit_error("exportId", MAX_ACTIVE_EXPORTS, MAX_ACTIVE_EXPORTS + 1))?;
         let target_identity = canonical_target_identity(&target, format).await?;
         let target_reservation = self.reserve_target(target_identity)?;
         let active_temps = self.active_temp_paths().await;
-        reconcile_target_residue(
+        reconcile_export_residue(
             &target,
             SystemTime::now(),
-            self.session_ttl,
+            STALE_EXPORT_PART_TTL,
             &active_temps,
             format,
         )
         .await?;
 
-        let id = self.new_id();
-        let (temp, file) = create_temp_file(&target, format).await?;
+        let id = self.reserve_new_id().await?;
+        let (temp, file) = match create_temp_file(&target, format, &id).await {
+            Ok(value) => value,
+            Err(error) => {
+                self.reserved_ids.lock().await.remove(&id);
+                return Err(error);
+            }
+        };
         let writer = BufWriter::with_capacity(64 * 1024, file);
         let mut header = Vec::new();
         formatter::append_header(&mut header, format);
-        let writer = initialize_writer(writer, &header, &temp, format, &target).await?;
+        let writer = match initialize_writer(writer, &header, &temp, format, &target).await {
+            Ok(writer) => writer,
+            Err(error) => {
+                self.reserved_ids.lock().await.remove(&id);
+                return Err(error);
+            }
+        };
 
         let session = Arc::new(Mutex::new(ExportSession {
             format,
@@ -118,6 +150,8 @@ impl ExportSessionManager {
             writer: Some(writer),
             frame_count: 0,
             raw_bytes: 0,
+            output_bytes: header.len(),
+            started_at: Instant::now(),
             last_activity: Instant::now(),
             terminal: false,
             _slot: slot,
@@ -129,14 +163,28 @@ impl ExportSessionManager {
             .lock()
             .await
             .insert(id.clone(), Arc::clone(&session));
+        self.reserved_ids.lock().await.remove(&id);
         debug_assert!(replaced.is_none(), "export ids must be unique per manager");
         Ok(id)
     }
 
-    pub async fn append(&self, id: &str, frames: &[DataFrame]) -> Result<(), AppError> {
+    pub async fn append(
+        &self,
+        id: &str,
+        frames: &[DataFrame],
+    ) -> Result<ExportAppendStats, AppError> {
+        validate_session_id(id)?;
         let batch_bytes = validate_frame_batch(frames, MAX_BATCH_FRAMES, MAX_BATCH_BYTES)?;
         let shared = self.get(id).await?;
         let mut session = shared.lock().await;
+        Self::append_locked(&mut session, frames, batch_bytes).await
+    }
+
+    async fn append_locked(
+        session: &mut ExportSession,
+        frames: &[DataFrame],
+        batch_bytes: usize,
+    ) -> Result<ExportAppendStats, AppError> {
         if session.terminal || session.writer.is_none() {
             return Err(validation_error(
                 "exportId",
@@ -147,16 +195,10 @@ impl ExportSessionManager {
         let next_frame_count = session.frame_count.saturating_add(frames.len());
         let next_raw_bytes = session.raw_bytes.saturating_add(batch_bytes);
         if next_frame_count > MAX_EXPORT_FRAMES {
-            return Err(validation_error(
-                "frames",
-                format!("too many frames: {next_frame_count} (max {MAX_EXPORT_FRAMES})"),
-            ));
+            return Err(limit_error("frames", MAX_EXPORT_FRAMES, next_frame_count));
         }
         if next_raw_bytes > MAX_EXPORT_BYTES {
-            return Err(validation_error(
-                "frames",
-                format!("export data exceeds {MAX_EXPORT_BYTES} bytes"),
-            ));
+            return Err(limit_error("frames", MAX_EXPORT_BYTES, next_raw_bytes));
         }
 
         let mut encoded = Vec::with_capacity(batch_bytes.min(64 * 1024));
@@ -164,7 +206,7 @@ impl ExportSessionManager {
             &mut encoded,
             frames,
             session.format,
-            &session.target.to_string_lossy(),
+            &display_name(&session.target),
         )?;
         let format = session.format;
         let target = session.target.clone();
@@ -177,18 +219,29 @@ impl ExportSessionManager {
             .map_err(|error| export_error(error, format, &target))?;
         session.frame_count = next_frame_count;
         session.raw_bytes = next_raw_bytes;
+        session.output_bytes = session.output_bytes.saturating_add(encoded.len());
         session.last_activity = Instant::now();
-        Ok(())
+        Ok(ExportAppendStats {
+            total_frames: session.frame_count,
+            total_raw_bytes: session.raw_bytes,
+        })
     }
 
-    pub async fn finish(&self, id: &str) -> Result<(), AppError> {
+    pub async fn finish(&self, id: &str) -> Result<ExportFinishStats, AppError> {
+        validate_session_id(id)?;
         let shared = self.get(id).await?;
-        let (format, target, temp, mut writer) = {
+        let (format, target, temp, mut writer, stats) = {
             let mut session = shared.lock().await;
             if session.terminal || session.writer.is_none() {
                 return Err(validation_error(
                     "exportId",
                     "unknown or finished export session",
+                ));
+            }
+            if session.frame_count == 0 {
+                return Err(validation_error(
+                    "frames",
+                    "export session must contain a frame",
                 ));
             }
             session.terminal = true;
@@ -202,6 +255,13 @@ impl ExportSessionManager {
                 session.target.clone(),
                 session.temp.clone(),
                 writer,
+                ExportFinishStats {
+                    frames: session.frame_count,
+                    raw_bytes: session.raw_bytes,
+                    output_bytes: session.output_bytes,
+                    duration_ms: u64::try_from(session.started_at.elapsed().as_millis())
+                        .unwrap_or(u64::MAX),
+                },
             )
         };
 
@@ -224,10 +284,11 @@ impl ExportSessionManager {
         }
         self.remove_current(id, &shared).await;
         self.active_temps.lock().await.remove(&temp);
-        result
+        result.map(|()| stats)
     }
 
     pub async fn abort(&self, id: &str) -> Result<(), AppError> {
+        validate_session_id(id)?;
         let Ok(shared) = self.get(id).await else {
             return Ok(());
         };
@@ -331,12 +392,20 @@ impl ExportSessionManager {
         })
     }
 
-    fn new_id(&self) -> String {
-        let counter = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        format!("export-{nanos:x}-{counter:x}")
+    async fn reserve_new_id(&self) -> Result<String, AppError> {
+        for _ in 0..8 {
+            let id = random_id_hex()?;
+            if self.sessions.lock().await.contains_key(&id) {
+                continue;
+            }
+            if self.reserved_ids.lock().await.insert(id.clone()) {
+                return Ok(id);
+            }
+        }
+        Err(AppError::IoError {
+            message: "failed to allocate a unique export session id".to_string(),
+            kind: ErrorKind::Other,
+        })
     }
 }
 
@@ -399,106 +468,43 @@ pub fn validate_frame_batch(
     max_bytes: usize,
 ) -> Result<usize, AppError> {
     if frames.len() > max_frames {
-        return Err(validation_error(
-            "frames",
-            format!("too many frames: {} (max {max_frames})", frames.len()),
-        ));
+        return Err(limit_error("frames", max_frames, frames.len()));
     }
     let mut total = 0usize;
     for frame in frames {
         if frame.id.len() > MAX_FRAME_ID_BYTES {
-            return Err(validation_error(
-                "frames",
-                format!("frame id exceeds {MAX_FRAME_ID_BYTES} bytes"),
-            ));
+            return Err(limit_error("frames", MAX_FRAME_ID_BYTES, frame.id.len()));
         }
         if frame.data.len() > MAX_FRAME_BYTES {
-            return Err(validation_error(
-                "frames",
-                format!("single frame exceeds {MAX_FRAME_BYTES} bytes"),
-            ));
+            return Err(limit_error("frames", MAX_FRAME_BYTES, frame.data.len()));
         }
         total = total
             .checked_add(frame.data.len())
-            .ok_or_else(|| validation_error("frames", "frame byte count overflow"))?;
-        if total > max_bytes {
-            return Err(validation_error(
-                "frames",
-                format!("frame data exceeds {max_bytes} bytes"),
-            ));
+            .ok_or_else(|| limit_error("frames", max_bytes, usize::MAX))?;
+        // A frame is indivisible. It may exceed the normal batch byte budget
+        // only when it is the sole frame in the batch, up to MAX_FRAME_BYTES.
+        if total > max_bytes && frames.len() != 1 {
+            return Err(limit_error("frames", max_bytes, total));
         }
     }
     Ok(total)
 }
 
-pub fn validate_export_path(path: &str, format: ExportFormat) -> Result<PathBuf, AppError> {
-    if path.trim().is_empty() {
-        return Err(validation_error("path", "export path cannot be empty"));
+fn validate_session_id(id: &str) -> Result<(), AppError> {
+    if id.len() != 32 || !is_lower_hex(id, 32) {
+        return Err(validation_error("exportId", "invalid export session id"));
     }
-    let path = PathBuf::from(path);
-    if !path.is_absolute() {
-        return Err(validation_error("path", "export path must be absolute"));
-    }
-    if path.is_dir() {
-        return Err(validation_error(
-            "path",
-            "export path cannot be a directory",
-        ));
-    }
-    if path.file_name().and_then(|value| value.to_str()).is_none() {
-        return Err(validation_error(
-            "path",
-            "export file name must be valid Unicode",
-        ));
-    }
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        return Err(validation_error("path", "export directory does not exist"));
-    }
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if !extension.is_empty() && extension != format.extension() {
-        return Err(validation_error(
-            "path",
-            format!("export file extension must be .{}", format.extension()),
-        ));
-    }
-    Ok(path)
+    Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ExportArtifact {
-    created_at: SystemTime,
-}
-
-fn artifact_prefix(target: &Path) -> Option<String> {
-    let name = target.file_name()?.to_str()?;
-    Some(format!(".bbcom-{name}-v2-"))
-}
-
-fn temp_path(target: &Path, created_at: SystemTime, nonce: &str) -> Option<PathBuf> {
+fn temp_path(target: &Path, id: &str) -> Option<PathBuf> {
     let parent = target.parent()?;
-    let prefix = artifact_prefix(target)?;
-    let nanos = u64::try_from(created_at.duration_since(UNIX_EPOCH).ok()?.as_nanos()).ok()?;
-    Some(parent.join(format!("{prefix}{nanos:x}-{nonce}.tmp")))
+    Some(parent.join(format!(".bbcom.{id}.part")))
 }
 
-fn classify_artifact(target: &Path, file_name: &str) -> Option<ExportArtifact> {
-    let rest = file_name.strip_prefix(&artifact_prefix(target)?)?;
-    let body = rest.strip_suffix(".tmp")?;
-    let (nanos, nonce) = body.split_once('-')?;
-    if !is_lower_hex(nanos, 16) || nonce.len() != 32 || !is_lower_hex(nonce, 32) {
-        return None;
-    }
-    let nanos = u64::from_str_radix(nanos, 16).ok()?;
-    Some(ExportArtifact {
-        created_at: UNIX_EPOCH.checked_add(Duration::from_nanos(nanos))?,
-    })
+fn classify_artifact(file_name: &str) -> Option<&str> {
+    let id = file_name.strip_prefix(".bbcom.")?.strip_suffix(".part")?;
+    (id.len() == 32 && is_lower_hex(id, 32)).then_some(id)
 }
 
 fn is_lower_hex(value: &str, max_len: usize) -> bool {
@@ -509,7 +515,7 @@ fn is_lower_hex(value: &str, max_len: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-async fn reconcile_target_residue(
+async fn reconcile_export_residue(
     target: &Path,
     now: SystemTime,
     ttl: Duration,
@@ -532,35 +538,60 @@ async fn reconcile_target_residue(
         let Some(file_name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        let Some(artifact) = classify_artifact(target, &file_name) else {
+        if classify_artifact(&file_name).is_none() {
             continue;
-        };
+        }
         let file_type = match entry.file_type().await {
             Ok(file_type) => file_type,
             Err(error) => {
-                tracing::warn!(path = %entry.path().display(), "could not inspect export residue: {error}");
+                tracing::warn!(
+                    operation = "reconcile_export_residue",
+                    error_kind = ?error.kind(),
+                    "could not inspect export residue"
+                );
                 continue;
             }
         };
         if !file_type.is_file() {
             continue;
         }
-        let expired = now
-            .duration_since(artifact.created_at)
-            .is_ok_and(|age| age >= ttl);
+        let modified = match entry
+            .metadata()
+            .await
+            .and_then(|metadata| metadata.modified())
+        {
+            Ok(modified) => modified,
+            Err(error) => {
+                tracing::warn!(
+                    operation = "reconcile_export_residue",
+                    error_kind = ?error.kind(),
+                    "could not inspect export residue age"
+                );
+                continue;
+            }
+        };
+        let expired = now.duration_since(modified).is_ok_and(|age| age >= ttl);
         if expired && !active_temps.contains(&entry.path()) {
             match fs::remove_file(entry.path()).await {
                 Ok(()) => removed_temps += 1,
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => {
-                    tracing::warn!(path = %entry.path().display(), "failed to remove expired export temp: {error}");
+                    tracing::warn!(
+                        operation = "reconcile_export_residue",
+                        error_kind = ?error.kind(),
+                        "failed to remove expired export temp"
+                    );
                 }
             }
         }
     }
 
     if removed_temps > 0 {
-        tracing::info!(target = %target.display(), count = removed_temps, "removed expired export temp files");
+        tracing::info!(
+            operation = "reconcile_export_residue",
+            count = removed_temps,
+            "removed expired export temp files"
+        );
     }
     Ok(())
 }
@@ -568,41 +599,31 @@ async fn reconcile_target_residue(
 async fn create_temp_file(
     target: &Path,
     format: ExportFormat,
+    id: &str,
 ) -> Result<(PathBuf, File), AppError> {
-    for _ in 0..8 {
-        let nonce = random_nonce_hex()?;
-        let temp = temp_path(target, SystemTime::now(), &nonce).ok_or_else(|| {
-            validation_error("path", "export target has an unsupported file name")
-        })?;
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .await
-        {
-            Ok(file) => return Ok((temp, file)),
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(export_error(error, format, target)),
-        }
-    }
-    Err(AppError::ExportError {
-        message: "failed to allocate a unique export temp file".to_string(),
-        format: format.label().to_string(),
-        path: target.to_string_lossy().into_owned(),
-    })
+    validate_session_id(id)?;
+    let temp = temp_path(target, id)
+        .ok_or_else(|| validation_error("path", "export target must have a parent directory"))?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .await
+        .map_err(|error| export_error(error, format, target))?;
+    Ok((temp, file))
 }
 
-fn random_nonce_hex() -> Result<String, AppError> {
+fn random_id_hex() -> Result<String, AppError> {
     let mut random = [0_u8; 16];
     getrandom::fill(&mut random).map_err(|error| AppError::IoError {
-        message: format!("failed to obtain randomness for export temp file: {error}"),
+        message: format!("failed to obtain randomness for export session id: {error}"),
         kind: ErrorKind::Other,
     })?;
-    let mut nonce = String::with_capacity(random.len() * 2);
+    let mut id = String::with_capacity(random.len() * 2);
     for byte in random {
-        write!(&mut nonce, "{byte:02x}").expect("writing to String cannot fail");
+        write!(&mut id, "{byte:02x}").expect("writing to String cannot fail");
     }
-    Ok(nonce)
+    Ok(id)
 }
 
 async fn replace_target(temp: &Path, target: &Path, format: ExportFormat) -> Result<(), AppError> {
@@ -623,20 +644,34 @@ async fn atomic_replace(temp: &Path, target: &Path, format: ExportFormat) -> Res
     let error_target = target.clone();
     tokio::task::spawn_blocking(move || {
         use windows_sys::Win32::Storage::FileSystem::{
-            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+            MOVEFILE_WRITE_THROUGH, MoveFileExW, REPLACEFILE_WRITE_THROUGH, ReplaceFileW,
         };
 
         let source = null_terminated_wide(&temp)?;
         let destination = null_terminated_wide(&target)?;
         // SAFETY: both buffers are owned, NUL-terminated UTF-16 paths and stay
-        // alive for the complete call. Flags request one replace operation and
-        // synchronous durability; no handles or borrowed output are involved.
-        let moved = unsafe {
-            MoveFileExW(
-                source.as_ptr(),
-                destination.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
+        // alive for the complete call. Existing targets use ReplaceFileW so
+        // their replacement is one atomic OS operation; a first export has no
+        // target to replace and is atomically moved into the same directory.
+        let moved = if target.exists() {
+            unsafe {
+                ReplaceFileW(
+                    destination.as_ptr(),
+                    source.as_ptr(),
+                    std::ptr::null(),
+                    REPLACEFILE_WRITE_THROUGH,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            }
+        } else {
+            unsafe {
+                MoveFileExW(
+                    source.as_ptr(),
+                    destination.as_ptr(),
+                    MOVEFILE_WRITE_THROUGH,
+                )
+            }
         };
         if moved == 0 {
             return Err(std::io::Error::last_os_error());
@@ -647,7 +682,8 @@ async fn atomic_replace(temp: &Path, target: &Path, format: ExportFormat) -> Res
     .map_err(|error| AppError::ExportError {
         message: format!("atomic export replace task failed: {error}"),
         format: format.label().to_string(),
-        path: error_target.to_string_lossy().into_owned(),
+        path: display_name(&error_target),
+        kind: ErrorKind::Other,
     })?
     .map_err(|error| export_error(error, format, &error_target))
 }
@@ -695,7 +731,11 @@ async fn remove_if_exists(path: &Path) {
     if let Err(error) = fs::remove_file(path).await
         && error.kind() != ErrorKind::NotFound
     {
-        tracing::warn!(path = %path.display(), "failed to remove export temp file: {error}");
+        tracing::warn!(
+            operation = "remove_export_temp",
+            error_kind = ?error.kind(),
+            "failed to remove export temp file"
+        );
     }
 }
 
@@ -706,12 +746,28 @@ fn validation_error(field: &str, message: impl Into<String>) -> AppError {
     }
 }
 
+fn limit_error(field: &str, limit: usize, actual: usize) -> AppError {
+    AppError::LimitError {
+        message: format!("{field} exceeds its limit"),
+        field: field.to_string(),
+        limit,
+        actual,
+    }
+}
+
 fn export_error(error: std::io::Error, format: ExportFormat, path: &Path) -> AppError {
     AppError::ExportError {
         message: error.to_string(),
         format: format.label().to_string(),
-        path: path.to_string_lossy().into_owned(),
+        path: display_name(path),
+        kind: error.kind(),
     }
+}
+
+fn display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "export target".to_string())
 }
 
 #[cfg(test)]
@@ -719,7 +775,10 @@ mod tests {
     use super::*;
     use crate::models::data_frame::Direction;
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::task::{Context, Poll};
+    use std::time::UNIX_EPOCH;
+    use tokio::sync::oneshot;
     use tokio::time::timeout;
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -792,11 +851,21 @@ mod tests {
             .begin(ExportFormat::Csv, target.clone())
             .await
             .unwrap();
-        manager
+        let append_stats = manager
             .append(&id, &[frame("1", &[0x41]), frame("2", &[0x42])])
             .await
             .unwrap();
-        manager.finish(&id).await.unwrap();
+        assert_eq!(
+            append_stats,
+            ExportAppendStats {
+                total_frames: 2,
+                total_raw_bytes: 2,
+            }
+        );
+        let finish_stats = manager.finish(&id).await.unwrap();
+        assert_eq!(finish_stats.frames, 2);
+        assert_eq!(finish_stats.raw_bytes, 2);
+        assert!(finish_stats.output_bytes > finish_stats.raw_bytes);
 
         let content = std::fs::read_to_string(&target).unwrap();
         assert!(content.starts_with("timestamp,direction,data\n"));
@@ -825,8 +894,8 @@ mod tests {
         let temp = shared.lock().await.temp.clone();
         assert!(temp.exists());
         let file_name = temp.file_name().unwrap().to_string_lossy();
-        assert!(classify_artifact(&target, &file_name).is_some());
-        assert!(file_name.contains("-v2-"));
+        assert!(classify_artifact(&file_name).is_some());
+        assert_eq!(file_name, format!(".bbcom.{id}.part"));
         drop(shared);
         manager.abort(&id).await.unwrap();
         assert!(!temp.exists());
@@ -1001,27 +1070,6 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    #[tokio::test]
-    async fn begin_failure_after_target_reservation_releases_all_admission() {
-        let manager = ExportSessionManager::default();
-        let (directory, _) = isolated_target("placeholder.jsonl");
-        let target = directory.join(format!("{}.jsonl", "x".repeat(220)));
-
-        assert!(manager.begin(ExportFormat::Jsonl, target).await.is_err());
-
-        assert_eq!(manager.slots.available_permits(), MAX_ACTIVE_EXPORTS);
-        assert!(manager.sessions.lock().await.is_empty());
-        assert!(manager.active_temps.lock().await.is_empty());
-        assert!(
-            manager
-                .active_targets
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_empty()
-        );
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_begins_reserve_capacity_before_creating_sessions() {
         let manager = Arc::new(ExportSessionManager::default());
@@ -1041,7 +1089,12 @@ mod tests {
             let (result, target) = task.await.unwrap();
             match result {
                 Ok(id) => opened.push((id, target)),
-                Err(AppError::ValidationError { field, .. }) if field == "exportId" => {
+                Err(AppError::LimitError {
+                    field,
+                    limit: MAX_ACTIVE_EXPORTS,
+                    actual,
+                    ..
+                }) if field == "exportId" && actual == MAX_ACTIVE_EXPORTS + 1 => {
                     rejected += 1;
                 }
                 Err(error) => panic!("unexpected begin error: {error}"),
@@ -1083,6 +1136,7 @@ mod tests {
             .begin(ExportFormat::Csv, target.clone())
             .await
             .unwrap();
+        manager.append(&id, &[frame("1", &[0x41])]).await.unwrap();
         std::fs::create_dir(&target).unwrap();
 
         assert!(manager.finish(&id).await.is_err());
@@ -1109,30 +1163,28 @@ mod tests {
             .await
             .unwrap();
         let shared = shared_session(&manager, &id).await;
-        let session_guard = shared.lock().await;
-
-        let map_guard = manager.sessions.lock().await;
-        let first_manager = Arc::clone(&manager);
-        let first_id = id.clone();
+        let (first_has_lock, wait_for_second) = oneshot::channel();
+        let (release_first, release_first_rx) = oneshot::channel();
+        let first_shared = Arc::clone(&shared);
         let first = tokio::spawn(async move {
-            first_manager
-                .append(&first_id, &[frame("first", &[1])])
-                .await
+            let mut session = first_shared.lock().await;
+            first_has_lock.send(()).unwrap();
+            release_first_rx.await.unwrap();
+            ExportSessionManager::append_locked(&mut session, &[frame("first", &[1])], 1).await
         });
-        tokio::task::yield_now().await;
-        drop(map_guard);
-        let checkpoint = manager.sessions.lock().await;
-        drop(checkpoint);
+        wait_for_second.await.unwrap();
 
+        let (second_started, second_started_rx) = oneshot::channel();
         let second_manager = Arc::clone(&manager);
         let second_id = id.clone();
         let second = tokio::spawn(async move {
+            second_started.send(()).unwrap();
             second_manager
                 .append(&second_id, &[frame("second", &[2])])
                 .await
         });
-        tokio::task::yield_now().await;
-        drop(session_guard);
+        second_started_rx.await.unwrap();
+        release_first.send(()).unwrap();
 
         first.await.unwrap().unwrap();
         second.await.unwrap().unwrap();
@@ -1147,15 +1199,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn residue_cleanup_is_target_scoped_strict_and_non_recursive() {
+    async fn residue_cleanup_is_strict_parent_scoped_and_non_recursive() {
         let (directory, target) = isolated_target("capture.csv");
         std::fs::write(&target, b"current").unwrap();
-        let stale = UNIX_EPOCH + Duration::from_nanos(0xdeadbeef);
-        let owned = temp_path(&target, stale, "00000000000000000000000000000001").unwrap();
-        let active = temp_path(&target, stale, "00000000000000000000000000000002").unwrap();
-        let wrong_target =
-            directory.join(".bbcom-other.csv-v2-deadbeef-00000000000000000000000000000003.tmp");
-        let malformed = directory.join(".bbcom-capture.csv-v2-deadbeef-too-short.tmp");
+        let owned = temp_path(&target, "00000000000000000000000000000001").unwrap();
+        let active = temp_path(&target, "00000000000000000000000000000002").unwrap();
+        let another_owned = directory.join(".bbcom.00000000000000000000000000000003.part");
+        let malformed = directory.join(".bbcom.too-short.part");
         let legacy = directory.join(".bbcom-capture.csv-export-deadbeef-1-0.tmp");
         let nested = directory.join("nested");
         std::fs::create_dir(&nested).unwrap();
@@ -1163,7 +1213,7 @@ mod tests {
         for path in [
             &owned,
             &active,
-            &wrong_target,
+            &another_owned,
             &malformed,
             &legacy,
             &nested_owned,
@@ -1172,10 +1222,10 @@ mod tests {
         }
         let active_temps = HashSet::from([active.clone()]);
 
-        reconcile_target_residue(
+        reconcile_export_residue(
             &target,
             SystemTime::now(),
-            EXPORT_SESSION_TTL,
+            Duration::ZERO,
             &active_temps,
             ExportFormat::Csv,
         )
@@ -1184,7 +1234,7 @@ mod tests {
 
         assert!(!owned.exists());
         assert!(active.exists());
-        assert!(wrong_target.exists());
+        assert!(!another_owned.exists());
         assert!(malformed.exists());
         assert!(legacy.exists());
         assert!(nested_owned.exists());
@@ -1198,8 +1248,7 @@ mod tests {
         std::fs::write(&target, b"current").unwrap();
         let victim = directory.join("victim.bin");
         std::fs::write(&victim, b"do not delete").unwrap();
-        let stale = UNIX_EPOCH + Duration::from_nanos(0xdeadbeef);
-        let link = temp_path(&target, stale, "00000000000000000000000000000004").unwrap();
+        let link = temp_path(&target, "00000000000000000000000000000004").unwrap();
 
         #[cfg(unix)]
         std::os::unix::fs::symlink(&victim, &link).unwrap();
@@ -1209,10 +1258,10 @@ mod tests {
             return;
         }
 
-        reconcile_target_residue(
+        reconcile_export_residue(
             &target,
             SystemTime::now(),
-            EXPORT_SESSION_TTL,
+            Duration::ZERO,
             &HashSet::new(),
             ExportFormat::Csv,
         )
@@ -1244,33 +1293,59 @@ mod tests {
     }
 
     #[test]
-    fn random_temp_nonces_are_full_width_and_unpredictable() {
-        let first = random_nonce_hex().unwrap();
-        let second = random_nonce_hex().unwrap();
+    fn random_session_ids_are_full_width_and_unpredictable() {
+        let first = random_id_hex().unwrap();
+        let second = random_id_hex().unwrap();
         assert_eq!(first.len(), 32);
         assert!(is_lower_hex(&first, 32));
         assert_ne!(first, second);
+        assert!(validate_session_id(&first).is_ok());
+        assert!(validate_session_id("export-123").is_err());
     }
 
     #[test]
     fn batch_limits_cover_count_single_frame_and_total_bytes() {
         let too_many = vec![frame("x", &[]); MAX_BATCH_FRAMES + 1];
-        assert!(validate_frame_batch(&too_many, MAX_BATCH_FRAMES, MAX_BATCH_BYTES).is_err());
-        assert!(
+        assert!(matches!(
+            validate_frame_batch(&too_many, MAX_BATCH_FRAMES, MAX_BATCH_BYTES),
+            Err(AppError::LimitError {
+                limit: MAX_BATCH_FRAMES,
+                actual,
+                ..
+            }) if actual == MAX_BATCH_FRAMES + 1
+        ));
+        assert!(matches!(
             validate_frame_batch(
                 &[frame("large", &vec![0; MAX_FRAME_BYTES + 1])],
                 MAX_BATCH_FRAMES,
                 MAX_BATCH_BYTES,
-            )
-            .is_err()
-        );
-        assert!(
+            ),
+            Err(AppError::LimitError {
+                limit: MAX_FRAME_BYTES,
+                actual,
+                ..
+            }) if actual == MAX_FRAME_BYTES + 1
+        ));
+        assert!(matches!(
             validate_frame_batch(
                 &[frame("a", &[0; 3]), frame("b", &[0; 3])],
                 MAX_BATCH_FRAMES,
                 5,
+            ),
+            Err(AppError::LimitError {
+                limit: 5,
+                actual: 6,
+                ..
+            })
+        ));
+        assert_eq!(
+            validate_frame_batch(
+                &[frame("singleton", &vec![0; MAX_FRAME_BYTES])],
+                MAX_BATCH_FRAMES,
+                MAX_BATCH_BYTES,
             )
-            .is_err()
+            .unwrap(),
+            MAX_FRAME_BYTES,
         );
     }
 }

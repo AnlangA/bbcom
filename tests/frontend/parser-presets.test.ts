@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { PARSER_PRESETS, findPreset } from '../../src/lib/parser-presets.ts';
 import { ProtocolParser } from '../../src/lib/protocol-parser.ts';

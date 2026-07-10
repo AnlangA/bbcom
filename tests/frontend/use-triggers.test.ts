@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { nextTick, ref } from 'vue';
 import { useTriggers } from '../../src/composables/useTriggers.ts';

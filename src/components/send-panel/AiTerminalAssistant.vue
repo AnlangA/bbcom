@@ -27,7 +27,7 @@
         <Terminal class="icon-sm" />
         {{ t('ai.terminal.model') }}
       </span>
-      <n-select
+      <AppSelect
         size="small"
         :value="activeSession.terminalAiModel"
         :options="aiModelOptions"
@@ -64,19 +64,20 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { NButton, NInput, NSelect, NTag, useMessage } from 'naive-ui';
+import { NButton, NInput, NTag, useMessage } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
 import { Copy, SendHorizontal, Terminal, WandSparkles } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
 import { getAiErrorMessage } from '../../lib/ai-error';
-import { terminalAiAssist, type TerminalAiResponse } from '../../lib/ipc';
+import { runAiRequest, type TerminalAiResponse } from '../../lib/ipc';
 import { logger } from '../../lib/logger';
 import { t } from '../../lib/i18n';
-import type { AiModel, SerialSession } from '../../types';
+import type { AiModel, AiWindowSession } from '../../types';
 import type { useAiWindowSession } from '../../composables/useAiWindowSession';
 import { aiModelMenuProps, aiModelOptions, aiRiskLabel, aiRiskTagType } from '../ai/ai-options';
 
 const props = defineProps<{
-  session: SerialSession;
+  session: AiWindowSession;
   bridge: ReturnType<typeof useAiWindowSession>;
 }>();
 
@@ -87,7 +88,7 @@ const loading = ref(false);
 const result = ref<TerminalAiResponse | null>(null);
 
 const activeSession = computed(() => props.session);
-const hasApiKey = computed(() => Boolean(appStore.aiApiKey.trim()));
+const hasApiKey = computed(() => appStore.aiKeyConfigured);
 const canGenerate = computed(() => prompt.value.trim().length > 0 && !loading.value);
 const riskLabel = computed(() => (result.value ? aiRiskLabel(result.value.risk) : ''));
 const riskTagType = computed(() => (result.value ? aiRiskTagType(result.value.risk) : 'default'));
@@ -105,17 +106,15 @@ async function generateCommand() {
   loading.value = true;
   result.value = null;
   try {
-    const response = await terminalAiAssist({
+    const response = await runAiRequest({
+      requestId: crypto.randomUUID(),
+      kind: 'terminal',
       prompt: prompt.value.trim(),
-      apiKey: appStore.aiApiKey,
       model: activeSession.value.terminalAiModel,
-      enableCodingPlan: appStore.aiEnableCodingPlan,
       shell: 'linux/busybox',
     });
+    if (response.kind !== 'terminal') throw new Error('unexpected AI response kind');
     result.value = response;
-    if (response.command && response.risk !== 'dangerous') {
-      applyCommandToApp(response.command);
-    }
   } catch (e: unknown) {
     message.error(getAiErrorMessage(e, t('ai.terminal.failed')));
   } finally {

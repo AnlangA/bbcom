@@ -17,14 +17,14 @@
       <div class="send-left">
         <n-checkbox v-model:checked="isHex" size="small" :disabled="looping">HEX</n-checkbox>
         <span class="options-divider" aria-hidden="true"></span>
-        <n-select
+        <AppSelect
           v-model:value="lineEnding"
           :options="lineEndingOptions"
           size="tiny"
           style="width: 96px"
           :disabled="isHex || looping"
         />
-        <n-select
+        <AppSelect
           v-model:value="appendChecksum"
           :options="checksumOptions"
           size="tiny"
@@ -89,7 +89,8 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
-import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
+import { NInput, NButton, NCheckbox, NInputNumber, useMessage } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
 import { Repeat2, SendHorizontal, SquareStop } from '@lucide/vue';
 import { encodeUtf8, isValidHex as checkValidHex, normalizeHex, parseHex } from '../../lib/format';
 import { checksumAlgoOptionsWithNone } from '../../lib/checksum-constants';

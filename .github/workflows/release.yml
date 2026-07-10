@@ -3,116 +3,352 @@ name: Release
 on:
   push:
     tags:
-      - '*'
+      - 'v*.*.*'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate release source
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+
+      - name: Reject non-SemVer tags and non-master commits
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release tag must match vX.Y.Z" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin master:refs/remotes/origin/master
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master
+          version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          test "$package_version" = "$version"
+          grep -Fq "## [$version]" CHANGELOG.md
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libudev-dev \
+            shellcheck
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Setup Rust 1.88.0
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.88.0
+          components: clippy,rustfmt
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify synchronized versions
+        run: pnpm run version:check
+
+      - name: Run release quality gate
+        run: pnpm run check
+
+      - name: Audit release dependencies
+        run: |
+          pnpm audit --audit-level moderate
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --deny unsound --deny yanked --file Cargo.lock
+
+      - name: Prepare release metadata directory
+        run: mkdir -p release-metadata
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: release-metadata/bbcom-${{ github.ref_name }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate third-party license inventories
+        shell: bash
+        run: |
+          mkdir -p release-metadata
+          pnpm licenses list --prod --json > release-metadata/frontend-licenses.json
+          node -e "const x=require('./release-metadata/frontend-licenses.json'); if (x.error) process.exit(1)"
+          cargo install cargo-license --version 0.7.0 --locked
+          cargo license --manifest-path src-tauri/Cargo.toml --json \
+            > release-metadata/rust-licenses.json
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-metadata
+          path: release-metadata/*
+          if-no-files-found: error
+          retention-days: 7
+
   build:
-    name: Build ${{ matrix.platform.name }}
-    runs-on: ${{ matrix.platform.os }}
+    name: Build signed ${{ matrix.name }} installer
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        platform:
+        include:
           - name: Windows x64
-            os: windows-latest
-            artifact_name: bbcom-windows-x64
-            binary_name: bbcom.exe
-            binary_path: target/release/bbcom.exe
-            rust_target: ''
-          - name: Linux x64
-            os: ubuntu-latest
-            artifact_name: bbcom-linux-x64
-            binary_name: bbcom
-            binary_path: target/release/bbcom
-            rust_target: ''
-          - name: macOS Apple Silicon
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            artifact: windows-x64
+          - name: macOS arm64
             os: macos-14
-            artifact_name: bbcom-macos-arm64
-            binary_name: bbcom
-            binary_path: target/aarch64-apple-darwin/release/bbcom
-            rust_target: aarch64-apple-darwin
-
+            target: aarch64-apple-darwin
+            artifact: macos-arm64
+          - name: Linux x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: linux-x64
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - name: Checkout tagged source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libudev-dev
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libudev-dev
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-        # Version is read from packageManager field in package.json (pnpm@11.5.3)
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: pnpm
 
-      - name: Setup Rust
-        if: matrix.platform.rust_target == ''
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Setup Rust with target
-        if: matrix.platform.rust_target != ''
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust target
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          targets: ${{ matrix.platform.rust_target }}
+          toolchain: 1.88.0
+          targets: ${{ matrix.target }}
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build frontend
-        run: pnpm build
+      - name: Import Windows signing certificate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw 'WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required'
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'bbcom-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          if (-not $cert.Thumbprint) { throw 'Windows signing certificate import failed' }
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
 
-      - name: Build application
-        if: matrix.platform.rust_target == ''
-        run: pnpm tauri:build --no-bundle
+      - name: Verify Apple signing and notarization secrets
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+            APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            test -n "${!name}" || { echo "$name is required" >&2; exit 1; }
+          done
 
-      - name: Build application for target
-        if: matrix.platform.rust_target != ''
-        run: pnpm tauri:build --no-bundle --target ${{ matrix.platform.rust_target }}
+      - name: Build signed Windows NSIS installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $config = @{
+            bundle = @{
+              windows = @{
+                certificateThumbprint = $env:WINDOWS_CERTIFICATE_THUMBPRINT
+                digestAlgorithm = 'sha256'
+                timestampUrl = 'http://timestamp.digicert.com'
+              }
+            }
+          } | ConvertTo-Json -Compress -Depth 5
+          pnpm tauri:build --target ${{ matrix.target }} --bundles nsis --config $config
 
-      - name: Prepare artifact
+      - name: Build signed and notarized macOS DMG
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm tauri:build --target ${{ matrix.target }} --bundles dmg
+
+      - name: Build Linux AppImage and deb installers
+        if: runner.os == 'Linux'
+        run: pnpm tauri:build --target ${{ matrix.target }} --bundles appimage,deb
+
+      - name: Verify Windows signature and stage installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          $installers = Get-ChildItem 'target/${{ matrix.target }}/release/bundle/nsis/*.exe'
+          if ($installers.Count -ne 1) { throw "expected one NSIS installer, found $($installers.Count)" }
+          $signature = Get-AuthenticodeSignature $installers[0].FullName
+          if ($signature.Status -ne 'Valid') { throw "invalid Authenticode signature: $($signature.Status)" }
+          Copy-Item $installers[0].FullName release-assets/
+
+      - name: Verify Apple signature/notarization and stage DMG
+        if: runner.os == 'macOS'
         shell: bash
         run: |
-          mkdir -p "release/${{ matrix.platform.artifact_name }}"
-          cp "${{ matrix.platform.binary_path }}" "release/${{ matrix.platform.artifact_name }}/${{ matrix.platform.binary_name }}"
-          cd release
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            7z a "${{ matrix.platform.artifact_name }}.zip" "${{ matrix.platform.artifact_name }}"
-          else
-            chmod +x "${{ matrix.platform.artifact_name }}/${{ matrix.platform.binary_name }}"
-            tar -czf "${{ matrix.platform.artifact_name }}.tar.gz" "${{ matrix.platform.artifact_name }}"
-          fi
+          shopt -s nullglob
+          app=(target/${{ matrix.target }}/release/bundle/macos/*.app)
+          dmg=(target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          test "${#app[@]}" -eq 1
+          test "${#dmg[@]}" -eq 1
+          codesign --verify --deep --strict --verbose=2 "${app[0]}"
+          xcrun stapler validate "${dmg[0]}"
+          mkdir -p release-assets
+          cp "${dmg[0]}" release-assets/
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
+      - name: Smoke-check and stage Linux installers
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          appimage=(target/${{ matrix.target }}/release/bundle/appimage/*.AppImage)
+          deb=(target/${{ matrix.target }}/release/bundle/deb/*.deb)
+          test "${#appimage[@]}" -eq 1
+          test "${#deb[@]}" -eq 1
+          chmod +x "${appimage[0]}"
+          (cd "$RUNNER_TEMP" && "${GITHUB_WORKSPACE}/${appimage[0]}" --appimage-extract >/dev/null)
+          dpkg-deb --info "${deb[0]}" >/dev/null
+          mkdir -p release-assets
+          cp "${appimage[0]}" "${deb[0]}" release-assets/
+
+      - name: Upload installer
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: ${{ matrix.platform.artifact_name }}
-          path: |
-            release/${{ matrix.platform.artifact_name }}.zip
-            release/${{ matrix.platform.artifact_name }}.tar.gz
-          if-no-files-found: ignore
+          name: ${{ matrix.artifact }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
 
   release:
-    name: Create GitHub release
-    runs-on: ubuntu-latest
-    needs: build
+    name: Create draft GitHub release
+    needs: [validate, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v7
+      - name: Checkout release notes
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Download installers and metadata
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: release
           merge-multiple: true
 
-      - name: Create release
-        uses: softprops/action-gh-release@v3
+      - name: Verify complete release set
+        shell: bash
+        run: |
+          shopt -s nullglob
+          nsis=(release/*.exe)
+          dmg=(release/*.dmg)
+          appimage=(release/*.AppImage)
+          deb=(release/*.deb)
+          sbom=(release/*.cdx.json)
+          test "${#nsis[@]}" -eq 1
+          test "${#dmg[@]}" -eq 1
+          test "${#appimage[@]}" -eq 1
+          test "${#deb[@]}" -eq 1
+          test "${#sbom[@]}" -eq 1
+          test -f release/frontend-licenses.json
+          test -f release/rust-licenses.json
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+
+      - name: Keyless-sign Linux installers
+        shell: bash
+        run: |
+          for artifact in release/*.AppImage release/*.deb; do
+            cosign sign-blob --yes --bundle "${artifact}.sigstore.json" "$artifact"
+          done
+
+      - name: Generate checksums and release notes
+        shell: bash
+        run: |
+          (
+            cd release
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              | sed 's#  \./#  #' > SHA256SUMS
+          )
+          version="${GITHUB_REF_NAME#v}"
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
+          subject-path: release/*
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+        with:
+          draft: true
+          prerelease: false
+          generate_release_notes: false
+          body_path: release-notes.md
           files: release/*
+          fail_on_unmatched_files: true

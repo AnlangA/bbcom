@@ -9,9 +9,6 @@
     "core:window:allow-set-always-on-top",
     "core:window:allow-is-always-on-top",
     "serialplugin:default",
-    "store:allow-load",
-    "store:allow-get",
-    "store:allow-delete",
-    "store:allow-save"
+    "main-window-commands"
   ]
 }

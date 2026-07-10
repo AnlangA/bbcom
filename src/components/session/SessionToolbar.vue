@@ -82,7 +82,7 @@
         <div class="toolbar-field">
           <FileText class="icon-sm field-icon" />
           <span class="field-label">{{ t('toolbar.format') }}</span>
-          <n-select
+          <AppSelect
             :value="appStore.displayMode"
             :options="displayModeOptions"
             size="small"
@@ -211,24 +211,19 @@
               <FileText class="icon-sm" />
             </template>
           </n-button>
-          <n-dropdown
-            :options="exportOptions"
-            :disabled="session.frames.length === 0 || isExporting"
-            @select="(key: string) => $emit('export', key)"
+          <n-button
+            class="toolbar-export-btn"
+            size="small"
+            quaternary
+            :disabled="session.frames.length === 0"
+            :loading="isExporting"
+            :title="t('toolbar.exportData')"
+            @click="$emit('export')"
           >
-            <n-button
-              class="toolbar-export-btn"
-              size="small"
-              quaternary
-              :disabled="session.frames.length === 0"
-              :loading="isExporting"
-              :title="t('toolbar.exportData')"
-            >
-              <template #icon>
-                <Download class="icon-sm" />
-              </template>
-            </n-button>
-          </n-dropdown>
+            <template #icon>
+              <Download class="icon-sm" />
+            </template>
+          </n-button>
         </div>
       </div>
     </div>
@@ -236,7 +231,8 @@
 </template>
 
 <script setup lang="ts">
-import { NButton, NTag, NDropdown, NSelect } from 'naive-ui';
+import { NButton, NTag } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
 import {
   ArrowDownUp,
   Binary,
@@ -263,6 +259,8 @@ export type SessionViewMode = 'terminal' | 'waveform' | 'parser' | 'modbus';
 
 defineProps<{
   session: SerialSession;
+  /** Per-session invalidation pulse for the raw frame arrays. */
+  framesVersion: number;
   isConnected: boolean;
   isConnecting: boolean;
   reconnecting: boolean;
@@ -271,7 +269,6 @@ defineProps<{
   sendingBreak: boolean;
   isExporting: boolean;
   viewMode: SessionViewMode;
-  exportOptions: { label: string; key: string }[];
 }>();
 
 defineEmits<{
@@ -284,7 +281,7 @@ defineEmits<{
   'toggle-auto-scroll': [];
   'toggle-timestamp': [];
   'toggle-auto-log': [];
-  export: [string];
+  export: [];
 }>();
 
 const appStore = useAppStore();

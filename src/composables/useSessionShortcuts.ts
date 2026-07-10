@@ -1,4 +1,4 @@
-import { onMounted, onUnmounted } from 'vue';
+import { getCurrentInstance, onMounted, onUnmounted } from 'vue';
 
 /**
  * Session-scoped keyboard shortcuts that mirror professional serial terminals:
@@ -63,13 +63,15 @@ export function useSessionShortcuts({
     }
   }
 
-  onMounted(() => {
-    window.addEventListener('keydown', handleKeydown);
-  });
+  if (getCurrentInstance()) {
+    onMounted(() => {
+      window.addEventListener('keydown', handleKeydown);
+    });
 
-  onUnmounted(() => {
-    window.removeEventListener('keydown', handleKeydown);
-  });
+    onUnmounted(() => {
+      window.removeEventListener('keydown', handleKeydown);
+    });
+  }
 
   // Exposed for unit testing the dispatch logic without a DOM.
   return { handleKeydown };

@@ -25,29 +25,29 @@
 命令/日志助手放在同一个应用里。
 
 项目的前端负责会话状态与协议引擎，以便在高吞吐串口数据下保持界面
-响应；Rust 侧保持轻量，主要承担 Tauri 命令、文件导出、校验、更新器
-集成和 AI 客户端调用。
+响应；Rust 侧负责特权文件/导出会话、校验、操作系统凭据存储和有界 AI
+客户端调用。
 
 ## 核心亮点
 
 - **多会话串口终端**：每个串口会话拥有独立连接状态、收发统计、
   暂停/继续、搜索、方向过滤和最近捕获恢复。
-- **高吞吐渲染链路**：O(1) RX 队列、`requestAnimationFrame` 批量
-  刷新、虚拟滚动和显式帧响应式通知协同工作。
+- **高吞吐渲染链路**：有界 O(1) RX 队列、阈值/定时运行时 drain、虚拟
+  滚动和每会话帧失效信号协同工作。
 - **Modbus 主站**：支持 RTU 与裸 PDU 传输、FC01-FC06/FC10、连续地址
   批量读写、周期读/写、回放数据源和寄存器绑定波形通道。
-- **协议工具**：按分隔符、定长、长度字段解析帧，并支持 `.bbrec`
-  原始 RX/TX 字节流录制与回放。
+- **协议工具**：按分隔符、定长、长度字段解析帧，支持有界重同步和
+  绝对流偏移。
 - **波形绘图**：可绘制 RX 文本数值或 Modbus 寄存器样本，支持通道
   显隐、统计、自动缩放、暂停、清空和 CSV 导出。
-- **自动化辅助**：带控制流的宏、RX 触发响应、快捷命令、发送历史、
+- **自动化辅助**：顺序发送/延时宏、RX 触发响应、快捷命令、发送历史、
   高亮规则、连接预设、DTR/RTS 控制和 250 ms BREAK 脉冲。
-- **导出与日志**：支持 TXT、CSV、JSONL、BIN；大体量导出走捕获文件
-  路径，避免把巨大帧数组作为单个 IPC 参数传递。
+- **导出与日志**：支持 TXT、CSV、JSONL、BIN；使用后端有界会话、不透明
+  保存授权、增量批次和原子替换。
 - **AI 助手**：Linux/BusyBox 命令生成与串口日志分析，包含模型校验、
-  请求冷却、风险分级和流式响应拼装。
+  请求限制/取消、角色隔离提示词和风险分级。
 - **桌面体验**：深色/浅色主题、中英文界面、本地设置持久化、快捷键
-  和可选更新检查。
+  和签名安装包发布。
 
 ## 截图
 
@@ -77,7 +77,8 @@
 - 显示模式：HEX、ASCII、UTF-8、ANSI、HEX+ASCII 分栏视图。
 - 串口参数：波特率、数据位、停止位、奇偶校验、流控、DTR 和 RTS。
 - 热插拔刷新、自动重连尝试、毫秒级时间戳、按帧/合并视图。
-- 循环发送、快捷命令、发送历史，以及带重试/退避的大写入分块。
+- 循环发送、快捷命令、发送历史，以及串行化的 4 KiB 写入分块；部分
+  写失败后不会进行可能造成重复字节的自动重传。
 - RX 文本或 HEX 匹配后自动发送响应，触发器自带冷却时间。
 - 会话级关键词高亮，可限定 All/TX/RX，并支持文本或 HEX 匹配。
 
@@ -85,10 +86,9 @@
 
 - 内置 CRLF、NMEA 0183、AT/Modem、SCPI、NUL 分隔二进制和长度前缀帧
   等解析预设。
-- `.bbrec` 捕获/回放原始 RX/TX 字节流。
 - `.bbreg` 导入/导出 Modbus 寄存器表和回放数据源。
 - 按时间范围与方向过滤导出内容。
-- Checksum / CRC-8 / CRC-16 / CRC-32 计算。
+- Checksum、CRC-8、CRC-16/X-25、CRC-16/Modbus、CRC-32 计算。
 
 ### AI 工作流
 
@@ -96,29 +96,29 @@
 - 自然语言生成终端命令，并给出安全/谨慎/危险风险分级。
 - 基于当前会话上下文回答串口日志问题。
 - 前端模型注册表与 Rust 分发表保持一致。
-- 支持增量 SSE 响应累加和中途终止状态。
+- 支持显式取消、60 秒超时、有界上下文和最多两个不排队的并发请求。
 
 ## 技术栈
 
-| 层级 | 技术 |
-| --- | --- |
-| 桌面 | [Tauri v2](https://v2.tauri.app/) |
-| 后端 | [Rust](https://www.rust-lang.org/) 2024、tokio、serde、thiserror、crc、zai-rs |
-| 前端 | [Vue 3](https://vuejs.org/) Composition API + [TypeScript](https://www.typescriptlang.org/) |
-| UI | [Naive UI](https://www.naiveui.com/)、lucide-vue-next |
-| 状态 | [Pinia](https://pinia.vuejs.org/) |
-| 构建 | [Vite 6](https://vite.dev/)、pnpm |
-| 串口 | tauri-plugin-serialplugin |
-| 持久化 | localStorage 会话快照 + Tauri Store 本地密钥 |
-| 测试与质量 | node:test、c8、ESLint、Prettier、madge、cargo test、clippy、criterion |
+| 层级       | 技术                                                                                                |
+| ---------- | --------------------------------------------------------------------------------------------------- |
+| 桌面       | [Tauri v2](https://v2.tauri.app/)                                                                   |
+| 后端       | [Rust](https://www.rust-lang.org/) 2024、tokio、serde、thiserror、crc、zai-rs                       |
+| 前端       | [Vue 3](https://vuejs.org/) Composition API + [TypeScript](https://www.typescriptlang.org/)         |
+| UI         | [Naive UI](https://www.naiveui.com/)、@lucide/vue                                                   |
+| 状态       | [Pinia](https://pinia.vuejs.org/)                                                                   |
+| 构建       | [Vite 6](https://vite.dev/)、pnpm                                                                   |
+| 串口       | tauri-plugin-serialplugin                                                                           |
+| 持久化     | 有界 localStorage 会话快照 + 操作系统 API Key 凭据存储                                              |
+| 测试与质量 | Vitest、V8 coverage、WebdriverIO/Jasmine、ESLint、Prettier、cargo test、clippy、llvm-cov、criterion |
 
 ## 快速开始
 
 ### 环境要求
 
-- Rust stable 1.85+（edition 2024）
-- Node.js 22+
-- pnpm 11+
+- Rust 1.88.0（edition 2024）
+- Node.js 22.23.1
+- pnpm 11.5.3
 - 操作系统允许访问串口
 
 Linux 下可能需要把用户加入串口权限组，例如：
@@ -158,26 +158,26 @@ chmod +x scripts/dev.sh
 
 ## 脚本
 
-| 命令 | 说明 |
-| --- | --- |
-| `pnpm dev` | 启动 Vite 开发服务器 |
-| `pnpm build` | Vue 类型检查并构建前端 |
-| `pnpm preview` | 预览前端构建产物 |
-| `pnpm tauri:dev` | 以 HMR 方式运行 Tauri 桌面应用 |
-| `pnpm tauri:build` | 构建桌面应用包 |
-| `pnpm format` | 格式化前端与 Rust 代码 |
-| `pnpm format:check` | 检查前端与 Rust 格式 |
-| `pnpm lint` | 对 `src/` 运行 ESLint |
-| `pnpm test:frontend` | 运行前端单元测试 |
-| `pnpm test:rust` | 运行 Rust 单元测试 |
-| `pnpm test` | 运行前端与 Rust 测试 |
-| `pnpm coverage:frontend` | 在 `.c8rc.json` 覆盖率门下运行前端测试 |
-| `pnpm coverage:lib` | 对无框架依赖的 `src/lib/` 模块执行逐文件行覆盖率门 |
-| `pnpm bench:frontend` | 运行前端热路径基准 |
-| `pnpm bench:frontend:write` | 刷新本机前端基准基线 |
-| `pnpm bench:rust` | 运行 Rust criterion 基准 |
-| `pnpm cycles` | 检查 TypeScript 导入环 |
-| `pnpm check` | 运行 lint、格式检查、构建和单元测试 |
+| 命令                        | 说明                                        |
+| --------------------------- | ------------------------------------------- |
+| `pnpm dev`                  | 启动 Vite 开发服务器                        |
+| `pnpm build`                | Vue 类型检查并构建前端                      |
+| `pnpm preview`              | 预览前端构建产物                            |
+| `pnpm tauri:dev`            | 以 HMR 方式运行 Tauri 桌面应用              |
+| `pnpm tauri:build`          | 构建桌面应用包                              |
+| `pnpm format`               | 格式化前端与 Rust 代码                      |
+| `pnpm format:check`         | 检查前端与 Rust 格式                        |
+| `pnpm lint`                 | 对 `src/` 运行 ESLint                       |
+| `pnpm test:frontend`        | 运行前端单元测试                            |
+| `pnpm test:rust`            | 运行 Rust 单元测试                          |
+| `pnpm test`                 | 运行前端与 Rust 测试                        |
+| `pnpm coverage:frontend`    | 运行 Vitest V8 全局覆盖率门禁               |
+| `pnpm coverage:lib`         | 运行 `src/lib/` 的严格 Vitest V8 覆盖率门禁 |
+| `pnpm bench:frontend`       | 运行前端热路径基准                          |
+| `pnpm bench:frontend:write` | 刷新本机前端基准基线                        |
+| `pnpm bench:rust`           | 运行 Rust criterion 基准                    |
+| `pnpm cycles`               | 检查 TypeScript 导入环                      |
+| `pnpm check`                | 运行 lint、格式检查、构建和单元测试         |
 
 ## 项目地图
 
@@ -200,12 +200,12 @@ bbcom/
 │   ├── App.vue                  # 主窗口入口
 │   └── AiWindow.vue             # AI 悬浮窗口入口
 ├── src-tauri/                   # Rust 后端
-│   ├── src/commands/            # Tauri 命令：ai、checksum、export、log、updater、window
+│   ├── src/commands/            # Tauri 命令：ai、checksum、导出/日志会话、window
 │   ├── src/export/              # TXT/CSV/JSONL/BIN 格式化器
 │   ├── src/models/              # IPC 数据结构与应用错误类型
 │   ├── src/utils/               # HEX、时间戳、校验工具
 │   └── benches/hot_paths.rs     # Criterion 基准
-├── tests/frontend/              # node:test 单元测试与前端基准
+├── tests/frontend/              # Vitest 单元测试与独立 Node 基准
 ├── images/                      # README 截图
 ├── .github/workflows/           # CI 与 release 工作流
 ├── ARCHITECTURE.md              # 维护者架构指南
@@ -217,9 +217,14 @@ bbcom/
 
 ## 验证
 
-CI 会运行前端 lint、格式检查、构建、测试、覆盖率、基准烟测和循环依赖
-检查，以及 Rust 格式、clippy 和测试。Rust 覆盖率在 CI 中以 tarpaulin
-报告形式尽力生成；前端覆盖率门由 c8 强制执行。
+CI 强制执行前端 lint、格式检查、构建、测试、覆盖率和架构检查。性能门禁在
+同一 runner 上交替运行 3 个独立 base/head 进程；每个 case 测量 7 轮、每轮
+至少 100 ms，CV 超过 10% 或 head/base 中位数低于 0.85 都会失败。Rust 审计、
+格式、Clippy、测试和 llvm-cov 阈值也都是不可旁路的硬门禁。
+
+`vX.Y.Z` 标签会生成草稿 release，其中包含已签名 Windows NSIS、已签名并
+公证的 macOS arm64 DMG、Linux AppImage/deb、SHA-256、CycloneDX SBOM、
+许可证清单、Sigstore bundle 和 GitHub 构建来源证明。v0.5.0 不提供自动更新器。
 
 提交 PR 前建议运行：
 

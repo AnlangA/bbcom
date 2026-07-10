@@ -19,7 +19,7 @@
           <span class="row-label">{{ t('settings.lightMode') }}</span>
         </div>
         <div class="section-row">
-          <n-select
+          <AppSelect
             :value="appStore.locale"
             :options="localeOptions"
             size="small"
@@ -107,7 +107,8 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { NModal, NInputNumber, NButton, NSwitch, NSelect } from 'naive-ui';
+import { NModal, NInputNumber, NButton, NSwitch } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
 import { useAppStore } from '../../stores/app';
 import { APP_VERSION } from '../../lib/version';
 import { supportedLocales, t, type Locale } from '../../lib/i18n';

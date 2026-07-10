@@ -26,17 +26,16 @@ export function parserConfigKey(config: ParserConfig): string {
  * separate from offset accounting, reset detection, and throughput tracking.
  */
 export class ParserFrameCollector {
-  private parser: ProtocolParser;
+  private parser: ProtocolParser | null;
   private parsedFrames: DisplayParsedFrame[] = [];
   private consumedFrameCount = 0;
-  private runningOffset = 0;
   private lastConfigKey = '';
   private windowStart = 0;
   private windowBytes = 0;
   private throughput = 0;
 
   constructor(initialConfig: ParserConfig) {
-    this.parser = new ProtocolParser(initialConfig);
+    this.parser = isEmptyDelimiter(initialConfig) ? null : new ProtocolParser(initialConfig);
   }
 
   sync(
@@ -49,8 +48,8 @@ export class ParserFrameCollector {
     const framesWereReset = frames.length < this.consumedFrameCount;
     this.lastConfigKey = key;
 
-    if (config.kind === 'delimiter' && config.delimiter.length === 0) {
-      this.reset(config);
+    if (isEmptyDelimiter(config)) {
+      this.reset(null);
       return this.snapshot(true);
     }
 
@@ -66,11 +65,10 @@ export class ParserFrameCollector {
     return this.snapshot(reset);
   }
 
-  private reset(config: ParserConfig): void {
-    this.parser = new ProtocolParser(config);
+  private reset(config: ParserConfig | null): void {
+    this.parser = config ? new ProtocolParser(config) : null;
     this.parsedFrames = [];
     this.consumedFrameCount = 0;
-    this.runningOffset = 0;
     this.windowStart = 0;
     this.windowBytes = 0;
     this.throughput = 0;
@@ -81,6 +79,7 @@ export class ParserFrameCollector {
     startIndex: number,
     now: number,
   ): void {
+    if (!this.parser) return;
     for (let i = startIndex; i < frames.length; i += 1) {
       const frame = frames[i];
       if (frame.direction !== 'RX') continue;
@@ -88,11 +87,10 @@ export class ParserFrameCollector {
       for (const parsedFrame of parsed) {
         this.parsedFrames.push({
           data: parsedFrame.data,
-          offset: this.runningOffset + parsedFrame.offset,
+          offset: parsedFrame.offset,
         });
         this.windowBytes += parsedFrame.data.length;
       }
-      this.runningOffset += frame.data.length;
     }
     this.consumedFrameCount = frames.length;
 
@@ -117,4 +115,8 @@ export class ParserFrameCollector {
       reset,
     };
   }
+}
+
+function isEmptyDelimiter(config: ParserConfig): boolean {
+  return config.kind === 'delimiter' && config.delimiter.length === 0;
 }

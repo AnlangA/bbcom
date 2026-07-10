@@ -19,11 +19,15 @@ pub fn run() {
     let result = tauri::Builder::default()
         .manage(commands::file_grants::FileGrantManager::default())
         .manage(export::session::ExportSessionManager::default())
+        .manage(commands::log::AutoLogSessionManager::default())
         .manage(secure_settings::SecureSettingsState::default())
+        .manage(commands::ai::request_manager::AiRequestManager::default())
         .setup(|app| {
             #[cfg(feature = "devtools")]
             {
-                app.get_webview_window("main").map(|w| w.open_devtools());
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
             }
             WebviewWindowBuilder::new(
                 app,
@@ -75,10 +79,9 @@ pub fn run() {
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_serialplugin::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            commands::ai::log_ai_assist,
-            commands::ai::terminal_ai_assist,
+            commands::ai::cancel_ai_request,
+            commands::ai::run_ai_request,
             commands::checksum::calculate_checksum,
             commands::export::abort_export,
             commands::export::append_export_batch,
@@ -86,11 +89,14 @@ pub fn run() {
             commands::export::finish_export,
             commands::file_grants::request_save_target,
             commands::file_grants::revoke_file_grant,
-            commands::log::append_log,
-            secure_settings::secure_settings_clear,
-            secure_settings::secure_settings_load,
-            secure_settings::secure_settings_migrate_if_missing,
-            secure_settings::secure_settings_save,
+            commands::log::abort_auto_log,
+            commands::log::append_auto_log_batch,
+            commands::log::begin_auto_log,
+            commands::log::finish_auto_log,
+            secure_settings::clear_ai_api_key,
+            secure_settings::get_ai_key_status,
+            secure_settings::migrate_ai_api_key,
+            secure_settings::set_ai_api_key,
             commands::window::get_ai_window_state,
             commands::window::hide_ai_window,
             commands::window::resize_ai_window,

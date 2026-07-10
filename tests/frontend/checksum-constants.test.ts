@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   CHECKSUM_BYTE_LENGTH,
@@ -10,7 +10,18 @@ test('checksum byte lengths match the width each algorithm appends', () => {
   assert.equal(CHECKSUM_BYTE_LENGTH.CHECKSUM, 1);
   assert.equal(CHECKSUM_BYTE_LENGTH.CRC8, 1);
   assert.equal(CHECKSUM_BYTE_LENGTH.CRC16, 2);
+  assert.equal(CHECKSUM_BYTE_LENGTH.CRC16_MODBUS, 2);
   assert.equal(CHECKSUM_BYTE_LENGTH.CRC32, 4);
+});
+
+test('legacy CRC16 keeps its tag while labels distinguish X-25 and Modbus', () => {
+  assert.deepEqual(
+    checksumOptions.filter((option) => option.value.startsWith('CRC16')),
+    [
+      { label: 'CRC-16/X-25', value: 'CRC16' },
+      { label: 'CRC-16/Modbus', value: 'CRC16_MODBUS' },
+    ],
+  );
 });
 
 test('checksum option sets stay consistent', () => {

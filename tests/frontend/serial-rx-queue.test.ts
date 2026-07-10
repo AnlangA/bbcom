@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { SerialRxQueue } from '../../src/lib/serial-rx-queue.ts';
 
@@ -111,4 +111,15 @@ test('clearPending keeps cumulative overflow state but clears the pending frame'
 test('rejects invalid queue limits', () => {
   assert.throws(() => new SerialRxQueue({ maxBytes: 0, maxChunks: 1 }), RangeError);
   assert.throws(() => new SerialRxQueue({ maxBytes: 1, maxChunks: Number.NaN }), RangeError);
+});
+
+test('drain copies only the live suffix when an old prefix has not yet compacted', () => {
+  const queue = new SerialRxQueue({ maxBytes: 3, maxChunks: 10 });
+  queue.enqueue(bytes([1]));
+  queue.enqueue(bytes([2]));
+  queue.enqueue(bytes([3]));
+  queue.enqueue(bytes([4]));
+
+  const drained = queue.drain();
+  assert.deepEqual(flatten(drained.chunks), [2, 3, 4]);
 });

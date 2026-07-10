@@ -1,9 +1,10 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   reconcileResidentSessionIds,
   resolveActiveSessionRuntime,
 } from '../../src/features/sessions/runtime/session-residency.ts';
+import { SessionRuntimeManager } from '../../src/features/sessions/runtime/session-runtime-manager.ts';
 
 test('restored sessions stay lazy until they are first activated', () => {
   assert.deepEqual(reconcileResidentSessionIds([], ['a', 'b', 'c'], 'b'), ['b']);
@@ -58,4 +59,45 @@ test('only the active session resolves to a heavy UI binding', () => {
   assert.equal(resolveActiveSessionRuntime(sessions, runtimes, 'c'), null);
   assert.equal(resolveActiveSessionRuntime(sessions, runtimes, null), null);
   assert.equal(runtimes.size, 2, 'switching the sole UI binding retains both headless runtimes');
+});
+
+test('SessionRuntimeManager retains per-session runtimes while the active binding changes', () => {
+  const manager = new SessionRuntimeManager<{ id: string }, { sessionId: string; label: string }>();
+  const first = { sessionId: 'first', label: 'first-runtime' };
+  const second = { sessionId: 'second', label: 'second-runtime' };
+  const sessions = [{ id: 'first' }, { id: 'second' }];
+
+  manager.reconcile(sessions, 'first');
+  manager.register(first);
+  manager.register(second);
+  assert.deepEqual(manager.residentSessionIds, ['first']);
+  assert.equal(manager.resolveActive(sessions, 'first')?.runtime, first);
+
+  manager.reconcile(sessions, 'second');
+  assert.deepEqual(manager.residentSessionIds, ['first', 'second']);
+  assert.equal(manager.resolveActive(sessions, 'second')?.runtime, second);
+  assert.equal(manager.size, 2);
+
+  manager.unregister(first);
+  assert.equal(manager.resolveActive(sessions, 'first'), null);
+  assert.equal(manager.size, 1);
+});
+
+test('SessionRuntimeManager ignores a stale cleanup from a replaced runtime', () => {
+  const manager = new SessionRuntimeManager<
+    { id: string },
+    { sessionId: string; generation: number }
+  >();
+  const stale = { sessionId: 'same-session', generation: 1 };
+  const replacement = { sessionId: 'same-session', generation: 2 };
+  const sessions = [{ id: 'same-session' }];
+
+  manager.register(stale);
+  manager.register(replacement);
+  manager.unregister(stale);
+
+  assert.equal(manager.size, 1);
+  assert.equal(manager.resolveActive(sessions, 'same-session')?.runtime, replacement);
+  manager.unregister(replacement);
+  assert.equal(manager.size, 0);
 });

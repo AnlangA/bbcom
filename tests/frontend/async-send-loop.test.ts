@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   AsyncSendLoop,
@@ -93,4 +93,28 @@ test('stop invalidates an in-flight generation and cancels scheduled work', asyn
   assert.equal(scheduled.length, 1);
   immediate.stop();
   assert.equal(cancelled.length, 1);
+});
+
+test('default scheduler clamps invalid intervals and contains task failures', async () => {
+  vi.useFakeTimers();
+  try {
+    const loop = new AsyncSendLoop(
+      async () => {
+        throw new Error('driver rejected write');
+      },
+      () => -10,
+    );
+
+    assert.equal(loop.isRunning, false);
+    assert.equal(loop.isScheduled, false);
+    assert.equal(loop.start(), true);
+    await vi.runAllTicks();
+    assert.equal(loop.isRunning, true);
+    assert.equal(loop.isScheduled, true);
+    loop.stop();
+    assert.equal(loop.isRunning, false);
+    assert.equal(loop.isScheduled, false);
+  } finally {
+    vi.useRealTimers();
+  }
 });

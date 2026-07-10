@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { ref } from 'vue';
 import {
@@ -126,6 +126,7 @@ test('computeSendByteCount counts HEX payload bytes incl. appended checksum', ()
   assert.equal(computeSendByteCount('AA BB', true, 'none', 'none'), 2);
   assert.equal(computeSendByteCount('AA BB', true, 'CHECKSUM', 'none'), 3); // 2 + 1
   assert.equal(computeSendByteCount('AA BB', true, 'CRC16', 'none'), 4); // 2 + 2
+  assert.equal(computeSendByteCount('AA BB', true, 'CRC16_MODBUS', 'none'), 4); // 2 + 2
   assert.equal(computeSendByteCount('AA BB', true, 'CRC32', 'none'), 6); // 2 + 4
   // empty input is zero
   assert.equal(computeSendByteCount('   ', true, 'none', 'none'), 0);

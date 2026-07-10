@@ -1,40 +1,62 @@
 import { useSessionStore } from '../stores/sessions';
 import { useAppStore } from '../stores/app';
 import {
-  invokeAppendLog,
+  invokeAbortAutoLog,
+  invokeAppendAutoLogBatch,
+  invokeBeginAutoLog,
+  invokeFinishAutoLog,
   requestSaveTarget,
   revokeFileGrant,
+  type AutoLogAppendStats,
+  type AutoLogFormat,
+  type ExportFramePayload,
   type SaveTargetGrant,
 } from '../lib/ipc';
-import { formatFrameData, formatLogLine } from '../lib/format';
 import { logger } from '../lib/logger';
-import type { DataFrame } from '../types';
+import type { DataFrame, DisplayMode } from '../types';
 
+export const AUTO_LOG_DEBOUNCE_MS = 100;
+export const AUTO_LOG_IMMEDIATE_FLUSH_BYTES = 64 * 1024;
 export const AUTO_LOG_MAX_QUEUED_BYTES = 1024 * 1024;
 export const AUTO_LOG_MAX_QUEUED_ENTRIES = 1024;
 export const AUTO_LOG_MAX_BATCH_BYTES = 256 * 1024;
+export const AUTO_LOG_MAX_BATCH_FRAMES = 256;
 export const AUTO_LOG_APPEND_TIMEOUT_MS = 15_000;
-export const AUTO_LOG_REVOKE_TIMEOUT_MS = 5_000;
+export const AUTO_LOG_DRAIN_TIMEOUT_MS = 2_000;
+export const AUTO_LOG_TERMINAL_TIMEOUT_MS = 5_000;
+/** Main-window notification emitted when capture must stop to avoid data loss. */
+export const AUTO_LOG_FAILURE_EVENT = 'bbcom:auto-log-failure';
+
+export type AutoLogFailureReason =
+  'begin-failure' | 'overflow' | 'append-failure' | 'drain-timeout';
 
 interface AutoLogQueueEntry {
-  content: string;
-  byteLength: number;
+  frame: DataFrame;
+  rawBytes: number;
+}
+
+export interface AutoLogSessionClient {
+  begin(token: string, format: AutoLogFormat): Promise<{ logId: string }>;
+  append(logId: string, frames: ExportFramePayload[]): Promise<AutoLogAppendStats>;
+  finish(logId: string): Promise<void>;
+  abort(logId: string): Promise<void>;
 }
 
 type SessionStore = ReturnType<typeof useSessionStore>;
-type AppendLog = (token: string, content: string) => Promise<void>;
 type RevokeTarget = (token: string) => Promise<void>;
 type ShutdownMode = 'none' | 'graceful' | 'abort';
 
 interface SessionAutoLogState {
   sessionId: string;
   generation: number;
-  grant: SaveTargetGrant;
+  logId: string;
+  displayName: string;
   sessionStore: SessionStore;
-  appendLog: AppendLog;
-  revokeTarget: RevokeTarget;
+  client: AutoLogSessionClient;
   appendTimeoutMs: number;
-  revokeTimeoutMs: number;
+  drainTimeoutMs: number;
+  terminalTimeoutMs: number;
+  debounceMs: number;
   queue: AutoLogQueueEntry[];
   outstandingBytes: number;
   outstandingEntries: number;
@@ -43,24 +65,31 @@ interface SessionAutoLogState {
   storeCleared: boolean;
   warningLogged: boolean;
   worker: Promise<void> | null;
-  revokePromise: Promise<void> | null;
+  debounceTimer: ReturnType<typeof setTimeout> | null;
+  terminalPromise: Promise<void> | null;
+  cancelAppendWait: (() => void) | null;
 }
 
-// Coordination is module-level because the serial runtime and the toolbar use
-// separate composable instances. A grant is permanently bound to the deps that
-// created it; later append/disable calls must never substitute another
-// instance's test doubles or IPC functions.
+const DEFAULT_SESSION_CLIENT: AutoLogSessionClient = {
+  begin: invokeBeginAutoLog,
+  append: invokeAppendAutoLogBatch,
+  finish: invokeFinishAutoLog,
+  abort: invokeAbortAutoLog,
+};
+
+// Runtime capture and toolbar actions use separate composable instances. A
+// backend log session remains bound to the client that opened it.
 const generations = new Map<string, number>();
 const sessionStates = new Map<string, SessionAutoLogState>();
-const utf8Encoder = new TextEncoder();
 
-/** Injectable sinks so queueing and grant lifecycle are unit-testable. */
 export interface UseAutoLogDeps {
-  appendLog?: AppendLog;
+  sessionClient?: AutoLogSessionClient;
   requestTarget?: (sessionId: string) => Promise<SaveTargetGrant | null>;
   revokeTarget?: RevokeTarget;
+  debounceMs?: number;
   appendTimeoutMs?: number;
-  revokeTimeoutMs?: number;
+  drainTimeoutMs?: number;
+  terminalTimeoutMs?: number;
 }
 
 function normalizeTimeout(value: number | undefined, fallback: number): number {
@@ -71,9 +100,6 @@ function normalizeTimeout(value: number | undefined, fallback: number): number {
 
 async function settleWithin<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  // Convert rejection into a fulfilled tagged result before racing. If the
-  // underlying IPC rejects after the timeout, this observer still consumes it
-  // and prevents an unhandled rejection.
   const observed = operation.then(
     (value) => ({ kind: 'fulfilled' as const, value }),
     (error: unknown) => ({ kind: 'rejected' as const, error }),
@@ -83,6 +109,27 @@ async function settleWithin<T>(operation: Promise<T>, timeoutMs: number): Promis
   });
   const result = await Promise.race([observed, timeout]);
   if (timer) clearTimeout(timer);
+  if (result.kind === 'timeout') throw new Error('operation timed out');
+  if (result.kind === 'rejected') throw result.error;
+  return result.value;
+}
+
+async function settleAppendWithin<T>(
+  state: SessionAutoLogState,
+  operation: Promise<T>,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const observed = operation.then(
+    (value) => ({ kind: 'fulfilled' as const, value }),
+    (error: unknown) => ({ kind: 'rejected' as const, error }),
+  );
+  const stopped = new Promise<{ kind: 'timeout' }>((resolve) => {
+    state.cancelAppendWait = () => resolve({ kind: 'timeout' });
+    timer = setTimeout(state.cancelAppendWait, state.appendTimeoutMs);
+  });
+  const result = await Promise.race([observed, stopped]);
+  if (timer) clearTimeout(timer);
+  state.cancelAppendWait = null;
   if (result.kind === 'timeout') throw new Error('operation timed out');
   if (result.kind === 'rejected') throw result.error;
   return result.value;
@@ -102,7 +149,11 @@ function hasSession(store: SessionStore, sessionId: string): boolean {
   return store.sessions.some((session) => session.id === sessionId);
 }
 
-async function revokeGrant(
+export function autoLogFormatForDisplayMode(displayMode: DisplayMode): AutoLogFormat {
+  return displayMode === 'HEX' || displayMode === 'HEXASCII' ? 'hex' : 'text';
+}
+
+async function revokeUnusedGrant(
   sessionId: string,
   grant: SaveTargetGrant,
   revokeTarget: RevokeTarget,
@@ -114,7 +165,7 @@ async function revokeGrant(
       timeoutMs,
     );
   } catch {
-    logger.warn('auto-log grant revoke failed for', sessionId);
+    logger.warn('unused auto-log grant revoke failed for', sessionId);
   }
 }
 
@@ -126,9 +177,16 @@ function clearStoreTarget(state: SessionAutoLogState): void {
   }
 }
 
+function cancelDebounce(state: SessionAutoLogState): void {
+  if (state.debounceTimer) {
+    clearTimeout(state.debounceTimer);
+    state.debounceTimer = null;
+  }
+}
+
 function dropQueuedEntries(state: SessionAutoLogState): void {
   for (const entry of state.queue) {
-    state.outstandingBytes -= entry.byteLength;
+    state.outstandingBytes -= entry.rawBytes;
     state.outstandingEntries -= 1;
   }
   state.queue = [];
@@ -136,93 +194,116 @@ function dropQueuedEntries(state: SessionAutoLogState): void {
 
 function markAborted(
   state: SessionAutoLogState,
-  reason: 'overflow' | 'append-failure',
-  overflowStats?: {
-    outstandingBytes: number;
-    outstandingEntries: number;
-    attemptedBytes: number;
-  },
+  reason: Exclude<AutoLogFailureReason, 'begin-failure'>,
+  details?: Record<string, number>,
 ): void {
   state.accepting = false;
   state.shutdownMode = 'abort';
+  cancelDebounce(state);
   clearStoreTarget(state);
   dropQueuedEntries(state);
   if (!state.warningLogged) {
     state.warningLogged = true;
-    if (reason === 'overflow') {
-      logger.warn('auto-log queue limit exceeded; logging disabled for', state.sessionId, {
-        outstandingBytes: overflowStats?.outstandingBytes ?? state.outstandingBytes,
-        outstandingEntries: overflowStats?.outstandingEntries ?? state.outstandingEntries,
-        attemptedBytes: overflowStats?.attemptedBytes ?? 0,
-      });
-    } else {
-      logger.warn('auto-log append failed; logging disabled for', state.sessionId);
-    }
+    logger.warn(`auto-log ${reason}; logging disabled for`, state.sessionId, details);
+    notifyAutoLogFailure(state.sessionId, reason);
   }
 }
 
-async function revokeStateOnce(state: SessionAutoLogState): Promise<void> {
-  if (!state.revokePromise) {
-    state.revokePromise = revokeGrant(
-      state.sessionId,
-      state.grant,
-      state.revokeTarget,
-      state.revokeTimeoutMs,
-    ).finally(() => {
-      if (sessionStates.get(state.sessionId) === state) {
-        sessionStates.delete(state.sessionId);
-      }
-    });
-  }
-  await state.revokePromise;
+function notifyAutoLogFailure(sessionId: string, reason: AutoLogFailureReason): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent(AUTO_LOG_FAILURE_EVENT, {
+      detail: { sessionId, reason },
+    }),
+  );
+}
+
+function toPayload(frame: DataFrame): ExportFramePayload {
+  return {
+    id: frame.id,
+    direction: frame.direction,
+    timestamp: frame.timestamp,
+    data: Array.from(frame.data),
+  };
 }
 
 function takeNextBatch(state: SessionAutoLogState): AutoLogQueueEntry[] {
   let count = 0;
-  let byteLength = 0;
-  while (count < state.queue.length) {
+  let rawBytes = 0;
+  while (count < state.queue.length && count < AUTO_LOG_MAX_BATCH_FRAMES) {
     const next = state.queue[count];
-    if (count > 0 && byteLength + next.byteLength > AUTO_LOG_MAX_BATCH_BYTES) break;
-    byteLength += next.byteLength;
+    if (count > 0 && rawBytes + next.rawBytes > AUTO_LOG_MAX_BATCH_BYTES) break;
+    rawBytes += next.rawBytes;
     count += 1;
   }
   return state.queue.splice(0, count);
 }
 
+async function terminalOnce(state: SessionAutoLogState): Promise<void> {
+  if (!state.terminalPromise) {
+    const operation =
+      state.shutdownMode === 'abort'
+        ? state.client.abort(state.logId)
+        : state.client.finish(state.logId);
+    state.terminalPromise = settleWithin(operation, state.terminalTimeoutMs)
+      .catch(() => {
+        logger.warn('auto-log backend session cleanup failed for', state.sessionId);
+      })
+      .finally(() => {
+        if (sessionStates.get(state.sessionId) === state) {
+          sessionStates.delete(state.sessionId);
+        }
+      });
+  }
+  await state.terminalPromise;
+}
+
 async function drainState(state: SessionAutoLogState): Promise<void> {
   try {
-    while (state.queue.length > 0) {
+    while (state.queue.length > 0 && state.shutdownMode !== 'abort') {
       const batch = takeNextBatch(state);
-      const batchBytes = batch.reduce((total, entry) => total + entry.byteLength, 0);
-      const content = batch.map((entry) => entry.content).join('');
+      const batchRawBytes = batch.reduce((total, entry) => total + entry.rawBytes, 0);
       let failed = false;
       try {
-        await settleWithin(
-          Promise.resolve().then(() => state.appendLog(state.grant.token, content)),
-          state.appendTimeoutMs,
+        await settleAppendWithin(
+          state,
+          Promise.resolve().then(() =>
+            state.client.append(
+              state.logId,
+              batch.map((entry) => toPayload(entry.frame)),
+            ),
+          ),
         );
       } catch {
         failed = true;
         markAborted(state, 'append-failure');
       } finally {
-        state.outstandingBytes -= batchBytes;
+        state.outstandingBytes -= batchRawBytes;
         state.outstandingEntries -= batch.length;
       }
       if (failed) break;
     }
 
-    if (state.shutdownMode !== 'none') await revokeStateOnce(state);
+    if (state.shutdownMode !== 'none') await terminalOnce(state);
   } finally {
     state.worker = null;
+    if (state.shutdownMode === 'none' && state.queue.length > 0) armDebounce(state);
   }
 }
 
 function ensureWorker(state: SessionAutoLogState): Promise<void> {
+  cancelDebounce(state);
   if (state.worker) return state.worker;
-  // Start on a microtask so synchronous frame bursts coalesce into bounded IPC
-  // batches and so `state.worker` is installed before drainState can finish.
   state.worker = Promise.resolve().then(() => drainState(state));
   return state.worker;
+}
+
+function armDebounce(state: SessionAutoLogState): void {
+  if (state.debounceTimer || state.worker || !state.accepting) return;
+  state.debounceTimer = setTimeout(() => {
+    state.debounceTimer = null;
+    void ensureWorker(state);
+  }, state.debounceMs);
 }
 
 async function shutdownState(
@@ -230,6 +311,7 @@ async function shutdownState(
   mode: Exclude<ShutdownMode, 'none'>,
 ): Promise<void> {
   state.accepting = false;
+  cancelDebounce(state);
   if (mode === 'abort') {
     state.shutdownMode = 'abort';
     dropQueuedEntries(state);
@@ -237,28 +319,43 @@ async function shutdownState(
     state.shutdownMode = 'graceful';
   }
   clearStoreTarget(state);
-  await ensureWorker(state);
+
+  const drain = ensureWorker(state);
+  try {
+    await settleWithin(drain, state.drainTimeoutMs);
+  } catch {
+    state.cancelAppendWait?.();
+    markAborted(state, 'drain-timeout');
+    if (sessionStates.get(state.sessionId) === state) sessionStates.delete(state.sessionId);
+    // The append operation remains observed by drainState. Start abort without
+    // extending the public two-second shutdown deadline.
+    void terminalOnce(state);
+  }
 }
 
 function createState(
   sessionId: string,
   generation: number,
-  grant: SaveTargetGrant,
+  logId: string,
+  displayName: string,
   sessionStore: SessionStore,
-  appendLog: AppendLog,
-  revokeTarget: RevokeTarget,
+  client: AutoLogSessionClient,
+  debounceMs: number,
   appendTimeoutMs: number,
-  revokeTimeoutMs: number,
+  drainTimeoutMs: number,
+  terminalTimeoutMs: number,
 ): SessionAutoLogState {
   return {
     sessionId,
     generation,
-    grant,
+    logId,
+    displayName,
     sessionStore,
-    appendLog,
-    revokeTarget,
+    client,
+    debounceMs,
     appendTimeoutMs,
-    revokeTimeoutMs,
+    drainTimeoutMs,
+    terminalTimeoutMs,
     queue: [],
     outstandingBytes: 0,
     outstandingEntries: 0,
@@ -267,64 +364,85 @@ function createState(
     storeCleared: false,
     warningLogged: false,
     worker: null,
-    revokePromise: null,
+    debounceTimer: null,
+    terminalPromise: null,
+    cancelAppendWait: null,
   };
 }
 
 export function useAutoLog(deps: UseAutoLogDeps = {}) {
   const sessionStore = useSessionStore();
   const appStore = useAppStore();
-  const doAppend = deps.appendLog ?? invokeAppendLog;
-  const doRequestTarget =
+  const client = deps.sessionClient ?? DEFAULT_SESSION_CLIENT;
+  const requestTarget =
     deps.requestTarget ??
     ((sessionId: string) => requestSaveTarget('auto-log', `bbcom-${sessionId}-${Date.now()}.txt`));
-  const doRevoke = deps.revokeTarget ?? revokeFileGrant;
+  const revokeTarget = deps.revokeTarget ?? revokeFileGrant;
+  const debounceMs = normalizeTimeout(deps.debounceMs, AUTO_LOG_DEBOUNCE_MS);
   const appendTimeoutMs = normalizeTimeout(deps.appendTimeoutMs, AUTO_LOG_APPEND_TIMEOUT_MS);
-  const revokeTimeoutMs = normalizeTimeout(deps.revokeTimeoutMs, AUTO_LOG_REVOKE_TIMEOUT_MS);
+  const drainTimeoutMs = normalizeTimeout(deps.drainTimeoutMs, AUTO_LOG_DRAIN_TIMEOUT_MS);
+  const terminalTimeoutMs = normalizeTimeout(deps.terminalTimeoutMs, AUTO_LOG_TERMINAL_TIMEOUT_MS);
 
   async function enable(sessionId: string): Promise<string | null> {
     const generation = nextGeneration(sessionId);
-    const grant = await doRequestTarget(sessionId);
+    const format = autoLogFormatForDisplayMode(appStore.displayMode);
+    let grant: SaveTargetGrant | null;
+    try {
+      grant = await requestTarget(sessionId);
+    } catch {
+      notifyAutoLogFailure(sessionId, 'begin-failure');
+      return null;
+    }
     if (!grant) return null;
 
     if (!isCurrentGeneration(sessionId, generation) || !hasSession(sessionStore, sessionId)) {
-      await revokeGrant(sessionId, grant, doRevoke, revokeTimeoutMs);
+      await revokeUnusedGrant(sessionId, grant, revokeTarget, terminalTimeoutMs);
       return null;
     }
 
     const previous = sessionStates.get(sessionId);
     if (previous) await shutdownState(previous, 'graceful');
-
-    // A disable, removal, or newer enable may have won while the previous
-    // queue drained. Never resurrect that stale grant.
     if (!isCurrentGeneration(sessionId, generation) || !hasSession(sessionStore, sessionId)) {
-      await revokeGrant(sessionId, grant, doRevoke, revokeTimeoutMs);
+      await revokeUnusedGrant(sessionId, grant, revokeTarget, terminalTimeoutMs);
+      return null;
+    }
+
+    let logId: string;
+    try {
+      ({ logId } = await client.begin(grant.token, format));
+    } catch {
+      await revokeUnusedGrant(sessionId, grant, revokeTarget, terminalTimeoutMs);
+      notifyAutoLogFailure(sessionId, 'begin-failure');
+      return null;
+    }
+    if (!isCurrentGeneration(sessionId, generation) || !hasSession(sessionStore, sessionId)) {
+      await settleWithin(client.abort(logId), terminalTimeoutMs).catch(() => undefined);
       return null;
     }
 
     const state = createState(
       sessionId,
       generation,
-      grant,
+      logId,
+      grant.displayName,
       sessionStore,
-      doAppend,
-      doRevoke,
+      client,
+      debounceMs,
       appendTimeoutMs,
-      revokeTimeoutMs,
+      drainTimeoutMs,
+      terminalTimeoutMs,
     );
     sessionStates.set(sessionId, state);
-    sessionStore.setAutoLogTarget(sessionId, grant.displayPath);
-    return grant.displayPath;
+    sessionStore.setAutoLogTarget(sessionId, grant.displayName);
+    return grant.displayName;
   }
 
-  /** Stop accepting frames, drain all accepted entries, then revoke once. */
   async function disable(sessionId: string): Promise<void> {
     nextGeneration(sessionId);
     const state = sessionStates.get(sessionId);
     if (state) {
       await shutdownState(state, 'graceful');
     } else if (hasSession(sessionStore, sessionId)) {
-      // Also clear stale persisted UI state when no in-memory grant exists.
       sessionStore.setAutoLogTarget(sessionId, null);
     }
   }
@@ -332,35 +450,35 @@ export function useAutoLog(deps: UseAutoLogDeps = {}) {
   function appendFrame(sessionId: string, frame: DataFrame): void {
     const state = sessionStates.get(sessionId);
     if (!state?.accepting) return;
-
     const session = state.sessionStore.sessions.find((item) => item.id === sessionId);
     if (!session?.autoLogEnabled) {
       void shutdownState(state, 'graceful');
       return;
     }
 
-    const dataText = formatFrameData(frame.data, appStore.displayMode);
-    const content = `${formatLogLine(frame.timestamp, frame.direction, dataText)}\n`;
-    const byteLength = utf8Encoder.encode(content).byteLength;
+    const rawBytes = frame.data.byteLength;
     const exceedsLimit =
-      byteLength > AUTO_LOG_MAX_BATCH_BYTES ||
-      state.outstandingBytes + byteLength > AUTO_LOG_MAX_QUEUED_BYTES ||
+      rawBytes > AUTO_LOG_MAX_BATCH_BYTES ||
+      state.outstandingBytes + rawBytes > AUTO_LOG_MAX_QUEUED_BYTES ||
       state.outstandingEntries + 1 > AUTO_LOG_MAX_QUEUED_ENTRIES;
-
     if (exceedsLimit) {
       markAborted(state, 'overflow', {
         outstandingBytes: state.outstandingBytes,
         outstandingEntries: state.outstandingEntries,
-        attemptedBytes: byteLength,
+        attemptedBytes: rawBytes,
       });
       void ensureWorker(state);
       return;
     }
 
-    state.queue.push({ content, byteLength });
-    state.outstandingBytes += byteLength;
+    state.queue.push({ frame, rawBytes });
+    state.outstandingBytes += rawBytes;
     state.outstandingEntries += 1;
-    void ensureWorker(state);
+    if (state.outstandingBytes >= AUTO_LOG_IMMEDIATE_FLUSH_BYTES) {
+      void ensureWorker(state);
+    } else {
+      armDebounce(state);
+    }
   }
 
   return { enable, disable, appendFrame };

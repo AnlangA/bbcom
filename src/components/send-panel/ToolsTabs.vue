@@ -3,7 +3,7 @@
     The send-panel "tower": five previously-stacked, each-duplicated-header
     collapsible sections (quick commands / macros / triggers / highlights /
     history) collapsed into one compact horizontal tab bar. Selecting a tab
-    swaps only that panel's body in — the rest never render — so a fully
+    swaps only that panel's body in — unvisited editor panels never load, so a fully
     configured session no longer eats half the terminal height with collapsed
     section headers. The per-panel bodies keep their own (now header-less)
     layout, so each tool's editing surface gets the full tab width.
@@ -32,7 +32,7 @@
     </div>
     <div class="tools-body">
       <!-- Quick commands: the only panel that still owns send/draft state via props -->
-      <div v-show="activeTab === 'quick'" class="tool-pane">
+      <div v-if="activeTab === 'quick'" class="tool-pane">
         <div class="quick-row">
           <div class="quick-form">
             <n-input
@@ -73,19 +73,18 @@
         </div>
       </div>
 
-      <div v-show="activeTab === 'macros'" class="tool-pane">
-        <MacroPanel :session-id="sessionId" :send="onSend" :disabled="disabled" />
-      </div>
+      <KeepAlive :max="3">
+        <MacroPanel
+          v-if="activeTab === 'macros'"
+          :session-id="sessionId"
+          :send="onSend"
+          :disabled="disabled"
+        />
+        <TriggerPanel v-else-if="activeTab === 'triggers'" :session-id="sessionId" />
+        <HighlightPanel v-else-if="activeTab === 'highlights'" :session-id="sessionId" />
+      </KeepAlive>
 
-      <div v-show="activeTab === 'triggers'" class="tool-pane">
-        <TriggerPanel :session-id="sessionId" />
-      </div>
-
-      <div v-show="activeTab === 'highlights'" class="tool-pane">
-        <HighlightPanel :session-id="sessionId" />
-      </div>
-
-      <div v-show="activeTab === 'history'" class="tool-pane">
+      <div v-if="activeTab === 'history'" class="tool-pane">
         <div v-if="history.length > 0" class="history-head">
           <button class="history-clear" type="button" @click.stop="emit('clearHistory')">
             <Trash2 class="icon-sm" />
@@ -111,7 +110,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, ref, watch } from 'vue';
 import { NButton, NInput } from 'naive-ui';
 import {
   BookmarkPlus,
@@ -122,9 +121,6 @@ import {
   X,
   Zap,
 } from '@lucide/vue';
-import MacroPanel from './MacroPanel.vue';
-import TriggerPanel from './TriggerPanel.vue';
-import HighlightPanel from './HighlightPanel.vue';
 import { useSessionStore } from '../../stores/sessions';
 import { truncate } from '../../lib/format';
 import { t } from '../../lib/i18n';
@@ -154,6 +150,10 @@ const emit = defineEmits<{
   (e: 'removeQuickCommand', id: string): void;
   (e: 'clearHistory'): void;
 }>();
+
+const MacroPanel = defineAsyncComponent(() => import('./MacroPanel.vue'));
+const TriggerPanel = defineAsyncComponent(() => import('./TriggerPanel.vue'));
+const HighlightPanel = defineAsyncComponent(() => import('./HighlightPanel.vue'));
 
 const sessionStore = useSessionStore();
 

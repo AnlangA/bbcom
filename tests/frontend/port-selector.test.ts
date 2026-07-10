@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   buildPortOptions,
@@ -80,13 +80,15 @@ test('localizes value and checksum options without changing values', () => {
     localizeChecksumOptions(
       [
         { label: 'Checksum', value: 'CHECKSUM' },
-        { label: 'CRC-16', value: 'CRC16' },
+        { label: 'CRC-16/X-25', value: 'CRC16' },
+        { label: 'CRC-16/Modbus', value: 'CRC16_MODBUS' },
       ],
       'Sum',
     ),
     [
       { label: 'Sum', value: 'CHECKSUM' },
-      { label: 'CRC-16', value: 'CRC16' },
+      { label: 'CRC-16/X-25', value: 'CRC16' },
+      { label: 'CRC-16/Modbus', value: 'CRC16_MODBUS' },
     ],
   );
 });

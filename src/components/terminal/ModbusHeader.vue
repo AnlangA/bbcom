@@ -13,7 +13,7 @@
         <Cpu class="icon-sm" />
         {{ t('modbus.title') }}
       </span>
-      <n-select
+      <AppSelect
         :value="config.transport"
         :options="transportOptions"
         size="tiny"
@@ -135,7 +135,8 @@
 </template>
 
 <script setup lang="ts">
-import { NButton, NCheckbox, NInputNumber, NSelect } from 'naive-ui';
+import { NButton, NCheckbox, NInputNumber } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
 import { Cpu, Download, FileUp, Play, RefreshCw, Send, Square, Upload, X } from '@lucide/vue';
 import { computed } from 'vue';
 import { t } from '../../lib/i18n';

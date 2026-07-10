@@ -5,7 +5,7 @@ pub fn format_timestamp(millis: f64) -> String {
     TimeZone::timestamp_millis_opt(&Local, millis_i64)
         .single()
         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string())
-        .unwrap_or_else(|| format!("{:.3}", millis))
+        .unwrap_or_else(|| format!("{millis:.3}"))
 }
 
 #[cfg(test)]

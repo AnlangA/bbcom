@@ -19,6 +19,12 @@ export default defineConfig(async () => ({
       : undefined,
   ].filter(Boolean),
   resolve: {
+    // serialplugin-api 3.0.0 advertises a `development` conditional export
+    // whose target (`guest-js/index.ts`) is not included in its npm package.
+    // Resolve the pinned plugin through its published default build in both
+    // Vite serve and build modes; this keeps the production serial API intact
+    // and makes the WDIO browser-mock renderer executable.
+    conditions: ['module', 'browser', 'production'],
     alias: {
       '@': resolve(__dirname, './src'),
     },
@@ -35,6 +41,9 @@ export default defineConfig(async () => ({
   envPrefix: ['VITE_', 'TAURI_'],
   build: {
     target: 'esnext',
+    // The bundle-size gate consumes the Vite manifest to identify every
+    // emitted entry rather than guessing from a hashed filename.
+    manifest: true,
     // Vite 8 uses its built-in Oxc minifier. A boolean keeps that optimized
     // default and avoids pulling the now-optional esbuild service into builds.
     minify: !process.env.TAURI_DEBUG,

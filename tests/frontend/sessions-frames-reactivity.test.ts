@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { computed } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
@@ -73,7 +73,10 @@ test('frames: computed reading session.frames.length updates after addFrame', ()
     const id = store.createSession('COM1', cfg);
 
     const session = () => store.sessions.find((s) => s.id === id)!;
-    const len = computed(() => session().frames.length);
+    const len = computed(() => {
+      void store.getSessionFramesVersion(id);
+      return session().frames.length;
+    });
 
     assert.equal(len.value, 0, 'starts empty');
     store.addFrame(id, { direction: 'RX', data: new Uint8Array([1]) });
@@ -96,8 +99,14 @@ test('frames: a watchEffect that reads frames.length re-runs after addFrame', ()
     // assert that after a mutation the computed's NEXT read reflects the new
     // state — the property a shallowRef + triggerRef conversion must preserve.
     const session = () => store.sessions.find((s) => s.id === id)!;
-    const len = computed(() => session().frames.length);
-    const txBytes = computed(() => session().txBytes);
+    const len = computed(() => {
+      void store.getSessionFramesVersion(id);
+      return session().frames.length;
+    });
+    const txBytes = computed(() => {
+      void store.getSessionFramesVersion(id);
+      return session().txBytes;
+    });
 
     assert.equal(len.value, 0, 'starts empty');
     store.addFrame(id, { direction: 'RX', data: new Uint8Array([1, 2, 3]) });
@@ -111,7 +120,7 @@ test('frames: a watchEffect that reads frames.length re-runs after addFrame', ()
   });
 });
 
-test('framesVersion ignores persisted config, draft, macro, and AI mutations', () => {
+test('per-session frame version ignores persisted config, draft, macro, and AI mutations', () => {
   withLocalStorageMock((storage) => {
     setActivePinia(createPinia());
     const store = useSessionStore();
@@ -120,10 +129,15 @@ test('framesVersion ignores persisted config, draft, macro, and AI mutations', (
     let frameEvaluations = 0;
     const frameCount = computed(() => {
       frameEvaluations += 1;
+      void store.getSessionFramesVersion(id);
       return store.sessions[0]?.frames.length ?? 0;
     });
 
-    assert.equal(store.framesVersion, 0, 'creating a session is not a frame mutation');
+    assert.equal(
+      store.getSessionFramesVersion(id),
+      0,
+      'creating a session is not a frame mutation',
+    );
     assert.equal(frameCount.value, 0);
 
     store.setSendDraft(id, 'AT+GMR');
@@ -142,7 +156,7 @@ test('framesVersion ignores persisted config, draft, macro, and AI mutations', (
     assert.equal(macroName.value, 'Startup', 'macro edits replace the raw collection reference');
     store.addLogAiMessage(id, { role: 'user', content: 'Summarize this capture' });
 
-    assert.equal(store.framesVersion, 0);
+    assert.equal(store.getSessionFramesVersion(id), 0);
     assert.equal(frameCount.value, 0);
     assert.equal(frameEvaluations, 1, 'persisted mutations do not invalidate frame consumers');
 
@@ -157,36 +171,52 @@ test('framesVersion ignores persisted config, draft, macro, and AI mutations', (
   });
 });
 
-test('framesVersion advances only for live or paused frame-buffer mutations', () => {
+test('per-session frame version advances only for live or paused frame-buffer mutations', () => {
   withLocalStorageMock(() => {
     setActivePinia(createPinia());
     const store = useSessionStore();
     const id = store.createSession('COM1', cfg);
 
-    assert.equal(store.framesVersion, 0);
+    assert.equal(store.getSessionFramesVersion(id), 0);
     store.updateDroppedBytes(id, 3);
-    assert.equal(store.framesVersion, 0, 'runtime metrics do not masquerade as frame changes');
+    assert.equal(
+      store.getSessionFramesVersion(id),
+      0,
+      'runtime metrics do not masquerade as frame changes',
+    );
 
     store.addFrame(id, { direction: 'RX', data: new Uint8Array([1]) });
-    assert.equal(store.framesVersion, 1, 'adding a live frame emits one pulse');
+    assert.equal(store.getSessionFramesVersion(id), 1, 'adding a live frame emits one pulse');
 
     store.setCapturePaused(id, true);
-    assert.equal(store.framesVersion, 1, 'toggling pause alone does not mutate a frame buffer');
+    assert.equal(
+      store.getSessionFramesVersion(id),
+      1,
+      'toggling pause alone does not mutate a frame buffer',
+    );
 
     store.addFrame(id, { direction: 'TX', data: new Uint8Array([2]) });
-    assert.equal(store.framesVersion, 2, 'adding a paused frame emits one pulse');
+    assert.equal(store.getSessionFramesVersion(id), 2, 'adding a paused frame emits one pulse');
 
     store.setCapturePaused(id, false);
     assert.equal(
-      store.framesVersion,
+      store.getSessionFramesVersion(id),
       3,
       'flushing paused frames into the live buffer emits one pulse',
     );
 
     store.clearFrames(id);
-    assert.equal(store.framesVersion, 4, 'clearing non-empty buffers emits one pulse');
+    assert.equal(
+      store.getSessionFramesVersion(id),
+      4,
+      'clearing non-empty buffers emits one pulse',
+    );
     store.clearFrames(id);
-    assert.equal(store.framesVersion, 4, 'clearing already-empty buffers is not a frame mutation');
+    assert.equal(
+      store.getSessionFramesVersion(id),
+      4,
+      'clearing already-empty buffers is not a frame mutation',
+    );
 
     store.flushPersistedSessions();
   });

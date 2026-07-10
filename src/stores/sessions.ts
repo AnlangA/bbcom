@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, markRaw, shallowRef, shallowReactive, toRaw, triggerRef, ref } from 'vue';
+import { computed, markRaw, shallowRef, shallowReactive, toRaw, ref } from 'vue';
 import type {
   AiChatMessage,
   AiModel,
@@ -24,63 +24,135 @@ import {
   normalizeModbusRegisters,
 } from '../lib/modbus';
 import {
-  MAX_PERSISTED_SESSIONS,
+  SESSION_STORAGE_FUTURE_BACKUP_KEY,
   SESSION_STORAGE_KEY,
   SESSION_STORAGE_VERSION,
+  UnsupportedSessionStorageVersionError,
   cloneParserConfig,
   createSessionRecord,
   hydrateSession,
   migratePersistedFile,
+  sessionSnapshotsForLocalStorage,
   serializeSessionSnapshots,
   type PersistedSessionsFile,
 } from '../lib/session-persistence';
 import {
+  createWorkerSessionStateClient,
+  migrateLegacySessionState,
+  sessionStateFilesEqual,
+  type SessionStatePersistenceClient,
+} from '../lib/session-state-client';
+import { SessionPersistenceScheduler } from '../lib/session-persistence-scheduler';
+import {
   appendFrameToSession,
   appendIdentifiedItem,
+  frameBuffersByteLength,
   flushPausedFramesToLive,
+  MAX_GLOBAL_FRAME_BYTES,
+  MAX_SESSION_FRAME_BYTES,
   normalizeLogAiFrameLimit,
   patchIdentifiedItem,
   removeIdentifiedItem,
   resetSessionFrames,
+  trimSessionsToGlobalByteLimit,
   upsertSendHistory,
 } from '../lib/session-store-helpers';
-import { isLocalStorageAvailable, loadJson, saveJson } from '../lib/storage';
-
-const PERSIST_DEBOUNCE_MS = 800;
-const PERSIST_MAX_WAIT_MS = 2_500;
+import {
+  isLocalStorageAvailable,
+  loadString,
+  removeString,
+  saveJson,
+  saveString,
+} from '../lib/storage';
+import { logger } from '../lib/logger';
 
 export const useSessionStore = defineStore('sessions', () => {
   const sessions = shallowRef<SerialSession[]>([]);
   const activeSessionId = ref<string | null>(null);
   const cleanupFns = new Map<string, () => Promise<void>>();
+  const frameClearListeners = new Map<string, Set<() => void>>();
   const sessionFramesVersions = shallowReactive<Record<string, number>>({});
+  const sessionFrameBytes = new Map<string, number>();
+  const rxQueueDroppedBytes = new Map<string, number>();
+  const frameBufferDroppedBytes = new Map<string, number>();
+  let totalFrameBytes = 0;
+  const persistenceReadOnly = ref(false);
+  let mruSessionIds: string[] = [];
+  let persistenceClient: SessionStatePersistenceClient | null = createWorkerSessionStateClient();
   let loaded = false;
-  let saveTimer: ReturnType<typeof setTimeout> | null = null;
-  let firstDirtyAt = 0;
+  let stateRevision = 0;
+  let pendingConfigDirty = false;
+  let pendingMruDirty = false;
+  let pendingFramesDirty = false;
+  let persistenceReadyPromise: Promise<void> = Promise.resolve();
+  let workerSaveChain: Promise<void> = Promise.resolve();
+
+  const persistenceScheduler = new SessionPersistenceScheduler(writePersistedSnapshot, {
+    onError: (error) => logger.warn('session persistence flush failed', error),
+  });
 
   const activeSession = computed(
     () => sessions.value.find((s) => s.id === activeSessionId.value) ?? null,
   );
 
-  /**
-   * Reactivity signal for frame-count consumers. `sessions` is a shallowRef, so
-   * mutating `session.frames` (a plain array) does NOT auto-trigger the
-   * dependents that read `session.frames.length` (DataPacketList, StatusBar,
-   * ParserPanel, WaveformPanel, SessionTabs, SessionView). `framesVersion` is a
-   * plain ref bumped on every frame-affecting mutation; consumers may depend on
-   * it directly, and `triggerRef(sessions)` re-runs any effect/computed that
-   * read `sessions.value` (the path templates take). Together they replace the
-   * implicit deep-reactivity of the old `ref` without a deep:true watcher.
-   */
-  const framesVersion = ref(0);
+  /** Per-session invalidation avoids repainting unrelated resident sessions. */
   function getSessionFramesVersion(sessionId: string): number {
     return sessionFramesVersions[sessionId] ?? 0;
   }
 
   function notifyFramesChanged(sessionId: string): void {
-    framesVersion.value += 1;
     sessionFramesVersions[sessionId] = getSessionFramesVersion(sessionId) + 1;
-    triggerRef(sessions);
+  }
+
+  function initializeFrameRuntimeState(session: SerialSession): void {
+    const retainedBytes = frameBuffersByteLength(session);
+    sessionFramesVersions[session.id] = 0;
+    sessionFrameBytes.set(session.id, retainedBytes);
+    rxQueueDroppedBytes.set(session.id, 0);
+    frameBufferDroppedBytes.set(session.id, 0);
+    totalFrameBytes += retainedBytes;
+  }
+
+  function setRetainedFrameBytes(sessionId: string, retainedBytes: number): void {
+    const previous = sessionFrameBytes.get(sessionId) ?? 0;
+    sessionFrameBytes.set(sessionId, retainedBytes);
+    totalFrameBytes += retainedBytes - previous;
+  }
+
+  function addFrameBufferDrop(sessionId: string, droppedBytes: number): void {
+    if (droppedBytes <= 0) return;
+    frameBufferDroppedBytes.set(
+      sessionId,
+      (frameBufferDroppedBytes.get(sessionId) ?? 0) + droppedBytes,
+    );
+    const session = sessions.value.find((candidate) => candidate.id === sessionId);
+    if (session) {
+      session.droppedBytes =
+        (rxQueueDroppedBytes.get(sessionId) ?? 0) + (frameBufferDroppedBytes.get(sessionId) ?? 0);
+    }
+  }
+
+  function enforceGlobalFrameByteLimit(): Set<string> | undefined {
+    // The normal capture path stays under the 256 MiB process budget. Avoid
+    // allocating an empty Set for every individual frame in that hot path;
+    // create tracking state only when a global eviction actually occurs.
+    if (totalFrameBytes <= MAX_GLOBAL_FRAME_BYTES) return undefined;
+    const affected = new Set<string>();
+    const result = trimSessionsToGlobalByteLimit(
+      sessions.value,
+      totalFrameBytes,
+      MAX_GLOBAL_FRAME_BYTES,
+    );
+    totalFrameBytes = result.retainedBytes;
+    for (const [sessionId, droppedBytes] of result.droppedBytesBySession) {
+      sessionFrameBytes.set(
+        sessionId,
+        Math.max(0, (sessionFrameBytes.get(sessionId) ?? 0) - droppedBytes),
+      );
+      addFrameBufferDrop(sessionId, droppedBytes);
+      affected.add(sessionId);
+    }
+    return affected;
   }
 
   /**
@@ -103,66 +175,255 @@ export const useSessionStore = defineStore('sessions', () => {
     return shallowReactive(session);
   }
 
-  function loadPersistedSessions() {
-    const raw = loadJson<PersistedSessionsFile>(SESSION_STORAGE_KEY, {
-      version: SESSION_STORAGE_VERSION,
-      activeSessionId: null,
-      sessions: [],
-    });
-    // Run the persisted blob through the versioned migration chain before
-    // hydrating, so future shape changes stay forward-compatible and testable.
-    const saved = migratePersistedFile(raw);
-    if (!Array.isArray(saved.sessions)) {
-      loaded = true;
-      return;
-    }
+  function replaceSessionsFromFile(saved: PersistedSessionsFile): void {
+    totalFrameBytes = 0;
+    sessionFrameBytes.clear();
+    rxQueueDroppedBytes.clear();
+    frameBufferDroppedBytes.clear();
+    for (const id of Object.keys(sessionFramesVersions)) delete sessionFramesVersions[id];
 
     const restored = saved.sessions
-      .slice(0, MAX_PERSISTED_SESSIONS)
       .map((raw) => hydrateSession(raw, { decorateFrame: markRaw }))
-      .filter((s): s is SerialSession => s !== null)
+      .filter((session): session is SerialSession => session !== null)
       .map((session) => wrapSession(session));
     sessions.value = restored;
+    for (const session of restored) initializeFrameRuntimeState(session);
     activeSessionId.value =
       typeof saved.activeSessionId === 'string' &&
       restored.some((session) => session.id === saved.activeSessionId)
         ? saved.activeSessionId
         : (restored[0]?.id ?? null);
-    loaded = true;
+    const validIds = new Set(restored.map((session) => session.id));
+    mruSessionIds = (saved.mruSessionIds ?? []).filter((id) => validIds.has(id));
+    if (activeSessionId.value) touchMruSession(activeSessionId.value);
   }
 
-  function serializeSessions(): PersistedSessionsFile {
-    return serializeSessionSnapshots(sessions.value, activeSessionId.value);
-  }
-
-  function flushPersistedSessions() {
-    if (!loaded) return;
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
+  function mergeSessionsFromFile(saved: PersistedSessionsFile): void {
+    const existingIds = new Set(sessions.value.map((session) => session.id));
+    const restored = saved.sessions
+      .map((raw) => hydrateSession(raw, { decorateFrame: markRaw }))
+      .filter((session): session is SerialSession => session !== null)
+      .filter((session) => !existingIds.has(session.id))
+      .map((session) => wrapSession(session));
+    if (restored.length > 0) {
+      sessions.value = [...restored, ...sessions.value];
+      for (const session of restored) initializeFrameRuntimeState(session);
     }
-    firstDirtyAt = 0;
-    saveJson(SESSION_STORAGE_KEY, serializeSessions());
+    mruSessionIds = [
+      ...mruSessionIds,
+      ...(saved.mruSessionIds ?? []),
+      ...restored.map((session) => session.id),
+    ]
+      .filter((id, index, all) => all.indexOf(id) === index)
+      .slice(0, 8);
+    if (!activeSessionId.value) {
+      activeSessionId.value =
+        saved.activeSessionId &&
+        sessions.value.some((session) => session.id === saved.activeSessionId)
+          ? saved.activeSessionId
+          : (sessions.value[0]?.id ?? null);
+    }
+    if (activeSessionId.value) touchMruSession(activeSessionId.value);
   }
 
-  function schedulePersist() {
-    if (!loaded || !isLocalStorageAvailable()) return;
-    const now = nowMillis();
-    if (firstDirtyAt === 0) firstDirtyAt = now;
-    if (saveTimer) clearTimeout(saveTimer);
-    const elapsed = now - firstDirtyAt;
-    const delay = elapsed >= PERSIST_MAX_WAIT_MS ? 0 : PERSIST_DEBOUNCE_MS;
-    saveTimer = setTimeout(flushPersistedSessions, delay);
+  function canonicalizePersistedFile(file: PersistedSessionsFile): PersistedSessionsFile {
+    const hydrated = file.sessions
+      .map((raw) => hydrateSession(raw))
+      .filter((session): session is SerialSession => session !== null);
+    const activeSessionId =
+      file.activeSessionId && hydrated.some((session) => session.id === file.activeSessionId)
+        ? file.activeSessionId
+        : (hydrated[0]?.id ?? null);
+    return serializeSessionSnapshots(hydrated, activeSessionId, {
+      mruSessionIds: file.mruSessionIds,
+      includeFrames: true,
+    });
+  }
+
+  function readLegacySnapshot(): { raw: string; file: PersistedSessionsFile } | null {
+    const raw = loadString(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    try {
+      // Keep legacy data intact until the IndexedDB transaction has completed
+      // and been read back. In particular, direct v1 recovery must retain
+      // valid imported Modbus runtime values while the old key is still the
+      // durable source of truth.
+      const migrated = migratePersistedFile(JSON.parse(raw) as unknown);
+      return { raw, file: migrated };
+    } catch (error) {
+      if (error instanceof UnsupportedSessionStorageVersionError) {
+        // Preserve the original bytes and disable every persistence write.
+        saveString(SESSION_STORAGE_FUTURE_BACKUP_KEY, raw);
+        persistenceReadOnly.value = true;
+      } else {
+        logger.warn('legacy session snapshot is malformed', error);
+      }
+      return null;
+    }
+  }
+
+  function touchMruSession(sessionId: string): void {
+    mruSessionIds = [sessionId, ...mruSessionIds.filter((id) => id !== sessionId)].slice(0, 8);
+  }
+
+  function resumePendingPersistence(): void {
+    if (persistenceReadOnly.value) return;
+    if (pendingMruDirty) {
+      pendingMruDirty = false;
+      pendingFramesDirty = false;
+      pendingConfigDirty = false;
+      persistenceScheduler.markConfigDirty(true);
+      return;
+    }
+    if (pendingFramesDirty) {
+      pendingFramesDirty = false;
+      pendingConfigDirty = false;
+      persistenceScheduler.markFramesDirty();
+      return;
+    }
+    if (pendingConfigDirty) {
+      pendingConfigDirty = false;
+      persistenceScheduler.markConfigDirty();
+    }
+  }
+
+  async function initializeWorkerPersistence(
+    legacy: { raw: string; file: PersistedSessionsFile } | null,
+    initialRevision: number,
+  ): Promise<void> {
+    const client = persistenceClient;
+    if (!client) return;
+    try {
+      const result = await client.load();
+      if (result.kind === 'future') {
+        persistenceReadOnly.value = true;
+        persistenceScheduler.dispose();
+        client.dispose();
+        if (stateRevision === initialRevision) {
+          replaceSessionsFromFile({
+            version: SESSION_STORAGE_VERSION,
+            activeSessionId: null,
+            mruSessionIds: [],
+            sessions: [],
+          });
+        }
+        return;
+      }
+
+      if (result.kind === 'current') {
+        const migrated = migratePersistedFile(result.file);
+        const saved = canonicalizePersistedFile(migrated);
+        if (stateRevision === initialRevision) replaceSessionsFromFile(saved);
+        else mergeSessionsFromFile(saved);
+        if (legacy && sessionStateFilesEqual(legacy.file, saved)) {
+          // The successful worker load is the required IndexedDB readback.
+          removeString(SESSION_STORAGE_KEY);
+        }
+        if (!sessionStateFilesEqual(result.file, saved)) pendingFramesDirty = true;
+        return;
+      }
+
+      if (legacy) {
+        const migrated = await migrateLegacySessionState(legacy.file, client, () => {
+          removeString(SESSION_STORAGE_KEY);
+        });
+        if (!migrated) throw new Error('IndexedDB migration readback did not match');
+        if (stateRevision === initialRevision) replaceSessionsFromFile(legacy.file);
+        else mergeSessionsFromFile(legacy.file);
+      }
+    } catch (error) {
+      // Keep the legacy key as the durable fallback. A worker/IDB failure must
+      // never turn a successful previous launch into data loss.
+      logger.warn('IndexedDB session persistence unavailable; using localStorage fallback', error);
+      client.dispose();
+      persistenceClient = null;
+      if (legacy && stateRevision === initialRevision) replaceSessionsFromFile(legacy.file);
+      else if (legacy) mergeSessionsFromFile(legacy.file);
+    } finally {
+      loaded = true;
+      resumePendingPersistence();
+    }
+  }
+
+  function loadPersistedSessions(): Promise<void> {
+    const legacy = readLegacySnapshot();
+    if (persistenceReadOnly.value) {
+      loaded = true;
+      return Promise.resolve();
+    }
+    if (!persistenceClient) {
+      if (legacy) replaceSessionsFromFile(legacy.file);
+      loaded = true;
+      return Promise.resolve();
+    }
+    const initialRevision = stateRevision;
+    return initializeWorkerPersistence(legacy, initialRevision);
+  }
+
+  function serializeSessions(includeFrames: boolean): PersistedSessionsFile {
+    return serializeSessionSnapshots(sessions.value, activeSessionId.value, {
+      mruSessionIds,
+      includeFrames,
+    });
+  }
+
+  function writePersistedSnapshot(includeFrames: boolean): Promise<void> {
+    if (!loaded || persistenceReadOnly.value) return Promise.resolve();
+    if (!persistenceClient) {
+      if (isLocalStorageAvailable()) {
+        saveJson(SESSION_STORAGE_KEY, sessionSnapshotsForLocalStorage(serializeSessions(true)));
+      }
+      return Promise.resolve();
+    }
+    const snapshot = serializeSessions(includeFrames);
+    const write = workerSaveChain
+      .catch(() => undefined)
+      .then(() => {
+        if (!persistenceClient || persistenceReadOnly.value) return;
+        return persistenceClient.save(snapshot, includeFrames);
+      });
+    workerSaveChain = write;
+    return write;
+  }
+
+  function schedulePersist(kind: 'config' | 'frames' | 'mru' = 'config'): void {
+    stateRevision += 1;
+    if (persistenceReadOnly.value) return;
+    if (!loaded) {
+      if (kind === 'frames') pendingFramesDirty = true;
+      else if (kind === 'mru') pendingMruDirty = true;
+      else pendingConfigDirty = true;
+      return;
+    }
+    if (!persistenceClient && !isLocalStorageAvailable()) return;
+    if (kind === 'frames') persistenceScheduler.markFramesDirty();
+    else if (kind === 'mru') persistenceScheduler.markConfigDirty(true);
+    else persistenceScheduler.markConfigDirty();
+  }
+
+  async function flushPersistedSessions(): Promise<void> {
+    if (persistenceReadOnly.value) return;
+    if (!loaded) {
+      pendingConfigDirty = true;
+      pendingFramesDirty = true;
+      await persistenceReadyPromise;
+    }
+    if (persistenceReadOnly.value) return;
+    await persistenceScheduler.flushNow();
+  }
+
+  function flushFinalPersistence(): Promise<'completed' | 'timeout'> {
+    return persistenceScheduler.flushFinal();
   }
 
   function createSession(portName: string, portConfig: SerialSession['portConfig']): string {
     const id = crypto.randomUUID();
-    sessions.value = [
-      ...sessions.value,
-      wrapSession(createSessionRecord(id, portName, portConfig)),
-    ];
+    const session = wrapSession(createSessionRecord(id, portName, portConfig));
+    sessions.value = [...sessions.value, session];
+    initializeFrameRuntimeState(session);
     activeSessionId.value = id;
-    schedulePersist();
+    touchMruSession(id);
+    schedulePersist('mru');
     return id;
   }
 
@@ -172,26 +433,69 @@ export const useSessionStore = defineStore('sessions', () => {
       cleanupFns.delete(id);
       await cleanup();
     }
+    const retainedBytes = sessionFrameBytes.get(id) ?? 0;
+    totalFrameBytes = Math.max(0, totalFrameBytes - retainedBytes);
+    sessionFrameBytes.delete(id);
+    rxQueueDroppedBytes.delete(id);
+    frameBufferDroppedBytes.delete(id);
+    frameClearListeners.delete(id);
     sessions.value = sessions.value.filter((s) => s.id !== id);
+    mruSessionIds = mruSessionIds.filter((sessionId) => sessionId !== id);
     delete sessionFramesVersions[id];
     if (activeSessionId.value === id) {
       activeSessionId.value = sessions.value[0]?.id ?? null;
+      if (activeSessionId.value) touchMruSession(activeSessionId.value);
     }
-    schedulePersist();
+    schedulePersist('mru');
   }
 
   function setActiveSession(id: string) {
     activeSessionId.value = id;
-    schedulePersist();
+    touchMruSession(id);
+    schedulePersist('mru');
   }
 
   function registerCleanup(id: string, fn: () => Promise<void>) {
     cleanupFns.set(id, fn);
   }
 
+  /**
+   * Subscribe to an explicit terminal-buffer clear for a session. Runtime data
+   * planes use this to reset stream state without observing UI frame renders.
+   */
+  function onFramesCleared(sessionId: string, listener: () => void): () => void {
+    let listeners = frameClearListeners.get(sessionId);
+    if (!listeners) {
+      listeners = new Set();
+      frameClearListeners.set(sessionId, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      const current = frameClearListeners.get(sessionId);
+      if (!current) return;
+      current.delete(listener);
+      if (current.size === 0) frameClearListeners.delete(sessionId);
+    };
+  }
+
+  function notifyFramesCleared(sessionId: string): void {
+    const listeners = frameClearListeners.get(sessionId);
+    if (!listeners) return;
+    for (const listener of [...listeners]) {
+      try {
+        listener();
+      } catch (listenerError) {
+        // A headless runtime must never prevent an explicit user clear from
+        // completing; it can recover its own state independently.
+        logger.warn('session frame-clear listener failed', listenerError);
+      }
+    }
+  }
+
   function addFrame(
     sessionId: string,
     frame: Omit<DataFrame, 'id' | 'timestamp'>,
+    options: { publish?: boolean } = {},
   ): DataFrame | undefined {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return undefined;
@@ -214,11 +518,29 @@ export const useSessionStore = defineStore('sessions', () => {
     // StatusBar) is refreshed anyway via the notifyFramesChanged() channel
     // below. Writing the raw underlying object keeps the values correct (the
     // proxy reads through to the same target) without per-frame setter cost.
-    appendFrameToSession(toRaw(session), fullFrame, maxBufferFrames.value);
+    const currentBytes = sessionFrameBytes.get(sessionId) ?? frameBuffersByteLength(session);
+    const trim = appendFrameToSession(toRaw(session), fullFrame, maxBufferFrames.value, {
+      currentBytes,
+      maxBytes: MAX_SESSION_FRAME_BYTES,
+    });
+    setRetainedFrameBytes(sessionId, trim.retainedBytes);
+    addFrameBufferDrop(sessionId, trim.droppedBytes);
+    const globallyTrimmed = enforceGlobalFrameByteLimit();
 
-    notifyFramesChanged(sessionId);
-    schedulePersist();
+    if (options.publish !== false) notifyFramesChanged(sessionId);
+    if (globallyTrimmed) {
+      for (const affectedSessionId of globallyTrimmed) {
+        if (affectedSessionId !== sessionId) notifyFramesChanged(affectedSessionId);
+      }
+    }
+    schedulePersist('frames');
     return fullFrame;
+  }
+
+  /** Publish a batch of frames that were appended with `publish:false`. */
+  function publishSessionFrames(sessionId: string) {
+    if (!sessions.value.some((session) => session.id === sessionId)) return;
+    notifyFramesChanged(sessionId);
   }
 
   function setConnected(sessionId: string, connected: boolean) {
@@ -232,7 +554,8 @@ export const useSessionStore = defineStore('sessions', () => {
       // does not accumulate offline time across reconnects.
       session.startTime = null;
     }
-    schedulePersist();
+    // Connection state and duration are runtime-only and are intentionally not
+    // included in session metadata snapshots.
   }
 
   /** Mirror the SerialRxQueue's cumulative dropped-byte count onto the session
@@ -240,16 +563,22 @@ export const useSessionStore = defineStore('sessions', () => {
   function updateDroppedBytes(sessionId: string, total: number) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.droppedBytes = total;
+    const normalized = Number.isFinite(total) ? Math.max(0, Math.floor(total)) : 0;
+    rxQueueDroppedBytes.set(sessionId, normalized);
+    session.droppedBytes = normalized + (frameBufferDroppedBytes.get(sessionId) ?? 0);
   }
 
   function clearFrames(sessionId: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     const hadFrames = session.frames.length > 0 || session.pausedFrames.length > 0;
+    if (hadFrames) setRetainedFrameBytes(sessionId, 0);
     resetSessionFrames(session);
-    if (hadFrames) notifyFramesChanged(sessionId);
-    schedulePersist();
+    if (hadFrames) {
+      notifyFramesChanged(sessionId);
+      notifyFramesCleared(sessionId);
+    }
+    schedulePersist('frames');
   }
 
   function setCapturePaused(sessionId: string, paused: boolean) {
@@ -258,10 +587,15 @@ export const useSessionStore = defineStore('sessions', () => {
     session.capturePaused = paused;
     if (!paused && session.pausedFrames.length > 0) {
       // Flush the off-screen buffer back into the live view, preserving order.
-      flushPausedFramesToLive(session, maxBufferFrames.value);
+      const trim = flushPausedFramesToLive(session, maxBufferFrames.value, {
+        currentBytes: sessionFrameBytes.get(sessionId) ?? frameBuffersByteLength(session),
+        maxBytes: MAX_SESSION_FRAME_BYTES,
+      });
+      setRetainedFrameBytes(sessionId, trim.retainedBytes);
+      addFrameBufferDrop(sessionId, trim.droppedBytes);
       notifyFramesChanged(sessionId);
     }
-    schedulePersist();
+    schedulePersist('frames');
   }
 
   function addSendHistory(sessionId: string, entry: SendHistoryEntry) {
@@ -563,22 +897,38 @@ export const useSessionStore = defineStore('sessions', () => {
     schedulePersist();
   }
 
-  loadPersistedSessions();
+  persistenceReadyPromise = loadPersistedSessions();
+
+  function whenPersistenceReady(): Promise<void> {
+    return persistenceReadyPromise;
+  }
+
+  if (typeof window !== 'undefined') {
+    const requestFinalFlush = () => {
+      void flushFinalPersistence();
+    };
+    window.addEventListener('pagehide', requestFinalFlush);
+    window.addEventListener('beforeunload', requestFinalFlush);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') requestFinalFlush();
+      });
+    }
+  }
 
   return {
     sessions,
     activeSessionId,
     activeSession,
-    // Reactivity signal: bump on every frame-affecting mutation. Consumers that
-    // read session.frames.length through the shallowRef sessions should track
-    // this (or rely on the triggerRef), since the frames array is non-reactive.
-    framesVersion,
+    persistenceReadOnly,
     getSessionFramesVersion,
     createSession,
     removeSession,
     setActiveSession,
     registerCleanup,
+    onFramesCleared,
     addFrame,
+    publishSessionFrames,
     setConnected,
     updateDroppedBytes,
     clearFrames,
@@ -614,5 +964,7 @@ export const useSessionStore = defineStore('sessions', () => {
     clearLogAiMessages,
     reorderSessions,
     flushPersistedSessions,
+    flushFinalPersistence,
+    whenPersistenceReady,
   };
 });

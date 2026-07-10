@@ -1,4 +1,4 @@
-import { onMounted, onUnmounted } from 'vue';
+import { getCurrentInstance, onMounted, onUnmounted } from 'vue';
 
 interface AppShortcuts {
   onCreateSession: () => void;
@@ -37,13 +37,18 @@ export function useAppShortcuts({ onCreateSession, onCloseSession }: AppShortcut
     }
   }
 
-  onMounted(() => {
-    window.addEventListener('keydown', handleKeydown);
-  });
+  // Keep the dispatch function usable as a pure utility in non-component
+  // contexts (tests, command adapters) without registering invalid lifecycle
+  // hooks. Component setup always has a current instance.
+  if (getCurrentInstance()) {
+    onMounted(() => {
+      window.addEventListener('keydown', handleKeydown);
+    });
 
-  onUnmounted(() => {
-    window.removeEventListener('keydown', handleKeydown);
-  });
+    onUnmounted(() => {
+      window.removeEventListener('keydown', handleKeydown);
+    });
+  }
 
   // Exposed for unit testing the dispatch logic without a DOM.
   return { handleKeydown };

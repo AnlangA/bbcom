@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   TriggerEngine,
@@ -54,6 +54,8 @@ test('parseHexPattern parses spaced and unspaced hex', () => {
   assert.deepEqual(parseHexPattern('aabb'), [0xaa, 0xbb]);
   assert.deepEqual(parseHexPattern('xyz'), []);
   assert.deepEqual(parseHexPattern('A'), [], 'odd length yields nothing');
+  assert.deepEqual(parseHexPattern('AA- BB'), [], 'punctuation is not silently discarded');
+  assert.deepEqual(parseHexPattern('AA ZZ BB'), [], 'invalid pairs do not become another pattern');
 });
 
 test('containsSubarray detects contiguous subsequences', () => {
@@ -77,6 +79,17 @@ test('text trigger matches across chunked reads', () => {
   assert.equal(eng.feed(bytes('REA')).length, 0, 'partial match does not fire');
   const fires = eng.feed(bytes('DY'));
   assert.equal(fires.length, 1);
+});
+
+test('text trigger uses a private streaming UTF-8 decoder', () => {
+  const first = new TriggerEngine([textTrigger('first', '€', 'A')]);
+  const second = new TriggerEngine([textTrigger('second', '€', 'B')]);
+  const euro = new TextEncoder().encode('€');
+
+  assert.equal(first.feed(euro.subarray(0, 2)).length, 0);
+  // A separate engine must not consume or corrupt the incomplete sequence.
+  assert.equal(second.feed(euro).length, 1);
+  assert.equal(first.feed(euro.subarray(2)).length, 1);
 });
 
 test('hex trigger matches a byte sequence', () => {

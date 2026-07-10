@@ -17,6 +17,7 @@
 //   constants — numeric budget limits
 
 export * from './display';
+export * from './errors';
 export * from './serial';
 export * from './macros';
 export * from './modbus';

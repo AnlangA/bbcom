@@ -31,7 +31,12 @@ import {
 } from '../lib/modbus';
 import type { ModbusStreamRecord } from '../lib/modbus';
 import { useSessionStore } from '../stores/sessions';
-import type { ModbusMasterConfig, ModbusRegister } from '../types';
+import type {
+  ModbusMasterConfig,
+  ModbusRegister,
+  SerialSendResult,
+  SerialWriteOptions,
+} from '../types';
 
 export type { ModbusSample } from '../lib/modbus';
 
@@ -40,7 +45,7 @@ interface UseModbusMasterOptions {
   config: Ref<ModbusMasterConfig>;
   registers: Ref<ModbusRegister[]>;
   /** Serialized binary TX (shares the serial port's write chain). */
-  sendBytes: (payload: Uint8Array) => Promise<boolean>;
+  sendBytes: (payload: Uint8Array, options?: SerialWriteOptions) => Promise<SerialSendResult>;
   /** Subscribe to raw RX bytes; returns an unlisten fn. */
   rawBytes: (cb: (bytes: Uint8Array) => void) => () => void;
   /** Connected flag — the loop only runs while connected. */

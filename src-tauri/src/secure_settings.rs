@@ -1,20 +1,42 @@
-use std::sync::{Arc, Mutex as SyncMutex};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex as SyncMutex},
+};
 
 use keyring::v1::{Entry, Error as KeyringError};
-use serde::Deserialize;
-use tauri::{State, WebviewWindow};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
+use zeroize::Zeroizing;
 
 use crate::commands::ai::AI_WINDOW_LABEL;
+use crate::models::ipc_error::{AppErrorCode, IpcError};
 
-const CREDENTIAL_SERVICE: &str = "com.bbcom.app.secure-settings";
-const AI_API_KEY: &str = "ai-api-key";
+// The credential identity is part of the v0.5 on-device security contract.
+// Keep the canonical key distinct from the legacy JSON field below so a
+// migration never changes the lookup name of an existing plaintext store.
+const CREDENTIAL_SERVICE: &str = "com.bbcom.app";
+const AI_API_KEY: &str = "zhipu-api-key";
+const LEGACY_AI_API_KEY_FIELD: &str = "ai-api-key";
 const MAX_SECRET_BYTES: usize = 4 * 1024;
-const STORAGE_ERROR: &str = "secure credential storage unavailable";
-const ACCESS_ERROR: &str = "secure credential storage access denied";
-const VALUE_ERROR: &str = "secure credential value invalid";
 
-#[derive(Clone, Default)]
-pub struct SecureSettingsState(Arc<SyncMutex<()>>);
+/// Process-owned API-key state. A key is either in the OS keyring or, only
+/// when the keyring is unavailable, in this zeroizing process-memory slot.
+/// It is never returned to a webview after v0.5.
+#[derive(Clone)]
+pub struct SecureSettingsState {
+    operation_lock: Arc<SyncMutex<()>>,
+    session_ai_key: Arc<SyncMutex<Option<Zeroizing<String>>>>,
+}
+
+impl Default for SecureSettingsState {
+    fn default() -> Self {
+        Self {
+            operation_lock: Arc::new(SyncMutex::new(())),
+            session_ai_key: Arc::new(SyncMutex::new(None)),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SecureSettingsError {
@@ -98,6 +120,7 @@ fn save_to<S: CredentialStore>(
     store.save(key, value)
 }
 
+#[cfg(test)]
 fn migrate_if_missing_from<S: CredentialStore>(
     store: &S,
     key: &str,
@@ -120,118 +143,457 @@ fn clear_from<S: CredentialStore>(store: &S, key: &str) -> Result<(), SecureSett
     store.clear(key)
 }
 
-fn ensure_allowed_window(label: &str) -> Result<(), String> {
-    if label == "main" || label == AI_WINDOW_LABEL {
-        Ok(())
-    } else {
-        Err(ACCESS_ERROR.to_string())
+/// Durability of the currently configured AI key. `session` deliberately
+/// means the OS keyring was unavailable and the key will disappear when the
+/// process exits; it never means a plaintext fallback was written anywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AiKeyDurability {
+    Os,
+    Session,
+    Missing,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiKeyStatus {
+    pub configured: bool,
+    pub durability: AiKeyDurability,
+}
+
+impl AiKeyStatus {
+    const fn missing() -> Self {
+        Self {
+            configured: false,
+            durability: AiKeyDurability::Missing,
+        }
     }
-}
 
-fn command_error(error: SecureSettingsError) -> String {
-    match error {
-        SecureSettingsError::AccessDenied => ACCESS_ERROR,
-        SecureSettingsError::InvalidValue => VALUE_ERROR,
-        SecureSettingsError::StorageUnavailable => STORAGE_ERROR,
+    const fn os() -> Self {
+        Self {
+            configured: true,
+            durability: AiKeyDurability::Os,
+        }
     }
-    .to_string()
-}
 
-fn run_with_lock<T, F>(lock: Arc<SyncMutex<()>>, operation: F) -> Result<T, SecureSettingsError>
-where
-    F: FnOnce() -> Result<T, SecureSettingsError>,
-{
-    let _guard = lock
-        .lock()
-        .map_err(|_| SecureSettingsError::StorageUnavailable)?;
-    operation()
-}
-
-async fn run_serialized<T, F>(
-    state: State<'_, SecureSettingsState>,
-    operation: F,
-) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce(&OsCredentialStore) -> Result<T, SecureSettingsError> + Send + 'static,
-{
-    // Native credential APIs can fail under concurrent access on Windows and
-    // Linux. Move the lock into the blocking task so cancellation of this
-    // future cannot release serialization while the native call still runs.
-    let lock = Arc::clone(&state.0);
-    tokio::task::spawn_blocking(move || run_with_lock(lock, || operation(&OsCredentialStore)))
-        .await
-        .map_err(|_| STORAGE_ERROR.to_string())?
-        .map_err(command_error)
+    const fn session() -> Self {
+        Self {
+            configured: true,
+            durability: AiKeyDurability::Session,
+        }
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SecretKeyRequest {
-    key: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SecretValueRequest {
-    key: String,
+pub struct SetAiApiKeyRequest {
     value: String,
 }
 
-#[tauri::command]
-pub async fn secure_settings_load(
-    window: WebviewWindow,
-    state: State<'_, SecureSettingsState>,
-    request: SecretKeyRequest,
-) -> Result<Option<String>, String> {
-    ensure_allowed_window(window.label())?;
-    run_serialized(state, move |store| load_from(store, &request.key)).await
+/// A one-way migration payload. The renderer may supply a legacy plaintext
+/// value it already owns (such as localStorage) but this command never echoes
+/// it, logs it, or writes it to a file.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrateAiApiKeyRequest {
+    #[serde(default)]
+    value: Option<String>,
 }
 
-#[tauri::command]
-pub async fn secure_settings_save(
-    window: WebviewWindow,
-    state: State<'_, SecureSettingsState>,
-    request: SecretValueRequest,
-) -> Result<(), String> {
-    ensure_allowed_window(window.label())?;
-    run_serialized(state, move |store| {
-        save_to(store, &request.key, &request.value)
+fn legacy_store_path_from_dir(app_data_dir: Option<PathBuf>) -> Option<PathBuf> {
+    app_data_dir.map(|dir| dir.join("secure-settings.json"))
+}
+
+fn read_legacy_store_value(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()?
+        .get(LEGACY_AI_API_KEY_FIELD)?
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// Remove only the old API-key field after a verified OS-keyring migration.
+/// Any unrelated legacy-store values are deliberately retained.
+fn remove_legacy_store_value(path: &Path) {
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    if object.remove(LEGACY_AI_API_KEY_FIELD).is_none() {
+        return;
+    }
+    let Ok(serialized) = serde_json::to_vec(&value) else {
+        return;
+    };
+    let temporary = path.with_extension("json.bbcom-migrating");
+    if fs::write(&temporary, serialized).is_ok() {
+        let _ = fs::rename(temporary, path);
+    }
+}
+
+fn key_error(error: SecureSettingsError, operation: &'static str) -> IpcError {
+    match error {
+        SecureSettingsError::AccessDenied => IpcError::security_denied(operation),
+        SecureSettingsError::InvalidValue => IpcError::invalid_input(operation, "value"),
+        SecureSettingsError::StorageUnavailable => IpcError::new(
+            AppErrorCode::IoPermissionDenied,
+            "error.keyring_unavailable",
+            true,
+            operation,
+        ),
+    }
+}
+
+fn validate_ai_key(value: &str, operation: &'static str) -> Result<(), IpcError> {
+    validate_secret_value(value).map_err(|error| key_error(error, operation))
+}
+
+fn session_key_present(state: &SecureSettingsState) -> Result<bool, IpcError> {
+    state
+        .session_ai_key
+        .lock()
+        .map(|key| key.is_some())
+        .map_err(|_| {
+            IpcError::new(
+                AppErrorCode::IoPermissionDenied,
+                "error.keyring_unavailable",
+                true,
+                "get_ai_key_status",
+            )
+        })
+}
+
+fn set_session_key(
+    state: &SecureSettingsState,
+    value: Option<Zeroizing<String>>,
+) -> Result<(), IpcError> {
+    let mut key = state.session_ai_key.lock().map_err(|_| {
+        IpcError::new(
+            AppErrorCode::IoPermissionDenied,
+            "error.keyring_unavailable",
+            true,
+            "set_ai_api_key",
+        )
+    })?;
+    *key = value;
+    Ok(())
+}
+
+fn current_session_key(state: &SecureSettingsState) -> Result<Option<Zeroizing<String>>, IpcError> {
+    state
+        .session_ai_key
+        .lock()
+        .map(|key| key.as_ref().map(|value| Zeroizing::new(value.to_string())))
+        .map_err(|_| {
+            IpcError::new(
+                AppErrorCode::IoPermissionDenied,
+                "error.keyring_unavailable",
+                true,
+                "run_ai_request",
+            )
+        })
+}
+
+fn status_from_store<S: CredentialStore>(
+    store: &S,
+    state: &SecureSettingsState,
+) -> Result<AiKeyStatus, IpcError> {
+    match load_from(store, AI_API_KEY) {
+        Ok(Some(_)) => Ok(AiKeyStatus::os()),
+        Ok(None) => {
+            if session_key_present(state)? {
+                Ok(AiKeyStatus::session())
+            } else {
+                Ok(AiKeyStatus::missing())
+            }
+        }
+        Err(SecureSettingsError::StorageUnavailable) => {
+            if session_key_present(state)? {
+                Ok(AiKeyStatus::session())
+            } else {
+                Ok(AiKeyStatus::missing())
+            }
+        }
+        Err(error) => Err(key_error(error, "get_ai_key_status")),
+    }
+}
+
+fn load_ai_key_from_store<S: CredentialStore>(
+    store: &S,
+    state: &SecureSettingsState,
+) -> Result<Zeroizing<String>, IpcError> {
+    match load_from(store, AI_API_KEY) {
+        Ok(Some(value)) => Ok(Zeroizing::new(value)),
+        Ok(None) | Err(SecureSettingsError::StorageUnavailable) => current_session_key(state)?
+            .ok_or_else(|| {
+                IpcError::new(
+                    AppErrorCode::SecurityDenied,
+                    "error.ai_key_missing",
+                    false,
+                    "run_ai_request",
+                )
+            }),
+        Err(error) => Err(key_error(error, "run_ai_request")),
+    }
+}
+
+fn save_ai_key_to_store<S: CredentialStore>(
+    store: &S,
+    state: &SecureSettingsState,
+    value: String,
+) -> Result<AiKeyStatus, IpcError> {
+    validate_ai_key(&value, "set_ai_api_key")?;
+
+    // A durable save counts only after an independent read-back matches. This
+    // is intentionally not a generic get command and the retrieved value
+    // never crosses a Tauri boundary.
+    let durable = save_to(store, AI_API_KEY, &value)
+        .and_then(|()| load_from(store, AI_API_KEY))
+        .is_ok_and(|stored| stored.as_deref() == Some(value.as_str()));
+    if durable {
+        set_session_key(state, None)?;
+        return Ok(AiKeyStatus::os());
+    }
+
+    set_session_key(state, Some(Zeroizing::new(value)))?;
+    Ok(AiKeyStatus::session())
+}
+
+fn clear_ai_key_from_store<S: CredentialStore>(
+    store: &S,
+    state: &SecureSettingsState,
+) -> Result<(), IpcError> {
+    // Always clear the process-memory fallback before returning. If an OS
+    // keyring delete fails, report it rather than pretending the durable key
+    // was removed.
+    set_session_key(state, None)?;
+    clear_from(store, AI_API_KEY).map_err(|error| key_error(error, "clear_ai_api_key"))
+}
+
+fn storage_unavailable(operation: &'static str) -> IpcError {
+    IpcError::new(
+        AppErrorCode::IoPermissionDenied,
+        "error.keyring_unavailable",
+        true,
+        operation,
+    )
+}
+
+async fn run_store_operation<S, T, F>(
+    state: SecureSettingsState,
+    store: S,
+    operation: &'static str,
+    work: F,
+) -> Result<T, IpcError>
+where
+    S: CredentialStore + Send + 'static,
+    T: Send + 'static,
+    F: FnOnce(&S, &SecureSettingsState) -> Result<T, IpcError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let _guard = state
+            .operation_lock
+            .lock()
+            .map_err(|_| storage_unavailable(operation))?;
+        work(&store, &state)
+    })
+    .await
+    .map_err(|_| storage_unavailable(operation))?
+}
+
+fn migrate_ai_key_from_store<S: CredentialStore>(
+    store: &S,
+    state: &SecureSettingsState,
+    requested_value: Option<String>,
+    legacy_path: Option<&Path>,
+) -> Result<AiKeyStatus, IpcError> {
+    let current = status_from_store(store, state)?;
+    if current.configured {
+        // A previous v0.5 OS-keyring write is already verified durable, so a
+        // stale plaintext copy can be removed safely. A session-only key is
+        // deliberately not sufficient authority to delete the legacy value.
+        if current.durability == AiKeyDurability::Os
+            && let Some(path) = legacy_path
+        {
+            remove_legacy_store_value(path);
+        }
+        return Ok(current);
+    }
+    let candidate = requested_value
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| legacy_path.and_then(read_legacy_store_value));
+    let Some(candidate) = candidate else {
+        return Ok(current);
+    };
+    let status = save_ai_key_to_store(store, state, candidate.trim().to_string())?;
+    if status.durability == AiKeyDurability::Os
+        && let Some(path) = legacy_path
+    {
+        remove_legacy_store_value(path);
+    }
+    Ok(status)
+}
+
+fn ensure_main_window_label(label: &str, operation: &'static str) -> Result<(), IpcError> {
+    if label == "main" {
+        Ok(())
+    } else {
+        Err(IpcError::security_denied(operation))
+    }
+}
+
+pub(crate) fn ensure_ai_request_window_label(
+    label: &str,
+    operation: &'static str,
+) -> Result<(), IpcError> {
+    if label == "main" || label == AI_WINDOW_LABEL {
+        Ok(())
+    } else {
+        Err(IpcError::security_denied(operation))
+    }
+}
+
+async fn get_ai_key_status_from_label<S>(
+    label: &str,
+    state: SecureSettingsState,
+    store: S,
+) -> Result<AiKeyStatus, IpcError>
+where
+    S: CredentialStore + Send + 'static,
+{
+    const OPERATION: &str = "get_ai_key_status";
+    ensure_ai_request_window_label(label, OPERATION)?;
+    run_store_operation(state, store, OPERATION, status_from_store).await
+}
+
+async fn set_ai_api_key_from_label<S>(
+    label: &str,
+    state: SecureSettingsState,
+    store: S,
+    value: String,
+) -> Result<AiKeyStatus, IpcError>
+where
+    S: CredentialStore + Send + 'static,
+{
+    const OPERATION: &str = "set_ai_api_key";
+    ensure_main_window_label(label, OPERATION)?;
+    run_store_operation(state, store, OPERATION, move |store, state| {
+        save_ai_key_to_store(store, state, value)
     })
     .await
 }
 
-#[tauri::command]
-pub async fn secure_settings_migrate_if_missing(
-    window: WebviewWindow,
-    state: State<'_, SecureSettingsState>,
-    request: SecretValueRequest,
-) -> Result<String, String> {
-    ensure_allowed_window(window.label())?;
-    // The load and conditional save execute under the same process-wide lock,
-    // so a normal save from another application window always wins the race.
-    run_serialized(state, move |store| {
-        migrate_if_missing_from(store, &request.key, &request.value)
+async fn migrate_ai_api_key_from_label<S>(
+    label: &str,
+    state: SecureSettingsState,
+    store: S,
+    requested_value: Option<String>,
+    legacy_path: Option<PathBuf>,
+) -> Result<AiKeyStatus, IpcError>
+where
+    S: CredentialStore + Send + 'static,
+{
+    const OPERATION: &str = "migrate_ai_api_key";
+    ensure_main_window_label(label, OPERATION)?;
+    run_store_operation(state, store, OPERATION, move |store, state| {
+        migrate_ai_key_from_store(store, state, requested_value, legacy_path.as_deref())
     })
     .await
 }
 
+async fn clear_ai_api_key_from_label<S>(
+    label: &str,
+    state: SecureSettingsState,
+    store: S,
+) -> Result<(), IpcError>
+where
+    S: CredentialStore + Send + 'static,
+{
+    const OPERATION: &str = "clear_ai_api_key";
+    ensure_main_window_label(label, OPERATION)?;
+    run_store_operation(state, store, OPERATION, clear_ai_key_from_store).await
+}
+
+/// Report configuration state without exposing the API key itself.
 #[tauri::command]
-pub async fn secure_settings_clear(
+pub async fn get_ai_key_status(
     window: WebviewWindow,
     state: State<'_, SecureSettingsState>,
-    request: SecretKeyRequest,
-) -> Result<(), String> {
-    ensure_allowed_window(window.label())?;
-    run_serialized(state, move |store| clear_from(store, &request.key)).await
+) -> Result<AiKeyStatus, IpcError> {
+    get_ai_key_status_from_label(window.label(), state.inner().clone(), OsCredentialStore).await
+}
+
+/// Save a key to the OS keyring, falling back only to zeroizing process memory.
+#[tauri::command]
+pub async fn set_ai_api_key(
+    window: WebviewWindow,
+    state: State<'_, SecureSettingsState>,
+    request: SetAiApiKeyRequest,
+) -> Result<AiKeyStatus, IpcError> {
+    set_ai_api_key_from_label(
+        window.label(),
+        state.inner().clone(),
+        OsCredentialStore,
+        request.value,
+    )
+    .await
+}
+
+/// Atomically migrate a legacy value only when no durable/session key exists.
+/// The caller removes plaintext only after receiving OS durability.
+#[tauri::command]
+pub async fn migrate_ai_api_key(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, SecureSettingsState>,
+    request: MigrateAiApiKeyRequest,
+) -> Result<AiKeyStatus, IpcError> {
+    let legacy_path = legacy_store_path_from_dir(app.path().app_data_dir().ok());
+    migrate_ai_api_key_from_label(
+        window.label(),
+        state.inner().clone(),
+        OsCredentialStore,
+        request.value,
+        legacy_path,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_ai_api_key(
+    window: WebviewWindow,
+    state: State<'_, SecureSettingsState>,
+) -> Result<(), IpcError> {
+    clear_ai_api_key_from_label(window.label(), state.inner().clone(), OsCredentialStore).await
+}
+
+/// Internal accessor for the AI command dispatcher. It shares the exact same
+/// lock as configuration writes so an in-flight request sees a coherent key.
+pub async fn load_ai_key_for_request(
+    state: State<'_, SecureSettingsState>,
+) -> Result<Zeroizing<String>, IpcError> {
+    run_store_operation(
+        state.inner().clone(),
+        OsCredentialStore,
+        "run_ai_request",
+        load_ai_key_from_store,
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Mutex, mpsc},
-        thread,
-        time::Duration,
+        fs,
+        sync::Mutex,
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::*;
@@ -269,6 +631,33 @@ mod tests {
             *self.value.lock().unwrap() = None;
             Ok(())
         }
+    }
+
+    struct ReadbackMismatchStore;
+
+    impl CredentialStore for ReadbackMismatchStore {
+        fn load(&self, _key: &str) -> Result<Option<String>, SecureSettingsError> {
+            Ok(Some("different-after-save".to_string()))
+        }
+
+        fn save(&self, _key: &str, _value: &str) -> Result<(), SecureSettingsError> {
+            Ok(())
+        }
+
+        fn clear(&self, _key: &str) -> Result<(), SecureSettingsError> {
+            Ok(())
+        }
+    }
+
+    fn legacy_path(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "bbcom-secure-settings-{label}-{}-{nanos}.json",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -329,7 +718,10 @@ mod tests {
         let error = save_to(&store, AI_API_KEY, "must-not-leak").unwrap_err();
         assert_eq!(error, SecureSettingsError::StorageUnavailable);
         assert!(!format!("{error:?}").contains("must-not-leak"));
-        assert_eq!(command_error(error), STORAGE_ERROR);
+        assert_eq!(
+            key_error(error, "set_ai_api_key").code,
+            AppErrorCode::IoPermissionDenied
+        );
     }
 
     #[test]
@@ -342,8 +734,10 @@ mod tests {
         let oversized = "x".repeat(MAX_SECRET_BYTES + 1);
         let error = save_to(&store, AI_API_KEY, &oversized).unwrap_err();
         assert_eq!(error, SecureSettingsError::InvalidValue);
-        assert_eq!(command_error(error), VALUE_ERROR);
-        assert!(!command_error(error).contains(&oversized));
+        assert_eq!(
+            key_error(error, "set_ai_api_key").code,
+            AppErrorCode::InvalidInput
+        );
         assert!(store.operations.lock().unwrap().is_empty());
     }
 
@@ -362,60 +756,405 @@ mod tests {
                 Err(SecureSettingsError::InvalidValue)
             );
             assert_eq!(
-                command_error(SecureSettingsError::InvalidValue),
-                VALUE_ERROR
+                key_error(SecureSettingsError::InvalidValue, "set_ai_api_key").code,
+                AppErrorCode::InvalidInput
             );
-            if !invalid_value.is_empty() {
-                assert!(!command_error(SecureSettingsError::InvalidValue).contains(&invalid_value));
-            }
         }
     }
 
     #[test]
-    fn only_application_windows_can_request_credentials() {
-        assert!(ensure_allowed_window("main").is_ok());
-        assert!(ensure_allowed_window(AI_WINDOW_LABEL).is_ok());
-        assert!(ensure_allowed_window("untrusted").is_err());
+    fn key_status_load_and_save_follow_the_os_session_missing_contract() {
+        let state = SecureSettingsState::default();
+        let store = MemoryCredentialStore::default();
+        assert_eq!(
+            status_from_store(&store, &state).unwrap(),
+            AiKeyStatus::missing()
+        );
+
+        set_session_key(&state, Some(Zeroizing::new("session-key".to_string()))).unwrap();
+        assert_eq!(
+            status_from_store(&store, &state).unwrap(),
+            AiKeyStatus::session()
+        );
+        assert_eq!(
+            load_ai_key_from_store(&store, &state).unwrap().to_string(),
+            "session-key"
+        );
+
+        *store.value.lock().unwrap() = Some("os-key".to_string());
+        assert_eq!(
+            status_from_store(&store, &state).unwrap(),
+            AiKeyStatus::os()
+        );
+        assert_eq!(
+            load_ai_key_from_store(&store, &state).unwrap().to_string(),
+            "os-key"
+        );
+
+        let unavailable = MemoryCredentialStore {
+            fail: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            status_from_store(&unavailable, &state).unwrap(),
+            AiKeyStatus::session()
+        );
+        assert_eq!(
+            load_ai_key_from_store(&unavailable, &state)
+                .unwrap()
+                .to_string(),
+            "session-key"
+        );
+
+        set_session_key(&state, None).unwrap();
+        assert_eq!(
+            status_from_store(&unavailable, &state).unwrap(),
+            AiKeyStatus::missing()
+        );
+        let missing = load_ai_key_from_store(&unavailable, &state).unwrap_err();
+        assert_eq!(missing.code, AppErrorCode::SecurityDenied);
+        assert_eq!(missing.operation, "run_ai_request");
+
+        let invalid = MemoryCredentialStore::default();
+        *invalid.value.lock().unwrap() = Some(String::new());
+        assert_eq!(
+            status_from_store(&invalid, &SecureSettingsState::default())
+                .unwrap_err()
+                .code,
+            AppErrorCode::InvalidInput
+        );
+        assert_eq!(
+            load_ai_key_from_store(&invalid, &SecureSettingsState::default())
+                .unwrap_err()
+                .code,
+            AppErrorCode::InvalidInput
+        );
+
+        // Poisoning must collapse to a typed storage error and never expose
+        // key material through the lock-failure path.
+        let poisoned = SecureSettingsState::default();
+        let lock = std::sync::Arc::clone(&poisoned.session_ai_key);
+        let _ = std::thread::spawn(move || {
+            let _guard = lock.lock().unwrap();
+            panic!("intentional secure settings test poison");
+        })
+        .join();
+        assert_eq!(
+            session_key_present(&poisoned).unwrap_err().code,
+            AppErrorCode::IoPermissionDenied
+        );
+        assert_eq!(
+            set_session_key(&poisoned, None).unwrap_err().code,
+            AppErrorCode::IoPermissionDenied
+        );
+        assert_eq!(
+            current_session_key(&poisoned).unwrap_err().code,
+            AppErrorCode::IoPermissionDenied
+        );
     }
 
     #[test]
-    fn blocking_helper_holds_the_lock_for_the_entire_operation() {
-        let lock = Arc::new(SyncMutex::new(()));
-        let (first_started_tx, first_started_rx) = mpsc::channel();
-        let (release_first_tx, release_first_rx) = mpsc::channel();
+    fn durable_save_requires_readback_and_clear_never_keeps_session_fallback() {
+        let state = SecureSettingsState::default();
+        let durable = MemoryCredentialStore::default();
+        let status = save_ai_key_to_store(&durable, &state, "durable-key".to_string()).unwrap();
+        assert_eq!(status, AiKeyStatus::os());
+        assert!(!session_key_present(&state).unwrap());
 
-        let first_lock = Arc::clone(&lock);
-        let first = thread::spawn(move || {
-            run_with_lock(first_lock, || {
-                first_started_tx.send(()).unwrap();
-                release_first_rx.recv().unwrap();
-                Ok(())
-            })
-        });
-        first_started_rx
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
-
-        let (second_started_tx, second_started_rx) = mpsc::channel();
-        let second_lock = Arc::clone(&lock);
-        let second = thread::spawn(move || {
-            run_with_lock(second_lock, || {
-                second_started_tx.send(()).unwrap();
-                Ok(())
-            })
-        });
-
-        assert!(
-            second_started_rx
-                .recv_timeout(Duration::from_millis(50))
-                .is_err()
+        let fallback = MemoryCredentialStore {
+            fail: true,
+            ..Default::default()
+        };
+        let status = save_ai_key_to_store(&fallback, &state, "session-key".to_string()).unwrap();
+        assert_eq!(status, AiKeyStatus::session());
+        assert_eq!(
+            current_session_key(&state).unwrap().unwrap().to_string(),
+            "session-key"
         );
-        release_first_tx.send(()).unwrap();
-        second_started_rx
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
 
-        assert_eq!(first.join().unwrap(), Ok(()));
-        assert_eq!(second.join().unwrap(), Ok(()));
+        let mismatch_state = SecureSettingsState::default();
+        let status = save_ai_key_to_store(
+            &ReadbackMismatchStore,
+            &mismatch_state,
+            "readback-key".to_string(),
+        )
+        .unwrap();
+        assert_eq!(status, AiKeyStatus::session());
+        assert_eq!(
+            current_session_key(&mismatch_state)
+                .unwrap()
+                .unwrap()
+                .to_string(),
+            "readback-key"
+        );
+
+        clear_ai_key_from_store(&durable, &state).unwrap();
+        assert!(!session_key_present(&state).unwrap());
+        set_session_key(&state, Some(Zeroizing::new("to-clear".to_string()))).unwrap();
+        let error = clear_ai_key_from_store(&fallback, &state).unwrap_err();
+        assert_eq!(error.code, AppErrorCode::IoPermissionDenied);
+        assert!(!session_key_present(&state).unwrap());
+    }
+
+    #[test]
+    fn legacy_file_helpers_read_only_the_api_key_and_preserve_other_settings() {
+        let path = legacy_path("helpers");
+        fs::write(&path, r#"{"ai-api-key":"legacy-secret","theme":"dark"}"#).unwrap();
+        assert_eq!(
+            read_legacy_store_value(&path).as_deref(),
+            Some("legacy-secret")
+        );
+        remove_legacy_store_value(&path);
+        let remaining: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(remaining.get(LEGACY_AI_API_KEY_FIELD).is_none());
+        assert_eq!(remaining["theme"], "dark");
+
+        fs::write(&path, r#"{"ai-api-key":"   "}"#).unwrap();
+        assert_eq!(read_legacy_store_value(&path), None);
+        fs::write(&path, "not-json").unwrap();
+        assert_eq!(read_legacy_store_value(&path), None);
+        remove_legacy_store_value(&path);
+
+        // Every malformed/irrelevant legacy shape is a no-op: migration must
+        // never delete unrelated content while trying to erase one key.
+        remove_legacy_store_value(&legacy_path("does-not-exist"));
+        fs::write(&path, "[]").unwrap();
+        remove_legacy_store_value(&path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[]");
+        fs::write(&path, r#"{"other":"preserved"}"#).unwrap();
+        remove_legacy_store_value(&path);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap(),
+            serde_json::json!({"other":"preserved"})
+        );
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn migration_removes_plaintext_only_after_os_durability_is_verified() {
+        let path = legacy_path("migrate");
+        fs::write(&path, r#"{"ai-api-key":"legacy-key","other":"preserved"}"#).unwrap();
+
+        let durable_store = MemoryCredentialStore::default();
+        let durable_state = SecureSettingsState::default();
+        let status = migrate_ai_key_from_store(
+            &durable_store,
+            &durable_state,
+            Some("  requested-key  ".to_string()),
+            Some(&path),
+        )
+        .unwrap();
+        assert_eq!(status, AiKeyStatus::os());
+        assert_eq!(
+            durable_store.value.lock().unwrap().as_deref(),
+            Some("requested-key")
+        );
+        let migrated: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(migrated.get(LEGACY_AI_API_KEY_FIELD).is_none());
+        assert_eq!(migrated["other"], "preserved");
+
+        // A durable key from an earlier v0.5 run must also clear the stale
+        // legacy value. The migration must not overwrite that durable key.
+        fs::write(&path, r#"{"ai-api-key":"stale-key","other":1}"#).unwrap();
+        let status =
+            migrate_ai_key_from_store(&durable_store, &durable_state, None, Some(&path)).unwrap();
+        assert_eq!(status, AiKeyStatus::os());
+        assert_eq!(
+            durable_store.value.lock().unwrap().as_deref(),
+            Some("requested-key")
+        );
+        let cleaned: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(cleaned.get(LEGACY_AI_API_KEY_FIELD).is_none());
+
+        fs::write(&path, r#"{"ai-api-key":"must-remain"}"#).unwrap();
+        let unavailable_store = MemoryCredentialStore {
+            fail: true,
+            ..Default::default()
+        };
+        let session_state = SecureSettingsState::default();
+        let status =
+            migrate_ai_key_from_store(&unavailable_store, &session_state, None, Some(&path))
+                .unwrap();
+        assert_eq!(status, AiKeyStatus::session());
+        assert_eq!(
+            read_legacy_store_value(&path).as_deref(),
+            Some("must-remain")
+        );
+
+        let no_candidate = migrate_ai_key_from_store(
+            &MemoryCredentialStore::default(),
+            &SecureSettingsState::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(no_candidate, AiKeyStatus::missing());
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn key_status_and_request_contracts_never_serialize_the_secret() {
+        assert_eq!(
+            serde_json::to_value(AiKeyStatus::os()).unwrap(),
+            serde_json::json!({"configured":true,"durability":"os"})
+        );
+        assert_eq!(
+            serde_json::to_value(AiKeyStatus::session()).unwrap(),
+            serde_json::json!({"configured":true,"durability":"session"})
+        );
+        assert_eq!(
+            serde_json::to_value(AiKeyStatus::missing()).unwrap(),
+            serde_json::json!({"configured":false,"durability":"missing"})
+        );
+        let request: SetAiApiKeyRequest = serde_json::from_str(r#"{"value":"value"}"#).unwrap();
+        assert_eq!(request.value, "value");
+        let migration: MigrateAiApiKeyRequest = serde_json::from_str("{}").unwrap();
+        assert!(migration.value.is_none());
+
+        // These are read/no-op operations only. The test accepts either a
+        // working keyring or a deliberately unavailable CI keyring, while
+        // ensuring OS backend failures stay in the typed error channel.
+        let os_store = OsCredentialStore;
+        assert!(matches!(
+            os_store.load(AI_API_KEY),
+            Ok(_) | Err(SecureSettingsError::StorageUnavailable)
+        ));
+        clear_from(&ReadbackMismatchStore, AI_API_KEY).unwrap();
+    }
+
+    #[test]
+    fn window_labels_and_legacy_path_are_security_bounded() {
+        assert!(ensure_main_window_label("main", "set_ai_api_key").is_ok());
+        let denied = ensure_main_window_label(AI_WINDOW_LABEL, "set_ai_api_key").unwrap_err();
+        assert_eq!(denied.code, AppErrorCode::SecurityDenied);
+        assert!(ensure_ai_request_window_label("main", "run_ai_request").is_ok());
+        assert!(ensure_ai_request_window_label(AI_WINDOW_LABEL, "run_ai_request").is_ok());
+        assert_eq!(
+            ensure_ai_request_window_label("untrusted", "run_ai_request")
+                .unwrap_err()
+                .code,
+            AppErrorCode::SecurityDenied
+        );
+        assert_eq!(
+            legacy_store_path_from_dir(Some(PathBuf::from("/tmp/bbcom"))),
+            Some(PathBuf::from("/tmp/bbcom/secure-settings.json"))
+        );
+        assert_eq!(legacy_store_path_from_dir(None), None);
+        assert_eq!(
+            storage_unavailable("key-operation").code,
+            AppErrorCode::IoPermissionDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn store_operations_share_the_state_lock_and_map_storage_errors() {
+        let state = SecureSettingsState::default();
+        let status = run_store_operation(
+            state.clone(),
+            MemoryCredentialStore::default(),
+            "set_ai_api_key",
+            |store, state| save_ai_key_to_store(store, state, "background-key".to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, AiKeyStatus::os());
+
+        let error = run_store_operation(
+            SecureSettingsState::default(),
+            MemoryCredentialStore {
+                fail: true,
+                ..Default::default()
+            },
+            "run_ai_request",
+            load_ai_key_from_store,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::SecurityDenied);
+        assert_eq!(error.operation, "run_ai_request");
+    }
+
+    #[tokio::test]
+    async fn key_command_cores_enforce_window_boundaries_and_preserve_durability_contracts() {
+        let denied = get_ai_key_status_from_label(
+            "untrusted-window",
+            SecureSettingsState::default(),
+            MemoryCredentialStore::default(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(denied.code, AppErrorCode::SecurityDenied);
+
+        assert_eq!(
+            get_ai_key_status_from_label(
+                AI_WINDOW_LABEL,
+                SecureSettingsState::default(),
+                MemoryCredentialStore::default(),
+            )
+            .await
+            .unwrap(),
+            AiKeyStatus::missing()
+        );
+
+        let denied = set_ai_api_key_from_label(
+            AI_WINDOW_LABEL,
+            SecureSettingsState::default(),
+            MemoryCredentialStore::default(),
+            "must-not-write".to_string(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(denied.code, AppErrorCode::SecurityDenied);
+
+        assert_eq!(
+            set_ai_api_key_from_label(
+                "main",
+                SecureSettingsState::default(),
+                MemoryCredentialStore::default(),
+                "durable-key".to_string(),
+            )
+            .await
+            .unwrap(),
+            AiKeyStatus::os()
+        );
+
+        assert_eq!(
+            migrate_ai_api_key_from_label(
+                "main",
+                SecureSettingsState::default(),
+                MemoryCredentialStore::default(),
+                Some(" requested-key ".to_string()),
+                None,
+            )
+            .await
+            .unwrap(),
+            AiKeyStatus::os()
+        );
+
+        let session_state = SecureSettingsState::default();
+        set_session_key(
+            &session_state,
+            Some(Zeroizing::new("session-key".to_string())),
+        )
+        .unwrap();
+        clear_ai_api_key_from_label(
+            "main",
+            session_state.clone(),
+            MemoryCredentialStore::default(),
+        )
+        .await
+        .unwrap();
+        assert!(!session_key_present(&session_state).unwrap());
+
+        let denied = clear_ai_api_key_from_label(
+            AI_WINDOW_LABEL,
+            SecureSettingsState::default(),
+            MemoryCredentialStore::default(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(denied.code, AppErrorCode::SecurityDenied);
     }
 }

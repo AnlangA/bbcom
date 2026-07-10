@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   buildPacketRows,
@@ -108,7 +108,8 @@ test('packetContextCopyText formats every context-menu copy mode', () => {
   const f = frame('x', 'RX', encodeUtf8('\x1b[31mA\x1b[0m'), 123);
   const options = {
     formatFrame: () => 'formatted',
-    stripAnsi: (text: string) => text.replace(/\x1b\[[0-9;]*m/g, ''),
+    stripAnsi: (text: string) =>
+      text.replace(new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g'), ''),
   };
 
   assert.equal(packetContextCopyText('hex', f, options), formatHex(f.data));
@@ -150,6 +151,13 @@ test('batch copy helpers select frames, enforce limits, and format text', () => 
     tooLarge: false,
     totalBytes: 2,
   });
+  assert.deepEqual(
+    packetCopySizeStatus([{ ...frame('merged', 'RX', new Uint8Array(64)), omittedBytes: 1024 }], {
+      maxBytes: 1000,
+      maxFrames: 10,
+    }),
+    { tooLarge: true, totalBytes: 1088 },
+  );
   assert.equal(
     packetBatchCopyText('filtered-text', filteredFrames),
     `[${formatTimestamp(200)}] RX | OK`,

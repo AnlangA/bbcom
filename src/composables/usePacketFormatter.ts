@@ -7,18 +7,110 @@ import {
   stripAnsiEscapes,
   toContinuousHex,
 } from '../lib/format';
-import { LRUCache } from '../lib/lru-cache';
-import { CACHE_SIZE, type DataFrame, type DisplayMode } from '../types';
+import {
+  TERMINAL_CACHE_ENTRY_MAX_BYTES,
+  TERMINAL_CACHE_MAX_BYTES,
+  type DataFrame,
+  type DisplayMode,
+} from '../types';
 
 interface PacketFormatterOptions {
   displayMode: Ref<DisplayMode>;
   ansiColorEnabled: Ref<boolean>;
 }
 
+interface CacheEntry {
+  frameId: string;
+  value: string;
+  bytes: number;
+}
+
+export interface PacketFormatterCacheStats {
+  bytes: number;
+  entries: number;
+  maxBytes: number;
+  maxEntryBytes: number;
+}
+
+/** One LRU budget shared by format, HEX-search, and text-search strings. */
+class SharedStringCache {
+  private readonly entries = new Map<string, CacheEntry>();
+  private readonly keysByFrame = new Map<string, Set<string>>();
+  private usedBytes = 0;
+
+  get(key: string): string | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.value;
+  }
+
+  set(key: string, frameId: string, value: string): void {
+    // JavaScript strings are UTF-16; account for both the value and key so
+    // the declared 16 MiB ceiling remains conservative in the live heap.
+    const bytes = (key.length + value.length) * 2;
+    this.delete(key);
+    if (bytes > TERMINAL_CACHE_ENTRY_MAX_BYTES) return;
+
+    while (this.usedBytes + bytes > TERMINAL_CACHE_MAX_BYTES && this.entries.size > 0) {
+      const oldestKey = this.entries.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      this.delete(oldestKey);
+    }
+    if (this.usedBytes + bytes > TERMINAL_CACHE_MAX_BYTES) return;
+
+    this.entries.set(key, { frameId, value, bytes });
+    let keys = this.keysByFrame.get(frameId);
+    if (!keys) {
+      keys = new Set();
+      this.keysByFrame.set(frameId, keys);
+    }
+    keys.add(key);
+    this.usedBytes += bytes;
+  }
+
+  deleteFrame(frameId: string): void {
+    const keys = this.keysByFrame.get(frameId);
+    if (!keys) return;
+    for (const key of [...keys]) this.delete(key);
+  }
+
+  clearKind(kind: string): void {
+    for (const key of [...this.entries.keys()]) {
+      if (key.startsWith(kind)) this.delete(key);
+    }
+  }
+
+  clear(): void {
+    this.entries.clear();
+    this.keysByFrame.clear();
+    this.usedBytes = 0;
+  }
+
+  stats(): PacketFormatterCacheStats {
+    return {
+      bytes: this.usedBytes,
+      entries: this.entries.size,
+      maxBytes: TERMINAL_CACHE_MAX_BYTES,
+      maxEntryBytes: TERMINAL_CACHE_ENTRY_MAX_BYTES,
+    };
+  }
+
+  private delete(key: string): void {
+    const entry = this.entries.get(key);
+    if (!entry) return;
+    this.entries.delete(key);
+    this.usedBytes -= entry.bytes;
+    const keys = this.keysByFrame.get(entry.frameId);
+    if (!keys) return;
+    keys.delete(key);
+    if (keys.size === 0) this.keysByFrame.delete(entry.frameId);
+  }
+}
+
 export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketFormatterOptions) {
-  const formatCache = new LRUCache<string, string>(CACHE_SIZE);
-  const hexSearchCache = new LRUCache<string, string>(CACHE_SIZE);
-  const textSearchCache = new LRUCache<string, string>(CACHE_SIZE);
+  const cache = new SharedStringCache();
   const ansiUp = new AnsiUp();
   ansiUp.use_classes = false;
   ansiUp.escape_html = true;
@@ -27,6 +119,7 @@ export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketForm
   function formatRaw(frame: DataFrame): string {
     switch (displayMode.value) {
       case 'HEX':
+      case 'HEXASCII':
         return formatHex(frame.data);
       case 'ANSI':
       case 'ASCII': {
@@ -42,37 +135,41 @@ export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketForm
     }
   }
 
-  function formatFrame(frame: DataFrame): string {
-    // Merged frames keep a stable id (`merged-<firstFrameId>`) while their
-    // concatenated data grows on every rebuild. They must bypass the id-keyed
-    // cache, otherwise they'd render stale content during streaming. Only the
-    // visible merged rows re-render, so the cost of skipping the cache is tiny.
-    if (frame.id.startsWith('merged-')) {
-      return formatRaw(frame);
-    }
+  function isMerged(frame: DataFrame): boolean {
+    return frame.id.startsWith('merged-') || frame.contentVersion !== undefined;
+  }
 
-    const key = `${frame.id}:${displayMode.value}:${ansiColorEnabled.value}`;
-    const cached = formatCache.get(key);
+  function formatFrame(frame: DataFrame): string {
+    // A rope row keeps its first-frame id while its tail/content version moves.
+    // Its 64 KiB tail would also exceed the per-entry cache ceiling in HEX
+    // mode, so format it directly and leave the shared cache for small source
+    // frames that are reused by virtual rows and filtering.
+    if (isMerged(frame)) return formatRaw(frame);
+
+    const key = `format:${frame.id}:${displayMode.value}:${ansiColorEnabled.value}`;
+    const cached = cache.get(key);
     if (cached !== undefined) return cached;
 
     const result = formatRaw(frame);
-    formatCache.set(key, result);
+    cache.set(key, frame.id, result);
     return result;
   }
 
   function getHexSearchData(frame: DataFrame): string {
-    const cached = hexSearchCache.get(frame.id);
+    const key = `hex:${frame.id}`;
+    const cached = cache.get(key);
     if (cached !== undefined) return cached;
     const result = toContinuousHex(frame.data);
-    hexSearchCache.set(frame.id, result);
+    cache.set(key, frame.id, result);
     return result;
   }
 
   function getTextSearchData(frame: DataFrame): string {
-    const cached = textSearchCache.get(frame.id);
+    const key = `text:${frame.id}`;
+    const cached = cache.get(key);
     if (cached !== undefined) return cached;
     const result = stripAnsiEscapes(formatUtf8(frame.data)).toLowerCase();
-    textSearchCache.set(frame.id, result);
+    cache.set(key, frame.id, result);
     return result;
   }
 
@@ -81,13 +178,15 @@ export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketForm
   }
 
   function clearCaches() {
-    formatCache.clear();
-    hexSearchCache.clear();
-    textSearchCache.clear();
+    cache.clear();
+  }
+
+  function evictFrames(frames: readonly DataFrame[]) {
+    for (const frame of frames) cache.deleteFrame(frame.id);
   }
 
   watch([displayMode, ansiColorEnabled], () => {
-    formatCache.clear();
+    cache.clearKind('format:');
   });
 
   return {
@@ -96,5 +195,7 @@ export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketForm
     getTextSearchData,
     stripAnsi,
     clearCaches,
+    evictFrames,
+    getCacheStats: () => cache.stats(),
   };
 }

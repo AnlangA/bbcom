@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { logger } from '../../src/lib/logger.ts';
 
@@ -6,7 +6,6 @@ import { logger } from '../../src/lib/logger.ts';
 function stubConsole(method: 'debug' | 'info' | 'warn' | 'error') {
   const calls: unknown[][] = [];
   const original = console[method];
-  // eslint-disable-next-line no-console
   console[method] = (...args: unknown[]) => {
     calls.push(args);
   };
@@ -54,7 +53,6 @@ test('debug and info are no-ops outside dev builds (test env has no Vite DEV fla
 test('logger never throws even when the console sink throws', () => {
   const warn = stubConsole('warn');
   // Make the sink throw on the next call
-  // eslint-disable-next-line no-console
   console.warn = () => {
     throw new Error('sink exploded');
   };

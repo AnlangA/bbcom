@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { effectScope } from 'vue';
 import { isEditable, useSessionShortcuts } from '../../src/composables/useSessionShortcuts.ts';

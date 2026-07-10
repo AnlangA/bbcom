@@ -1,4 +1,4 @@
-import { ref, onMounted, onUnmounted } from 'vue';
+import { getCurrentInstance, ref, onMounted, onUnmounted } from 'vue';
 import { listen } from '@tauri-apps/api/event';
 import { getAiWindowState, hideAiWindow, showAiWindow, type AiWindowState } from '../lib/ipc';
 import { logger } from '../lib/logger';
@@ -45,23 +45,25 @@ export function useAiWindowState(deps: UseAiWindowStateDeps = {}) {
     }
   }
 
-  onMounted(() => {
-    void refresh();
-    void listen<AiWindowState>('ai-window-state', (event) => {
-      visible.value = event.payload.visible;
-    })
-      .then((cleanup) => {
-        unlisten = cleanup;
+  if (getCurrentInstance()) {
+    onMounted(() => {
+      void refresh();
+      void listen<AiWindowState>('ai-window-state', (event) => {
+        visible.value = event.payload.visible;
       })
-      .catch((e) => {
-        logger.debug('ai-window event bridge unavailable:', e);
-      });
-  });
+        .then((cleanup) => {
+          unlisten = cleanup;
+        })
+        .catch((e) => {
+          logger.debug('ai-window event bridge unavailable:', e);
+        });
+    });
 
-  onUnmounted(() => {
-    unlisten?.();
-    unlisten = null;
-  });
+    onUnmounted(() => {
+      unlisten?.();
+      unlisten = null;
+    });
+  }
 
   return {
     visible,

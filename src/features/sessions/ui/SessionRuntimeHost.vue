@@ -23,10 +23,7 @@ import SessionView from '../../../components/session/SessionView.vue';
 import type { SerialSession } from '../../../types';
 import SessionRuntime from './SessionRuntime.vue';
 import type { SessionRuntimeController } from '../runtime/session-runtime-controller';
-import {
-  reconcileResidentSessionIds,
-  resolveActiveSessionRuntime,
-} from '../runtime/session-residency';
+import { SessionRuntimeManager } from '../runtime/session-runtime-manager';
 
 const props = defineProps<{
   sessions: readonly SerialSession[];
@@ -35,15 +32,12 @@ const props = defineProps<{
 
 const residentSessionIds = ref<string[]>([]);
 const runtimes = shallowReactive(new Map<string, SessionRuntimeController>());
+const runtimeManager = new SessionRuntimeManager<SerialSession, SessionRuntimeController>(runtimes);
 
 watch(
   () => [props.sessions, props.activeSessionId] as const,
   ([sessions, activeSessionId]) => {
-    residentSessionIds.value = reconcileResidentSessionIds(
-      residentSessionIds.value,
-      sessions.map((session) => session.id),
-      activeSessionId,
-    );
+    residentSessionIds.value = [...runtimeManager.reconcile(sessions, activeSessionId)];
   },
   { immediate: true },
 );
@@ -57,15 +51,15 @@ const residentSessions = computed(() => {
 });
 
 const activeBinding = computed(() =>
-  resolveActiveSessionRuntime(props.sessions, runtimes, props.activeSessionId),
+  runtimeManager.resolveActive(props.sessions, props.activeSessionId),
 );
 
 function registerRuntime(runtime: SessionRuntimeController) {
-  runtimes.set(runtime.sessionId, runtime);
+  runtimeManager.register(runtime);
 }
 
 function unregisterRuntime(runtime: SessionRuntimeController) {
-  if (runtimes.get(runtime.sessionId) === runtime) runtimes.delete(runtime.sessionId);
+  runtimeManager.unregister(runtime);
 }
 </script>
 

@@ -6,7 +6,7 @@
  * the waveform math tests in `waveform.test.ts`. Everything here is pure math
  * or logic and fully testable headless.
  */
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

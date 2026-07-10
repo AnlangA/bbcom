@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { runModbusReadBatches, runModbusWriteBatches } from '../../src/lib/modbus';
 import type { ModbusReadBatch, ModbusWriteBatch } from '../../src/lib/modbus';

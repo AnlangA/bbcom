@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { clampDelayMs, useMacroRunner } from '../../src/composables/useMacroRunner.ts';
 import type { Macro } from '../../src/types.ts';

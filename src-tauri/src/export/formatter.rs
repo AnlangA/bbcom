@@ -4,28 +4,6 @@ use crate::models::errors::AppError;
 use crate::utils::hex;
 use crate::utils::timestamp;
 use std::io::Write as _;
-use tokio::fs::File;
-use tokio::io::{AsyncWriteExt, BufWriter};
-
-pub async fn export(
-    frames: &[DataFrame],
-    format: &ExportFormat,
-    path: &str,
-) -> Result<(), AppError> {
-    let mut writer = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
-    let mut buf = Vec::with_capacity(64 * 1024);
-    append_header(&mut buf, *format);
-    if !buf.is_empty() {
-        writer.write_all(&buf).await.map_err(AppError::from)?;
-    }
-    for chunk in frames.chunks(256) {
-        buf.clear();
-        append_frames(&mut buf, chunk, *format, path)?;
-        writer.write_all(&buf).await.map_err(AppError::from)?;
-    }
-    writer.flush().await.map_err(AppError::from)?;
-    Ok(())
-}
 
 pub(crate) fn append_header(buf: &mut Vec<u8>, format: ExportFormat) {
     if format == ExportFormat::Csv {
@@ -48,6 +26,7 @@ pub(crate) fn append_frames(
                     message: e.to_string(),
                     format: format.label().to_string(),
                     path: path.to_string(),
+                    kind: std::io::ErrorKind::InvalidData,
                 })?;
                 buf.push(b'\n');
             }
@@ -82,6 +61,7 @@ fn encode_error(error: std::io::Error, format: ExportFormat, path: &str) -> AppE
         message: error.to_string(),
         format: format.label().to_string(),
         path: path.to_string(),
+        kind: error.kind(),
     }
 }
 
@@ -103,13 +83,6 @@ fn data_to_string(data: &[u8], ascii: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // Monotonic counter guarantees unique temp paths even when two parallel tests
-    // sample the same nanosecond timestamp (e.g. exports_txt_hex / exports_txt_ascii).
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn frames() -> Vec<DataFrame> {
         vec![
@@ -128,41 +101,24 @@ mod tests {
         ]
     }
 
-    fn temp_path(ext: &str) -> String {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "bbcom-export-{}-{nanos}-{counter}.{ext}",
-            std::process::id()
-        ));
-        path.to_string_lossy().into_owned()
+    fn encoded(format: ExportFormat) -> Vec<u8> {
+        let mut output = Vec::new();
+        append_header(&mut output, format);
+        append_frames(&mut output, &frames(), format, "backend-owned-target").unwrap();
+        output
     }
 
-    #[tokio::test]
-    async fn exports_txt_hex() {
-        let path = temp_path("txt");
-        export(&frames(), &ExportFormat::TxtHex, &path)
-            .await
-            .unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        fs::remove_file(&path).ok();
+    #[test]
+    fn exports_txt_hex() {
+        let content = String::from_utf8(encoded(ExportFormat::TxtHex)).unwrap();
 
         assert!(content.contains("TX | 41 42"));
         assert!(content.contains("RX | 43 44"));
     }
 
-    #[tokio::test]
-    async fn exports_txt_ascii() {
-        let path = temp_path("txt");
-        export(&frames(), &ExportFormat::TxtAscii, &path)
-            .await
-            .unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        fs::remove_file(&path).ok();
+    #[test]
+    fn exports_txt_ascii() {
+        let content = String::from_utf8(encoded(ExportFormat::TxtAscii)).unwrap();
 
         // 0x41/0x42 = "AB", 0x43/0x44 = "CD" — ASCII payload, not hex pairs
         assert!(content.contains("TX | AB"));
@@ -170,39 +126,43 @@ mod tests {
         assert!(!content.contains("TX | 41 42"));
     }
 
-    #[tokio::test]
-    async fn exports_csv() {
-        let path = temp_path("csv");
-        export(&frames(), &ExportFormat::Csv, &path).await.unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        fs::remove_file(&path).ok();
+    #[test]
+    fn exports_csv() {
+        let content = String::from_utf8(encoded(ExportFormat::Csv)).unwrap();
 
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0], "timestamp,direction,data");
         assert!(lines[1].ends_with(",TX,\"41 42\""));
         assert!(lines[2].ends_with(",RX,\"43 44\""));
+
+        let error = encode_error(
+            std::io::Error::new(std::io::ErrorKind::StorageFull, "writer full"),
+            ExportFormat::Csv,
+            "backend-owned-target",
+        );
+        assert!(matches!(
+            error,
+            AppError::ExportError {
+                format,
+                path,
+                kind: std::io::ErrorKind::StorageFull,
+                ..
+            } if format == "csv" && path == "backend-owned-target"
+        ));
     }
 
-    #[tokio::test]
-    async fn exports_jsonl_with_uppercase_direction() {
-        let path = temp_path("jsonl");
-        export(&frames(), &ExportFormat::Jsonl, &path)
-            .await
-            .unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        fs::remove_file(&path).ok();
+    #[test]
+    fn exports_jsonl_with_uppercase_direction() {
+        let content = String::from_utf8(encoded(ExportFormat::Jsonl)).unwrap();
 
         assert!(content.contains("\"direction\":\"TX\""));
         assert!(content.contains("\"direction\":\"RX\""));
     }
 
-    #[tokio::test]
-    async fn exports_bin_concatenated_payloads() {
-        let path = temp_path("bin");
-        export(&frames(), &ExportFormat::Bin, &path).await.unwrap();
-        let content = fs::read(&path).unwrap();
-        fs::remove_file(&path).ok();
+    #[test]
+    fn exports_bin_concatenated_payloads() {
+        let content = encoded(ExportFormat::Bin);
 
         assert_eq!(content, vec![0x41, 0x42, 0x43, 0x44]);
     }
@@ -222,7 +182,9 @@ mod ipc_sim_tests {
     fn frontend_begin_payload(format: &str, token: &str) -> String {
         serde_json::json!({
             "format": format,
-            "token": token
+            "token": token,
+            "expectedFrames": 1,
+            "expectedRawBytes": 5
         })
         .to_string()
     }

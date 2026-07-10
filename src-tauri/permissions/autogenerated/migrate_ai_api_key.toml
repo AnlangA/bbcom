@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-migrate-ai-api-key"
+description = "Enables the migrate_ai_api_key command without any pre-configured scope."
+commands.allow = ["migrate_ai_api_key"]
+
+[[permission]]
+identifier = "deny-migrate-ai-api-key"
+description = "Denies the migrate_ai_api_key command without any pre-configured scope."
+commands.deny = ["migrate_ai_api_key"]

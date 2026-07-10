@@ -4,13 +4,9 @@
   "description": "Least-privilege capabilities for the AI assistant window",
   "windows": ["ai-assistant"],
   "permissions": [
-    "core:default",
-    "core:window:default",
+    "core:event:default",
     "core:window:allow-set-always-on-top",
     "core:window:allow-is-always-on-top",
-    "store:allow-load",
-    "store:allow-get",
-    "store:allow-delete",
-    "store:allow-save"
+    "ai-assistant-commands"
   ]
 }

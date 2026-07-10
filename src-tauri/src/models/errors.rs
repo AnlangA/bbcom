@@ -9,6 +9,8 @@ pub enum AppError {
         message: String,
         format: String,
         path: String,
+        #[serde(skip)]
+        kind: std::io::ErrorKind,
     },
 
     #[error("io error: {message}")]
@@ -23,6 +25,20 @@ pub enum AppError {
 
     #[error("validation error: {message}")]
     ValidationError { message: String, field: String },
+
+    #[error("limit exceeded: {message}")]
+    LimitError {
+        message: String,
+        field: String,
+        limit: usize,
+        actual: usize,
+    },
+
+    #[error("resource busy: {message}")]
+    Busy { message: String },
+
+    #[error("operation timed out: {message}")]
+    Timeout { message: String },
 
     #[error("ai error: {message}")]
     AiError { message: String },

@@ -1,6 +1,4 @@
-import { ref } from 'vue';
-import { SerialPort } from 'tauri-plugin-serialplugin-api';
-import type { WatchHandle } from 'tauri-plugin-serialplugin-api';
+import { onScopeDispose, ref, shallowRef } from 'vue';
 import { useSessionStore } from '../stores/sessions';
 import { useSessionFrames } from './useSessionFrames';
 import { useAutoLog } from './useAutoLog';
@@ -8,27 +6,38 @@ import { encodeUtf8, formatBytes, parseHex } from '../lib/format';
 import { concatUint8Arrays } from '../lib/bytes';
 import { mapDataBits, mapFlowControl, mapParity, mapStopBits } from '../lib/serial-config';
 import { SerialRxQueue } from '../lib/serial-rx-queue';
+import {
+  SerialRxDrainScheduler,
+  SerialUiPublishScheduler,
+  type SerialTimerScheduler,
+} from '../lib/serial-rx-scheduler';
+import {
+  createTauriSerialPort,
+  type SerialPortAdapter,
+  type SerialPortFactory,
+  type SerialWatchHandleAdapter,
+} from '../lib/serial-port-adapter';
+import { SERIAL_WRITE_CLOSE_GRACE_MS, SerialWriteScheduler } from '../lib/serial-write-scheduler';
 import { logger } from '../lib/logger';
 import { t } from '../lib/i18n';
 import { MAX_INPUT_SIZE } from '../types';
-import type { PortConfig, DataFrame } from '../types';
+import type {
+  DataFrame,
+  PortConfig,
+  SerialSendFailureReason,
+  SerialSendResult,
+  SerialWriteOptions,
+} from '../types';
 
 const MAX_RX_QUEUE_BYTES = MAX_INPUT_SIZE * 2;
 const MAX_RX_QUEUE_CHUNKS = 512;
 const RECONNECT_INTERVAL_MS = 1500;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
-/** Result of validating + encoding a send payload before it enters the
- *  serialized write chain. Exported for unit testing. */
+/** Result of validating + encoding a send payload before it enters the queue. */
 export type SendPayloadResult =
   { ok: true; payload: Uint8Array } | { ok: false; reason: 'empty' | 'bad-hex' | 'too-large' };
 
-/**
- * Validate and encode a `send(data, isHex)` call into a binary payload, without
- * touching the port. Returns `ok:false` (with a reason) for empty input,
- * unparseable/empty hex, or payloads exceeding MAX_INPUT_SIZE. Pure — the sole
- * input gate every TX passes before entering the serialized write chain.
- */
 export function buildSendPayload(data: string, isHex: boolean): SendPayloadResult {
   let payload: Uint8Array;
   if (isHex) {
@@ -46,17 +55,60 @@ export function buildSendPayload(data: string, isHex: boolean): SendPayloadResul
   return { ok: true, payload };
 }
 
-interface SerialConnectionOptions {
+export interface SerialConnectionOptions {
   onDisconnect?: () => void;
-  /** Fired once per connection when RX data is first dropped due to overflow. */
+  /** Fired once per connection when RX first overflows. */
   onOverflow?: (totalDroppedBytes: number) => void;
-  /** Polled at disconnect time so the toggle can change live. */
   autoReconnect?: () => boolean;
   onReconnecting?: () => void;
   onReconnected?: () => void;
-  /** Fired for each completed RX frame (after it's added to the store), so
-   *  observers like the trigger engine can react without polling the store. */
   onRxFrame?: (frame: DataFrame) => void;
+}
+
+export interface SerialConnectionDependencies {
+  createPort?: SerialPortFactory;
+  timerScheduler?: SerialTimerScheduler;
+  isDocumentVisible?: () => boolean;
+  writeCloseGraceMs?: number;
+}
+
+interface ConnectionAttempt {
+  generation: number;
+  port: SerialPortAdapter;
+  watch: SerialWatchHandleAdapter | null;
+  scheduler: SerialWriteScheduler | null;
+  committed: boolean;
+  disconnected: boolean;
+}
+
+class StaleConnectionError extends Error {
+  constructor() {
+    super('stale serial connection generation');
+  }
+}
+
+function failedSend(
+  reason: SerialSendFailureReason,
+  requestedBytes: number,
+  error?: unknown,
+): SerialSendResult {
+  return {
+    status: 'rejected',
+    ok: false,
+    requestedBytes,
+    confirmedBytes: 0,
+    bytesWritten: 0,
+    reason,
+    code:
+      reason === 'queue-full'
+        ? 'SERIAL_QUEUE_FULL'
+        : reason === 'not-connected' || reason === 'disconnecting'
+          ? 'SERIAL_DISCONNECTED'
+          : 'INVALID_INPUT',
+    ...(error === undefined
+      ? {}
+      : { error: error instanceof Error ? error.message : String(error) }),
+  };
 }
 
 export function useSerialConnection(
@@ -64,17 +116,19 @@ export function useSerialConnection(
   portName: string,
   config: PortConfig,
   options?: SerialConnectionOptions,
+  dependencies: SerialConnectionDependencies = {},
 ) {
   const sessionStore = useSessionStore();
-  const { addFrame } = useSessionFrames(sessionId);
+  const { addFrame, publishFrames } = useSessionFrames(sessionId);
   const { appendFrame } = useAutoLog();
-  const port = ref<SerialPort | null>(null);
+  const createPort = dependencies.createPort ?? createTauriSerialPort;
+  const closeGraceMs = dependencies.writeCloseGraceMs ?? SERIAL_WRITE_CLOSE_GRACE_MS;
+
+  const port = shallowRef<SerialPortAdapter | null>(null);
   const isConnecting = ref(false);
   const isConnected = ref(false);
   const error = ref<string | null>(null);
-  /** Cumulative RX bytes dropped due to queue overflow for this connection. */
   const totalDroppedBytes = ref(0);
-  /** True while auto-reconnect is cycling through retry attempts. */
   const reconnecting = ref(false);
 
   const rxQueue = new SerialRxQueue({
@@ -82,125 +136,196 @@ export function useSerialConnection(
     maxChunks: MAX_RX_QUEUE_CHUNKS,
   });
   let rxOverflowErrorMessage: string | null = null;
-  let rafId: number | null = null;
-  let watchHandle: WatchHandle | null = null;
 
-  // Reconnect state
-  let intentionalClose = false;
+  const isDocumentVisible =
+    dependencies.isDocumentVisible ??
+    (() => typeof document === 'undefined' || document.visibilityState !== 'hidden');
+  const uiPublisher = new SerialUiPublishScheduler(
+    () => {
+      sessionStore.updateDroppedBytes(sessionId, totalDroppedBytes.value);
+      publishFrames();
+    },
+    isDocumentVisible,
+    dependencies.timerScheduler,
+  );
+  const rxDrain = new SerialRxDrainScheduler(
+    () => ({ bytes: rxQueue.pendingBytes, chunks: rxQueue.pendingChunks }),
+    flushQueue,
+    dependencies.timerScheduler,
+  );
+
+  let activeConnection: ConnectionAttempt | null = null;
+  let pendingAttempt: ConnectionAttempt | null = null;
+  let connectionGeneration = 0;
+  let intentionalClose = true;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectAttempts = 0;
+  let breakInFlight = false;
 
-  // Write serializer: chains every TX through a single promise so concurrent
-  // callers (cyclic loop, quick-command, history-resend, AI-fill) can never
-  // overlap writeBinary on the same port. The cyclic sender drives an async
-  // handler from setInterval without awaiting it; if a write IPC round-trip
-  // ever exceeds the loop interval, unserialized writes would interleave on
-  // the driver — undefined behavior on most serial drivers. Chaining costs one
-  // microtask and serializes strictly in call order.
-  let writeChain: Promise<boolean> = Promise.resolve(true);
-
-  // Raw-bytes observers: protocol engines (e.g. the Modbus master) need
-  // byte-accurate RX *before* the RAF coalesces chunks into display frames,
-  // because they must verify CRCs and correlate responses to their own
-  // requests. Each observer receives the exact bytes the plugin delivered.
   const rawByteObservers = new Set<(bytes: Uint8Array) => void>();
 
-  /** Open the port, start listening, apply handshake lines, (re)register the data listener. */
-  async function openConnection() {
-    const p = new SerialPort({
-      path: portName,
-      baudRate: config.baudRate,
-      dataBits: mapDataBits(config.dataBits),
-      stopBits: mapStopBits(config.stopBits),
-      parity: mapParity(config.parity),
-      flowControl: mapFlowControl(config.flowControl),
-    });
-    await p.open();
-    port.value = p;
-    if (watchHandle) {
-      await watchHandle.unwatch();
-      watchHandle = null;
+  const onVisibilityChange = () => uiPublisher.visibilityChanged();
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+  onScopeDispose(() => {
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     }
-    // v3 exposes one channel-backed watch for data, errors, and disconnects.
-    // Binary mode avoids a lossy text decode/re-encode round trip.
-    watchHandle = await p.watch(
-      {
-        onData(data) {
-          enqueueReceivedBytes(data instanceof Uint8Array ? data : encodeUtf8(data));
-        },
-        onDisconnect: onDisconnectEvent,
-        onError(message) {
-          logger.warn('serial watch error for', portName, message);
-        },
-      },
-      { decode: false },
-    );
-    // Apply DTR/RTS handshake levels — needed for Arduino auto-reset, ESP32
-    // boot-mode entry, modems, etc. Some drivers reject these writes; ignore
-    // so the connection itself still succeeds.
-    try {
-      await p.writeDataTerminalReady(config.dtr);
-      await p.writeRequestToSend(config.rts);
-    } catch {
-      // control-signal write unsupported on this driver — non-fatal
+    void stop();
+  });
+
+  function assertCurrent(attempt: ConnectionAttempt): void {
+    if (attempt.generation !== connectionGeneration || intentionalClose || attempt.disconnected) {
+      throw new StaleConnectionError();
     }
   }
 
-  async function start() {
+  async function openConnection(generation: number): Promise<ConnectionAttempt> {
+    const attempt: ConnectionAttempt = {
+      generation,
+      port: createPort({
+        path: portName,
+        baudRate: config.baudRate,
+        dataBits: mapDataBits(config.dataBits),
+        stopBits: mapStopBits(config.stopBits),
+        parity: mapParity(config.parity),
+        flowControl: mapFlowControl(config.flowControl),
+      }),
+      watch: null,
+      scheduler: null,
+      committed: false,
+      disconnected: false,
+    };
+    pendingAttempt = attempt;
+
+    try {
+      await attempt.port.open();
+      assertCurrent(attempt);
+      attempt.watch = await attempt.port.watch(
+        {
+          onData(data) {
+            if (attempt.generation !== connectionGeneration || attempt.disconnected) return;
+            enqueueReceivedBytes(data instanceof Uint8Array ? data : encodeUtf8(data));
+          },
+          onDisconnect() {
+            attempt.disconnected = true;
+            void handleDisconnect(attempt);
+          },
+          onError(message) {
+            if (attempt.generation === connectionGeneration) {
+              logger.warn('serial watch error for', portName, message);
+            }
+          },
+        },
+        { decode: false },
+      );
+      assertCurrent(attempt);
+
+      // Unsupported control lines are non-fatal, but a generation change at
+      // either await boundary still invalidates the whole transaction.
+      try {
+        await attempt.port.writeDataTerminalReady(config.dtr);
+      } catch (controlError) {
+        assertCurrent(attempt);
+        logger.debug('serial DTR write unsupported for', portName, controlError);
+      }
+      assertCurrent(attempt);
+      try {
+        await attempt.port.writeRequestToSend(config.rts);
+      } catch (controlError) {
+        assertCurrent(attempt);
+        logger.debug('serial RTS write unsupported for', portName, controlError);
+      }
+      assertCurrent(attempt);
+
+      attempt.scheduler = new SerialWriteScheduler((chunk) => attempt.port.writeBinary(chunk));
+      attempt.committed = true;
+      activeConnection = attempt;
+      port.value = attempt.port;
+      return attempt;
+    } catch (openError) {
+      await cleanupAttempt(attempt);
+      throw openError;
+    } finally {
+      if (pendingAttempt === attempt) pendingAttempt = null;
+    }
+  }
+
+  async function start(): Promise<boolean> {
+    const generation = ++connectionGeneration;
+    intentionalClose = false;
     isConnecting.value = true;
     error.value = null;
-    totalDroppedBytes.value = 0;
-    intentionalClose = false;
-    reconnecting.value = false;
     stopReconnect();
-    if (rafId) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
-    }
+
+    flushRxAndPublish();
+    rxDrain.cancel();
+    uiPublisher.cancel();
     rxQueue.reset();
     rxOverflowErrorMessage = null;
-    // Reset the write chain so a new connection starts from a settled state.
-    writeChain = Promise.resolve(true);
-    await closePortSafely();
+    totalDroppedBytes.value = 0;
+    sessionStore.updateDroppedBytes(sessionId, 0);
+
+    const supersededAttempt = pendingAttempt;
+    if (supersededAttempt) requestCandidateClose(supersededAttempt);
+    const previous = detachActiveConnection();
+    if (previous) await shutdownConnection(previous, closeGraceMs);
+    if (generation !== connectionGeneration || intentionalClose)
+      return finishStart(generation, false);
+
     try {
-      await openConnection();
-    } catch (e) {
-      await closePortSafely();
-      logger.warn('serial open failed for', portName, e);
-      error.value = String(e);
-      isConnecting.value = false;
-      return false;
-    } finally {
-      isConnecting.value = false;
+      await openConnection(generation);
+      if (generation !== connectionGeneration || intentionalClose) {
+        const stale = detachActiveConnection();
+        if (stale) await shutdownConnection(stale, 0);
+        return finishStart(generation, false);
+      }
+      isConnected.value = true;
+      sessionStore.setConnected(sessionId, true);
+      return finishStart(generation, true);
+    } catch (openError) {
+      if (generation === connectionGeneration && !intentionalClose) {
+        if (!(openError instanceof StaleConnectionError)) {
+          logger.warn('serial open failed for', portName, openError);
+          error.value = String(openError);
+        }
+        isConnected.value = false;
+        sessionStore.setConnected(sessionId, false);
+      }
+      return finishStart(generation, false);
     }
-
-    isConnected.value = true;
-    sessionStore.setConnected(sessionId, true);
-
-    return true;
   }
 
-  function onDisconnectEvent() {
-    if (intentionalClose) {
-      // Planned close via stop() — the caller already knows; just sync state.
-      isConnected.value = false;
-      sessionStore.setConnected(sessionId, false);
-      return;
-    }
-    // Unplanned disconnect (cable pulled, device reset, …)
+  function finishStart(generation: number, result: boolean): boolean {
+    if (generation === connectionGeneration) isConnecting.value = false;
+    return result;
+  }
+
+  async function handleDisconnect(attempt: ConnectionAttempt): Promise<void> {
+    if (!attempt.committed) return;
+    if (attempt.generation !== connectionGeneration || activeConnection !== attempt) return;
+
+    // Invalidate every callback and queued lifecycle continuation from this
+    // connection before exposing the disconnected state.
+    connectionGeneration += 1;
+    activeConnection = null;
+    port.value = null;
     isConnected.value = false;
     sessionStore.setConnected(sessionId, false);
-    watchHandle = null;
-    port.value = null;
+    flushRxAndPublish();
+    await shutdownConnection(attempt, 0);
 
+    if (intentionalClose) return;
     if (options?.autoReconnect?.()) {
-      startReconnect();
+      if (reconnecting.value) scheduleReconnect();
+      else startReconnect();
     } else {
       options?.onDisconnect?.();
     }
   }
 
-  function startReconnect() {
+  function startReconnect(): void {
     if (reconnecting.value || intentionalClose) return;
     reconnecting.value = true;
     reconnectAttempts = 0;
@@ -208,12 +333,12 @@ export function useSerialConnection(
     scheduleReconnect();
   }
 
-  function scheduleReconnect() {
+  function scheduleReconnect(): void {
     if (reconnectTimer || intentionalClose) return;
     reconnectTimer = setTimeout(attemptReconnect, RECONNECT_INTERVAL_MS);
   }
 
-  async function attemptReconnect() {
+  async function attemptReconnect(): Promise<void> {
     reconnectTimer = null;
     if (intentionalClose) {
       reconnecting.value = false;
@@ -222,16 +347,16 @@ export function useSerialConnection(
     reconnectAttempts += 1;
     if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
       reconnecting.value = false;
-      // Give up — treat as a normal disconnect so the UI reflects it.
       options?.onDisconnect?.();
       return;
     }
+
+    const generation = ++connectionGeneration;
     try {
-      await openConnection();
-      if (intentionalClose) {
-        // The user disconnected while we were opening — close what we got.
-        await closePortSafely();
-        reconnecting.value = false;
+      await openConnection(generation);
+      if (generation !== connectionGeneration || intentionalClose) {
+        const stale = detachActiveConnection();
+        if (stale) await shutdownConnection(stale, 0);
         return;
       }
       reconnecting.value = false;
@@ -241,11 +366,11 @@ export function useSerialConnection(
       sessionStore.setConnected(sessionId, true);
       options?.onReconnected?.();
     } catch {
-      if (!intentionalClose) scheduleReconnect();
+      if (generation === connectionGeneration && !intentionalClose) scheduleReconnect();
     }
   }
 
-  function stopReconnect() {
+  function stopReconnect(): void {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -253,21 +378,13 @@ export function useSerialConnection(
     reconnecting.value = false;
   }
 
-  function enqueueReceivedBytes(bytes: Uint8Array) {
-    // Notify raw-bytes observers first — they need the exact chunk (incl. CRC
-    // tails and inter-chunk boundaries) before any queue trimming/coalescing.
-    if (rawByteObservers.size > 0 && bytes.length > 0) {
-      for (const obs of rawByteObservers) obs(bytes);
-    }
+  function enqueueReceivedBytes(bytes: Uint8Array): void {
+    if (bytes.length === 0) return;
+    for (const observer of rawByteObservers) observer(bytes);
 
     const result = rxQueue.enqueue(bytes);
     totalDroppedBytes.value = result.totalDroppedBytes;
-
-    if (result.overflowStarted) {
-      // Notify once per connection so silent data loss is at least surfaced
-      // once; the running total stays visible in the toolbar afterwards.
-      options?.onOverflow?.(result.totalDroppedBytes);
-    }
+    if (result.overflowStarted) options?.onOverflow?.(result.totalDroppedBytes);
 
     if (result.droppedSinceDrain > 0) {
       rxOverflowErrorMessage = t('serial.error.rxOverflow', {
@@ -275,168 +392,141 @@ export function useSerialConnection(
       });
       error.value = rxOverflowErrorMessage;
     } else if (rxOverflowErrorMessage && error.value === rxOverflowErrorMessage) {
-      // Buffer has recovered — clear a stale overflow message, but leave any
-      // connection-level error untouched.
       error.value = null;
       rxOverflowErrorMessage = null;
     }
-
-    if (!rafId && result.pendingChunks > 0) {
-      rafId = requestAnimationFrame(flushQueue);
-    }
+    rxDrain.notify();
   }
 
-  function flushQueue() {
-    if (rxQueue.pendingChunks === 0) {
-      rafId = null;
-      return;
-    }
+  function flushQueue(): void {
+    if (rxQueue.pendingChunks === 0) return;
     const { chunks, byteLength } = rxQueue.drain();
-    rafId = null;
-
-    const frame = addFrame({
-      direction: 'RX',
-      data: concatUint8Arrays(chunks, byteLength),
-    });
-    if (frame) {
-      appendFrame(sessionId, frame);
-      // Notify observers (e.g. the trigger engine) of the completed RX frame.
-      // Fired after the frame is stored so a trigger response re-enters the
-      // same single-flight write serializer in the right order.
-      options?.onRxFrame?.(frame);
-    }
+    const frame = addFrame(
+      { direction: 'RX', data: concatUint8Arrays(chunks, byteLength) },
+      { publish: false },
+    );
+    if (!frame) return;
+    appendFrame(sessionId, frame);
+    options?.onRxFrame?.(frame);
+    uiPublisher.markDirty();
   }
 
-  async function doSend(data: string, isHex: boolean): Promise<boolean> {
-    if (!port.value) return false;
+  function flushRxAndPublish(): void {
+    rxDrain.flushNow();
+    uiPublisher.flushNow();
+  }
 
+  async function send(
+    data: string,
+    isHex: boolean,
+    writeOptions?: SerialWriteOptions,
+  ): Promise<SerialSendResult> {
     const built = buildSendPayload(data, isHex);
-    if (!built.ok) return false;
-    const payload = built.payload;
-
-    try {
-      // writeBinary accepts Uint8Array directly and converts internally, so no
-      // need to box the payload into a regular array here (avoids a redundant copy).
-      await port.value.writeBinary(payload);
-    } catch (e) {
-      logger.warn('serial write failed on', portName, e);
-      return false;
-    }
-
-    const txFrame = addFrame({
-      direction: 'TX',
-      data: payload,
-    });
-    if (txFrame) appendFrame(sessionId, txFrame);
-    return true;
+    if (!built.ok) return failedSend(built.reason, 0);
+    return enqueuePayload(built.payload, writeOptions);
   }
 
-  async function send(data: string, isHex: boolean): Promise<boolean> {
-    // Chain onto the in-flight write so sends never overlap. Each caller still
-    // observes its own boolean result; only the ordering is serialized.
-    const result = writeChain.then(() => doSend(data, isHex));
-    writeChain = result.catch(() => true);
+  async function sendBytes(
+    payload: Uint8Array,
+    writeOptions?: SerialWriteOptions,
+  ): Promise<SerialSendResult> {
+    if (payload.length === 0) return failedSend('empty', 0);
+    if (payload.length > MAX_INPUT_SIZE) return failedSend('too-large', payload.length);
+    return enqueuePayload(payload, writeOptions);
+  }
+
+  async function enqueuePayload(
+    payload: Uint8Array,
+    writeOptions?: SerialWriteOptions,
+  ): Promise<SerialSendResult> {
+    const connection = activeConnection;
+    if (!connection?.scheduler || !isConnected.value) {
+      return failedSend('not-connected', payload.length);
+    }
+    const result = await connection.scheduler.enqueue(payload, writeOptions);
+    if (result.bytesWritten > 0) {
+      const txFrame = addFrame({
+        direction: 'TX',
+        data: payload.slice(0, result.bytesWritten),
+        txStatus: result.status === 'complete' ? 'complete' : 'partial-unknown',
+        requestedBytes: result.requestedBytes,
+      });
+      if (txFrame) appendFrame(sessionId, txFrame);
+    }
+    if (!result.ok && result.reason === 'write-error') {
+      logger.warn('serial write failed on', portName, result.error ?? result.reason);
+    }
     return result;
   }
 
-  /**
-   * Send a pre-built binary payload (e.g. a Modbus RTU frame) through the same
-   * serialized write path as {@link send}. This is the safe TX entry point for
-   * protocol engines that must emit raw bytes without a hex/text round-trip and
-   * must not overlap cyclic sends, triggers, or quick commands.
-   */
-  async function sendBytes(payload: Uint8Array): Promise<boolean> {
-    if (payload.length === 0) return false;
-    const result = writeChain.then(() => doSendBytes(payload));
-    writeChain = result.catch(() => true);
-    return result;
+  function rawBytes(callback: (bytes: Uint8Array) => void): () => void {
+    rawByteObservers.add(callback);
+    return () => rawByteObservers.delete(callback);
   }
 
-  async function doSendBytes(payload: Uint8Array): Promise<boolean> {
-    if (!port.value) return false;
-    if (payload.length > MAX_INPUT_SIZE) return false;
-    try {
-      await port.value.writeBinary(payload);
-    } catch (e) {
-      logger.warn('serial writeBinary failed on', portName, e);
-      return false;
-    }
-    const txFrame = addFrame({ direction: 'TX', data: payload });
-    if (txFrame) appendFrame(sessionId, txFrame);
-    return true;
-  }
-
-  /**
-   * Subscribe to raw RX bytes (each chunk as delivered by the plugin, before
-   * RAF coalescing). Returns an unlisten function. Protocol engines use this to
-   * verify CRCs and correlate responses to their own requests; UI code should
-   * use {@link SerialConnectionOptions.onRxFrame} for completed display frames.
-   */
-  function rawBytes(cb: (bytes: Uint8Array) => void): () => void {
-    rawByteObservers.add(cb);
-    return () => {
-      rawByteObservers.delete(cb);
-    };
-  }
-
-  /**
-   * Pulse the serial BREAK line (line held to SPACE) for ~250ms. Required for
-   * Arduino auto-reset into the bootloader and for forcing ESP32/ESP8266 into
-   * download mode (often combined with DTR/RTS). Idempotent: a second call
-   * while one is in flight is ignored. Non-fatal if the driver rejects it
-   * (some USB-CDC adapters don't implement break).
-   */
-  let breakInFlight = false;
   async function sendBreak(durationMs = 250): Promise<boolean> {
-    if (breakInFlight || !port.value) return false;
+    const connection = activeConnection;
+    if (breakInFlight || !connection) return false;
     breakInFlight = true;
     try {
-      await port.value.setBreak();
-      await new Promise((r) => setTimeout(r, durationMs));
-      await port.value.clearBreak();
-      return true;
-    } catch (e) {
-      logger.warn('serial setBreak/clearBreak failed on', portName, e);
+      await connection.port.setBreak();
+      await new Promise((resolve) => setTimeout(resolve, durationMs));
+      await connection.port.clearBreak();
+      return connection === activeConnection;
+    } catch (breakError) {
+      logger.warn('serial setBreak/clearBreak failed on', portName, breakError);
       return false;
     } finally {
       breakInFlight = false;
     }
   }
 
-  async function closePortSafely() {
-    const activeWatch = watchHandle;
-    watchHandle = null;
-    if (activeWatch) {
-      try {
-        await activeWatch.unwatch();
-      } catch {
-        // watch may already be gone after an unplanned disconnect
-      }
-    }
-    const activePort = port.value;
+  function detachActiveConnection(): ConnectionAttempt | null {
+    const connection = activeConnection;
+    activeConnection = null;
     port.value = null;
-    if (activePort) {
-      try {
-        await activePort.close();
-      } catch {
-        // ignore — port may already be closed
-      }
-    }
+    return connection;
   }
 
-  async function stop() {
+  function requestCandidateClose(attempt: ConnectionAttempt): void {
+    void attempt.port.close().catch(() => undefined);
+  }
+
+  async function cleanupAttempt(attempt: ConnectionAttempt): Promise<void> {
+    const watch = attempt.watch;
+    attempt.watch = null;
+    await Promise.allSettled([watch?.unwatch() ?? Promise.resolve(), attempt.port.close()]);
+  }
+
+  async function shutdownConnection(connection: ConnectionAttempt, graceMs: number): Promise<void> {
+    const writeShutdown = await connection.scheduler?.shutdown(graceMs);
+    if (writeShutdown?.timedOut) {
+      // A native write can remain pending after its logical task has been
+      // rejected.  Serial plugin v3 provides a path-scoped hard close for
+      // that case; always continue with watch/port cleanup if it fails.
+      await connection.port.forceClose?.().catch(() => undefined);
+    }
+    await cleanupAttempt(connection);
+  }
+
+  async function stop(): Promise<void> {
+    const generation = ++connectionGeneration;
     intentionalClose = true;
     stopReconnect();
-    if (rafId) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
-    }
+    isConnecting.value = false;
+
+    const opening = pendingAttempt;
+    if (opening) requestCandidateClose(opening);
+    const connection = detachActiveConnection();
+
+    flushRxAndPublish();
+    rxDrain.cancel();
+    uiPublisher.cancel();
     rxQueue.clearPending();
     error.value = null;
-    // Drain any in-flight write before tearing the port down, so a final
-    // queued TX (e.g. the last tick of a cyclic send) is not cut off mid-write.
-    await writeChain.catch(() => undefined);
-    await closePortSafely();
+
+    if (connection) await shutdownConnection(connection, closeGraceMs);
+    if (generation !== connectionGeneration) return;
     isConnected.value = false;
     sessionStore.setConnected(sessionId, false);
   }

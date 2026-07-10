@@ -4,8 +4,15 @@ import type { DataFrame } from '../types';
 export function useSessionFrames(sessionId: string) {
   const sessionStore = useSessionStore();
 
-  function addFrame(frame: Omit<DataFrame, 'id' | 'timestamp'>): DataFrame | undefined {
-    return sessionStore.addFrame(sessionId, frame);
+  function addFrame(
+    frame: Omit<DataFrame, 'id' | 'timestamp'>,
+    options?: { publish?: boolean },
+  ): DataFrame | undefined {
+    return sessionStore.addFrame(sessionId, frame, options);
+  }
+
+  function publishFrames() {
+    sessionStore.publishSessionFrames(sessionId);
   }
 
   function clearFrames() {
@@ -14,6 +21,7 @@ export function useSessionFrames(sessionId: string) {
 
   return {
     addFrame,
+    publishFrames,
     clearFrames,
   };
 }

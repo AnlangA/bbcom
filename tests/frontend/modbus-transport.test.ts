@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   frameRequest,
@@ -8,7 +8,6 @@ import {
   scanResponse,
   writeSingleRegisterRequest,
   writeMultipleRegistersRequest,
-  type ModbusTransport,
 } from '../../src/lib/modbus';
 
 function asString(u: Uint8Array): string {
