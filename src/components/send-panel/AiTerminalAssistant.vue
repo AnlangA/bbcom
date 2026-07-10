@@ -65,7 +65,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { NButton, NInput, NSelect, NTag, useMessage } from 'naive-ui';
-import { Copy, SendHorizontal, Terminal, WandSparkles } from 'lucide-vue-next';
+import { Copy, SendHorizontal, Terminal, WandSparkles } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
 import { getAiErrorMessage } from '../../lib/ai-error';
 import { terminalAiAssist, type TerminalAiResponse } from '../../lib/ipc';

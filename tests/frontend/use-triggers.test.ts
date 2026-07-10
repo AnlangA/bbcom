@@ -56,9 +56,7 @@ function hexTrigger(
 
 test('useTriggers: feedFrame ignores TX frames', async () => {
   const sent: Array<{ data: string; isHex: boolean }> = [];
-  const triggers = ref<Trigger[]>([
-    textTrigger('t1', 'login:', 'root\n'),
-  ]);
+  const triggers = ref<Trigger[]>([textTrigger('t1', 'login:', 'root\n')]);
   const { feedFrame } = useTriggers({
     triggers,
     send: async (data, isHex) => {
@@ -205,7 +203,11 @@ test('useTriggers: reset clears matcher state', async () => {
   reset();
   await feedFrame(rxFrame(toBytes('K'), 2));
 
-  assert.equal(sent.length, 0, 'reset drops the partial match so the split pattern no longer fires');
+  assert.equal(
+    sent.length,
+    0,
+    'reset drops the partial match so the split pattern no longer fires',
+  );
 });
 
 function toBytes(text: string): Uint8Array {

@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "*"
+      - '*'
 
 permissions:
   contents: write
@@ -21,13 +21,13 @@ jobs:
             artifact_name: bbcom-windows-x64
             binary_name: bbcom.exe
             binary_path: target/release/bbcom.exe
-            rust_target: ""
+            rust_target: ''
           - name: Linux x64
             os: ubuntu-latest
             artifact_name: bbcom-linux-x64
             binary_name: bbcom
             binary_path: target/release/bbcom
-            rust_target: ""
+            rust_target: ''
           - name: macOS Apple Silicon
             os: macos-14
             artifact_name: bbcom-macos-arm64

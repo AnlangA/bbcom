@@ -32,42 +32,28 @@ const SID = 'sess-1';
 
 test('applyAiSessionUpdate: routes setTerminalAiModel to the model setter', () => {
   const store = recordingStore();
-  applyAiSessionUpdate(
-    { sessionId: SID, action: 'setTerminalAiModel', value: 'glm-4.6' },
-    store,
-  );
-  assert.deepEqual(store.calls, [
-    { method: 'setTerminalAiModel', id: SID, value: 'glm-4.6' },
-  ]);
+  applyAiSessionUpdate({ sessionId: SID, action: 'setTerminalAiModel', value: 'glm-4.6' }, store);
+  assert.deepEqual(store.calls, [{ method: 'setTerminalAiModel', id: SID, value: 'glm-4.6' }]);
 });
 
 test('applyAiSessionUpdate: routes setLogAiFrameLimit and coerces value to a number', () => {
   const store = recordingStore();
   // The bridge receives numbers over IPC as plain JSON; ensure Number() coercion holds.
-  applyAiSessionUpdate(
-    { sessionId: SID, action: 'setLogAiFrameLimit', value: '500' },
-    store,
-  );
-  assert.deepEqual(store.calls, [
-    { method: 'setLogAiFrameLimit', id: SID, value: 500 },
-  ]);
+  applyAiSessionUpdate({ sessionId: SID, action: 'setLogAiFrameLimit', value: '500' }, store);
+  assert.deepEqual(store.calls, [{ method: 'setLogAiFrameLimit', id: SID, value: 500 }]);
 });
 
 test('applyAiSessionUpdate: routes addLogAiMessage with the message payload', () => {
   const store = recordingStore();
   const msg = { role: 'user', content: 'summarize' };
   applyAiSessionUpdate({ sessionId: SID, action: 'addLogAiMessage', value: msg }, store);
-  assert.deepEqual(store.calls, [
-    { method: 'addLogAiMessage', id: SID, value: msg },
-  ]);
+  assert.deepEqual(store.calls, [{ method: 'addLogAiMessage', id: SID, value: msg }]);
 });
 
 test('applyAiSessionUpdate: routes clearLogAiMessages', () => {
   const store = recordingStore();
   applyAiSessionUpdate({ sessionId: SID, action: 'clearLogAiMessages', value: null }, store);
-  assert.deepEqual(store.calls, [
-    { method: 'clearLogAiMessages', id: SID, value: undefined },
-  ]);
+  assert.deepEqual(store.calls, [{ method: 'clearLogAiMessages', id: SID, value: undefined }]);
 });
 
 test('applyAiSessionUpdate: routes every supported action exactly once per event', () => {
@@ -86,9 +72,6 @@ test('applyAiSessionUpdate: routes every supported action exactly once per event
 
 test('applyAiSessionUpdate: unknown actions are a no-op (no throw, no store mutation)', () => {
   const store = recordingStore();
-  applyAiSessionUpdate(
-    { sessionId: SID, action: 'totallyUnknown', value: 42 },
-    store,
-  );
+  applyAiSessionUpdate({ sessionId: SID, action: 'totallyUnknown', value: 42 }, store);
   assert.deepEqual(store.calls, [], 'unknown action ignored');
 });

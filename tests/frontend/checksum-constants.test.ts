@@ -16,10 +16,7 @@ test('checksum byte lengths match the width each algorithm appends', () => {
 test('checksum option sets stay consistent', () => {
   // The "with none" list must be the base list plus a leading 'none' option.
   assert.equal(checksumAlgoOptionsWithNone[0].value, 'none');
-  assert.equal(
-    checksumAlgoOptionsWithNone.length,
-    checksumOptions.length + 1,
-  );
+  assert.equal(checksumAlgoOptionsWithNone.length, checksumOptions.length + 1);
   // Every algorithm in the options has a known byte length.
   for (const opt of checksumOptions) {
     assert.ok(CHECKSUM_BYTE_LENGTH[opt.value] > 0);

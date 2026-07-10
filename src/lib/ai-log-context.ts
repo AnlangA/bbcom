@@ -14,36 +14,58 @@ export interface LogAiContextResult {
 export function buildLogAiContext(session: SerialSession): LogAiContextResult {
   const mode = session.logAiContextMode;
   const charLimit = mode === 'full-capped' ? FULL_CHAR_LIMIT : LATEST_CHAR_LIMIT;
-  const frames = selectFrames(session.frames, mode, session.logAiFrameLimit);
-  const lines = frames.map(formatLogFrame);
-  const joined = lines.join('\n');
+  const frameStart = selectedFrameStart(session.frames.length, mode, session.logAiFrameLimit);
+  const frameCount = session.frames.length - frameStart;
+  const linesFromEnd: string[] = [];
+  let joinedLength = 0;
+  let frameIndex = session.frames.length - 1;
+
+  // The context always keeps the newest characters. Walk backwards so older
+  // frames are never decoded/formatted once the character budget is covered.
+  // Lines are reversed once at the end to restore chronological output order.
+  for (; frameIndex >= frameStart; frameIndex -= 1) {
+    const line = formatLogFrame(session.frames[frameIndex]);
+    joinedLength += line.length + (linesFromEnd.length > 0 ? 1 : 0);
+    linesFromEnd.push(line);
+    if (joinedLength >= charLimit) {
+      frameIndex -= 1;
+      break;
+    }
+  }
+
+  const joined = linesFromEnd.reverse().join('\n');
   const trimmed = trimStartToLimit(joined, charLimit);
-  const truncated = frames.length < session.frames.length || trimmed.length < joined.length;
+  const selectionTruncated = frameStart > 0;
+  const budgetTruncated = frameIndex >= frameStart || trimmed.length < joined.length;
 
   return {
     text: trimmed,
-    truncated,
-    frameCount: frames.length,
+    truncated: selectionTruncated || budgetTruncated,
+    frameCount,
     charLimit,
   };
 }
 
-function selectFrames(
-  frames: DataFrame[],
+function selectedFrameStart(
+  frameCount: number,
   mode: LogAiContextMode,
   frameLimit: number,
-): DataFrame[] {
-  if (mode === 'latest-n-frames') {
-    if (frameLimit <= 0) return [];
-    return frames.slice(-frameLimit);
-  }
-  return frames;
+): number {
+  if (mode !== 'latest-n-frames') return 0;
+  if (frameLimit <= 0) return frameCount;
+  // Match Array#slice coercion used by the previous implementation for the
+  // defensive NaN/Infinity/fractional cases, while avoiding a tail allocation.
+  if (!Number.isFinite(frameLimit)) return 0;
+  const normalizedLimit = Math.trunc(frameLimit);
+  if (normalizedLimit === 0) return 0;
+  return Math.max(0, frameCount - normalizedLimit);
 }
 
 function formatLogFrame(frame: DataFrame): string {
   const text = sanitizeText(formatUtf8(frame.data));
-  const hex = formatHex(frame.data);
-  const payload = isReadable(text) ? `UTF8: ${text}` : `HEX: ${hex}`;
+  // HEX formatting is substantially more expensive for binary payloads. Only
+  // produce it when the UTF-8 readability check says it will actually be used.
+  const payload = isReadable(text) ? `UTF8: ${text}` : `HEX: ${formatHex(frame.data)}`;
   return `[${formatTimestamp(frame.timestamp)}] ${frame.direction} ${payload}`;
 }
 

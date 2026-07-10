@@ -96,7 +96,7 @@
 
 <script setup lang="ts">
 import { NCheckbox, NInput, NInputNumber, NSelect } from 'naive-ui';
-import { Binary, X } from 'lucide-vue-next';
+import { Binary, X } from '@lucide/vue';
 import { t } from '../../lib/i18n';
 
 defineProps<{

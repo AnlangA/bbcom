@@ -42,7 +42,7 @@
 
 <script setup lang="ts">
 import { NInput } from 'naive-ui';
-import { Search } from 'lucide-vue-next';
+import { Search } from '@lucide/vue';
 import { formatBytes } from '../../lib/format';
 import { t } from '../../lib/i18n';
 

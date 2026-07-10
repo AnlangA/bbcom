@@ -159,7 +159,7 @@
 import { computed, ref, reactive, watch } from 'vue';
 import { NSelect, NButton, NInput, NSwitch } from 'naive-ui';
 import type { SelectOption } from 'naive-ui';
-import { Cable, ChevronRight, Hash, Plus, RefreshCw, Settings2 } from 'lucide-vue-next';
+import { Cable, ChevronRight, Hash, Plus, RefreshCw, Settings2 } from '@lucide/vue';
 import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
@@ -284,8 +284,7 @@ const checksumByteCount = computed(() => checksumState.value.byteCount);
 const checksumAlgoLabel = computed(
   () =>
     (checksumAlgoOptions.value.find((option) => option.value === checksumAlgo.value)?.label as
-      | string
-      | undefined) ?? checksumAlgo.value,
+      string | undefined) ?? checksumAlgo.value,
 );
 
 watch([checksumInput, checksumAlgo], () => {

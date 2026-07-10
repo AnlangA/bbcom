@@ -135,7 +135,7 @@
 <script setup lang="ts">
 import { ref, computed, shallowReactive } from 'vue';
 import { NInput, NButton, NCheckbox, NInputNumber, useMessage } from 'naive-ui';
-import { Download, Pencil, Play, Plus, Square, Upload, X } from 'lucide-vue-next';
+import { Download, Pencil, Play, Plus, Square, Upload, X } from '@lucide/vue';
 import { useSessionStore } from '../../stores/sessions';
 import { useMacroRunner, type MacroRunResult } from '../../composables/useMacroRunner';
 import {

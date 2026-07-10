@@ -118,9 +118,7 @@
             >
           </div>
         </div>
-        <Transition name="fade-slide" mode="out-in">
-          <SessionView v-if="activeSession" :key="activeSession.id" :session="activeSession" />
-        </Transition>
+        <SessionRuntimeHost :sessions="sessions" :active-session-id="activeSession?.id ?? null" />
       </div>
       <StatusBar :session="activeSession" />
     </main>
@@ -144,11 +142,11 @@ import {
   Plus,
   Settings,
   Sun,
-} from 'lucide-vue-next';
+} from '@lucide/vue';
 import PortSelector from '../port-selector/PortSelector.vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
-import SessionView from '../session/SessionView.vue';
 import StatusBar from '../status-bar/StatusBar.vue';
+import { SessionRuntimeHost } from '../../features/sessions';
 import { useAiWindowState } from '../../composables/useAiWindowState';
 import { useAppShortcuts } from '../../composables/useAppShortcuts';
 import { useSessionActions } from '../../composables/useSessionActions';
@@ -504,23 +502,6 @@ useAppShortcuts({
   font-size: var(--font-size-xs);
   color: var(--text-secondary);
   line-height: 1.4;
-}
-
-.fade-slide-enter-active,
-.fade-slide-leave-active {
-  transition:
-    opacity 150ms ease,
-    transform 150ms ease;
-}
-
-.fade-slide-enter-from {
-  opacity: 0;
-  transform: translateY(8px);
-}
-
-.fade-slide-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
 }
 
 @media (max-width: 760px) {

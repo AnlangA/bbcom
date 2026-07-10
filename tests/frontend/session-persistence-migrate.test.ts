@@ -13,7 +13,10 @@ import {
  * be re-stamped, so a user upgrading the app never loses their session snapshots.
  */
 
-function minimalFile(version: number, overrides: Partial<PersistedSessionsFile> = {}): PersistedSessionsFile {
+function minimalFile(
+  version: number,
+  overrides: Partial<PersistedSessionsFile> = {},
+): PersistedSessionsFile {
   return {
     version,
     activeSessionId: null,
@@ -59,7 +62,11 @@ test('migratePersistedFile: walks every registered step in order', () => {
   current.version = target;
 
   assert.equal(current.version, target, 'chain lands on the new version');
-  assert.equal((current as { marker?: string }).marker, 'v2->v3', 'last step wins, order preserved');
+  assert.equal(
+    (current as { marker?: string }).marker,
+    'v2->v3',
+    'last step wins, order preserved',
+  );
 });
 
 test('MIGRATION_STEPS: registry length matches (current version - 1)', () => {

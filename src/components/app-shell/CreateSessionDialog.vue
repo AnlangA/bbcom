@@ -89,7 +89,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { NForm, NFormItem, NModal, NSelect, NSwitch, NInput, NButton } from 'naive-ui';
-import { BookmarkPlus, Trash2 } from 'lucide-vue-next';
+import { BookmarkPlus, Trash2 } from '@lucide/vue';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';

@@ -121,7 +121,7 @@ import {
   Trash2,
   X,
   Zap,
-} from 'lucide-vue-next';
+} from '@lucide/vue';
 import MacroPanel from './MacroPanel.vue';
 import TriggerPanel from './TriggerPanel.vue';
 import HighlightPanel from './HighlightPanel.vue';

@@ -1,12 +1,15 @@
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
-import App from './App.vue';
-import AiWindow from './AiWindow.vue';
 import './styles/variables.css';
 import './styles/global.css';
 
 const params = new URLSearchParams(window.location.search);
 const isAiWindow = params.get('window') === 'ai';
-const app = createApp(isAiWindow ? AiWindow : App);
+
+const RootComponent = isAiWindow
+  ? (await import('./AiWindow.vue')).default
+  : (await import('./App.vue')).default;
+
+const app = createApp(RootComponent);
 app.use(createPinia());
 app.mount('#app');

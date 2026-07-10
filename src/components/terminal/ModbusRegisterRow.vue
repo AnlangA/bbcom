@@ -158,7 +158,7 @@
 <script setup lang="ts">
 import { computed, shallowReactive } from 'vue';
 import { NCheckbox, NInput, NInputNumber, NSelect } from 'naive-ui';
-import { LineChart, RefreshCw, Send, Trash2 } from 'lucide-vue-next';
+import { LineChart, RefreshCw, Send, Trash2 } from '@lucide/vue';
 import { useSessionStore } from '../../stores/sessions';
 import {
   formatModbusRegisterValue,

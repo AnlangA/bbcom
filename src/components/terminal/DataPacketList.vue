@@ -86,6 +86,7 @@
             row.key,
             row.start,
             row.size,
+            row.contentVersion,
             appStore.displayMode,
             appStore.ansiColorEnabled,
             appStore.showTimestamp,
@@ -120,9 +121,8 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, NSelect, useMessage } from 'naive-ui';
-import { Copy, Search } from 'lucide-vue-next';
+import { Copy, Search } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
-import { useSessionStore } from '../../stores/sessions';
 import { usePacketFilter } from '../../composables/usePacketFilter';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
 import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
@@ -148,14 +148,14 @@ import type { DataFrame, DirectionFilter, HighlightRule } from '../../types';
 
 const props = defineProps<{
   frames: DataFrame[];
+  framesVersion: number;
   highlights?: HighlightRule[];
 }>();
 
 const appStore = useAppStore();
-const sessionStore = useSessionStore();
 const message = useMessage();
 const framesRef = toRef(props, 'frames');
-const framesVersion = computed(() => sessionStore.framesVersion);
+const framesVersion = toRef(props, 'framesVersion');
 const totalFrameCount = computed(() => {
   void framesVersion.value;
   return props.frames.length;

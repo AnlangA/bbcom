@@ -8,7 +8,8 @@
 use bbcom::export::formatter;
 use bbcom::models::data_frame::{DataFrame, Direction};
 use bbcom::utils::{checksum, hex};
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use std::hint::black_box;
 
 fn bench_data(size: usize) -> Vec<u8> {
     let mut v = Vec::with_capacity(size);

@@ -6,21 +6,18 @@
 //! correctly — so a renamed field, a changed serde case, or a drifted enum tag
 //! is caught here rather than at runtime in the webview.
 //!
-//! This mirrors the existing `export::formatter::ipc_sim_tests` but covers the
-//! remaining commands (checksum, log, AI request validation) and the
-//! `request`-wrapped export entry point.
+//! This covers checksum, log, streamed export, and AI request validation.
 
 #[cfg(test)]
 mod tests {
     use crate::commands::ai::{LogAiRequest, TerminalAiRequest};
     use crate::commands::checksum::{ChecksumRequest, calculate_checksum};
     use crate::commands::export::{
-        CaptureFileExportRequest, ExportRequest, export_data, export_data_from_capture_file,
+        AppendExportBatchRequest, BeginExportRequest, ExportSessionRequest,
     };
     use crate::commands::log::append_log;
+    use crate::export::session::{ExportSessionManager, validate_export_path};
     use crate::models::checksum_type::ChecksumType;
-    use crate::models::data_frame::DataFrame;
-    use crate::models::errors::AppError;
 
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -110,25 +107,40 @@ mod tests {
         assert_eq!(on_disk, "hello\n");
     }
 
-    // ---- export_data: frontend sends { request: { frames, format, path } } ----
-    // The existing formatter ipc_sim_tests build the inner JSON manually; this
-    // covers the outer `request` wrapper that the actual command unwraps.
+    // ---- streamed export: begin -> append batches -> finish ----
 
     #[tokio::test]
-    async fn export_data_deserializes_wrapped_frontend_payload_and_executes() {
+    async fn streamed_export_payloads_deserialize_and_execute() {
         let path = unique_path("txt");
-        // EXACT shape from ipc.ts invokeExportData: request.{frames, format, path}.
-        // Uint8Array -> JSON number[] via the Tauri serializer. "Hi" -> [72,105].
-        let json = format!(
-            r#"{{"frames":[{{"id":"1","direction":"TX","timestamp":0.0,"data":[72,105]}}],"format":"txt-ascii","path":{path_json}}}"#,
+        let begin_json = format!(
+            r#"{{"format":"txt-ascii","path":{path_json}}}"#,
             path_json = serde_json::to_string(&path).unwrap()
         );
-        let req: ExportRequest = serde_json::from_str(&json).expect("export payload shape");
+        let begin: BeginExportRequest =
+            serde_json::from_str(&begin_json).expect("begin export payload shape");
+        let target = validate_export_path(&begin.path, begin.format).unwrap();
+        let manager = ExportSessionManager::default();
+        let export_id = manager.begin(begin.format, target).await.unwrap();
 
-        // Re-derive the DataFrame shape the deserializer produced, then run the
-        // command exactly as Tauri would invoke it.
-        assert_eq!(req.frames.len(), 1, "one frame deserialized");
-        export_data(req).await.unwrap();
+        let append_json = format!(
+            r#"{{"exportId":{id_json},"frames":[{{"id":"1","direction":"TX","timestamp":0.0,"data":[72,105]}}]}}"#,
+            id_json = serde_json::to_string(&export_id).unwrap()
+        );
+        let append: AppendExportBatchRequest =
+            serde_json::from_str(&append_json).expect("append batch payload shape");
+        assert_eq!(append.frames.len(), 1);
+        manager
+            .append(&append.export_id, &append.frames)
+            .await
+            .unwrap();
+
+        let finish_json = format!(
+            r#"{{"exportId":{id_json}}}"#,
+            id_json = serde_json::to_string(&export_id).unwrap()
+        );
+        let finish: ExportSessionRequest =
+            serde_json::from_str(&finish_json).expect("finish export payload shape");
+        manager.finish(&finish.export_id).await.unwrap();
 
         let on_disk = fs::read_to_string(&path).unwrap();
         fs::remove_file(&path).ok();
@@ -136,32 +148,6 @@ mod tests {
             on_disk.contains("Hi"),
             "txt-ascii decoded the bytes: {on_disk}"
         );
-    }
-
-    #[tokio::test]
-    async fn export_data_rejects_too_many_frames_at_the_contract_boundary() {
-        let path = unique_path("jsonl");
-        // Build a payload exceeding MAX_EXPORT_FRAMES (100_000) at the wire level.
-        // The deserializer must accept it; the command must reject it.
-        let frames: Vec<DataFrame> = (0..100_001)
-            .map(|i| DataFrame {
-                id: i.to_string(),
-                direction: crate::models::data_frame::Direction::Tx,
-                timestamp: 0.0,
-                data: vec![1u8],
-            })
-            .collect();
-        let req = ExportRequest {
-            frames,
-            format: crate::commands::export::ExportFormat::Jsonl,
-            path: path.clone(),
-        };
-        let err = export_data(req).await.unwrap_err();
-        assert!(
-            matches!(err, AppError::ValidationError { field, .. } if field == "frames"),
-            "oversized export rejected at the frame-count gate"
-        );
-        let _ = fs::remove_file(&path);
     }
 
     // ---- AI request validation at the contract boundary (no network) ----
@@ -203,80 +189,5 @@ mod tests {
         assert_eq!(req.context_mode.as_deref(), Some("latest-10k"));
         assert_eq!(req.context_truncated, Some(true));
         assert_eq!(req.session_meta.as_deref(), Some("COM1@115200"));
-    }
-
-    // ---- export_data_from_capture_file: capture-file export ----
-    // The frontend writes a JSONL temp file (one DataFrame/line) and passes only
-    // the path; the wire shape is camelCase to match CaptureFileExportRequest.
-
-    #[tokio::test]
-    async fn capture_file_export_deserializes_wire_payload_and_runs() {
-        let capture = unique_path("jsonl");
-        let target = unique_path("txt");
-        // Write a one-frame JSONL capture (the shape frameToJsonlLine emits).
-        fs::write(
-            &capture,
-            "{\"id\":\"1\",\"direction\":\"TX\",\"timestamp\":0.0,\"data\":[72,105]}\n",
-        )
-        .unwrap();
-
-        let json = format!(
-            r#"{{"captureFile":{cap},"format":"txt-ascii","path":{tgt}}}"#,
-            cap = serde_json::to_string(&capture).unwrap(),
-            tgt = serde_json::to_string(&target).unwrap(),
-        );
-        let req: CaptureFileExportRequest =
-            serde_json::from_str(&json).expect("capture-file export payload shape");
-        assert_eq!(req.format, crate::commands::export::ExportFormat::TxtAscii);
-
-        export_data_from_capture_file(req).await.unwrap();
-        let out = fs::read_to_string(&target).unwrap();
-        let _ = fs::remove_file(&capture);
-        let _ = fs::remove_file(&target);
-        // TXT-ASCII decodes [72,105] back to "Hi".
-        assert!(out.contains("Hi"), "txt-ascii decoded the capture: {out}");
-    }
-
-    #[tokio::test]
-    async fn capture_file_export_rejects_missing_capture_file() {
-        // Target extension matches the csv format so path validation passes and
-        // the read of the (missing) capture file is what fails.
-        let target = unique_path("csv");
-        let json = format!(
-            r#"{{"captureFile":"/nonexistent/bbcom-capture-xyz.jsonl","format":"csv","path":{tgt}}}"#,
-            tgt = serde_json::to_string(&target).unwrap(),
-        );
-        let req: CaptureFileExportRequest = serde_json::from_str(&json).unwrap();
-        let err = export_data_from_capture_file(req).await.unwrap_err();
-        // A missing capture file surfaces as an ExportError (read failed).
-        assert!(matches!(err, AppError::ExportError { .. }));
-        let _ = fs::remove_file(&target);
-    }
-
-    #[tokio::test]
-    async fn capture_file_export_skips_blank_lines_and_parses_multiple_frames() {
-        let capture = unique_path("jsonl");
-        let target = unique_path("jsonl");
-        // Two frames with a blank line between them — blank lines must be skipped.
-        fs::write(
-            &capture,
-            r#"{"id":"1","direction":"TX","timestamp":0.0,"data":[1]}
-{"id":"2","direction":"RX","timestamp":1.0,"data":[2,3]}"#,
-        )
-        .unwrap();
-        let req = CaptureFileExportRequest {
-            capture_file: capture.clone(),
-            format: crate::commands::export::ExportFormat::Jsonl,
-            path: target.clone(),
-        };
-        export_data_from_capture_file(req).await.unwrap();
-        let out = fs::read_to_string(&target).unwrap();
-        let _ = fs::remove_file(&capture);
-        let _ = fs::remove_file(&target);
-        assert_eq!(
-            out.lines().count(),
-            2,
-            "both frames exported, blank line skipped"
-        );
     }
 }

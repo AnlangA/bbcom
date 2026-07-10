@@ -47,7 +47,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { Plus, X } from 'lucide-vue-next';
+import { Plus, X } from '@lucide/vue';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { t } from '../../lib/i18n';

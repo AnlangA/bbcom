@@ -37,11 +37,17 @@ test('filters by direction and debounced text search', async () => {
     });
 
     filter.directionFilter.value = 'RX';
-    assert.deepEqual(filter.filteredFrames.value.map((frame) => frame.id), ['2', '3']);
+    assert.deepEqual(
+      filter.filteredFrames.value.map((frame) => frame.id),
+      ['2', '3'],
+    );
 
     filter.searchInput.value = 'ac';
     await delay(180);
-    assert.deepEqual(filter.filteredFrames.value.map((frame) => frame.id), ['3']);
+    assert.deepEqual(
+      filter.filteredFrames.value.map((frame) => frame.id),
+      ['3'],
+    );
   });
   scope.stop();
 });
@@ -49,10 +55,7 @@ test('filters by direction and debounced text search', async () => {
 test('filters by normalized hex search', async () => {
   const scope = effectScope();
   await scope.run(async () => {
-    const frames = ref([
-      makeFrame('1', 'TX', [0xaa, 0xbb]),
-      makeFrame('2', 'RX', [0xcc, 0xdd]),
-    ]);
+    const frames = ref([makeFrame('1', 'TX', [0xaa, 0xbb]), makeFrame('2', 'RX', [0xcc, 0xdd])]);
     const searchMode = ref<SearchMode>('HEX');
     const packetViewMode = ref<PacketViewMode>('FRAME');
     const filter = usePacketFilter({
@@ -65,7 +68,10 @@ test('filters by normalized hex search', async () => {
 
     filter.searchInput.value = 'AA BB';
     await delay(180);
-    assert.deepEqual(filter.filteredFrames.value.map((frame) => frame.id), ['1']);
+    assert.deepEqual(
+      filter.filteredFrames.value.map((frame) => frame.id),
+      ['1'],
+    );
   });
   scope.stop();
 });

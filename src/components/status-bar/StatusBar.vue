@@ -64,7 +64,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
-import { Usb } from 'lucide-vue-next';
+import { Usb } from '@lucide/vue';
 import type { SerialSession } from '../../types';
 import { formatBytes, formatDuration, formatRate } from '../../lib/format';
 import { t } from '../../lib/i18n';

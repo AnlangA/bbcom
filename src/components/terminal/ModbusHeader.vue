@@ -136,7 +136,7 @@
 
 <script setup lang="ts">
 import { NButton, NCheckbox, NInputNumber, NSelect } from 'naive-ui';
-import { Cpu, Download, FileUp, Play, RefreshCw, Send, Square, Upload, X } from 'lucide-vue-next';
+import { Cpu, Download, FileUp, Play, RefreshCw, Send, Square, Upload, X } from '@lucide/vue';
 import { computed } from 'vue';
 import { t } from '../../lib/i18n';
 import type { ModbusMasterConfig } from '../../types';

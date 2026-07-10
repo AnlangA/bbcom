@@ -75,7 +75,7 @@
 <script setup lang="ts">
 import { computed, shallowReactive } from 'vue';
 import { NButton, NInput, NInputNumber, NSelect } from 'naive-ui';
-import { Plus } from 'lucide-vue-next';
+import { Plus } from '@lucide/vue';
 import {
   isBitFc,
   isModbusDataCountEditable,

@@ -69,11 +69,7 @@ test('useAiWindowState: a failed toggle resets visible to false (no stuck optimi
 
   await api.toggle();
 
-  assert.equal(
-    api.visible.value,
-    false,
-    'on failure visible does not stay optimistically true',
-  );
+  assert.equal(api.visible.value, false, 'on failure visible does not stay optimistically true');
 });
 
 test('useAiWindowState: refresh failure falls back to hidden', async () => {

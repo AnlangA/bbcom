@@ -1,5 +1,4 @@
 import { invoke } from '@tauri-apps/api/core';
-import { toRaw } from 'vue';
 import type { ExportFormat } from './constants';
 import type { ChecksumType, DataFrame } from '../types';
 
@@ -37,45 +36,25 @@ export async function calculateChecksum(data: ArrayLike<number>, algorithm: Chec
   });
 }
 
-export async function invokeExportData(frames: DataFrame[], format: ExportFormat, path: string) {
-  return invoke<void>('export_data', {
-    // toRaw unwraps the reactive array proxy; frame elements are markRaw'd at
-    // creation, so the Tauri serializer walks raw typed arrays instead of
-    // recursing through per-byte proxies.
-    request: { frames: toRaw(frames), format, path },
-  });
+export type ExportFramePayload = Omit<DataFrame, 'data'> & { data: number[] };
+
+export async function invokeBeginExport(format: ExportFormat, path: string): Promise<string> {
+  return invoke<string>('begin_export', { request: { format, path } });
 }
 
-/**
- * Serialize one DataFrame as a single JSONL line matching the Rust `DataFrame`
- * serde shape ({"id","direction","timestamp","data":[...]}). Used by the
- * capture-file export path so each frame crosses IPC as a small text append
- * (via append_log) instead of as a JSON object on the `frames` invoke argument.
- */
-export function frameToJsonlLine(frame: DataFrame): string {
-  return JSON.stringify({
-    id: frame.id,
-    direction: frame.direction,
-    timestamp: frame.timestamp,
-    data: Array.from(frame.data),
-  });
+export async function invokeAppendExportBatch(
+  exportId: string,
+  frames: ExportFramePayload[],
+): Promise<void> {
+  return invoke<void>('append_export_batch', { request: { exportId, frames } });
 }
 
-/**
- * Capture-file export. `captureFile` is a JSONL temp file the caller has
- * already written (one DataFrame per line, via repeated invokeAppendLog). The
- * Rust side reads+parses it, avoiding serialization of up to 100k DataFrame
- * objects through the `invoke` argument. The wire shape is camelCase to match
- * the Rust `CaptureFileExportRequest` (`#[serde(rename_all = "camelCase")]`).
- */
-export async function invokeExportDataFromCaptureFile(
-  captureFile: string,
-  format: ExportFormat,
-  path: string,
-) {
-  return invoke<void>('export_data_from_capture_file', {
-    request: { captureFile, format, path },
-  });
+export async function invokeFinishExport(exportId: string): Promise<void> {
+  return invoke<void>('finish_export', { request: { exportId } });
+}
+
+export async function invokeAbortExport(exportId: string): Promise<void> {
+  return invoke<void>('abort_export', { request: { exportId } });
 }
 
 /** Append a chunk of text to the auto-log file (created if missing). Stateless

@@ -74,19 +74,34 @@ test('toProtocolEngine adapts ProtocolParser to the ProtocolEngine interface', (
 });
 
 test('toProtocolEngine: delimiter config name includes the hex pattern', () => {
-  const parser = new ProtocolParser({ kind: 'delimiter', delimiter: [0x0d, 0x0a], includeDelimiter: false });
+  const parser = new ProtocolParser({
+    kind: 'delimiter',
+    delimiter: [0x0d, 0x0a],
+    includeDelimiter: false,
+  });
   const engine = toProtocolEngine(parser);
   assert.equal(engine.name, 'delimiter:0D0A');
 });
 
 test('toProtocolEngine: length config name includes the field size', () => {
-  const parser = new ProtocolParser({ kind: 'length', lengthOffset: 0, lengthSize: 2, bigEndian: true, lengthAdjust: 0 });
+  const parser = new ProtocolParser({
+    kind: 'length',
+    lengthOffset: 0,
+    lengthSize: 2,
+    bigEndian: true,
+    lengthAdjust: 0,
+  });
   const engine = toProtocolEngine(parser);
   assert.equal(engine.name, 'length:2B');
 });
 
 test('toProtocolEngine: plain object without kind returns unknown', () => {
-  const engine = toProtocolEngine({ feed: () => [], reset: () => {}, pending: 0, config: { foo: 1 } });
+  const engine = toProtocolEngine({
+    feed: () => [],
+    reset: () => {},
+    pending: 0,
+    config: { foo: 1 },
+  });
   assert.equal(engine.name, 'unknown');
 });
 

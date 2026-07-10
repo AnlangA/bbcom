@@ -1,4 +1,4 @@
-use crate::commands::export::ExportFormat;
+use crate::export::ExportFormat;
 use crate::models::data_frame::{DataFrame, Direction};
 use crate::models::errors::AppError;
 use crate::utils::hex;
@@ -12,31 +12,77 @@ pub async fn export(
     format: &ExportFormat,
     path: &str,
 ) -> Result<(), AppError> {
-    match format {
-        ExportFormat::TxtHex => export_text(frames, path, false).await,
-        ExportFormat::TxtAscii => export_text(frames, path, true).await,
-        ExportFormat::Csv => export_csv(frames, path).await,
-        ExportFormat::Jsonl => export_jsonl(frames, path).await,
-        ExportFormat::Bin => export_bin(frames, path).await,
+    let mut writer = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
+    let mut buf = Vec::with_capacity(64 * 1024);
+    append_header(&mut buf, *format);
+    if !buf.is_empty() {
+        writer.write_all(&buf).await.map_err(AppError::from)?;
+    }
+    for chunk in frames.chunks(256) {
+        buf.clear();
+        append_frames(&mut buf, chunk, *format, path)?;
+        writer.write_all(&buf).await.map_err(AppError::from)?;
+    }
+    writer.flush().await.map_err(AppError::from)?;
+    Ok(())
+}
+
+pub(crate) fn append_header(buf: &mut Vec<u8>, format: ExportFormat) {
+    if format == ExportFormat::Csv {
+        buf.extend_from_slice(b"timestamp,direction,data\n");
     }
 }
 
-async fn export_jsonl(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
-    // Build the whole document into one buffer, then issue a single write.
-    // Collapses ~one async yield per frame into one write per export.
-    let mut buf: Vec<u8> = Vec::with_capacity(frames.len() * 64);
+/// Encode a bounded frame chunk into `buf`. Callers control chunk size so
+/// formatter memory is proportional to one batch rather than the full export.
+pub(crate) fn append_frames(
+    buf: &mut Vec<u8>,
+    frames: &[DataFrame],
+    format: ExportFormat,
+    path: &str,
+) -> Result<(), AppError> {
     for frame in frames {
-        serde_json::to_writer(&mut buf, frame).map_err(|e| AppError::ExportError {
-            message: e.to_string(),
-            format: "jsonl".to_string(),
-            path: path.to_string(),
-        })?;
-        buf.push(b'\n');
+        match format {
+            ExportFormat::Jsonl => {
+                serde_json::to_writer(&mut *buf, frame).map_err(|e| AppError::ExportError {
+                    message: e.to_string(),
+                    format: format.label().to_string(),
+                    path: path.to_string(),
+                })?;
+                buf.push(b'\n');
+            }
+            ExportFormat::TxtHex | ExportFormat::TxtAscii => {
+                writeln!(
+                    buf,
+                    "[{}] {} | {}",
+                    timestamp::format_timestamp(frame.timestamp),
+                    dir_label(&frame.direction),
+                    data_to_string(&frame.data, format == ExportFormat::TxtAscii)
+                )
+                .map_err(|e| encode_error(e, format, path))?;
+            }
+            ExportFormat::Csv => {
+                writeln!(
+                    buf,
+                    "{},{},\"{}\"",
+                    timestamp::format_timestamp(frame.timestamp),
+                    dir_label(&frame.direction),
+                    hex::format_hex(&frame.data)
+                )
+                .map_err(|e| encode_error(e, format, path))?;
+            }
+            ExportFormat::Bin => buf.extend_from_slice(&frame.data),
+        }
     }
-    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
-    w.write_all(&buf).await.map_err(AppError::from)?;
-    w.flush().await.map_err(AppError::from)?;
     Ok(())
+}
+
+fn encode_error(error: std::io::Error, format: ExportFormat, path: &str) -> AppError {
+    AppError::ExportError {
+        message: error.to_string(),
+        format: format.label().to_string(),
+        path: path.to_string(),
+    }
 }
 
 fn dir_label(d: &Direction) -> &'static str {
@@ -52,69 +98,6 @@ fn data_to_string(data: &[u8], ascii: bool) -> String {
     } else {
         hex::format_hex(data)
     }
-}
-
-async fn export_text(frames: &[DataFrame], path: &str, ascii: bool) -> Result<(), AppError> {
-    let mut buf: Vec<u8> = Vec::with_capacity(frames.len() * 80);
-    for frame in frames {
-        let data_str = data_to_string(&frame.data, ascii);
-        // Vec<u8> implements std::fmt::Write, so write! appends UTF-8 bytes
-        // without allocating a per-frame String.
-        writeln!(
-            &mut buf,
-            "[{}] {} | {}",
-            timestamp::format_timestamp(frame.timestamp),
-            dir_label(&frame.direction),
-            data_str
-        )
-        .map_err(|e| AppError::ExportError {
-            message: e.to_string(),
-            format: "txt".to_string(),
-            path: path.to_string(),
-        })?;
-    }
-    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
-    w.write_all(&buf).await.map_err(AppError::from)?;
-    w.flush().await.map_err(AppError::from)?;
-    Ok(())
-}
-
-async fn export_csv(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
-    let mut buf: Vec<u8> = Vec::with_capacity(frames.len() * 80);
-    buf.extend_from_slice(b"timestamp,direction,data\n");
-    for frame in frames {
-        // hex output is [0-9A-F ]+ — it never contains quotes, so the previous
-        // unconditional replace('"', "\"\"") was dead work; drop it.
-        let data_str = hex::format_hex(&frame.data);
-        writeln!(
-            &mut buf,
-            "{},{},\"{}\"",
-            timestamp::format_timestamp(frame.timestamp),
-            dir_label(&frame.direction),
-            data_str
-        )
-        .map_err(|e| AppError::ExportError {
-            message: e.to_string(),
-            format: "csv".to_string(),
-            path: path.to_string(),
-        })?;
-    }
-    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
-    w.write_all(&buf).await.map_err(AppError::from)?;
-    w.flush().await.map_err(AppError::from)?;
-    Ok(())
-}
-
-async fn export_bin(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
-    let total: usize = frames.iter().map(|frame| frame.data.len()).sum();
-    let mut buf: Vec<u8> = Vec::with_capacity(total);
-    for frame in frames {
-        buf.extend_from_slice(&frame.data);
-    }
-    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
-    w.write_all(&buf).await.map_err(AppError::from)?;
-    w.flush().await.map_err(AppError::from)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -227,19 +210,35 @@ mod tests {
 
 #[cfg(test)]
 mod ipc_sim_tests {
-    use crate::commands::export::ExportRequest;
+    use crate::commands::export::{AppendExportBatchRequest, BeginExportRequest};
+    use crate::export::session::{ExportSessionManager, validate_export_path};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static SIM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    // EXACT JSON the frontend sends via invoke('export_data', { request: {...} }).
+    fn frontend_begin_payload(format: &str, path: &str) -> String {
+        serde_json::json!({
+            "format": format,
+            "path": path
+        })
+        .to_string()
+    }
+
     // Tauri's IPC serializer converts the Uint8Array to a JSON array via Array.from.
     // "Hello" -> [72,101,108,108,111].
-    fn frontend_payload(format: &str, path: &str) -> String {
-        let data = r#"[{"id":"1","direction":"TX","timestamp":0.0,"data":[72,101,108,108,111]}]"#;
-        format!(r#"{{"frames":{data},"format":"{format}","path":"{path}"}}"#)
+    fn frontend_append_payload(export_id: &str) -> String {
+        serde_json::json!({
+            "exportId": export_id,
+            "frames": [{
+                "id": "1",
+                "direction": "TX",
+                "timestamp": 0.0,
+                "data": [72, 101, 108, 108, 111]
+            }]
+        })
+        .to_string()
     }
 
     async fn run_frontend_export(format: &str, ext: &str) -> Vec<u8> {
@@ -252,11 +251,20 @@ mod ipc_sim_tests {
         path.push(format!("bbcom-ipc-sim-{nanos}-{c}.{ext}"));
         let path_str = path.to_string_lossy().to_string();
 
-        let json = frontend_payload(format, &path_str);
-        let req: ExportRequest = serde_json::from_str(&json).expect("IPC payload must deserialize");
-        super::export(&req.frames, &req.format, &path_str)
+        let begin: BeginExportRequest =
+            serde_json::from_str(&frontend_begin_payload(format, &path_str))
+                .expect("begin payload must deserialize");
+        let target = validate_export_path(&begin.path, begin.format).unwrap();
+        let manager = ExportSessionManager::default();
+        let export_id = manager.begin(begin.format, target).await.unwrap();
+        let append: AppendExportBatchRequest =
+            serde_json::from_str(&frontend_append_payload(&export_id))
+                .expect("append payload must deserialize");
+        manager
+            .append(&append.export_id, &append.frames)
             .await
             .unwrap();
+        manager.finish(&export_id).await.unwrap();
         let bytes = fs::read(&path).unwrap();
         fs::remove_file(&path).ok();
         bytes

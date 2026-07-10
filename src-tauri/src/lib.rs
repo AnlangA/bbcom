@@ -16,6 +16,7 @@ pub fn run() {
         .init();
 
     let result = tauri::Builder::default()
+        .manage(export::session::ExportSessionManager::default())
         .setup(|app| {
             #[cfg(feature = "devtools")]
             {
@@ -58,10 +59,10 @@ pub fn run() {
                 let app_handle2 = app.handle().clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { .. } = event {
-                        if let Some(ai_window) = app_handle2.get_webview_window(AI_WINDOW_LABEL) {
-                            if let Err(e) = ai_window.close() {
-                                tracing::warn!("failed to close AI window on exit: {e}");
-                            }
+                        if let Some(ai_window) = app_handle2.get_webview_window(AI_WINDOW_LABEL)
+                            && let Err(e) = ai_window.close()
+                        {
+                            tracing::warn!("failed to close AI window on exit: {e}");
                         }
                         app_handle.exit(0);
                     }
@@ -72,15 +73,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_serialplugin::init())
         .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::ai::log_ai_assist,
             commands::ai::terminal_ai_assist,
             commands::checksum::calculate_checksum,
-            commands::export::export_data,
-            commands::export::export_data_from_capture_file,
+            commands::export::abort_export,
+            commands::export::append_export_batch,
+            commands::export::begin_export,
+            commands::export::finish_export,
             commands::log::append_log,
-            commands::updater::check_for_updates,
             commands::window::get_ai_window_state,
             commands::window::hide_ai_window,
             commands::window::resize_ai_window,

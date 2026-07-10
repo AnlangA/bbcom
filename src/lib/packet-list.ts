@@ -30,6 +30,9 @@ export interface PacketRowData {
     transform: string;
   };
   frame: DataFrame;
+  /** Changes whenever immutable frame content changes, including MERGED rows
+   * whose stable first-frame id is intentionally reused as data grows. */
+  contentVersion: number;
   formatted: string;
   timestamp: string;
   showTimestamp: boolean;
@@ -100,6 +103,7 @@ export function buildPacketRows({
         transform: `translateY(${item.start}px)`,
       },
       frame,
+      contentVersion: frame.data.byteLength,
       formatted: formatFrame(frame),
       timestamp: formatTimestamp(frame.timestamp),
       showTimestamp,

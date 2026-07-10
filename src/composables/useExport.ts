@@ -2,11 +2,12 @@ import { ref } from 'vue';
 import { save } from '@tauri-apps/plugin-dialog';
 import type { DataFrame, DisplayMode } from '../types';
 import {
-  frameToJsonlLine,
   getCommandErrorMessage,
-  invokeAppendLog,
-  invokeExportData,
-  invokeExportDataFromCaptureFile,
+  invokeAbortExport,
+  invokeAppendExportBatch,
+  invokeBeginExport,
+  invokeFinishExport,
+  type ExportFramePayload,
 } from '../lib/ipc';
 import { resolveExportFormat, type ExportChoice, type ExportFormat } from '../lib/constants';
 import { t } from '../lib/i18n';
@@ -21,31 +22,34 @@ const EXT_MAP: Record<ExportChoice, { name: string; ext: string }> = {
 /** `ok:true` on success; `ok:false` with no `error` when the user cancelled the save dialog. */
 export type ExportResult = { ok: true } | { ok: false; error?: string };
 
+export const EXPORT_BATCH_MAX_FRAMES = 512;
+export const EXPORT_BATCH_MAX_BYTES = 4 * 1024 * 1024;
+export const EXPORT_FRAME_MAX_BYTES = 2 * 1024 * 1024;
+
+export interface ExportSessionClient {
+  begin(format: ExportFormat, path: string): Promise<string>;
+  append(exportId: string, frames: ExportFramePayload[]): Promise<void>;
+  finish(exportId: string): Promise<void>;
+  abort(exportId: string): Promise<void>;
+}
+
 /** Injectable side-effects so the export flow can be unit-tested without a
  *  Tauri runtime. Defaults wire through to the real dialog + IPC. */
 export interface UseExportDeps {
   /** Resolve a save path (or null when the user cancels). */
   promptSave?: (choice: ExportChoice) => Promise<string | null>;
-  /** Invoke the Rust export command (legacy: frames cross IPC as a JSON array). */
+  /** Explicit legacy test seam. Production uses the bounded session protocol. */
   exportFrames?: (frames: DataFrame[], format: ExportFormat, path: string) => Promise<void>;
-  /**
-   * Capture-file export path: write the frames to a JSONL temp file and invoke
-   * `export_data_from_capture_file`. When provided, this is preferred over
-   * `exportFrames` because it avoids serializing the frames array through the
-   * `invoke` argument. Defaults to the real temp-file write + command.
-   */
-  exportViaCaptureFile?: (
-    frames: DataFrame[],
-    format: ExportFormat,
-    targetPath: string,
-  ) => Promise<void>;
-  /**
-   * Whether to use the capture-file export path (production default). Set to
-   * false to force the legacy exportFrames path (used by unit tests that stub
-   * exportFrames, and as a fallback if the capture-file path is unavailable).
-   */
-  useCaptureFileBypass?: boolean;
+  /** Injectable bounded-export client for unit tests. */
+  sessionClient?: ExportSessionClient;
 }
+
+const DEFAULT_SESSION_CLIENT: ExportSessionClient = {
+  begin: invokeBeginExport,
+  append: invokeAppendExportBatch,
+  finish: invokeFinishExport,
+  abort: invokeAbortExport,
+};
 
 export function useExport(deps: UseExportDeps = {}) {
   const isExporting = ref(false);
@@ -63,18 +67,10 @@ export function useExport(deps: UseExportDeps = {}) {
       if (!path) return { ok: false };
 
       const format = resolveExportFormat(choice, displayMode);
-      // Prefer the capture-file path (production default): it writes the frames
-      // to a JSONL temp file and sends only the path, avoiding
-      // serialization of up to 100k frames through the invoke argument. A caller
-      // forces the legacy exportFrames path by passing useCaptureFileBypass:
-      // false (or by stubbing exportFrames, e.g. in unit tests).
-      const useBypass = deps.useCaptureFileBypass !== false && !deps.exportFrames;
-      if (useBypass) {
-        const via = deps.exportViaCaptureFile ?? defaultExportViaCaptureFile;
-        await via(frames, format, path);
+      if (deps.exportFrames) {
+        await deps.exportFrames(frames, format, path);
       } else {
-        const doExport = deps.exportFrames ?? invokeExportData;
-        await doExport(frames, format, path);
+        await exportWithSession(frames, format, path, deps.sessionClient ?? DEFAULT_SESSION_CLIENT);
       }
       return { ok: true };
     } catch (e) {
@@ -104,41 +100,59 @@ async function defaultPromptSave(choice: ExportChoice): Promise<string | null> {
   });
 }
 
-/**
- * Default capture-file export: write each frame as one JSONL line to a temp
- * file (via the stateless append_log command), then invoke
- * export_data_from_capture_file which reads+parses it on the Rust side.
- *
- * Each frame crosses IPC as a small text append rather than as an element of a
- * giant JSON array on the invoke argument — the dominant export cost.
- */
-async function defaultExportViaCaptureFile(
-  frames: DataFrame[],
-  format: ExportFormat,
-  targetPath: string,
-): Promise<void> {
-  const captureFile = await defaultCaptureFilePath();
-  // Clear any stale temp file by writing the first line, then append the rest.
-  for (let i = 0; i < frames.length; i += 1) {
-    const line = frameToJsonlLine(frames[i]) + '\n';
-    // append_log creates the file if missing; the first write seeds it.
-    await invokeAppendLog(captureFile, line);
+/** Lazily convert frames into bounded IPC payloads so only one batch is
+ * materialized at a time. The limits mirror the Rust session validator. */
+export function* createExportBatches(
+  frames: readonly DataFrame[],
+): Generator<ExportFramePayload[]> {
+  let batch: ExportFramePayload[] = [];
+  let batchBytes = 0;
+
+  for (const frame of frames) {
+    const frameBytes = frame.data.length;
+    if (frameBytes > EXPORT_FRAME_MAX_BYTES) {
+      throw new Error(`Frame ${frame.id} exceeds the ${EXPORT_FRAME_MAX_BYTES}-byte export limit`);
+    }
+
+    if (
+      batch.length >= EXPORT_BATCH_MAX_FRAMES ||
+      (batch.length > 0 && batchBytes + frameBytes > EXPORT_BATCH_MAX_BYTES)
+    ) {
+      yield batch;
+      batch = [];
+      batchBytes = 0;
+    }
+
+    batch.push({
+      id: frame.id,
+      direction: frame.direction,
+      timestamp: frame.timestamp,
+      data: Array.from(frame.data),
+    });
+    batchBytes += frameBytes;
   }
-  try {
-    await invokeExportDataFromCaptureFile(captureFile, format, targetPath);
-  } finally {
-    // Best-effort cleanup of the temp file; a failure here must not mask the
-    // export result, so ignore errors.
-    void invokeAppendLog(captureFile, '').catch(() => undefined);
-  }
+
+  if (batch.length > 0) yield batch;
 }
 
-/** Resolve a unique temp-file path for the capture. The path is constructed
- *  in the OS temp dir with a timestamp+random suffix to avoid collisions. */
-async function defaultCaptureFilePath(): Promise<string> {
-  // The frontend cannot directly access the OS temp dir without the fs plugin,
-  // so we reuse the export target's directory + a hidden temp name. The Rust
-  // side reads it from the same location the dialog chose.
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  return `.bbcom-capture-${stamp}.jsonl`;
+async function exportWithSession(
+  frames: readonly DataFrame[],
+  format: ExportFormat,
+  path: string,
+  client: ExportSessionClient,
+): Promise<void> {
+  const exportId = await client.begin(format, path);
+  let finished = false;
+  try {
+    for (const batch of createExportBatches(frames)) {
+      await client.append(exportId, batch);
+    }
+    await client.finish(exportId);
+    finished = true;
+  } finally {
+    if (!finished) {
+      // Preserve the original batching/IPC error if cleanup itself fails.
+      await client.abort(exportId).catch(() => undefined);
+    }
+  }
 }

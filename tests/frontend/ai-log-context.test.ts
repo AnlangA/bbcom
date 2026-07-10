@@ -4,8 +4,40 @@ import { buildLogAiContext } from '../../src/lib/ai-log-context.ts';
 import { encodeUtf8 } from '../../src/lib/format.ts';
 import type { DataFrame, LogAiContextMode, SerialSession } from '../../src/types/index.ts';
 
-function frame(id: string, direction: DataFrame['direction'], data: Uint8Array, timestamp = 0): DataFrame {
+function frame(
+  id: string,
+  direction: DataFrame['direction'],
+  data: Uint8Array,
+  timestamp = 0,
+): DataFrame {
   return { id, direction, timestamp, data };
+}
+
+function arrayIndex(property: string | symbol): number | null {
+  if (typeof property !== 'string' || !/^(0|[1-9]\d*)$/.test(property)) return null;
+  const index = Number(property);
+  return Number.isSafeInteger(index) ? index : null;
+}
+
+/** Lazily materialize frames so a test can observe exactly which indices are read. */
+function observedFrames(
+  count: number,
+  onRead: (index: number) => void,
+  data: Uint8Array,
+): DataFrame[] {
+  const target = new Array<DataFrame>(count);
+  return new Proxy(target, {
+    has(array, property) {
+      const index = arrayIndex(property);
+      return index === null ? Reflect.has(array, property) : index < count;
+    },
+    get(array, property, receiver) {
+      const index = arrayIndex(property);
+      if (index === null) return Reflect.get(array, property, receiver);
+      onRead(index);
+      return frame(String(index), index % 2 === 0 ? 'RX' : 'TX', data, index);
+    },
+  });
 }
 
 function baseSession(overrides: Partial<SerialSession> = {}): SerialSession {
@@ -35,10 +67,7 @@ function baseSession(overrides: Partial<SerialSession> = {}): SerialSession {
 
 test('latest-10k mode includes all frames and reports the 10k char limit', () => {
   const session = baseSession({
-    frames: [
-      frame('1', 'RX', encodeUtf8('boot ok')),
-      frame('2', 'TX', encodeUtf8('ping')),
-    ],
+    frames: [frame('1', 'RX', encodeUtf8('boot ok')), frame('2', 'TX', encodeUtf8('ping'))],
   });
   const result = buildLogAiContext(session);
 
@@ -66,7 +95,10 @@ test('latest-n-frames mode selects only the trailing N frames', () => {
 });
 
 test('full-capped mode uses the larger 50k char limit', () => {
-  const session = baseSession({ frames: [frame('1', 'RX', encodeUtf8('hi'))], logAiContextMode: 'full-capped' });
+  const session = baseSession({
+    frames: [frame('1', 'RX', encodeUtf8('hi'))],
+    logAiContextMode: 'full-capped',
+  });
   assert.equal(buildLogAiContext(session).charLimit, 50_000);
 });
 
@@ -94,6 +126,55 @@ test('context is trimmed to the char limit from the front (keeps the tail)', () 
   assert.ok(result.text.length <= 10_000, 'trimmed text must respect the char limit');
   // the most recent frame marker should survive (tail kept)
   assert.match(result.text, /AAAAAAAAAA/);
+});
+
+test('large histories only access and format the tail needed by the character budget', () => {
+  const totalFrames = 100_000;
+  const accessed: number[] = [];
+  const payload = encodeUtf8('A'.repeat(200));
+  const frames = observedFrames(totalFrames, (index) => accessed.push(index), payload);
+  const session = baseSession({ frames, logAiContextMode: 'latest-10k' });
+
+  const result = buildLogAiContext(session);
+
+  assert.equal(
+    result.frameCount,
+    totalFrames,
+    'frameCount keeps the existing selected-frame contract',
+  );
+  assert.equal(result.charLimit, 10_000);
+  assert.equal(result.truncated, true);
+  assert.equal(result.text.length, 10_000);
+  assert.equal(accessed[0], totalFrames - 1, 'scan starts at the newest frame');
+  assert.ok(
+    accessed.length < 100,
+    `only budget-relevant tail frames should be formatted, read ${accessed.length}`,
+  );
+  assert.ok(accessed.at(-1)! > totalFrames - 100, 'no old history frame should be touched');
+});
+
+test('latest-n mode preserves selected frameCount while stopping at the character budget', () => {
+  const totalFrames = 20_000;
+  const selectedFrames = 5_000;
+  const accessed: number[] = [];
+  const frames = observedFrames(
+    totalFrames,
+    (index) => accessed.push(index),
+    encodeUtf8('B'.repeat(200)),
+  );
+  const session = baseSession({
+    frames,
+    logAiContextMode: 'latest-n-frames',
+    logAiFrameLimit: selectedFrames,
+  });
+
+  const result = buildLogAiContext(session);
+
+  assert.equal(result.frameCount, selectedFrames);
+  assert.equal(result.truncated, true);
+  assert.ok(accessed.length < 100);
+  assert.equal(accessed[0], totalFrames - 1);
+  assert.ok(accessed.at(-1)! >= totalFrames - selectedFrames);
 });
 
 test('empty session yields empty, non-truncated context', () => {

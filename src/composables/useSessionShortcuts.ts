@@ -17,6 +17,9 @@ interface SessionShortcutHandlers {
   onClear: () => void;
   onTogglePause: () => void;
   isConnected: () => boolean;
+  /** Resident session views remain mounted; only the active one may consume
+   * application-wide keyboard shortcuts. Defaults to true for compatibility. */
+  isActive?: () => boolean;
 }
 
 const INPUT_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
@@ -38,8 +41,10 @@ export function useSessionShortcuts({
   onClear,
   onTogglePause,
   isConnected,
+  isActive = () => true,
 }: SessionShortcutHandlers) {
   function handleKeydown(event: KeyboardEvent) {
+    if (!isActive()) return;
     // Esc: never preventDefault unconditionally — it must still close dropdowns,
     // blur inputs, etc. Only act when not in an editable element AND connected.
     if (event.key === 'Escape') {

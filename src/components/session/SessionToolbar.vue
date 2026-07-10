@@ -253,7 +253,7 @@ import {
   PowerOff,
   Trash2,
   Unplug,
-} from 'lucide-vue-next';
+} from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
 import { formatBytes } from '../../lib/format';
 import { t } from '../../lib/i18n';

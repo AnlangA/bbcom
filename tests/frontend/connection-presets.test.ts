@@ -60,10 +60,7 @@ test('configsEqual is true only when every field matches', () => {
 test('describeConfig renders a compact human-readable label', () => {
   assert.equal(describeConfig(CFG_9600), '9600 8N1, none');
   assert.equal(describeConfig(CFG_ESP32), '115200 8N1, none, DTR+RTS');
-  assert.equal(
-    describeConfig({ ...CFG_9600, parity: 'even', stopBits: 2 }),
-    '9600 8E2, none',
-  );
+  assert.equal(describeConfig({ ...CFG_9600, parity: 'even', stopBits: 2 }), '9600 8E2, none');
 });
 
 test('addPreset persists and returns an extended list with a unique id', () => {
@@ -79,10 +76,7 @@ test('addPreset persists and returns an extended list with a unique id', () => {
     // loadPresets reads back the persisted blob.
     const loaded = loadPresets();
     assert.equal(loaded.length, 2);
-    assert.deepEqual(
-      loaded.map((p) => p.name).sort(),
-      ['Arduino', 'ESP32'],
-    );
+    assert.deepEqual(loaded.map((p) => p.name).sort(), ['Arduino', 'ESP32']);
   });
 });
 

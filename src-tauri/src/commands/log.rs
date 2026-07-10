@@ -64,13 +64,14 @@ fn validate_log_path(path: &str) -> Result<(), AppError> {
         });
     }
 
-    if let Some(parent) = path_ref.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            return Err(AppError::ValidationError {
-                message: "日志目录不存在".to_string(),
-                field: "path".to_string(),
-            });
-        }
+    if let Some(parent) = path_ref.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        return Err(AppError::ValidationError {
+            message: "日志目录不存在".to_string(),
+            field: "path".to_string(),
+        });
     }
 
     Ok(())

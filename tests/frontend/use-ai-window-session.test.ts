@@ -129,7 +129,10 @@ test('useAiWindowSession: clearLogAiMessages empties the list and emits', async 
 
   assert.equal(api.session.value!.logAiMessages.length, 0, 'list cleared');
   assert.deepEqual(emitted, [
-    { event: 'ai-session-update', payload: { sessionId: 'sess-1', action: 'clearLogAiMessages', value: null } },
+    {
+      event: 'ai-session-update',
+      payload: { sessionId: 'sess-1', action: 'clearLogAiMessages', value: null },
+    },
   ]);
 });
 

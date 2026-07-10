@@ -92,12 +92,13 @@ test('builds FC06 register write requests and expected PDU ack length', () => {
 });
 
 test('builds FC10 register write requests from encoded multi-register values', () => {
-  const [batch] = buildModbusWriteBatches([
-    reg('wide', 0x10, 7, 'uint32-be', 0x12345678),
-  ]);
+  const [batch] = buildModbusWriteBatches([reg('wide', 0x10, 7, 'uint32-be', 0x12345678)]);
   const request = buildModbusWriteWireRequest('pdu', batch);
 
-  assert.equal(hex(request.wire), hex(writeMultipleRegistersRequest('pdu', 1, 7, [0x1234, 0x5678])));
+  assert.equal(
+    hex(request.wire),
+    hex(writeMultipleRegistersRequest('pdu', 1, 7, [0x1234, 0x5678])),
+  );
   assert.equal(request.expectedLen, 5);
 });
 

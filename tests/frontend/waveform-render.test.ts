@@ -145,7 +145,11 @@ function channel(color: string): WaveformChannelState {
 }
 
 test('sampleTimestamp falls back to the index when the entry is non-finite', () => {
-  const buf: WaveformSampleBuffer = { samples: [], timestamps: [10, Number.NaN], originTimestamp: 10 };
+  const buf: WaveformSampleBuffer = {
+    samples: [],
+    timestamps: [10, Number.NaN],
+    originTimestamp: 10,
+  };
   assert.equal(sampleTimestamp(buf, 0), 10);
   assert.equal(sampleTimestamp(buf, 1), 1, 'NaN timestamp falls back to the index');
 });
@@ -176,19 +180,27 @@ test('buildVisibleChannelPaths maps in-window samples to a single polyline', () 
 
 test('buildVisibleChannelPaths skips invisible channels and out-of-window samples', () => {
   const timestamps = [100, 200, 300];
-  const buf = makeBuffer(timestamps, [[5, 5, 5], [9, 9, 9]]);
-  const paths = buildVisibleChannelPaths(buf, [channel('#f00'), { ...channel('#0f0'), visible: false }], (i) => `Ch ${i}`, {
-    channelCount: 2,
-    endMs: 300,
-    plotBottom: 50,
-    plotH: 50,
-    sampleX: (ts) => ts,
-    scanEndIndex: 3,
-    scanStartIndex: 0,
-    span: 4,
-    startMs: 100,
-    vMin: 5,
-  });
+  const buf = makeBuffer(timestamps, [
+    [5, 5, 5],
+    [9, 9, 9],
+  ]);
+  const paths = buildVisibleChannelPaths(
+    buf,
+    [channel('#f00'), { ...channel('#0f0'), visible: false }],
+    (i) => `Ch ${i}`,
+    {
+      channelCount: 2,
+      endMs: 300,
+      plotBottom: 50,
+      plotH: 50,
+      sampleX: (ts) => ts,
+      scanEndIndex: 3,
+      scanStartIndex: 0,
+      span: 4,
+      startMs: 100,
+      vMin: 5,
+    },
+  );
   assert.equal(paths.length, 1, 'the invisible channel produces no path');
   assert.equal(paths[0].color, '#f00');
 });
@@ -211,7 +223,15 @@ test('findHoverPoint returns null outside the plot rect and matches the nearest 
   ];
   // Cursor clearly outside the plot rect.
   assert.equal(
-    findHoverPoint({ cursor: { x: -5, y: 0 }, originTimestamp: 0, paths, plotTop: 0, plotX0: 0, plotX1: 100, plotBottom: 50 }),
+    findHoverPoint({
+      cursor: { x: -5, y: 0 },
+      originTimestamp: 0,
+      paths,
+      plotTop: 0,
+      plotX0: 0,
+      plotX1: 100,
+      plotBottom: 50,
+    }),
     null,
   );
   // Cursor inside — the projection lands mid-segment at x=90 (timestamp 90).
@@ -273,8 +293,18 @@ function createMockCtx(pxPerChar = 10): MockCtx & CanvasRenderingContext2D {
 test('drawWaveformPaths strokes one path per channel', () => {
   const ctx = createMockCtx();
   drawWaveformPaths(ctx, [
-    { color: '#f00', label: 'a', points: [{ x: 0, y: 0, value: 0, timestamp: 0 }], samplePoints: [] },
-    { color: '#0f0', label: 'b', points: [{ x: 1, y: 1, value: 1, timestamp: 1 }], samplePoints: [] },
+    {
+      color: '#f00',
+      label: 'a',
+      points: [{ x: 0, y: 0, value: 0, timestamp: 0 }],
+      samplePoints: [],
+    },
+    {
+      color: '#0f0',
+      label: 'b',
+      points: [{ x: 1, y: 1, value: 1, timestamp: 1 }],
+      samplePoints: [],
+    },
   ]);
   const strokes = ctx.calls.filter((c) => c.name === 'stroke').length;
   assert.equal(strokes, 2, 'one stroke per channel path');
@@ -309,7 +339,10 @@ test('drawRoundRect issues a closed quadratic-corner path', () => {
   drawRoundRect(ctx, 0, 0, 100, 50, 8);
   assert.ok(ctx.calls.some((c) => c.name === 'beginPath'));
   assert.ok(ctx.calls.some((c) => c.name === 'closePath'));
-  assert.ok(ctx.calls.filter((c) => c.name === 'quadraticCurveTo').length >= 4, 'four rounded corners');
+  assert.ok(
+    ctx.calls.filter((c) => c.name === 'quadraticCurveTo').length >= 4,
+    'four rounded corners',
+  );
 });
 
 test('truncateCanvasText returns the text when it fits, else ellipsizes', () => {
@@ -372,7 +405,9 @@ test('drawHoverRuler renders the crosshair, dot, and a labelled box', () => {
     textColor: '#fff',
   });
   // At least the crosshair + dot + box outlines + 3 text lines.
-  assert.ok(ctx.calls.some((c) => c.name === 'arc'), 'hover dot');
+  assert.ok(
+    ctx.calls.some((c) => c.name === 'arc'),
+    'hover dot',
+  );
   assert.ok(ctx.calls.filter((c) => c.name === 'fillText').length >= 3, 'label + x + y lines');
 });
-

@@ -1,15 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { effectScope } from 'vue';
-import {
-  isEditable,
-  useSessionShortcuts,
-} from '../../src/composables/useSessionShortcuts.ts';
+import { isEditable, useSessionShortcuts } from '../../src/composables/useSessionShortcuts.ts';
 
 /** Minimal KeyboardEvent stub sufficient for the dispatch logic. */
 function key(
   keyName: string,
-  opts: { ctrl?: boolean; meta?: boolean; target?: { tagName?: string; isContentEditable?: boolean } | null } = {},
+  opts: {
+    ctrl?: boolean;
+    meta?: boolean;
+    target?: { tagName?: string; isContentEditable?: boolean } | null;
+  } = {},
 ): KeyboardEvent {
   return {
     key: keyName,
@@ -28,6 +29,7 @@ function setup(handlers: {
   onClear: () => void;
   onTogglePause: () => void;
   isConnected: () => boolean;
+  isActive?: () => boolean;
 }): { handleKeydown: (e: KeyboardEvent) => void } {
   // useSessionShortcuts registers onMounted/onUnmounted lifecycle hooks; calling
   // it inside an effectScope silences the "lifecycle without active instance"
@@ -118,4 +120,18 @@ test('Ctrl+L without ctrl/meta does nothing', () => {
   handleKeydown(key('l'));
   handleKeydown(key('x', { ctrl: true }));
   assert.deepEqual(calls, [], 'plain l and ctrl+x are ignored');
+});
+
+test('resident inactive sessions never consume global shortcuts', () => {
+  const calls: string[] = [];
+  const { handleKeydown } = setup({
+    onClear: () => calls.push('clear'),
+    onTogglePause: () => calls.push('pause'),
+    isConnected: () => true,
+    isActive: () => false,
+  });
+
+  handleKeydown(key('l', { ctrl: true }));
+  handleKeydown(key('Escape'));
+  assert.deepEqual(calls, []);
 });

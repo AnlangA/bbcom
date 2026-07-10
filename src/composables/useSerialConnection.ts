@@ -1,12 +1,11 @@
 import { ref, onUnmounted } from 'vue';
-import { listen } from '@tauri-apps/api/event';
 import { SerialPort } from 'tauri-plugin-serialplugin-api';
+import type { WatchHandle } from 'tauri-plugin-serialplugin-api';
 import { useSessionStore } from '../stores/sessions';
 import { useSessionFrames } from './useSessionFrames';
 import { useAutoLog } from './useAutoLog';
 import { encodeUtf8, formatBytes, parseHex } from '../lib/format';
 import { concatUint8Arrays } from '../lib/bytes';
-import { escapeSerialPath } from '../lib/serial-utils';
 import { mapDataBits, mapFlowControl, mapParity, mapStopBits } from '../lib/serial-config';
 import { SerialRxQueue } from '../lib/serial-rx-queue';
 import { logger } from '../lib/logger';
@@ -22,8 +21,7 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 /** Result of validating + encoding a send payload before it enters the
  *  serialized write chain. Exported for unit testing. */
 export type SendPayloadResult =
-  | { ok: true; payload: Uint8Array }
-  | { ok: false; reason: 'empty' | 'bad-hex' | 'too-large' };
+  { ok: true; payload: Uint8Array } | { ok: false; reason: 'empty' | 'bad-hex' | 'too-large' };
 
 /**
  * Validate and encode a `send(data, isHex)` call into a binary payload, without
@@ -85,8 +83,7 @@ export function useSerialConnection(
   });
   let rxOverflowErrorMessage: string | null = null;
   let rafId: number | null = null;
-  let unlistenData: (() => void) | null = null;
-  let unlistenDisconnect: (() => void) | null = null;
+  let watchHandle: WatchHandle | null = null;
 
   // Reconnect state
   let intentionalClose = false;
@@ -120,28 +117,30 @@ export function useSerialConnection(
     });
     await p.open();
     port.value = p;
-    if (unlistenData) {
-      unlistenData();
+    if (watchHandle) {
+      await watchHandle.unwatch();
+      watchHandle = null;
     }
-    // Register the data callback before starting the read pump. Tauri discards
-    // events that have no listener, so bytes arriving immediately on connect
-    // would otherwise be dropped in the startListening/listen gap.
-    unlistenData = await p.listen((data: string | number[] | Uint8Array) => {
-      const bytes =
-        data instanceof Uint8Array
-          ? data
-          : typeof data === 'string'
-            ? encodeUtf8(data)
-            : new Uint8Array(data as number[]);
-      enqueueReceivedBytes(bytes);
-    }, false);
-    await p.startListening();
+    // v3 exposes one channel-backed watch for data, errors, and disconnects.
+    // Binary mode avoids a lossy text decode/re-encode round trip.
+    watchHandle = await p.watch(
+      {
+        onData(data) {
+          enqueueReceivedBytes(data instanceof Uint8Array ? data : encodeUtf8(data));
+        },
+        onDisconnect: onDisconnectEvent,
+        onError(message) {
+          logger.warn('serial watch error for', portName, message);
+        },
+      },
+      { decode: false },
+    );
     // Apply DTR/RTS handshake levels — needed for Arduino auto-reset, ESP32
     // boot-mode entry, modems, etc. Some drivers reject these writes; ignore
     // so the connection itself still succeeds.
     try {
-      await p.setDataTerminalReady(config.dtr);
-      await p.setRequestToSend(config.rts);
+      await p.writeDataTerminalReady(config.dtr);
+      await p.writeRequestToSend(config.rts);
     } catch {
       // control-signal write unsupported on this driver — non-fatal
     }
@@ -178,14 +177,6 @@ export function useSerialConnection(
     isConnected.value = true;
     sessionStore.setConnected(sessionId, true);
 
-    // The disconnect event is a global per-port event — register it once and
-    // let it survive reconnects.
-    if (unlistenDisconnect) unlistenDisconnect();
-    unlistenDisconnect = await listen(
-      `plugin-serialplugin-disconnected-${escapeSerialPath(portName)}`,
-      onDisconnectEvent,
-    );
-
     return true;
   }
 
@@ -199,7 +190,7 @@ export function useSerialConnection(
     // Unplanned disconnect (cable pulled, device reset, …)
     isConnected.value = false;
     sessionStore.setConnected(sessionId, false);
-    unlistenData = null;
+    watchHandle = null;
     port.value = null;
 
     if (options?.autoReconnect?.()) {
@@ -413,22 +404,23 @@ export function useSerialConnection(
   }
 
   async function closePortSafely() {
-    if (unlistenData) {
+    const activeWatch = watchHandle;
+    watchHandle = null;
+    if (activeWatch) {
       try {
-        unlistenData();
+        await activeWatch.unwatch();
       } catch {
-        // listener may already be gone after an unplanned disconnect
+        // watch may already be gone after an unplanned disconnect
       }
-      unlistenData = null;
     }
-    if (port.value) {
+    const activePort = port.value;
+    port.value = null;
+    if (activePort) {
       try {
-        await port.value.stopListening();
-        await port.value.close();
+        await activePort.close();
       } catch {
         // ignore — port may already be closed
       }
-      port.value = null;
     }
   }
 
@@ -445,10 +437,6 @@ export function useSerialConnection(
     // queued TX (e.g. the last tick of a cyclic send) is not cut off mid-write.
     await writeChain.catch(() => undefined);
     await closePortSafely();
-    if (unlistenDisconnect) {
-      unlistenDisconnect();
-      unlistenDisconnect = null;
-    }
     isConnected.value = false;
     sessionStore.setConnected(sessionId, false);
   }

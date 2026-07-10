@@ -3,11 +3,7 @@ import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
 import { computed, effectScope, ref, type EffectScope } from 'vue';
 import { useModbusMaster, type ModbusMasterStatus } from '../../src/composables/useModbusMaster.ts';
-import {
-  frameRequest,
-  readRequest,
-  writeSingleRegisterRequest,
-} from '../../src/lib/modbus';
+import { frameRequest, readRequest, writeSingleRegisterRequest } from '../../src/lib/modbus';
 import { useSessionStore } from '../../src/stores/sessions.ts';
 import type {
   ModbusFunctionCode,

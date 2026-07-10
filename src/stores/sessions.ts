@@ -53,6 +53,7 @@ export const useSessionStore = defineStore('sessions', () => {
   const sessions = shallowRef<SerialSession[]>([]);
   const activeSessionId = ref<string | null>(null);
   const cleanupFns = new Map<string, () => Promise<void>>();
+  const sessionFramesVersions = shallowReactive<Record<string, number>>({});
   let loaded = false;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let firstDirtyAt = 0;
@@ -72,8 +73,13 @@ export const useSessionStore = defineStore('sessions', () => {
    * implicit deep-reactivity of the old `ref` without a deep:true watcher.
    */
   const framesVersion = ref(0);
-  function notifyFramesChanged(): void {
+  function getSessionFramesVersion(sessionId: string): number {
+    return sessionFramesVersions[sessionId] ?? 0;
+  }
+
+  function notifyFramesChanged(sessionId: string): void {
     framesVersion.value += 1;
+    sessionFramesVersions[sessionId] = getSessionFramesVersion(sessionId) + 1;
     triggerRef(sessions);
   }
 
@@ -87,11 +93,11 @@ export const useSessionStore = defineStore('sessions', () => {
    * the same proxy ref and therefore would not invalidate downstream render
    * effects on its own).
    *
-   * shallowReactive makes only the top-level keys reactive: nested objects
-   * (frames, modbusRegisters, logAiMessages) are kept raw, which is exactly what
-   * we want — those are mutated in bulk and surfaced via notifyFramesChanged /
-   * triggerRef(sessions) rather than per-element traps. Frame items are already
-   * markRaw'd at creation, so wrapping is a no-op for them.
+   * shallowReactive makes only the top-level keys reactive: nested objects are
+   * kept raw. Config collections are therefore replaced through their top-level
+   * session key, while the high-volume frame buffers use notifyFramesChanged()
+   * instead of per-element traps. Frame items are already markRaw'd at creation,
+   * so wrapping is a no-op for them.
    */
   function wrapSession(session: SerialSession): SerialSession {
     return shallowReactive(session);
@@ -140,9 +146,6 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   function schedulePersist() {
-    // Always notify shallowRef consumers (every mutator calls this); the guard
-    // below only short-circuits the persistence debounce, not reactivity.
-    notifyFramesChanged();
     if (!loaded || !isLocalStorageAvailable()) return;
     const now = nowMillis();
     if (firstDirtyAt === 0) firstDirtyAt = now;
@@ -154,7 +157,10 @@ export const useSessionStore = defineStore('sessions', () => {
 
   function createSession(portName: string, portConfig: SerialSession['portConfig']): string {
     const id = crypto.randomUUID();
-    sessions.value.push(wrapSession(createSessionRecord(id, portName, portConfig)));
+    sessions.value = [
+      ...sessions.value,
+      wrapSession(createSessionRecord(id, portName, portConfig)),
+    ];
     activeSessionId.value = id;
     schedulePersist();
     return id;
@@ -167,6 +173,7 @@ export const useSessionStore = defineStore('sessions', () => {
       await cleanup();
     }
     sessions.value = sessions.value.filter((s) => s.id !== id);
+    delete sessionFramesVersions[id];
     if (activeSessionId.value === id) {
       activeSessionId.value = sessions.value[0]?.id ?? null;
     }
@@ -209,6 +216,7 @@ export const useSessionStore = defineStore('sessions', () => {
     // proxy reads through to the same target) without per-frame setter cost.
     appendFrameToSession(toRaw(session), fullFrame, maxBufferFrames.value);
 
+    notifyFramesChanged(sessionId);
     schedulePersist();
     return fullFrame;
   }
@@ -233,13 +241,14 @@ export const useSessionStore = defineStore('sessions', () => {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
     session.droppedBytes = total;
-    notifyFramesChanged();
   }
 
   function clearFrames(sessionId: string) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
+    const hadFrames = session.frames.length > 0 || session.pausedFrames.length > 0;
     resetSessionFrames(session);
+    if (hadFrames) notifyFramesChanged(sessionId);
     schedulePersist();
   }
 
@@ -250,6 +259,7 @@ export const useSessionStore = defineStore('sessions', () => {
     if (!paused && session.pausedFrames.length > 0) {
       // Flush the off-screen buffer back into the live view, preserving order.
       flushPausedFramesToLive(session, maxBufferFrames.value);
+      notifyFramesChanged(sessionId);
     }
     schedulePersist();
   }
@@ -281,7 +291,9 @@ export const useSessionStore = defineStore('sessions', () => {
   ) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    appendIdentifiedItem(session.quickCommands, command);
+    const commands = [...session.quickCommands];
+    appendIdentifiedItem(commands, command);
+    session.quickCommands = commands;
     schedulePersist();
   }
 
@@ -295,7 +307,9 @@ export const useSessionStore = defineStore('sessions', () => {
   function addMacro(sessionId: string, macro: Omit<Macro, 'id'>): string | undefined {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return undefined;
-    const id = appendIdentifiedItem(session.macros, macro);
+    const macros = [...session.macros];
+    const id = appendIdentifiedItem(macros, macro);
+    session.macros = macros;
     schedulePersist();
     return id;
   }
@@ -303,7 +317,9 @@ export const useSessionStore = defineStore('sessions', () => {
   function updateMacro(sessionId: string, macroId: string, patch: Partial<Omit<Macro, 'id'>>) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    if (!patchIdentifiedItem(session.macros, macroId, patch)) return;
+    const macros = [...session.macros];
+    if (!patchIdentifiedItem(macros, macroId, patch)) return;
+    session.macros = macros;
     schedulePersist();
   }
 
@@ -317,7 +333,9 @@ export const useSessionStore = defineStore('sessions', () => {
   function addTrigger(sessionId: string, trigger: Omit<Trigger, 'id'>): string | undefined {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return undefined;
-    const id = appendIdentifiedItem(session.triggers, trigger);
+    const triggers = [...session.triggers];
+    const id = appendIdentifiedItem(triggers, trigger);
+    session.triggers = triggers;
     schedulePersist();
     return id;
   }
@@ -329,7 +347,9 @@ export const useSessionStore = defineStore('sessions', () => {
   ) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    if (!patchIdentifiedItem(session.triggers, triggerId, patch)) return;
+    const triggers = [...session.triggers];
+    if (!patchIdentifiedItem(triggers, triggerId, patch)) return;
+    session.triggers = triggers;
     schedulePersist();
   }
 
@@ -346,7 +366,9 @@ export const useSessionStore = defineStore('sessions', () => {
   ): string | undefined {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return undefined;
-    const id = appendIdentifiedItem(session.highlights, highlight);
+    const highlights = [...session.highlights];
+    const id = appendIdentifiedItem(highlights, highlight);
+    session.highlights = highlights;
     schedulePersist();
     return id;
   }
@@ -358,7 +380,9 @@ export const useSessionStore = defineStore('sessions', () => {
   ) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    if (!patchIdentifiedItem(session.highlights, highlightId, patch)) return;
+    const highlights = [...session.highlights];
+    if (!patchIdentifiedItem(highlights, highlightId, patch)) return;
+    session.highlights = highlights;
     schedulePersist();
   }
 
@@ -453,7 +477,6 @@ export const useSessionStore = defineStore('sessions', () => {
         valueTs: hit.valueTs,
       };
     });
-    notifyFramesChanged();
   }
 
   function setModbusConfig(sessionId: string, patch: Partial<ModbusMasterConfig>) {
@@ -511,13 +534,14 @@ export const useSessionStore = defineStore('sessions', () => {
   function addLogAiMessage(sessionId: string, message: Omit<AiChatMessage, 'id' | 'timestamp'>) {
     const session = sessions.value.find((s) => s.id === sessionId);
     if (!session) return;
-    session.logAiMessages.push(
+    session.logAiMessages = [
+      ...session.logAiMessages,
       markRaw({
         ...message,
         id: crypto.randomUUID(),
         timestamp: Date.now(),
       }),
-    );
+    ];
     schedulePersist();
   }
 
@@ -532,8 +556,10 @@ export const useSessionStore = defineStore('sessions', () => {
     if (fromIndex === toIndex) return;
     if (fromIndex < 0 || fromIndex >= sessions.value.length) return;
     if (toIndex < 0 || toIndex >= sessions.value.length) return;
-    const [moved] = sessions.value.splice(fromIndex, 1);
-    sessions.value.splice(toIndex, 0, moved);
+    const reordered = [...sessions.value];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved);
+    sessions.value = reordered;
     schedulePersist();
   }
 
@@ -547,6 +573,7 @@ export const useSessionStore = defineStore('sessions', () => {
     // read session.frames.length through the shallowRef sessions should track
     // this (or rely on the triggerRef), since the frames array is non-reactive.
     framesVersion,
+    getSessionFramesVersion,
     createSession,
     removeSession,
     setActiveSession,

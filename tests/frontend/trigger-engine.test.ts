@@ -26,7 +26,12 @@ function textTrigger(
   };
 }
 
-function hexTrigger(id: string, pattern: string, response: string, opts: Partial<Trigger> = {}): Trigger {
+function hexTrigger(
+  id: string,
+  pattern: string,
+  response: string,
+  opts: Partial<Trigger> = {},
+): Trigger {
   return {
     id,
     name: id,
@@ -108,16 +113,10 @@ test('a trigger fires at most once per feed call even if pattern repeats', () =>
 });
 
 test('multiple distinct triggers can fire in one feed', () => {
-  const eng = new TriggerEngine([
-    textTrigger('t1', 'foo', 'A'),
-    textTrigger('t2', 'bar', 'B'),
-  ]);
+  const eng = new TriggerEngine([textTrigger('t1', 'foo', 'A'), textTrigger('t2', 'bar', 'B')]);
   const fires = eng.feed(bytes('foo and bar'));
   assert.equal(fires.length, 2);
-  assert.deepEqual(
-    fires.map((f) => f.triggerId).sort(),
-    ['t1', 't2'],
-  );
+  assert.deepEqual(fires.map((f) => f.triggerId).sort(), ['t1', 't2']);
 });
 
 test('setTriggers replaces the set and resets buffers', () => {

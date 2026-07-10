@@ -41,7 +41,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { NButton, NTabPane, NTabs, useMessage } from 'naive-ui';
-import { Bot, Pin, PinOff } from 'lucide-vue-next';
+import { Bot, Pin, PinOff } from '@lucide/vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAiWindowSession } from '../../composables/useAiWindowSession';
 import { startAiWindowDrag } from '../../lib/ipc';

@@ -92,9 +92,13 @@ function benchMedian(name: string, fn: () => unknown, iters: number, rounds = 5)
   const ops: number[] = [];
   let lastMs = 0;
   for (let r = 0; r < rounds; r++) {
-    const res = bench(name, () => {
-      fn();
-    }, iters);
+    const res = bench(
+      name,
+      () => {
+        fn();
+      },
+      iters,
+    );
     ops.push(res.opsPerSec);
     lastMs = res.ms;
   }
@@ -140,18 +144,26 @@ function summarize(r: BenchResult): string {
 }
 
 test('bench: formatHex over 50k frames', () => {
-  const r = benchMedian('formatHex_50k', () => {
-    for (const f of FRAMES) formatHex(f.data);
-  }, 1);
+  const r = benchMedian(
+    'formatHex_50k',
+    () => {
+      for (const f of FRAMES) formatHex(f.data);
+    },
+    1,
+  );
   console.log(`[bench] ${summarize(r)} | ${fmt(TOTAL_BYTES)} bytes total`);
   recordResult(r.name, r.opsPerSec);
   assertNoRegression(r.name, r.opsPerSec);
 });
 
 test('bench: formatUtf8 over 50k frames', () => {
-  const r = benchMedian('formatUtf8_50k', () => {
-    for (const f of FRAMES) formatUtf8(f.data);
-  }, 1);
+  const r = benchMedian(
+    'formatUtf8_50k',
+    () => {
+      for (const f of FRAMES) formatUtf8(f.data);
+    },
+    1,
+  );
   console.log(`[bench] ${summarize(r)}`);
   recordResult(r.name, r.opsPerSec);
   assertNoRegression(r.name, r.opsPerSec);
@@ -161,9 +173,13 @@ test('bench: concatUint8Arrays (RX flush, 64-chunk batch)', () => {
   // Simulate one RAF flush: ~64 chunks concatenated into one frame.
   const batch = FRAMES.slice(0, 64).map((f) => f.data);
   const batchBytes = batch.reduce((sum, chunk) => sum + chunk.length, 0);
-  const r = benchMedian('concat_64chunks', () => {
-    concatUint8Arrays(batch, batchBytes);
-  }, 10000);
+  const r = benchMedian(
+    'concat_64chunks',
+    () => {
+      concatUint8Arrays(batch, batchBytes);
+    },
+    10000,
+  );
   console.log(`[bench] ${summarize(r)}`);
   recordResult(r.name, r.opsPerSec);
   assertNoRegression(r.name, r.opsPerSec);
@@ -211,27 +227,35 @@ test('bench: MERGED-view rebuild over 50k frames', () => {
 });
 
 test('bench: protocol parser feed over 50k frames', () => {
-  const r = benchMedian('protocol_parser_feed_50k', () => {
-    const parser = new ProtocolParser({ kind: 'fixed', frameSize: 64 });
-    let parsed = 0;
-    for (const f of FRAMES) {
-      parsed += parser.feed(f.data).length;
-    }
-    if (parsed === 0) throw new Error('parser emitted no frames');
-  }, 1);
+  const r = benchMedian(
+    'protocol_parser_feed_50k',
+    () => {
+      const parser = new ProtocolParser({ kind: 'fixed', frameSize: 64 });
+      let parsed = 0;
+      for (const f of FRAMES) {
+        parsed += parser.feed(f.data).length;
+      }
+      if (parsed === 0) throw new Error('parser emitted no frames');
+    },
+    1,
+  );
   console.log(`[bench] ${summarize(r)}`);
   recordResult(r.name, r.opsPerSec);
   assertNoRegression(r.name, r.opsPerSec);
 });
 
 test('bench: waveform decode/parse over 50k frames', () => {
-  const r = benchMedian('waveform_parse_50k', () => {
-    let samples = 0;
-    for (const f of WAVEFORM_FRAMES) {
-      samples += parseSampleLine(decodeFrameText(f.data)).length;
-    }
-    if (samples === 0) throw new Error('waveform parser emitted no samples');
-  }, 1);
+  const r = benchMedian(
+    'waveform_parse_50k',
+    () => {
+      let samples = 0;
+      for (const f of WAVEFORM_FRAMES) {
+        samples += parseSampleLine(decodeFrameText(f.data)).length;
+      }
+      if (samples === 0) throw new Error('waveform parser emitted no samples');
+    },
+    1,
+  );
   console.log(`[bench] ${summarize(r)}`);
   recordResult(r.name, r.opsPerSec);
   assertNoRegression(r.name, r.opsPerSec);
@@ -244,13 +268,17 @@ test('bench: LRU format cache hit rate (1000-entry, repeated display)', () => {
     cache.set(`f${f.id}:HEX:true`, formatHex(f.data));
   }
   const subset = FRAMES.slice(0, 1000);
-  const r = benchMedian('lru_hit_1000', () => {
-    for (const f of subset) {
-      const key = `f${f.id}:HEX:true`;
-      const v = cache.get(key);
-      if (v === undefined) cache.set(key, formatHex(f.data));
-    }
-  }, 100);
+  const r = benchMedian(
+    'lru_hit_1000',
+    () => {
+      for (const f of subset) {
+        const key = `f${f.id}:HEX:true`;
+        const v = cache.get(key);
+        if (v === undefined) cache.set(key, formatHex(f.data));
+      }
+    },
+    100,
+  );
   console.log(`[bench] ${summarize(r)}`);
   recordResult(r.name, r.opsPerSec);
   assertNoRegression(r.name, r.opsPerSec);
@@ -267,10 +295,14 @@ test('bench: SerialRxQueue drop path (512 sustained overflowing enqueues)', () =
   // (shift + recordDrop) — the backpressure safety net for high-baud bursts.
   const queue = new SerialRxQueue({ maxBytes: 64 * 1024, maxChunks: 512 });
   const chunk = new Uint8Array(256);
-  const r = benchMedian('serialrxqueue_drop_512', () => {
-    queue.reset();
-    for (let i = 0; i < 512; i++) queue.enqueue(chunk);
-  }, 50);
+  const r = benchMedian(
+    'serialrxqueue_drop_512',
+    () => {
+      queue.reset();
+      for (let i = 0; i < 512; i++) queue.enqueue(chunk);
+    },
+    50,
+  );
   console.log(`[bench] ${summarize(r)} | dropped ${queue.totalDroppedBytes} bytes`);
   recordResult(r.name, r.opsPerSec);
   assertNoRegression(r.name, r.opsPerSec);
@@ -293,14 +325,18 @@ test('bench: sessions store 50k-frame push (addFrame hot path)', () => {
     direction: f.direction,
     data: f.data,
   }));
-  const r = benchMedian('sessions_push_50k', () => {
-    setActivePinia(createPinia());
-    const store = useSessionStore();
-    const id = store.createSession('BENCH', cfg);
-    for (let i = 0; i < seed.length; i++) {
-      store.addFrame(id, { direction: seed[i].direction, data: seed[i].data });
-    }
-  }, 1);
+  const r = benchMedian(
+    'sessions_push_50k',
+    () => {
+      setActivePinia(createPinia());
+      const store = useSessionStore();
+      const id = store.createSession('BENCH', cfg);
+      for (let i = 0; i < seed.length; i++) {
+        store.addFrame(id, { direction: seed[i].direction, data: seed[i].data });
+      }
+    },
+    1,
+  );
   console.log(`[bench] ${summarize(r)}`);
   recordResult(r.name, r.opsPerSec);
   assertNoRegression(r.name, r.opsPerSec);
@@ -325,10 +361,14 @@ test('bench: Modbus read-batch composition (256 contiguous holding regs)', () =>
     periodicRead: true,
     periodicWrite: false,
   }));
-  const r = benchMedian('modbus_readbatch_256', () => {
-    const batches = buildModbusReadBatches(regs);
-    if (batches.length === 0) throw new Error('expected at least one batch');
-  }, 200);
+  const r = benchMedian(
+    'modbus_readbatch_256',
+    () => {
+      const batches = buildModbusReadBatches(regs);
+      if (batches.length === 0) throw new Error('expected at least one batch');
+    },
+    200,
+  );
   console.log(`[bench] ${summarize(r)}`);
   recordResult(r.name, r.opsPerSec);
   assertNoRegression(r.name, r.opsPerSec);

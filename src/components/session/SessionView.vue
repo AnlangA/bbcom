@@ -39,7 +39,7 @@
         v-if="viewMode === 'waveform'"
         ref="waveformRef"
         :frames="props.session.frames"
-        :frames-version="sessionStore.framesVersion"
+        :frames-version="visibleFramesVersion"
         direction="RX"
         :mode="props.session.waveformSourceMode"
         :channel-labels="waveformChannelLabels"
@@ -72,11 +72,13 @@
         v-else-if="viewMode === 'parser'"
         :session-id="props.session.id"
         :frames="props.session.frames"
+        :frames-version="visibleFramesVersion"
         @close="viewMode = 'terminal'"
       />
       <DataPacketList
         v-else
         :frames="props.session.frames"
+        :frames-version="visibleFramesVersion"
         :highlights="props.session.highlights"
       />
     </div>
@@ -95,7 +97,7 @@
       />
     </div>
     <input
-      ref="writeSourceInput"
+      :ref="setWriteSourceInput"
       type="file"
       accept=".bbreg,.jsonl,.txt"
       hidden
@@ -105,11 +107,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, defineAsyncComponent, onMounted, ref } from 'vue';
 import DataPacketList from '../terminal/DataPacketList.vue';
-import WaveformPanel from '../terminal/WaveformPanel.vue';
-import ParserPanel from '../terminal/ParserPanel.vue';
-import ModbusPanel from '../terminal/ModbusPanel.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
 import SessionToolbar, { type SessionViewMode } from './SessionToolbar.vue';
 import { useSerialConnection } from '../../composables/useSerialConnection';
@@ -126,12 +125,21 @@ import { EXPORT_OPTIONS, type ExportChoice } from '../../lib/constants';
 import { formatBytes } from '../../lib/format';
 import { t } from '../../lib/i18n';
 import type { SerialSession } from '../../types';
+import { useActiveFrameVersion } from '../../features/sessions/runtime/active-frame-version';
 
 const props = defineProps<{
   session: SerialSession;
+  active: boolean;
 }>();
 
+const WaveformPanel = defineAsyncComponent(() => import('../terminal/WaveformPanel.vue'));
+const ParserPanel = defineAsyncComponent(() => import('../terminal/ParserPanel.vue'));
+const ModbusPanel = defineAsyncComponent(() => import('../terminal/ModbusPanel.vue'));
+
 const sessionStore = useSessionStore();
+const active = computed(() => props.active);
+const sessionFramesVersion = computed(() => sessionStore.getSessionFramesVersion(props.session.id));
+const visibleFramesVersion = useActiveFrameVersion(active, sessionFramesVersion);
 const appStore = useAppStore();
 const { requestClearFrames } = useSessionActions();
 const { isExporting, exportData } = useExport();
@@ -211,6 +219,7 @@ useSessionShortcuts({
   onClear: clear,
   onTogglePause: togglePause,
   isConnected: () => props.session.isConnected,
+  isActive: () => sessionStore.activeSessionId === props.session.id,
 });
 
 const sendingBreak = ref(false);
@@ -261,6 +270,10 @@ const {
     viewMode.value = 'waveform';
   },
 });
+
+function setWriteSourceInput(element: unknown) {
+  writeSourceInput.value = element instanceof HTMLInputElement ? element : null;
+}
 
 async function handleSendBreak() {
   sendingBreak.value = true;

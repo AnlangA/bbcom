@@ -8,7 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+// Deliberately no `Debug`: this request contains the user's API key.
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalAiRequest {
     pub prompt: String,
@@ -27,7 +28,8 @@ pub struct TerminalAiResponse {
     pub risk: String,
 }
 
-#[derive(Debug, Deserialize)]
+// Deliberately no `Debug`: this request contains the user's API key.
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogAiRequest {
     pub prompt: String,

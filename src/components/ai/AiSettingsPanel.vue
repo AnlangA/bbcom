@@ -38,7 +38,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import { NButton, NInput, NSwitch, useMessage } from 'naive-ui';
-import { KeyRound, Settings2 } from 'lucide-vue-next';
+import { KeyRound, Settings2 } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
 import { t } from '../../lib/i18n';
 

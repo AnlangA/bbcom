@@ -62,7 +62,10 @@ test('every preset config is a valid ParserConfig shape (smoke)', () => {
     } else if (cfg.kind === 'fixed') {
       assert.ok(cfg.frameSize > 0, `${p.id}: frameSize > 0`);
     } else {
-      assert.ok(cfg.lengthSize === 1 || cfg.lengthSize === 2 || cfg.lengthSize === 4, `${p.id}: valid lengthSize`);
+      assert.ok(
+        cfg.lengthSize === 1 || cfg.lengthSize === 2 || cfg.lengthSize === 4,
+        `${p.id}: valid lengthSize`,
+      );
     }
   }
 });

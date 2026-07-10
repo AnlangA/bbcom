@@ -1,6 +1,7 @@
 use serde::Serialize;
 use tauri::{Emitter, LogicalSize, Manager};
 
+use crate::commands::ai::AI_WINDOW_LABEL;
 use crate::models::errors::AppError;
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +62,12 @@ pub fn resize_ai_window(
     app: tauri::AppHandle,
     request: ResizeAiWindowRequest,
 ) -> Result<(), AppError> {
+    if !request.width.is_finite() || !request.height.is_finite() {
+        return Err(AppError::ValidationError {
+            message: "window dimensions must be finite".to_string(),
+            field: "size".to_string(),
+        });
+    }
     let window = app
         .get_webview_window("ai-assistant")
         .ok_or_else(|| AppError::AiError {
@@ -77,7 +84,7 @@ pub fn resize_ai_window(
 /// Bounds enforced by the AI window's resizable range (see lib.rs builder).
 pub const AI_WINDOW_MIN_WIDTH: f64 = 420.0;
 pub const AI_WINDOW_MAX_WIDTH: f64 = 920.0;
-pub const AI_WINDOW_MIN_HEIGHT: f64 = 112.0;
+pub const AI_WINDOW_MIN_HEIGHT: f64 = 120.0;
 pub const AI_WINDOW_MAX_HEIGHT: f64 = 560.0;
 
 /// Clamp a requested AI window size to its allowed range. Pure so it can be unit-tested
@@ -91,6 +98,12 @@ pub fn clamp_window_size(width: f64, height: f64) -> (f64, f64) {
 
 #[tauri::command]
 pub fn start_ai_window_drag(window: tauri::Window) -> Result<(), AppError> {
+    if window.label() != AI_WINDOW_LABEL {
+        return Err(AppError::ValidationError {
+            message: "window is not allowed to start the AI drag operation".to_string(),
+            field: "window".to_string(),
+        });
+    }
     window.start_dragging().map_err(|e| AppError::AiError {
         message: e.to_string(),
     })
@@ -102,7 +115,7 @@ mod tests {
 
     #[test]
     fn clamps_undersized_request_to_minimum() {
-        assert_eq!(clamp_window_size(100.0, 50.0), (420.0, 112.0));
+        assert_eq!(clamp_window_size(100.0, 50.0), (420.0, 120.0));
     }
 
     #[test]

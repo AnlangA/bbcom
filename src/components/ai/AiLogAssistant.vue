@@ -99,7 +99,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { NButton, NInput, NInputNumber, NSelect, NTag, useMessage } from 'naive-ui';
-import { Bot, MessageSquareText, Trash2, WandSparkles } from 'lucide-vue-next';
+import { Bot, MessageSquareText, Trash2, WandSparkles } from '@lucide/vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/app';
 import type { AiModel, LogAiContextMode, SerialSession } from '../../types';

@@ -96,11 +96,12 @@ import { useSessionStore } from '../../stores/sessions';
 import ParserConfigBar from './ParserConfigBar.vue';
 import ParserStatsBar from './ParserStatsBar.vue';
 import ParserFrameDetail from './ParserFrameDetail.vue';
-import { Copy } from 'lucide-vue-next';
+import { Copy } from '@lucide/vue';
 
 const props = defineProps<{
   sessionId: string;
   frames: DataFrame[];
+  framesVersion: number;
 }>();
 
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -215,7 +216,7 @@ function syncParsedFrames() {
 }
 
 watch(
-  () => [props.frames.length, parserConfigKey(currentConfig.value)] as const,
+  () => [props.framesVersion, props.frames.length, parserConfigKey(currentConfig.value)] as const,
   syncParsedFrames,
   {
     immediate: true,

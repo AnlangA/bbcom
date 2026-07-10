@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_PROTOCOL_PARSER_MAX_PENDING_BYTES,
   ProtocolParser,
   byteAscii,
   byteHex,
@@ -69,6 +70,27 @@ test('fixed-size parser emits exactly N bytes per frame', () => {
   assert.equal(p.pending, 1, 'one leftover byte buffered');
 });
 
+test('fixed-size parser drains 32 KiB of one-byte frames in linear time', () => {
+  const input = new Uint8Array(32 * 1024);
+  for (let i = 0; i < input.length; i += 1) input[i] = i & 0xff;
+  const p = new ProtocolParser({ kind: 'fixed', frameSize: 1 });
+
+  const started = performance.now();
+  const out = p.feed(input);
+  const elapsed = performance.now() - started;
+
+  assert.equal(out.length, input.length);
+  assert.equal(out[0].data[0], 0);
+  assert.equal(out[0].offset, 0);
+  assert.equal(out.at(-1)?.data[0], 0xff);
+  assert.equal(out.at(-1)?.offset, input.length - 1);
+  assert.equal(p.pending, 0);
+  // The old implementation copied every remaining suffix and took >1s for
+  // this case on the baseline machine. Leave ample CI headroom while guarding
+  // against accidentally restoring quadratic extraction.
+  assert.ok(elapsed < 500, `32 KiB fixed parse took ${elapsed.toFixed(1)}ms`);
+});
+
 test('length-based parser reads a 1-byte length prefix (big-endian)', () => {
   // Frame: [len=4][payload 4 bytes]. lengthAdjust = 1 (the length byte itself).
   const cfg: ParserConfig = {
@@ -106,6 +128,30 @@ test('length-based parser reads a 2-byte little-endian length', () => {
   assert.deepEqual(Array.from(out[0].data), [0x05, 0x00, 1, 2, 3, 4, 5]);
 });
 
+test('length-based parser drains many small frames without copying each remaining suffix', () => {
+  const frameCount = 16 * 1024;
+  const input = new Uint8Array(frameCount * 2);
+  for (let i = 0; i < frameCount; i += 1) {
+    input[i * 2] = 1;
+    input[i * 2 + 1] = i & 0xff;
+  }
+  const p = new ProtocolParser({
+    kind: 'length',
+    lengthOffset: 0,
+    lengthSize: 1,
+    bigEndian: true,
+    lengthAdjust: 1,
+  });
+
+  const out = p.feed(input);
+
+  assert.equal(out.length, frameCount);
+  assert.deepEqual(Array.from(out[0].data), [1, 0]);
+  assert.deepEqual(Array.from(out.at(-1)?.data ?? []), [1, 0xff]);
+  assert.equal(out.at(-1)?.offset, input.length - 2);
+  assert.equal(p.pending, 0);
+});
+
 test('length-based parser resyncs on an implausible length (drops 1 byte)', () => {
   // lengthValue=0 at offset 0 => total = 0 + 1 (adjust) = 1; that's fine.
   // Use a huge lengthValue to trigger the resync path: 0xFF => total=256, fine.
@@ -124,6 +170,7 @@ test('length-based parser resyncs on an implausible length (drops 1 byte)', () =
   assert.equal(out.length, 0, 'no frame emitted for implausible length');
   // After dropping 1 byte, only 3 bytes remain — not enough for a 4-byte header.
   assert.equal(p.pending, 3);
+  assert.deepEqual(p.stats, { discardedBytes: 1, overflowEvents: 0, resyncEvents: 1 });
 });
 
 test('reset clears the partial buffer', () => {
@@ -135,7 +182,7 @@ test('reset clears the partial buffer', () => {
   assert.equal(p.pending, 0);
 });
 
-test('delimiter parser buffers indefinitely without a match (no crash)', () => {
+test('delimiter parser retains unmatched bytes while below its safety ceiling', () => {
   const cfg: ParserConfig = {
     kind: 'delimiter',
     delimiter: [0x00],
@@ -144,7 +191,43 @@ test('delimiter parser buffers indefinitely without a match (no crash)', () => {
   const p = new ProtocolParser(cfg);
   const out = p.feed(bytes('no terminator here'));
   assert.equal(out.length, 0);
-  assert.ok(p.pending > 0);
+  assert.equal(p.pending, bytes('no terminator here').length);
+  assert.deepEqual(p.stats, { discardedBytes: 0, overflowEvents: 0, resyncEvents: 0 });
+});
+
+test('delimiter parser bounds an unmatched stream and exposes overflow statistics', () => {
+  const p = new ProtocolParser({ kind: 'delimiter', delimiter: [0x00], includeDelimiter: false });
+  const extra = 257;
+  const input = new Uint8Array(DEFAULT_PROTOCOL_PARSER_MAX_PENDING_BYTES + extra);
+  input.fill(0x41);
+
+  assert.deepEqual(p.feed(input), []);
+  assert.equal(p.pending, DEFAULT_PROTOCOL_PARSER_MAX_PENDING_BYTES);
+  assert.deepEqual(p.stats, {
+    discardedBytes: extra,
+    overflowEvents: 1,
+    resyncEvents: 1,
+  });
+
+  p.reset();
+  assert.equal(p.pending, 0);
+  assert.deepEqual(p.stats, { discardedBytes: 0, overflowEvents: 0, resyncEvents: 0 });
+});
+
+test('delimiter overflow preserves a split delimiter in the retained suffix', () => {
+  const p = new ProtocolParser(
+    { kind: 'delimiter', delimiter: [0x0d, 0x0a], includeDelimiter: false },
+    { maxPendingBytes: 4 },
+  );
+
+  assert.deepEqual(p.feed(new Uint8Array([1, 2, 3, 4, 5, 0x0d])), []);
+  assert.equal(p.pending, 4);
+  assert.deepEqual(p.stats, { discardedBytes: 2, overflowEvents: 1, resyncEvents: 1 });
+
+  const out = p.feed(new Uint8Array([0x0a]));
+  assert.equal(out.length, 1);
+  assert.deepEqual(Array.from(out[0].data), [3, 4, 5]);
+  assert.equal(p.pending, 0);
 });
 
 test('byteHex renders two-char lowercase hex', () => {

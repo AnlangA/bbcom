@@ -1,7 +1,8 @@
 name: CI
 
-# PR-level continuous integration: lint + format check + build + tests + the
-# performance benchmark smoke run, plus the Rust test/clippy/fmt gates. Runs on
+# PR-level continuous integration: dependency audit, architecture, lint,
+# formatting, build, tests, coverage and benchmark smoke checks, plus the Rust
+# audit/test/clippy/fmt gates. Runs on
 # every push to master and every pull request so a regression is caught before
 # merge. (The tag-triggered cross-platform release build lives in release.yml.)
 on:
@@ -11,7 +12,7 @@ on:
 
 jobs:
   frontend:
-    name: Frontend (lint + format + build + test + bench)
+    name: Frontend (audit + architecture + quality + coverage)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -30,11 +31,17 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Dependency audit (moderate and above)
+        run: pnpm audit --audit-level moderate
+
       - name: Lint
         run: pnpm run lint
 
       - name: Format check
-        run: pnpm exec prettier --check src/
+        run: pnpm run format:check
+
+      - name: Architecture boundaries and cycles
+        run: pnpm run architecture
 
       - name: Type-check + build
         run: pnpm run build
@@ -61,14 +68,8 @@ jobs:
       - name: Coverage gate (lib/ per-file >=90%)
         run: pnpm run coverage:lib
 
-      # Circular-dependency gate: madge fails if any new import cycle is
-      # introduced. Scans the TS source (Vue SFCs excluded — babel can't parse
-      # them; their script blocks share the same module graph).
-      - name: Circular-dependency gate
-        run: pnpm run cycles
-
   rust:
-    name: Rust (fmt + clippy + test)
+    name: Rust (audit + fmt + clippy + test)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -89,14 +90,20 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Install Rust advisory scanner
+        run: cargo install cargo-audit --locked
+
+      - name: Rust dependency audit
+        run: cargo audit
+
       - name: Format check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: Clippy (deny warnings on changed code paths)
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked -- -D warnings
 
       - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
 
       # Rust coverage report: cargo-tarpaulin runs only on Linux. Reported
       # as a build artifact; not yet a hard gate (no committed threshold), but

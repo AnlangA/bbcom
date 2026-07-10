@@ -268,7 +268,7 @@ import {
   MoveVertical,
   Crosshair,
   CircleDot,
-} from 'lucide-vue-next';
+} from '@lucide/vue';
 import { NTooltip } from 'naive-ui';
 import { t } from '../../lib/i18n';
 import type { WaveformSourceMode } from '../../types/waveform';

@@ -90,7 +90,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
-import { Repeat2, SendHorizontal, SquareStop } from 'lucide-vue-next';
+import { Repeat2, SendHorizontal, SquareStop } from '@lucide/vue';
 import { encodeUtf8, isValidHex as checkValidHex, normalizeHex, parseHex } from '../../lib/format';
 import { checksumAlgoOptionsWithNone } from '../../lib/checksum-constants';
 import { MAX_INPUT_SIZE } from '../../types';
@@ -98,6 +98,7 @@ import { useAppStore } from '../../stores/app';
 import { useSessionStore } from '../../stores/sessions';
 import { calculateChecksum } from '../../lib/ipc';
 import { t } from '../../lib/i18n';
+import { AsyncSendLoop } from '../../features/serial/application/async-send-loop';
 import type { ChecksumType, LineEnding, QuickCommand, SendHistoryEntry } from '../../types';
 import ToolsTabs from './ToolsTabs.vue';
 
@@ -135,8 +136,12 @@ const loopInterval = computed({
 const appendChecksum = ref<'none' | ChecksumType>('none');
 const looping = ref(false);
 const showFlash = ref(false);
-let loopTimer: ReturnType<typeof setInterval> | null = null;
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
+const sendLoop = new AsyncSendLoop(
+  () => handleSend(),
+  () => loopInterval.value,
+  () => message.error(t('send.error.failed')),
+);
 
 const lineEndingOptions = computed(() => [
   { label: t('send.lineEnding.none'), value: 'none' },
@@ -188,6 +193,7 @@ watch(
   () => appStore.aiCommandSeq,
   () => {
     if (!appStore.aiCommandDraft) return;
+    if (props.sessionId && props.sessionId !== sessionStore.activeSessionId) return;
     if (!sessionStore.activeSession) {
       appStore.setPendingAiCommand(appStore.aiCommandDraft);
       return;
@@ -265,17 +271,13 @@ function toggleLoop() {
 }
 
 function startLoop() {
-  if (!canSend.value || loopTimer) return;
+  if (!canSend.value || sendLoop.isRunning) return;
   looping.value = true;
-  handleSend();
-  loopTimer = setInterval(handleSend, loopInterval.value);
+  sendLoop.start();
 }
 
 function stopLoop() {
-  if (loopTimer) {
-    clearInterval(loopTimer);
-    loopTimer = null;
-  }
+  sendLoop.stop();
   looping.value = false;
 }
 

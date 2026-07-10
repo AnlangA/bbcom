@@ -145,12 +145,14 @@ test('nextTargets skips rows without opt-in, writable FC, or matching source seq
   source.load([{ t: 1, slave: 1, fc: 0x03, addr: 5, type: 'uint16', value: 77 }], 'source.bbreg');
 
   assert.deepEqual(
-    source.nextTargets([
-      reg({ id: 'matched', functionCode: 0x06, address: 5 }),
-      reg({ id: 'not-periodic', functionCode: 0x06, address: 5, periodicWrite: false }),
-      reg({ id: 'read-row', functionCode: 0x03, address: 5 }),
-      reg({ id: 'missing-sequence', functionCode: 0x06, address: 6 }),
-    ]).map((target) => target.reg.id),
+    source
+      .nextTargets([
+        reg({ id: 'matched', functionCode: 0x06, address: 5 }),
+        reg({ id: 'not-periodic', functionCode: 0x06, address: 5, periodicWrite: false }),
+        reg({ id: 'read-row', functionCode: 0x03, address: 5 }),
+        reg({ id: 'missing-sequence', functionCode: 0x06, address: 6 }),
+      ])
+      .map((target) => target.reg.id),
     ['matched'],
   );
 });

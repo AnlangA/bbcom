@@ -25,7 +25,11 @@ use crate::models::errors::AppError;
 use cooldown::enforce_ai_cooldown;
 use parser::{parse_log_ai_response, parse_terminal_ai_response};
 use prompts::{LOG_SYSTEM_PROMPT, TERMINAL_SYSTEM_PROMPT};
-use service::{MAX_AI_CONTEXT_BYTES, run_ai_chat, truncate_to_utf8_boundary, validate_ai_inputs};
+use service::{
+    MAX_AI_CONTEXT_BYTES, MAX_AI_CONTEXT_MODE_BYTES, MAX_AI_MODEL_BYTES, MAX_AI_SESSION_META_BYTES,
+    MAX_AI_SHELL_BYTES, build_ai_messages, run_ai_chat, truncate_to_utf8_boundary,
+    validate_ai_inputs, validate_optional_max_bytes,
+};
 
 /// Webview window label for the standalone AI assistant window.
 pub const AI_WINDOW_LABEL: &str = "ai-assistant";
@@ -41,27 +45,45 @@ pub const AI_WINDOW_LABEL: &str = "ai-assistant";
 pub async fn terminal_ai_assist(
     request: TerminalAiRequest,
 ) -> Result<TerminalAiResponse, AppError> {
+    validate_ai_inputs(&request.prompt, &request.api_key, "请输入要生成的终端命令")?;
+    validate_optional_max_bytes(
+        request.model.as_deref(),
+        MAX_AI_MODEL_BYTES,
+        "model",
+        "模型名称",
+    )?;
+    validate_optional_max_bytes(
+        request.shell.as_deref(),
+        MAX_AI_SHELL_BYTES,
+        "shell",
+        "目标 Shell",
+    )?;
+
     let prompt = request.prompt.trim();
     let api_key = request.api_key.trim();
-    validate_ai_inputs(prompt, api_key, "请输入要生成的终端命令")?;
     enforce_ai_cooldown().await?;
 
     let context = truncate_to_utf8_boundary(
-        &request.context.unwrap_or_default(),
+        request.context.as_deref().unwrap_or_default(),
         MAX_AI_CONTEXT_BYTES,
         "terminal AI context",
     );
-    let shell = request.shell.unwrap_or_else(|| "linux/busybox".to_string());
-    let user_prompt = format!(
-        "System prompt:\n{TERMINAL_SYSTEM_PROMPT}\n\nTarget shell: {shell}\nRecent serial console context:\n{context}\n\nUser request: {}",
-        prompt
+    let shell = request.shell.as_deref().unwrap_or("linux/busybox");
+    let untrusted_context = format!(
+        "Target shell metadata: {shell}\nRecent serial console context:\n{}",
+        if context.is_empty() {
+            "(none)"
+        } else {
+            &context
+        }
     );
+    let messages = build_ai_messages(TERMINAL_SYSTEM_PROMPT, untrusted_context, prompt);
 
     let model = request.model.as_deref().unwrap_or("glm-4.5-air");
     let use_coding_plan = request.enable_coding_plan.unwrap_or(false);
     let content = run_ai_chat(
         model,
-        user_prompt,
+        messages,
         api_key,
         use_coding_plan,
         "AI 没有返回可用命令",
@@ -76,9 +98,28 @@ pub async fn terminal_ai_assist(
 /// only after input validation passes.
 #[tauri::command]
 pub async fn log_ai_assist(request: LogAiRequest) -> Result<LogAiResponse, AppError> {
+    validate_ai_inputs(&request.prompt, &request.api_key, "请输入日志分析问题")?;
+    validate_optional_max_bytes(
+        request.model.as_deref(),
+        MAX_AI_MODEL_BYTES,
+        "model",
+        "模型名称",
+    )?;
+    validate_optional_max_bytes(
+        request.context_mode.as_deref(),
+        MAX_AI_CONTEXT_MODE_BYTES,
+        "contextMode",
+        "上下文模式",
+    )?;
+    validate_optional_max_bytes(
+        request.session_meta.as_deref(),
+        MAX_AI_SESSION_META_BYTES,
+        "sessionMeta",
+        "会话元数据",
+    )?;
+
     let prompt = request.prompt.trim();
     let api_key = request.api_key.trim();
-    validate_ai_inputs(prompt, api_key, "请输入日志分析问题")?;
 
     if request.context.trim().is_empty() {
         return Err(AppError::ValidationError {
@@ -89,23 +130,22 @@ pub async fn log_ai_assist(request: LogAiRequest) -> Result<LogAiResponse, AppEr
 
     enforce_ai_cooldown().await?;
 
+    let backend_context_truncated = request.context.len() > MAX_AI_CONTEXT_BYTES;
     let context =
         truncate_to_utf8_boundary(&request.context, MAX_AI_CONTEXT_BYTES, "log AI context");
-    let context_mode = request
-        .context_mode
-        .unwrap_or_else(|| "latest-10k".to_string());
-    let context_truncated = request.context_truncated.unwrap_or(false);
-    let session_meta = request.session_meta.unwrap_or_default();
-    let user_prompt = format!(
-        "System prompt:\n{LOG_SYSTEM_PROMPT}\n\nSession:\n{session_meta}\n\nContext mode: {context_mode}\nContext truncated: {context_truncated}\nSerial log context:\n{context}\n\nUser question: {}",
-        prompt
+    let context_mode = request.context_mode.as_deref().unwrap_or("latest-10k");
+    let context_truncated = request.context_truncated.unwrap_or(false) || backend_context_truncated;
+    let session_meta = request.session_meta.as_deref().unwrap_or_default();
+    let untrusted_context = format!(
+        "Session metadata:\n{session_meta}\nContext mode: {context_mode}\nContext truncated: {context_truncated}\nSerial log context:\n{context}"
     );
+    let messages = build_ai_messages(LOG_SYSTEM_PROMPT, untrusted_context, prompt);
 
     let model = request.model.as_deref().unwrap_or("glm-4.5-air");
     let use_coding_plan = request.enable_coding_plan.unwrap_or(false);
     let content = run_ai_chat(
         model,
-        user_prompt,
+        messages,
         api_key,
         use_coding_plan,
         "AI 没有返回可用日志分析",

@@ -104,7 +104,12 @@ test('skips the trailing delay on the last step', async () => {
       if (i === 1) elapsed = Date.now() - t0;
     },
   });
-  await run(macro([{ data: 'a', isHex: false, delayMs: 200 }, { data: 'b', isHex: false, delayMs: 0 }]));
+  await run(
+    macro([
+      { data: 'a', isHex: false, delayMs: 200 },
+      { data: 'b', isHex: false, delayMs: 0 },
+    ]),
+  );
   // The 200ms delay is inter-step (after step 0), so step 1 starts ~200ms in.
   // If the last-step delay were NOT skipped we'd see no difference here (last
   // delay is 0 anyway); this test guards the inter-step gap itself.
