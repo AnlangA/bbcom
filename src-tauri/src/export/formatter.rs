@@ -211,17 +211,18 @@ mod tests {
 #[cfg(test)]
 mod ipc_sim_tests {
     use crate::commands::export::{AppendExportBatchRequest, BeginExportRequest};
-    use crate::export::session::{ExportSessionManager, validate_export_path};
+    use crate::commands::file_grants::{FileGrantManager, SaveTargetPurpose};
+    use crate::export::session::ExportSessionManager;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static SIM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    fn frontend_begin_payload(format: &str, path: &str) -> String {
+    fn frontend_begin_payload(format: &str, token: &str) -> String {
         serde_json::json!({
             "format": format,
-            "path": path
+            "token": token
         })
         .to_string()
     }
@@ -249,12 +250,24 @@ mod ipc_sim_tests {
             .as_nanos();
         let c = SIM_COUNTER.fetch_add(1, Ordering::Relaxed);
         path.push(format!("bbcom-ipc-sim-{nanos}-{c}.{ext}"));
-        let path_str = path.to_string_lossy().to_string();
+        let purpose = match format {
+            "txt-hex" => SaveTargetPurpose::ExportTxtHex,
+            "txt-ascii" => SaveTargetPurpose::ExportTxtAscii,
+            "csv" => SaveTargetPurpose::ExportCsv,
+            "jsonl" => SaveTargetPurpose::ExportJsonl,
+            "bin" => SaveTargetPurpose::ExportBin,
+            other => panic!("unsupported test export format: {other}"),
+        };
+        let grants = FileGrantManager::default();
+        let token = grants.issue(purpose, path.clone()).await.unwrap();
 
         let begin: BeginExportRequest =
-            serde_json::from_str(&frontend_begin_payload(format, &path_str))
+            serde_json::from_str(&frontend_begin_payload(format, &token))
                 .expect("begin payload must deserialize");
-        let target = validate_export_path(&begin.path, begin.format).unwrap();
+        let target = grants
+            .consume_export(&begin.token, begin.format)
+            .await
+            .unwrap();
         let manager = ExportSessionManager::default();
         let export_id = manager.begin(begin.format, target).await.unwrap();
         let append: AppendExportBatchRequest =

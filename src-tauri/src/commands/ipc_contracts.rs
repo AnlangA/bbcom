@@ -15,8 +15,9 @@ mod tests {
     use crate::commands::export::{
         AppendExportBatchRequest, BeginExportRequest, ExportSessionRequest,
     };
-    use crate::commands::log::append_log;
-    use crate::export::session::{ExportSessionManager, validate_export_path};
+    use crate::commands::file_grants::{FileGrantManager, SaveTargetPurpose};
+    use crate::commands::log::AppendLogRequest;
+    use crate::export::session::ExportSessionManager;
     use crate::models::checksum_type::ChecksumType;
 
     use std::fs;
@@ -77,34 +78,15 @@ mod tests {
         assert!(serde_json::from_str::<ChecksumRequest>(json).is_err());
     }
 
-    // ---- append_log: frontend sends { path, content } (FLAT, no request wrapper) ----
+    // ---- append_log: frontend sends an opaque grant token, never a path ----
 
-    #[tokio::test]
-    async fn append_log_deserializes_flat_frontend_payload_and_writes() {
-        // ipc.ts invokeAppendLog sends { path, content } directly (no `request`
-        // wrapper). Mirror that exact shape.
-        let path = unique_path("txt");
-        let json = format!(
-            r#"{{"path":{path_json},"content":"hello\n"}}"#,
-            path_json = serde_json::to_string(&path).unwrap()
-        );
-
-        // The command takes (path, content) as separate args — Tauri unpacks the
-        // flat object. Simulate by deserializing into the two-arg shape.
-        #[derive(serde::Deserialize)]
-        struct FlatLogPayload {
-            path: String,
-            content: String,
-        }
-        let payload: FlatLogPayload =
-            serde_json::from_str(&json).expect("append_log payload shape");
-
-        append_log(payload.path.clone(), payload.content)
-            .await
-            .unwrap();
-        let on_disk = fs::read_to_string(&path).unwrap();
-        fs::remove_file(&path).ok();
-        assert_eq!(on_disk, "hello\n");
+    #[test]
+    fn append_log_deserializes_tokenized_frontend_payload() {
+        let json = r#"{"token":"opaque-grant","content":"hello\n"}"#;
+        let request: AppendLogRequest =
+            serde_json::from_str(json).expect("append_log payload shape");
+        assert_eq!(request.token, "opaque-grant");
+        assert_eq!(request.content, "hello\n");
     }
 
     // ---- streamed export: begin -> append batches -> finish ----
@@ -112,13 +94,21 @@ mod tests {
     #[tokio::test]
     async fn streamed_export_payloads_deserialize_and_execute() {
         let path = unique_path("txt");
+        let grants = FileGrantManager::default();
+        let token = grants
+            .issue(SaveTargetPurpose::ExportTxtAscii, path.clone().into())
+            .await
+            .unwrap();
         let begin_json = format!(
-            r#"{{"format":"txt-ascii","path":{path_json}}}"#,
-            path_json = serde_json::to_string(&path).unwrap()
+            r#"{{"format":"txt-ascii","token":{token_json}}}"#,
+            token_json = serde_json::to_string(&token).unwrap()
         );
         let begin: BeginExportRequest =
             serde_json::from_str(&begin_json).expect("begin export payload shape");
-        let target = validate_export_path(&begin.path, begin.format).unwrap();
+        let target = grants
+            .consume_export(&begin.token, begin.format)
+            .await
+            .unwrap();
         let manager = ExportSessionManager::default();
         let export_id = manager.begin(begin.format, target).await.unwrap();
 

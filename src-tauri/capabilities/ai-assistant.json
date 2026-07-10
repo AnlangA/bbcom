@@ -8,6 +8,9 @@
     "core:window:default",
     "core:window:allow-set-always-on-top",
     "core:window:allow-is-always-on-top",
-    "store:default"
+    "store:allow-load",
+    "store:allow-get",
+    "store:allow-delete",
+    "store:allow-save"
   ]
 }

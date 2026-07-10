@@ -1,19 +1,18 @@
 //! Thin Tauri command adapters for bounded export services.
 
-use crate::export::session::{
-    ExportSessionManager, validate_export_path as validate_session_export_path,
-};
+use crate::commands::file_grants::{FileGrantManager, ensure_main_window};
+use crate::export::session::ExportSessionManager;
 use crate::models::data_frame::DataFrame;
 use crate::models::errors::AppError;
 use serde::Deserialize;
-use tauri::State;
+use tauri::{State, WebviewWindow};
 
 pub use crate::export::ExportFormat;
 
 #[derive(Debug, Deserialize)]
 pub struct BeginExportRequest {
     pub format: ExportFormat,
-    pub path: String,
+    pub token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,42 +30,44 @@ pub struct ExportSessionRequest {
 
 #[tauri::command]
 pub async fn begin_export(
+    window: WebviewWindow,
+    grants: State<'_, FileGrantManager>,
     manager: State<'_, ExportSessionManager>,
     request: BeginExportRequest,
 ) -> Result<String, AppError> {
+    ensure_main_window(window.label())?;
     let format = request.format;
-    let path =
-        tokio::task::spawn_blocking(move || validate_session_export_path(&request.path, format))
-            .await
-            .map_err(|error| AppError::ExportError {
-                message: format!("export validation task failed: {error}"),
-                format: format.label().to_string(),
-                path: String::new(),
-            })??;
+    let path = grants.consume_export(&request.token, format).await?;
     manager.begin(format, path).await
 }
 
 #[tauri::command]
 pub async fn append_export_batch(
+    window: WebviewWindow,
     manager: State<'_, ExportSessionManager>,
     request: AppendExportBatchRequest,
 ) -> Result<(), AppError> {
+    ensure_main_window(window.label())?;
     manager.append(&request.export_id, &request.frames).await
 }
 
 #[tauri::command]
 pub async fn finish_export(
+    window: WebviewWindow,
     manager: State<'_, ExportSessionManager>,
     request: ExportSessionRequest,
 ) -> Result<(), AppError> {
+    ensure_main_window(window.label())?;
     manager.finish(&request.export_id).await
 }
 
 #[tauri::command]
 pub async fn abort_export(
+    window: WebviewWindow,
     manager: State<'_, ExportSessionManager>,
     request: ExportSessionRequest,
 ) -> Result<(), AppError> {
+    ensure_main_window(window.label())?;
     manager.abort(&request.export_id).await
 }
 
@@ -91,17 +92,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_export_path() {
-        let err = validate_session_export_path("", ExportFormat::Csv).unwrap_err();
-        assert!(matches!(err, AppError::ValidationError { field, .. } if field == "path"));
-    }
-
-    #[test]
-    fn rejects_mismatched_extension() {
-        let mut path = std::env::temp_dir();
-        path.push("capture.txt");
-        let err =
-            validate_session_export_path(&path.to_string_lossy(), ExportFormat::Csv).unwrap_err();
-        assert!(matches!(err, AppError::ValidationError { field, .. } if field == "path"));
+    fn begin_request_accepts_only_an_opaque_token() {
+        let request: BeginExportRequest =
+            serde_json::from_str(r#"{"format":"csv","token":"opaque-grant"}"#).unwrap();
+        assert_eq!(request.format, ExportFormat::Csv);
+        assert_eq!(request.token, "opaque-grant");
+        assert!(
+            serde_json::from_str::<BeginExportRequest>(
+                r#"{"format":"csv","path":"C:\\unsafe.csv"}"#
+            )
+            .is_err()
+        );
     }
 }

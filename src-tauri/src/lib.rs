@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod export;
 pub mod models;
+pub mod secure_settings;
 pub mod utils;
 
 use commands::ai::AI_WINDOW_LABEL;
@@ -16,7 +17,9 @@ pub fn run() {
         .init();
 
     let result = tauri::Builder::default()
+        .manage(commands::file_grants::FileGrantManager::default())
         .manage(export::session::ExportSessionManager::default())
+        .manage(secure_settings::SecureSettingsState::default())
         .setup(|app| {
             #[cfg(feature = "devtools")]
             {
@@ -81,7 +84,13 @@ pub fn run() {
             commands::export::append_export_batch,
             commands::export::begin_export,
             commands::export::finish_export,
+            commands::file_grants::request_save_target,
+            commands::file_grants::revoke_file_grant,
             commands::log::append_log,
+            secure_settings::secure_settings_clear,
+            secure_settings::secure_settings_load,
+            secure_settings::secure_settings_migrate_if_missing,
+            secure_settings::secure_settings_save,
             commands::window::get_ai_window_state,
             commands::window::hide_ai_window,
             commands::window::resize_ai_window,
