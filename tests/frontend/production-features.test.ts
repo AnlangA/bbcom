@@ -1,9 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { formatHexAscii } from '../../src/lib/format.ts';
 import { chunkPayload, sendChunked, WRITE_CHUNK_SIZE } from '../../src/lib/write-chunking.ts';
 import { filterFramesByTimeRange, type TimeRangeFilter } from '../../src/lib/export-filters.ts';
 import type { DataFrame } from '../../src/types.ts';
+
+test('production CSP excludes development HTTP and WebSocket origins', () => {
+  const config = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')) as {
+    app: { security: { csp: string; devCsp: string } };
+  };
+  const { csp, devCsp } = config.app.security;
+  assert.equal(csp.includes('localhost:5173'), false);
+  assert.equal(csp.includes('ws://'), false);
+  assert.equal(devCsp.includes('http://localhost:5173'), true);
+  assert.equal(devCsp.includes('ws://localhost:5173'), true);
+});
+
+test('frontend capabilities cannot open arbitrary native file dialogs', () => {
+  const capability = JSON.parse(readFileSync('src-tauri/capabilities/default.json', 'utf8')) as {
+    permissions: string[];
+  };
+  const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    dependencies: Record<string, string>;
+  };
+
+  assert.equal(
+    capability.permissions.some((item) => item.startsWith('dialog:')),
+    false,
+  );
+  assert.equal('@tauri-apps/plugin-dialog' in manifest.dependencies, false);
+});
 
 // ---- F-h: HEX+ASCII dual display mode ----
 

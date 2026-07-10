@@ -8,7 +8,7 @@
 
 项目的功能覆盖和纯函数测试基础较好，但审计前存在四类高风险耦合：会话 UI 生命周期等同于串口连接生命周期、协议解析热路径存在二次复杂度、批量导出跨 IPC 复制完整帧集合、AI 将系统指令和不可信串口内容拼成同一条用户文本。本轮已优先拆除这些 P0 风险，并完成当前工具链能够兼容的直接依赖升级。
 
-后续不应再进行一次性“全目录搬家”。建议采用绞杀式迁移：先建立目标边界和兼容门面，每次迁移一个业务切片，验收后删除旧入口。真正需要继续解决的核心问题是：API Key 仍由普通 JSON store 持久化、前端大部分代码仍位于扁平的 `components/composables/lib/stores`、隐藏会话虽已停止响应帧脉冲但运行时仍与整棵 UI 挂载绑定、前后端 IPC 契约和限制值仍由两套代码手工维护、Rust 覆盖率和真实性能基线尚未成为硬门禁。
+后续不应再进行一次性“全目录搬家”。建议采用绞杀式迁移：先建立目标边界和兼容门面，每次迁移一个业务切片，验收后删除旧入口。第二轮已把 API Key 迁移到 OS 凭据库、把 headless session runtime 与 active-only 重 UI 解耦，并以 Rust 签发的文件 grant 取代 WebView 任意路径写入。真正仍需继续解决的核心问题是：前端大部分代码仍位于扁平的 `components/composables/lib/stores`、前后端 IPC 契约和限制值仍由两套代码手工维护、Rust 覆盖率和真实性能/硬件基线尚未成为硬门禁。
 
 文档中的状态含义：
 
@@ -22,26 +22,26 @@
 
 | 指标            |                          审计/当前快照 | 说明                                                                                          |
 | --------------- | -------------------------------------: | --------------------------------------------------------------------------------------------- |
-| 前端模块        |                     133 个 TS/Vue 模块 | 新架构检查脚本扫描结果；当前无循环依赖                                                        |
-| 前端源码        |   135 个 TS/Vue/CSS 文件，约 22,396 行 | 用于估算迁移规模，不作为质量指标                                                              |
-| Rust 源码       |          30 个 `.rs` 文件，约 2,786 行 | 包含命令、模型、导出和工具模块                                                                |
-| 前端测试文件    |                    74 个，约 10,350 行 | Node test runner；不包含真实 WebView E2E                                                      |
+| 前端模块        |                     134 个 TS/Vue 模块 | 新架构检查脚本扫描结果；当前无循环依赖                                                        |
+| 前端源码        |   136 个 TS/Vue/CSS 文件，约 23,106 行 | 用于估算迁移规模，不作为质量指标                                                              |
+| Rust 源码       |          30 个 `.rs` 文件，约 4,202 行 | 包含命令、模型、导出、安全存储和工具模块                                                      |
+| 前端测试文件    |                              75 个文件 | Node test runner；当前工作树定义 623 个顶层测试；不包含真实 WebView E2E                       |
 | 大文件热点      |                 20 个文件约 350 行以上 | 最高包括 `WaveformPanel.vue` 775 行、`waveform-render.ts` 586 行、`stores/sessions.ts` 556 行 |
 | Node / 包管理器 |             Node 22（CI），pnpm 11.5.3 | 锁文件必须以 frozen 模式安装                                                                  |
 | Rust 工具链     | edition 2024，MSRV 从 1.85 提升到 1.88 | workspace resolver 从 2 提升到 3                                                              |
 
 ### 2.2 正确性、覆盖率与安全基线
 
-| 指标                      |                  审计前基线 | 本轮结果/状态                                                                                                        |
-| ------------------------- | --------------------------: | -------------------------------------------------------------------------------------------------------------------- |
-| 前端测试                  |              576 / 576 通过 | 本轮 598 / 598 通过，新增串口、会话驻留/隔离、解析器和有界导出测试                                                   |
-| 前端 statements / lines   |             88.01% / 88.01% | 本轮 88.67% / 88.67%，高于全局 85% 门槛                                                                              |
-| 前端 branches / functions |             88.73% / 90.19% | 本轮 89.00% / 90.20%，高于 88% 门槛                                                                                  |
-| Rust 测试                 |                68 / 71 通过 | 审计前 3 个失败来自 Windows 路径分隔符测试；本轮 library tests 78 / 78 通过                                          |
-| AI 定向测试               |                      未单列 | 21 / 21 通过，覆盖角色隔离、字节边界和并发限制                                                                       |
-| 架构循环                  |        未设可靠 Vue/TS 门禁 | 133 个模块扫描通过，无循环依赖和 domain 边界违规                                                                     |
-| Rust 依赖安全             | Windows 依赖图发现 3 个漏洞 | 已将 `crossbeam-epoch` 更新到 0.9.20、`quick-xml` 更新到 0.41.0、`plist` 更新到 1.10.0；CI 新增 `cargo audit` 硬门禁 |
-| npm 安全                  |                未设持续门禁 | `pnpm audit` 当前 0 漏洞，peer 检查 0 问题；CI 对 moderate 及以上漏洞失败                                            |
+| 指标                      |                  审计前基线 | 本轮结果/状态                                                                                                                     |
+| ------------------------- | --------------------------: | --------------------------------------------------------------------------------------------------------------------------------- |
+| 前端测试                  |              576 / 576 通过 | 第二批最近一次完整执行 616 / 616；最终工作树定义 623 项，新增安全迁移测试后 Node runner 被当前沙箱 `spawn EPERM` 阻断，待 CI 复核 |
+| 前端 statements / lines   |             88.01% / 88.01% | 第一批 88.67% / 88.67%，高于全局 85% 门槛；第二批最终覆盖率因同一 runner 限制待重采样                                             |
+| 前端 branches / functions |             88.73% / 90.19% | 第一批 89.00% / 90.20%，高于 88% 门槛；第二批最终覆盖率因同一 runner 限制待重采样                                                 |
+| Rust 测试                 |                68 / 71 通过 | 审计前 3 个失败来自 Windows 路径分隔符测试；当前 workspace/all-targets 101 / 101 通过                                             |
+| AI 定向测试               |                      未单列 | 21 / 21 通过，覆盖角色隔离、字节边界和并发限制                                                                                    |
+| 架构循环                  |        未设可靠 Vue/TS 门禁 | 134 个模块扫描通过，无循环依赖和 domain 边界违规                                                                                  |
+| Rust 依赖安全             | Windows 依赖图发现 3 个漏洞 | 已将 `crossbeam-epoch` 更新到 0.9.20、`quick-xml` 更新到 0.41.0、`plist` 更新到 1.10.0；CI 新增 `cargo audit` 硬门禁              |
+| npm 安全                  |                未设持续门禁 | `pnpm audit` 当前 0 漏洞，peer 检查 0 问题；CI 对 moderate 及以上漏洞失败                                                         |
 
 ### 2.3 性能与包体积基线
 
@@ -62,45 +62,52 @@
 | Rust CRC16，256 B                    |                    未记录 |                                                      约 592 ns / 412.7 MiB/s |              Criterion release，10 samples |
 | Rust 导出格式化，10,000 帧           |                    未记录 |                                          JSONL 约 8.4 ms；HEX 文本约 14.6 ms |                               不含磁盘 I/O |
 
+### 2.4 第二批最终验收快照
+
+- 已通过：Prettier/cargo fmt、ESLint、Vue type-check、134 模块架构检查、Rust workspace/all-targets 101/101、全目标 clippy `-D warnings`、release profile 编译、frozen/offline pnpm 安装、peer dependency 检查、`git diff --check`。
+- 最近完整前端回归为 616/616；最终工作树新增安全迁移用例后共有 623 个顶层测试。当前受控 Windows 沙箱拒绝 Node test runner/Vite 的子进程（`spawn EPERM`），外部执行又因本会话额度在 19:18 前不可用，因此 623 项最终回归、覆盖率和 Vite bundle 重采样必须由 CI 或额度恢复后的同一工作树补跑，不能把旧结果冒充最终结果。
+- `pnpm outdated` 仅报告 TypeScript 7.0.2；继续使用 6.0.3 的原因是 `typescript-eslint@8.63.0` peer 上限 `<6.1.0`。peer 检查为 0 问题。
+- 第一批最后一次成功 `pnpm audit` 为 0 漏洞；第二批只移除了一个 JS dialog 依赖，但最终在线 audit 因沙箱网络失败且外部额度不足而未重跑。`cargo audit` 本机未安装，CI 仍是权威门禁。
+
 ## 3. 问题清单与优先级
 
 优先级定义：P0 是数据丢失、秘密泄露、资源失控或主要热路径不可接受；P1 是阻碍演进、可观测性不足或中期性能风险；P2 是维护效率和体验优化。
 
 ### 3.1 P0
 
-| 维度        | 问题                                                                                        | 影响                                      | 状态       | 处理                                                                                                                                                                        |
-| ----------- | ------------------------------------------------------------------------------------------- | ----------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 架构        | 切换标签会卸载 `SessionView`，串口连接、监听器和定时任务与可见 UI 同生共死                  | 后台会话断线、状态丢失                    | **已实施** | 引入 session residency；访问过且仍存在的会话运行时保持挂载，只有活动会话响应全局快捷键                                                                                      |
-| 性能        | 协议解析器每取一帧都切剩余数组，fixed=1 时退化为 O(n²)；delimiter 无上限积累                | 高波特率卡死、内存增长                    | **已实施** | cursor + 摊还压缩；delimiter 搜索游标；pending 1,000,000 B 上限；丢弃/重同步统计                                                                                            |
-| 性能/安全   | 导出最多 100,000 帧以完整 JSON 数组跨 IPC，`Uint8Array` 扩成 number[]，内存和延迟被多次放大 | 大导出卡死或 OOM；临时文件归属不清        | **已实施** | 彻底删除整批 IPC；后端 export session；512 帧/4 MiB 批次；单帧 2 MiB、总计 100,000 帧/128 MiB、最多 8 个会话；30 分钟遗弃回收；临时文件、flush+sync、原子替换和显式回滚错误 |
-| 安全        | AI 系统规则、串口日志和用户问题原先拼进同一文本，串口内容可伪造指令                         | prompt injection、危险命令建议            | **已实施** | 使用真正的 system/user `TextMessages`；串口/元数据单独作为不可信 user message；最终 user message 才是实际问题                                                               |
-| 安全/资源   | AI prompt、key、model、响应和并发缺少完整上限；含 key 的请求类型可被 Debug                  | 内存/费用放大、秘密进入日志               | **已实施** | prompt 16 KiB、key 4 KiB、model 64 B、shell 256 B、session meta 4 KiB、context mode 64 B、context 512,000 B、response 256 KiB；最多 2 个无等待请求；请求类型移除 Debug      |
-| 性能/正确性 | 周期发送使用 `setInterval`，慢写入可能叠加未完成 Promise                                    | 无界发送队列、乱序/断开时残留             | **已实施** | 改为一次只执行一个任务，上一轮 settle 后再调度，stop 以 generation 使后续 tick 失效                                                                                         |
-| 依赖/兼容   | serial plugin 前后端停留 v2，事件监听模型与 v3 API 分叉                                     | 无法安全升级、断连监听脆弱                | **已实施** | Rust/JS 同步升级 v3；改用 channel-backed `watch`/`WatchHandle.unwatch`，二进制模式避免文本往返                                                                              |
-| 安全        | `secure-settings.json` 实际由普通 Tauri store 保存，名称虽为 secure 但没有 OS 凭据保护      | 本地 API Key 可被同用户进程或备份直接读取 | **待完成** | 迁移到 OS Credential Manager/Keychain/Secret Service 或经审计的 Stronghold；双读迁移后清除明文                                                                              |
-| 依赖/供应链 | CI 没有把 npm audit 和 Rust advisory 扫描设为硬门禁                                         | 已知漏洞可能重新进入锁文件                | **已实施** | CI 增加 `pnpm audit --audit-level moderate` 与 `cargo audit`；后续再补 SBOM、许可证和 SARIF 归档                                                                            |
+| 维度        | 问题                                                                                        | 影响                                      | 状态       | 处理                                                                                                                                                                                                                |
+| ----------- | ------------------------------------------------------------------------------------------- | ----------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 架构        | 切换标签会卸载 `SessionView`，串口连接、监听器和定时任务与可见 UI 同生共死                  | 后台会话断线、状态丢失                    | **已实施** | 引入 session residency；访问过且仍存在的会话运行时保持挂载，只有活动会话响应全局快捷键                                                                                                                              |
+| 性能        | 协议解析器每取一帧都切剩余数组，fixed=1 时退化为 O(n²)；delimiter 无上限积累                | 高波特率卡死、内存增长                    | **已实施** | cursor + 摊还压缩；delimiter 搜索游标；pending 1,000,000 B 上限；丢弃/重同步统计                                                                                                                                    |
+| 性能/安全   | 导出最多 100,000 帧以完整 JSON 数组跨 IPC，`Uint8Array` 扩成 number[]，内存和延迟被多次放大 | 大导出卡死或 OOM；临时文件归属不清        | **已实施** | 彻底删除整批 IPC；后端 export session；512 帧/4 MiB 批次；单帧 2 MiB、总计 100,000 帧/128 MiB、最多 8 个会话；30 分钟遗弃回收；临时文件、flush+sync、原子替换和显式回滚错误                                         |
+| 安全        | AI 系统规则、串口日志和用户问题原先拼进同一文本，串口内容可伪造指令                         | prompt injection、危险命令建议            | **已实施** | 使用真正的 system/user `TextMessages`；串口/元数据单独作为不可信 user message；最终 user message 才是实际问题                                                                                                       |
+| 安全/资源   | AI prompt、key、model、响应和并发缺少完整上限；含 key 的请求类型可被 Debug                  | 内存/费用放大、秘密进入日志               | **已实施** | prompt 16 KiB、key 4 KiB、model 64 B、shell 256 B、session meta 4 KiB、context mode 64 B、context 512,000 B、response 256 KiB；最多 2 个无等待请求；请求类型移除 Debug                                              |
+| 性能/正确性 | 周期发送使用 `setInterval`，慢写入可能叠加未完成 Promise                                    | 无界发送队列、乱序/断开时残留             | **已实施** | 改为一次只执行一个任务，上一轮 settle 后再调度，stop 以 generation 使后续 tick 失效                                                                                                                                 |
+| 依赖/兼容   | serial plugin 前后端停留 v2，事件监听模型与 v3 API 分叉                                     | 无法安全升级、断连监听脆弱                | **已实施** | Rust/JS 同步升级 v3；改用 channel-backed `watch`/`WatchHandle.unwatch`，二进制模式避免文本往返                                                                                                                      |
+| 安全        | `secure-settings.json` 实际由普通 Tauri store 保存，名称虽为 secure 但没有 OS 凭据保护      | 本地 API Key 可被同用户进程或备份直接读取 | **已实施** | Rust `keyring` 对接 Windows Credential Store/macOS Keychain/Linux Secret Service；仅允许 API key 与 main/AI 窗口；4 KiB 上限；原子 compare-if-missing 双读迁移，成功后才清除 JSON/localStorage 明文，禁止新明文回退 |
+| 依赖/供应链 | CI 没有把 npm audit 和 Rust advisory 扫描设为硬门禁                                         | 已知漏洞可能重新进入锁文件                | **已实施** | CI 增加 `pnpm audit --audit-level moderate` 与 `cargo audit`；后续再补 SBOM、许可证和 SARIF 归档                                                                                                                    |
 
 ### 3.2 P1
 
-| 维度      | 问题                                                                                                                        | 影响                                                                     | 后续动作                                                                                                                |
-| --------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| 目录/架构 | 绝大多数业务仍散落在 `components/`、`composables/`、`lib/`、`stores/`，只有 serial/sessions 开始进入 `features/`            | 私有实现可被任意跨层导入，改动波及面大                                   | 按第 4 节目标树逐切片迁移；每个 feature 只从 `index.ts` 暴露公共 API                                                    |
-| 架构      | session residency 当前通过常驻整个 `SessionView` 保存连接；本轮已按会话隔离帧版本并冻结隐藏 UI 帧脉冲，但隐藏组件树仍占内存 | 会话越多，常驻组件内存仍线性增长                                         | 将 headless `SessionRuntime` 与 active-only `SessionView` 分离；连接/自动日志常驻，重 UI 只保留一份                     |
-| 状态管理  | `sessions.ts` 同时负责目录、连接标志、帧缓冲、宏、触发器、Modbus、AI 消息和持久化                                           | 556 行 store 成为变更热点                                                | 分成 catalog/runtime/frame/config/history stores；跨 store 用 application service 编排                                  |
-| 状态性能  | 审计前 `schedulePersist()` 顺带触发帧消费者，任何配置更新都会让高频列表失效                                                 | 无关设置导致大列表重算                                                   | 本轮已把 frame 通知收窄到 append/clear/flush；后续增加 selector 级 render-count 测试和帧版本号契约                      |
-| IPC       | TS/Rust 手写重复 DTO、枚举和限制常量                                                                                        | camelCase、格式 tag、大小上限容易漂移                                    | 从 Rust schema 生成 TS bindings，或维护单一 JSON Schema；契约测试覆盖所有 command/event                                 |
-| IPC 性能  | 导出虽已分批，但每批二进制仍序列化为 JSON number[]                                                                          | 4 MiB 原始字节可能在 IPC/JS 堆中放大数倍                                 | 调研 Tauri Channel/resource/binary transfer；保留 session 协议作为流控层                                                |
-| Rust 并发 | `ExportSessionManager` 在 `write_all().await` 时持有全局 map mutex                                                          | 一个慢磁盘会阻塞其他导出会话                                             | map 只存 `Arc<Mutex<Session>>`，全局锁只用于查找/增删；每个导出独立串行                                                 |
-| Rust 资源 | 本轮已用 30 分钟 inactivity TTL 惰性回收进程内遗弃会话；进程崩溃仍可能留下 `.tmp`/`.backup`                                 | 重启后存在孤立磁盘文件                                                   | 启动时按严格命名和目录范围清理/恢复孤立文件；输出编码字节也设预算并检查磁盘空间                                         |
-| 持久化    | session 快照在主线程 JSON.stringify/localStorage，虽限制为 8 会话、每会话 2,000 帧/1 MiB，仍可能形成长任务                  | 串口高负载下 UI 抖动                                                     | 把序列化移到 worker 或 Rust；使用增量日志/版本化快照，保留向后迁移器                                                    |
-| 性能      | MERGED 包视图仍可能在响应式失效后重建全部帧；波形解析/渲染仍在主线程                                                        | 50k–100k 帧时出现长任务                                                  | 增量维护 merge index；波形解码和协议解析评估 worker/Rust；用真实 WebView profile 决策                                   |
-| 包体积    | Vite 8 默认分块保住了异步边界，但主窗口启动路径仍包含多个静态 chunk                                                         | 请求瀑布和解析开销未测                                                   | 先采集 Windows WebView2/macOS WKWebView waterfall，再决定 `advancedChunks`；禁止恢复整包 naive-ui 的粗粒度 manualChunks |
-| 安全      | 生产 CSP 的 `connect-src` 仍包含 localhost/ws 开发地址，style 仍允许 unsafe-inline                                          | XSS 后可利用的连接面较宽                                                 | 开发/生产 CSP 分离；生产移除 localhost/ws；评估 Naive UI nonce/hash 方案后收紧 style                                    |
-| 安全      | `append_log`、export begin 接受前端传入的绝对路径                                                                           | WebView 被攻陷时可尝试写入用户可写位置                                   | 保存对话框返回后端签发的一次性文件 token；命令只接受 token/受控目录，不再信任任意路径字符串                             |
-| 测试      | 当前以纯 TS/Rust 单测为主，缺少真实 Tauri IPC、WebView 和硬件断连测试                                                       | 平台 API、权限和生命周期回归只能人工发现                                 | 增加 Windows 主线 E2E、PTY/虚拟串口集成、断连/磁盘满/取消导出故障注入                                                   |
-| 测试/性能 | `.perf-baseline.json` 被 gitignore，CI 的 15% 回归逻辑没有可比较基线                                                        | benchmark 只证明“能跑”，不能阻止退化                                     | 提交经校准的相对基线或改用历史 CI artifact；按平台分基线，连续两次超 15% 才失败                                         |
-| 测试      | Rust tarpaulin `continue-on-error` 且无阈值                                                                                 | 覆盖率漂移不会阻止合并                                                   | 先稳定报告，再设 workspace lines ≥80%、关键 parser/export/AI ≥90% 的硬门禁                                              |
-| 发布兼容  | 现有 bundle identifier `com.bbcom.app` 以 `.app` 结尾，Tauri 在 macOS 发布构建中明确警告                                    | 与 macOS `.app` bundle 扩展名冲突；直接改名又会迁移应用数据目录/签名身份 | 设计 `com.bbcom.desktop` 身份迁移，先迁移旧数据目录和签名配置，再在独立版本切换；不得只为消除警告直接改字符串           |
+| 维度      | 问题                                                                                                             | 影响                                                                     | 后续动作                                                                                                                                                                       |
+| --------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 目录/架构 | 绝大多数业务仍散落在 `components/`、`composables/`、`lib/`、`stores/`，只有 serial/sessions 开始进入 `features/` | 私有实现可被任意跨层导入，改动波及面大                                   | 按第 4 节目标树逐切片迁移；每个 feature 只从 `index.ts` 暴露公共 API                                                                                                           |
+| 架构      | session residency 曾通过常驻整个 `SessionView` 保存连接，隐藏组件树随会话数线性增长                              | 多会话常驻时内存、watcher 和组件实例过多                                 | **已实施**：每个已访问会话只常驻 headless `SessionRuntime`；仅活动会话挂载一棵 `SessionView`；dispose 幂等释放循环发送、Modbus、自动日志 grant 与串口                          |
+| 状态管理  | `sessions.ts` 同时负责目录、连接标志、帧缓冲、宏、触发器、Modbus、AI 消息和持久化                                | 556 行 store 成为变更热点                                                | 分成 catalog/runtime/frame/config/history stores；跨 store 用 application service 编排                                                                                         |
+| 状态性能  | 审计前 `schedulePersist()` 顺带触发帧消费者，任何配置更新都会让高频列表失效                                      | 无关设置导致大列表重算                                                   | 本轮已把 frame 通知收窄到 append/clear/flush；后续增加 selector 级 render-count 测试和帧版本号契约                                                                             |
+| IPC       | TS/Rust 手写重复 DTO、枚举和限制常量                                                                             | camelCase、格式 tag、大小上限容易漂移                                    | 从 Rust schema 生成 TS bindings，或维护单一 JSON Schema；契约测试覆盖所有 command/event                                                                                        |
+| IPC 性能  | 导出虽已分批，但每批二进制仍序列化为 JSON number[]                                                               | 4 MiB 原始字节可能在 IPC/JS 堆中放大数倍                                 | 调研 Tauri Channel/resource/binary transfer；保留 session 协议作为流控层                                                                                                       |
+| Rust 并发 | `ExportSessionManager` 曾在 `write_all().await` 时持有全局 map mutex                                             | 一个慢磁盘会阻塞其他导出会话                                             | **已实施**：map 仅短时查找 `Arc<Mutex<Session>>`；每个 ID 独立串行；Semaphore 在建文件前预留 8 个槽；清扫以 `try_lock` 跳过忙会话；canonical target reservation 拒绝同目标并发 |
+| Rust 资源 | 进程崩溃可能留下导出临时文件，旧 hard-link/remove/hard-link 替换还存在目标短暂消失窗口                           | 重启后孤儿文件、并发覆盖或崩溃时原文件风险                               | **已实施**：128-bit 随机、目标绑定的 v2 temp；只清理过期普通文件；Windows `MoveFileExW(REPLACE_EXISTING                                                                        | WRITE_THROUGH)`，Unix 同目录 rename + 父目录 fsync；不再创建 backup |
+| 持久化    | session 快照在主线程 JSON.stringify/localStorage，虽限制为 8 会话、每会话 2,000 帧/1 MiB，仍可能形成长任务       | 串口高负载下 UI 抖动                                                     | 把序列化移到 worker 或 Rust；使用增量日志/版本化快照，保留向后迁移器                                                                                                           |
+| 性能      | MERGED 包视图仍可能在响应式失效后重建全部帧；波形解析/渲染仍在主线程                                             | 50k–100k 帧时出现长任务                                                  | 增量维护 merge index；波形解码和协议解析评估 worker/Rust；用真实 WebView profile 决策                                                                                          |
+| 包体积    | Vite 8 默认分块保住了异步边界，但主窗口启动路径仍包含多个静态 chunk                                              | 请求瀑布和解析开销未测                                                   | 先采集 Windows WebView2/macOS WKWebView waterfall，再决定 `advancedChunks`；禁止恢复整包 naive-ui 的粗粒度 manualChunks                                                        |
+| 安全      | 生产 CSP 的 `connect-src` 曾包含 localhost/ws 开发地址，style 仍允许 unsafe-inline                               | XSS 后可利用的连接面较宽                                                 | **部分已实施**：`csp`/`devCsp` 分离，生产移除 localhost/ws；仍需评估 Naive UI nonce/hash 后收紧 style                                                                          |
+| 安全      | `append_log`、export begin 曾接受前端传入的绝对路径                                                              | WebView 被攻陷时可尝试写入用户可写位置                                   | **已实施**：仅 main window 可调用 Rust 原生保存对话框；后端签发格式绑定的一次性 export grant 或可撤销 auto-log grant；写命令不接受路径；前端 dialog capability/包已删除        |
+| 测试      | 当前以纯 TS/Rust 单测为主，缺少真实 Tauri IPC、WebView 和硬件断连测试                                            | 平台 API、权限和生命周期回归只能人工发现                                 | 增加 Windows 主线 E2E、PTY/虚拟串口集成、断连/磁盘满/取消导出故障注入                                                                                                          |
+| 测试/性能 | `.perf-baseline.json` 被 gitignore，CI 的 15% 回归逻辑没有可比较基线                                             | benchmark 只证明“能跑”，不能阻止退化                                     | 提交经校准的相对基线或改用历史 CI artifact；按平台分基线，连续两次超 15% 才失败                                                                                                |
+| 测试      | Rust tarpaulin `continue-on-error` 且无阈值                                                                      | 覆盖率漂移不会阻止合并                                                   | 先稳定报告，再设 workspace lines ≥80%、关键 parser/export/AI ≥90% 的硬门禁                                                                                                     |
+| 发布兼容  | 现有 bundle identifier `com.bbcom.app` 以 `.app` 结尾，Tauri 在 macOS 发布构建中明确警告                         | 与 macOS `.app` bundle 扩展名冲突；直接改名又会迁移应用数据目录/签名身份 | 设计 `com.bbcom.desktop` 身份迁移，先迁移旧数据目录和签名配置，再在独立版本切换；不得只为消除警告直接改字符串                                                                  |
 
 ### 3.3 P2
 
@@ -246,22 +253,25 @@ shared 可被下游使用，但不得依赖 Tauri adapter
 
 本节仅记录已经落到工作树的内容；第 6 节才是后续计划。
 
-| 项目              | 已实施内容                                                                                                                  | 证据/约束                                                                               |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| npm 工具链升级    | Vue 3.5、Pinia 3、Vite 8、ESLint 10、Vue plugin/parser、vue-tsc 3、TypeScript 6、Tauri JS API 等升级；Lucide 包替换         | lockfile 更新；lint/build/type-check 作为验收门禁                                       |
-| Cargo 升级        | MSRV 1.88、resolver 3、Tauri 2.11、Tokio 1.52、zai-rs 0.2、Criterion 0.8 等                                                 | Rust 当前快照 79/79 tests；严格 clippy/fmt 纳入 CI                                      |
-| serial v3         | Rust `tauri-plugin-serialplugin` 与 JS API 同步到 3.0.0；使用 `watch`、二进制数据和显式 unwatch                             | 避免 v2 全局事件名、listen/startListening 时序和文本转码                                |
-| session residency | 新增 `SessionRuntimeHost` 和纯函数 reconciliation；标签切换不再销毁已访问会话；帧版本改为 per-session，隐藏视图冻结 UI 脉冲 | 关闭/删除会话才卸载；隐藏会话继续收包/触发后台任务，但不消费快捷键、AI 草稿或帧列表重算 |
-| parser O(n)       | cursor 消费、摊还 compaction、delimiter 增量搜索；长度异常逐字节重同步                                                      | 32 KiB fixed=1 从约 1,129 ms 降至 6.7 ms；pending 上限与 stats 测试                     |
-| AI 日志上下文     | 从尾部按字符预算反向选帧；UTF-8 可读时不再提前生成 HEX                                                                      | 100k 帧、10k 字符约只读取 45 帧，仍保持原时间顺序和 truncation 契约                     |
-| AI 安全           | system/user 角色分离；串口内容显式不可信；输入/响应字节限制；2 请求并发；API Key 请求无 Debug                               | 21/21 定向测试通过；IPC 字段名保持兼容                                                  |
-| 导出会话          | begin/append/finish/abort；删除 legacy 整批命令；有界批次；30 分钟遗弃回收；后端临时文件；原子替换和可诊断恢复              | 前端不再构造全量 IPC payload；header/append/finish/abort/过期/双重回滚失败均有测试      |
-| store 通知收窄    | `schedulePersist` 不再无条件触发帧更新；配置集合采用顶层不可变替换；仅 append/clear/flush 通知帧消费者                      | 避免设置、宏、触发器、Modbus 状态使大帧列表无效化                                       |
-| 首屏拆包          | main 按窗口动态导入；Waveform/Parser/Modbus 和设置对话框按需加载；Vite 8 使用默认 Oxc minifier                              | 主窗口启动路径 gzip 下降 8.1%，异步代码占比显著提高                                     |
-| 异步周期发送      | 以 settle 后调度代替 `setInterval`                                                                                          | 同一会话最多一个 in-flight send，stop 后不再续调度                                      |
-| 架构门禁          | 用仓库内脚本替代与 TS6 peer 冲突的 Madge 8                                                                                  | 当前 132 模块、0 cycle，并检查 domain 禁止依赖 UI/infrastructure/store/框架             |
-| 最小权限          | main 与 AI window capability 分离；AI window 不再拥有 dialog/serial；窗口尺寸拒绝 NaN/Infinity，拖拽校验 label              | 降低独立 AI WebView 被利用后的权限范围                                                  |
-| 无效 updater 清理 | 删除未启用、无 endpoint、无 pubkey 的 updater 插件、命令、配置和 capability                                                 | 将来只有完成签名/回滚运维后才重新引入                                                   |
+| 项目              | 已实施内容                                                                                                                                       | 证据/约束                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| npm 工具链升级    | Vue 3.5、Pinia 3、Vite 8、ESLint 10、Vue plugin/parser、vue-tsc 3、TypeScript 6、Tauri JS API 等升级；Lucide 包替换                              | lockfile 更新；lint/build/type-check 作为验收门禁                                       |
+| Cargo 升级        | MSRV 1.88、resolver 3、Tauri 2.11、Tokio 1.52、zai-rs 0.2、Criterion 0.8、keyring 4.1 等                                                         | Rust 全量测试、严格 clippy/fmt 与 advisory 扫描作为验收门禁                             |
+| serial v3         | Rust `tauri-plugin-serialplugin` 与 JS API 同步到 3.0.0；使用 `watch`、二进制数据和显式 unwatch                                                  | 避免 v2 全局事件名、listen/startListening 时序和文本转码                                |
+| session runtime   | `SessionRuntimeHost` 为已访问会话保留 headless runtime，仅活动会话挂载 `SessionView`；串口/重连/trigger/循环发送/Modbus/auto-log 生命周期移出 UI | 标签切换不再断连且只保留一棵重 UI；删除会话按顺序等待日志排空/撤权和串口关闭            |
+| parser O(n)       | cursor 消费、摊还 compaction、delimiter 增量搜索；长度异常逐字节重同步                                                                           | 32 KiB fixed=1 从约 1,129 ms 降至 6.7 ms；pending 上限与 stats 测试                     |
+| AI 日志上下文     | 从尾部按字符预算反向选帧；UTF-8 可读时不再提前生成 HEX                                                                                           | 100k 帧、10k 字符约只读取 45 帧，仍保持原时间顺序和 truncation 契约                     |
+| AI 安全           | system/user 角色分离；串口内容显式不可信；输入/响应字节限制；2 请求并发；API Key 请求无 Debug                                                    | 21/21 定向测试通过；IPC 字段名保持兼容                                                  |
+| 导出会话          | begin/append/finish/abort；删除 legacy 路径与整批命令；有界批次；每会话锁、容量预留、同目标 RAII reservation；随机 temp 与平台原子替换           | 前端只传 grant/export ID；慢导出不持全局锁；失败保持旧目标；严格残留清理有并发/故障测试 |
+| 安全存储          | API Key 只经 allowlist 自定义命令进入 OS credential store；原子 migrate-if-missing 防 main/AI 窗口迁移竞态；旧 JSON/localStorage 只读迁移        | 新写入无明文 fallback；值/错误/日志脱敏且限制 4 KiB；旧明文仅在凭据持久化成功后删除     |
+| 文件授权/自动日志 | Rust 原生 save dialog 签发 opaque grant；export 一次性且格式绑定，auto-log 可撤销/过期；每会话 1 MiB/1024 项有界队列与 256 KiB 批写              | pending dialog 以 generation 取消；失败/溢出停用并撤权；同路径后端分片锁防交错写        |
+| CSP/能力          | 生产 `connect-src` 移除 localhost/ws，开发源只在 `devCsp`；移除前端 dialog 包和 capability                                                       | AI window 无 serial/dialog；保存路径授权只存在于校验 main label 的 Rust command         |
+| store 通知收窄    | `schedulePersist` 不再无条件触发帧更新；配置集合采用顶层不可变替换；仅 append/clear/flush 通知帧消费者                                           | 避免设置、宏、触发器、Modbus 状态使大帧列表无效化                                       |
+| 首屏拆包          | main 按窗口动态导入；Waveform/Parser/Modbus 和设置对话框按需加载；Vite 8 使用默认 Oxc minifier                                                   | 主窗口启动路径 gzip 下降 8.1%，异步代码占比显著提高                                     |
+| 异步周期发送      | 以 settle 后调度代替 `setInterval`                                                                                                               | 同一会话最多一个 in-flight send，stop 后不再续调度                                      |
+| 架构门禁          | 用仓库内脚本替代与 TS6 peer 冲突的 Madge 8                                                                                                       | 当前 134 模块、0 cycle，并检查 domain 禁止依赖 UI/infrastructure/store/框架             |
+| 最小权限          | main 与 AI window capability 分离；AI window 不再拥有 dialog/serial；窗口尺寸拒绝 NaN/Infinity，拖拽校验 label                                   | 降低独立 AI WebView 被利用后的权限范围                                                  |
+| 无效 updater 清理 | 删除未启用、无 endpoint、无 pubkey 的 updater 插件、命令、配置和 capability                                                                      | 将来只有完成签名/回滚运维后才重新引入                                                   |
 
 ## 6. 分阶段迁移计划、验收与回滚
 
@@ -279,12 +289,14 @@ shared 可被下游使用，但不得依赖 Tauri adapter
 
 ### 阶段 1：关闭剩余 P0 安全与资源风险（2–4 天）
 
+**状态：核心实现已完成；发布前仍需真实平台/故障注入验收。**
+
 **工作内容**
 
-1. 把 API Key 从普通 store 迁移到 OS keychain/Stronghold；实现 `new → legacy → empty` 双读，写入新存储成功后删除明文。
+1. API Key 已迁移到 OS credential store；实现 native/legacy 状态化双读、原子缺失迁移，写入新存储成功后删除明文。
 2. 在 CI 加 npm production audit、Rust advisory/deny、SBOM；升级后的锁文件重新确认 0 critical/high。
-3. export session 增加启动时孤立 temp/backup 清理、编码后输出预算和每会话锁；生产 CSP 去掉开发连接源。inactivity TTL 与惰性清扫本轮已完成。
-4. 保存对话框路径改成后端一次性 token，至少先覆盖 export 与 append_log。
+3. export session 已增加严格孤立 temp 清理、每会话锁、并发容量预留、同目标 reservation 与平台原子替换；生产 CSP 已去掉开发连接源。
+4. export 与 append_log 已全部改为后端文件 grant；生产前端不再拥有 dialog capability，也不存在任意路径兼容入口。
 
 **验收**：磁盘中不再出现新明文 key；旧 key 可一次性迁移；日志不含 key；漏洞门禁为 0 critical/high；8 个并行导出互不阻塞；取消/崩溃/磁盘满测试不破坏原目标文件。  
 **回滚**：保留一个版本的 legacy 只读迁移，不恢复 legacy 写入；file token 可在紧急版本中回退为“仅保存对话框返回路径 + 受控目录”，不能回退为任意路径；导出新协议故障时只允许临时启用有严格小数据上限的 legacy export。
@@ -303,10 +315,12 @@ shared 可被下游使用，但不得依赖 Tauri adapter
 
 ### 阶段 3：会话运行时与 UI 解耦（4–7 天）
 
+**状态：生命周期解耦已完成；worker/Rust 计算迁移与真实 20 会话预算仍待采样。**
+
 **工作内容**
 
-1. 抽 `SessionRuntimeController`：串口 watch、重连、自动日志、发送队列、协议 parser 生命周期。
-2. 每个已连接/需后台工作的会话保留 headless runtime；界面只挂载一个 active `SessionView`。
+1. 已抽 `SessionRuntimeController`：串口 watch、重连、自动日志、循环发送、trigger 与 Modbus 生命周期。
+2. 每个访问过且仍存在的会话保留 headless runtime；界面只挂载一个 active `SessionView`。
 3. runtime 以 event/selector 向 store 发布有界快照，UI 不持有插件对象。
 4. 将波形/协议的 CPU 密集解析放入 worker 或 Rust 原型，对比复制成本后决定。
 
@@ -353,26 +367,26 @@ shared 可被下游使用，但不得依赖 Tauri adapter
 
 ### 7.1 npm/pnpm
 
-| 依赖                                                | 审计前                   | 本轮选择              | 状态与原因                                                          |
-| --------------------------------------------------- | ------------------------ | --------------------- | ------------------------------------------------------------------- |
-| Vue                                                 | `^3.5.0`                 | `^3.5.39`             | 已升级                                                              |
-| Pinia                                               | `^2.2.0`                 | `^3.0.4`              | 已升级并修复 shallow store 更新语义                                 |
-| Vite                                                | `^6.4.3`                 | `^8.1.4`              | 已升级；使用 Vite 8/Oxc 默认 minifier                               |
-| `@vitejs/plugin-vue`                                | `^5.0.0`                 | `^6.0.7`              | 已升级                                                              |
-| TypeScript                                          | `^5.6.0`                 | `^6.0.3`              | 已升级到当前 lint 生态允许的最高主版本                              |
-| `typescript-eslint`                                 | `^8.0.0`                 | `^8.63.0`             | 已升级；peer 为 `>=4.8.4 <6.1.0`，它是暂缓 TS7 的硬约束             |
-| ESLint / `@eslint/js`                               | `^9` / `^9.39.4`         | `^10.6.0` / `^10.0.1` | 已升级；补 `globals.browser`                                        |
-| `eslint-plugin-vue`                                 | `^9.0.0`                 | `^10.9.2`             | 已升级                                                              |
-| `vue-eslint-parser`                                 | `^9.0.0`                 | `^10.4.1`             | 已升级                                                              |
-| vue-tsc                                             | `^2.2.0`                 | `^3.3.7`              | 已升级                                                              |
-| Prettier                                            | `^3.8.4`                 | `^3.9.5`              | 已升级                                                              |
-| `@tauri-apps/api`                                   | `^2.11.0`                | `^2.11.1`             | 已升级                                                              |
-| `@tauri-apps/cli`                                   | `^2.11.2`                | `^2.11.4`             | 已升级                                                              |
-| serial plugin JS                                    | `^2.0.0`                 | `^3.0.0`              | 已升级并完成 API 迁移                                               |
-| TanStack Vue Virtual                                | `^3.0.0`                 | `^3.13.31`            | 已升级                                                              |
-| 图标库                                              | `lucide-vue-next ^1.0.0` | `@lucide/vue ^1.24.0` | 包替换并更新全部 import                                             |
-| Madge                                               | `^8.0.0`                 | 删除                  | Madge 8 peer 仅支持 TypeScript `^5.4.4`；改用无 peer 冲突的仓库脚本 |
-| c8 / visualizer / Naive UI / ansi_up / dialog/store | 已在兼容版本             | 保持或锁到审计版本    | 发布前仍需 production audit 与 license/SBOM 检查                    |
+| 依赖                                         | 审计前                   | 本轮选择              | 状态与原因                                                                                 |
+| -------------------------------------------- | ------------------------ | --------------------- | ------------------------------------------------------------------------------------------ |
+| Vue                                          | `^3.5.0`                 | `^3.5.39`             | 已升级                                                                                     |
+| Pinia                                        | `^2.2.0`                 | `^3.0.4`              | 已升级并修复 shallow store 更新语义                                                        |
+| Vite                                         | `^6.4.3`                 | `^8.1.4`              | 已升级；使用 Vite 8/Oxc 默认 minifier                                                      |
+| `@vitejs/plugin-vue`                         | `^5.0.0`                 | `^6.0.7`              | 已升级                                                                                     |
+| TypeScript                                   | `^5.6.0`                 | `^6.0.3`              | 已升级到当前 lint 生态允许的最高主版本                                                     |
+| `typescript-eslint`                          | `^8.0.0`                 | `^8.63.0`             | 已升级；peer 为 `>=4.8.4 <6.1.0`，它是暂缓 TS7 的硬约束                                    |
+| ESLint / `@eslint/js`                        | `^9` / `^9.39.4`         | `^10.6.0` / `^10.0.1` | 已升级；补 `globals.browser`                                                               |
+| `eslint-plugin-vue`                          | `^9.0.0`                 | `^10.9.2`             | 已升级                                                                                     |
+| `vue-eslint-parser`                          | `^9.0.0`                 | `^10.4.1`             | 已升级                                                                                     |
+| vue-tsc                                      | `^2.2.0`                 | `^3.3.7`              | 已升级                                                                                     |
+| Prettier                                     | `^3.8.4`                 | `^3.9.5`              | 已升级                                                                                     |
+| `@tauri-apps/api`                            | `^2.11.0`                | `^2.11.1`             | 已升级                                                                                     |
+| `@tauri-apps/cli`                            | `^2.11.2`                | `^2.11.4`             | 已升级                                                                                     |
+| serial plugin JS                             | `^2.0.0`                 | `^3.0.0`              | 已升级并完成 API 迁移                                                                      |
+| TanStack Vue Virtual                         | `^3.0.0`                 | `^3.13.31`            | 已升级                                                                                     |
+| 图标库                                       | `lucide-vue-next ^1.0.0` | `@lucide/vue ^1.24.0` | 包替换并更新全部 import                                                                    |
+| Madge                                        | `^8.0.0`                 | 删除                  | Madge 8 peer 仅支持 TypeScript `^5.4.4`；改用无 peer 冲突的仓库脚本                        |
+| c8 / visualizer / Naive UI / ansi_up / store | 已在兼容版本             | 保持或锁到审计版本    | 前端 dialog 包已删除；store 仅保留一个版本的明文只读迁移；发布前仍需 audit 与 license/SBOM |
 
 #### 为什么暂缓 TypeScript 7
 
@@ -380,21 +394,24 @@ TypeScript 7.0.2 已在 2026-07-08 发布，但“最新”不等于“当前项
 
 ### 7.2 Cargo
 
-| 依赖/工具链          | 审计前        | 本轮选择              | 状态与说明                                          |
-| -------------------- | ------------- | --------------------- | --------------------------------------------------- |
-| Rust MSRV / resolver | 1.85 / 2      | 1.88 / 3              | 已升级                                              |
-| Tauri                | broad `2`     | `2.11.5`              | 已更新锁图                                          |
-| tauri-build          | broad `2`     | `2.6.3`               | 已升级                                              |
-| serial plugin Rust   | `2`           | `3.0.0`               | 已与 JS v3 同步迁移                                 |
-| dialog / store       | `2` / `2`     | `2.7.1` / `2.4.3`     | 已升级                                              |
-| serde / serde_json   | `1` / `1`     | `1.0.228` / `1.0.150` | 已升级                                              |
-| thiserror            | `2`           | `2.0.18`              | 已升级                                              |
-| crc / chrono         | `3` / `0.4`   | `3.4.0` / `0.4.45`    | 已升级                                              |
-| tracing / subscriber | `0.1` / `0.3` | `0.1.44` / `0.3.23`   | 已升级                                              |
-| Tokio                | broad `1`     | `1.52.3`              | 已升级并增加 `sync` feature 供并发门禁/会话使用     |
-| zai-rs               | `0.1.14`      | `0.2.0`               | 已升级并迁移角色化消息 API                          |
-| Criterion            | `0.5`         | `0.8.2`               | 已升级；改用 `std::hint::black_box`                 |
-| updater plugin       | `2.10.1`      | 删除                  | 配置 inactive、无 endpoint/pubkey；减少依赖和权限面 |
+| 依赖/工具链          | 审计前        | 本轮选择                 | 状态与说明                                                                                        |
+| -------------------- | ------------- | ------------------------ | ------------------------------------------------------------------------------------------------- |
+| Rust MSRV / resolver | 1.85 / 2      | 1.88 / 3                 | 已升级                                                                                            |
+| Tauri                | broad `2`     | `2.11.5`                 | 已更新锁图                                                                                        |
+| tauri-build          | broad `2`     | `2.6.3`                  | 已升级                                                                                            |
+| serial plugin Rust   | `2`           | `3.0.0`                  | 已与 JS v3 同步迁移                                                                               |
+| dialog / store       | `2` / `2`     | `2.7.1` / `2.4.3`        | Rust dialog 仅供校验 main window 的 save-grant command；store 仅供 legacy 清理                    |
+| keyring              | 未使用        | `4.1.4`                  | API Key 对接 Windows Credential Store、macOS Keychain、Linux Secret Service；不使用应用内固定密码 |
+| getrandom            | 间接          | `0.3.4`                  | 文件 grant 与导出 temp 使用 OS 随机 nonce                                                         |
+| windows-sys          | 间接          | `0.61.2`（Windows only） | `MoveFileExW(REPLACE_EXISTING                                                                     | WRITE_THROUGH)` 原子持久替换 |
+| serde / serde_json   | `1` / `1`     | `1.0.228` / `1.0.150`    | 已升级                                                                                            |
+| thiserror            | `2`           | `2.0.18`                 | 已升级                                                                                            |
+| crc / chrono         | `3` / `0.4`   | `3.4.0` / `0.4.45`       | 已升级                                                                                            |
+| tracing / subscriber | `0.1` / `0.3` | `0.1.44` / `0.3.23`      | 已升级                                                                                            |
+| Tokio                | broad `1`     | `1.52.3`                 | 已升级并增加 `sync` feature 供并发门禁/会话使用                                                   |
+| zai-rs               | `0.1.14`      | `0.2.0`                  | 已升级并迁移角色化消息 API                                                                        |
+| Criterion            | `0.5`         | `0.8.2`                  | 已升级；改用 `std::hint::black_box`                                                               |
+| updater plugin       | `2.10.1`      | 删除                     | 配置 inactive、无 endpoint/pubkey；减少依赖和权限面                                               |
 
 升级纪律：manifest、lockfile 和 API 迁移必须同一 PR；Rust 运行 `fmt + clippy -D warnings + test --locked + cargo audit`，前端运行 `install --frozen-lockfile + audit + lint + type-check + test + build`。当前 npm 审计为 0；任何未来扫描未出最终报告时只能写“待验证”，不能宣称安全。
 

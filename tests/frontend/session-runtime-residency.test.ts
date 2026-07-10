@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computed, effectScope, ref } from 'vue';
-import { reconcileResidentSessionIds } from '../../src/features/sessions/runtime/session-residency.ts';
-import { useActiveFrameVersion } from '../../src/features/sessions/runtime/active-frame-version.ts';
+import {
+  reconcileResidentSessionIds,
+  resolveActiveSessionRuntime,
+} from '../../src/features/sessions/runtime/session-residency.ts';
 
 test('restored sessions stay lazy until they are first activated', () => {
   assert.deepEqual(reconcileResidentSessionIds([], ['a', 'b', 'c'], 'b'), ['b']);
@@ -37,41 +38,24 @@ test('reconciliation is deterministic, de-duplicates ids, and does not mutate it
   assert.deepEqual(available, ['a', 'b', 'c']);
 });
 
-test('inactive resident views freeze their UI pulse and catch up once reactivated', () => {
-  const scope = effectScope();
-  scope.run(() => {
-    const active = ref(false);
-    const currentVersion = ref(0);
-    let versionReads = 0;
-    const trackedVersion = computed(() => {
-      versionReads += 1;
-      return currentVersion.value;
-    });
-    const visibleVersion = useActiveFrameVersion(active, trackedVersion);
+test('only the active session resolves to a heavy UI binding', () => {
+  const sessions = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  const runtimeA = { name: 'runtime-a' };
+  const runtimeB = { name: 'runtime-b' };
+  const runtimes = new Map([
+    ['a', runtimeA],
+    ['b', runtimeB],
+  ]);
 
-    assert.equal(visibleVersion.value, 0);
-    assert.equal(versionReads, 0, 'an initially hidden view does not subscribe to frame pulses');
-
-    currentVersion.value = 1;
-    assert.equal(visibleVersion.value, 0);
-    assert.equal(versionReads, 0, 'background frames do not wake the hidden UI');
-
-    active.value = true;
-    assert.equal(visibleVersion.value, 1, 'activation catches the UI up to the latest frame');
-    assert.equal(versionReads, 1);
-
-    currentVersion.value = 2;
-    assert.equal(visibleVersion.value, 2, 'active views continue receiving frame pulses');
-    assert.equal(versionReads, 2);
-
-    active.value = false;
-    currentVersion.value = 3;
-    assert.equal(visibleVersion.value, 2, 'deactivation freezes the last rendered version');
-    assert.equal(versionReads, 2, 'the hidden view unsubscribes from further frame pulses');
-
-    active.value = true;
-    assert.equal(visibleVersion.value, 3);
-    assert.equal(versionReads, 3);
+  assert.deepEqual(resolveActiveSessionRuntime(sessions, runtimes, 'a'), {
+    session: sessions[0],
+    runtime: runtimeA,
   });
-  scope.stop();
+  assert.deepEqual(resolveActiveSessionRuntime(sessions, runtimes, 'b'), {
+    session: sessions[1],
+    runtime: runtimeB,
+  });
+  assert.equal(resolveActiveSessionRuntime(sessions, runtimes, 'c'), null);
+  assert.equal(resolveActiveSessionRuntime(sessions, runtimes, null), null);
+  assert.equal(runtimes.size, 2, 'switching the sole UI binding retains both headless runtimes');
 });

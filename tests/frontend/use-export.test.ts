@@ -6,12 +6,13 @@ import {
   EXPORT_BATCH_MAX_BYTES,
   EXPORT_BATCH_MAX_FRAMES,
   EXPORT_FRAME_MAX_BYTES,
+  savePurposeForFormat,
   useExport,
   type ExportSessionClient,
 } from '../../src/composables/useExport.ts';
 import type { ExportFramePayload } from '../../src/lib/ipc.ts';
 import type { DataFrame, DisplayMode } from '../../src/types.ts';
-import type { ExportChoice, ExportFormat } from '../../src/lib/constants.ts';
+import type { ExportFormat } from '../../src/lib/constants.ts';
 
 function frame(direction: 'RX' | 'TX', data: number[] | Uint8Array, id = 1): DataFrame {
   return {
@@ -22,29 +23,8 @@ function frame(direction: 'RX' | 'TX', data: number[] | Uint8Array, id = 1): Dat
   };
 }
 
-function legacyDeps(
-  overrides: {
-    savePath?: string | null;
-    exportFrames?: (frames: DataFrame[], format: ExportFormat, path: string) => Promise<void>;
-  } = {},
-) {
-  const calls: Array<{ frames: DataFrame[]; format: ExportFormat; path: string }> = [];
-  return {
-    calls,
-    api: useExport({
-      promptSave: async () =>
-        overrides.savePath === undefined ? '/tmp/out.txt' : overrides.savePath,
-      exportFrames:
-        overrides.exportFrames ??
-        (async (frames, format, path) => {
-          calls.push({ frames, format, path });
-        }),
-    }),
-  };
-}
-
 interface SessionCalls {
-  begins: Array<{ format: ExportFormat; path: string }>;
+  begins: Array<{ format: ExportFormat; targetGrant: string }>;
   batches: Array<{ exportId: string; frames: ExportFramePayload[] }>;
   finishes: string[];
   aborts: string[];
@@ -53,7 +33,7 @@ interface SessionCalls {
 
 function sessionDeps(
   overrides: {
-    savePath?: string | null;
+    targetGrant?: string | null;
     begin?: ExportSessionClient['begin'];
     append?: ExportSessionClient['append'];
     finish?: ExportSessionClient['finish'];
@@ -68,10 +48,10 @@ function sessionDeps(
     order: [],
   };
   const sessionClient: ExportSessionClient = {
-    async begin(format, path) {
-      calls.begins.push({ format, path });
+    async begin(format, targetGrant) {
+      calls.begins.push({ format, targetGrant });
       calls.order.push('begin');
-      return overrides.begin ? overrides.begin(format, path) : 'export-1';
+      return overrides.begin ? overrides.begin(format, targetGrant) : 'export-1';
     },
     async append(exportId, frames) {
       calls.batches.push({ exportId, frames });
@@ -92,44 +72,15 @@ function sessionDeps(
   return {
     calls,
     api: useExport({
-      promptSave: async () =>
-        overrides.savePath === undefined ? '/tmp/out.jsonl' : overrides.savePath,
+      requestTarget: async () => {
+        const token =
+          overrides.targetGrant === undefined ? 'grant-out-jsonl' : overrides.targetGrant;
+        return token ? { token, displayPath: '/display-only/out.jsonl' } : null;
+      },
       sessionClient,
     }),
   };
 }
-
-// ---- Legacy path (exportFrames) ----
-
-test('useExport (legacy): happy path invokes exportFrames and sets isExporting', async () => {
-  const { api, calls } = legacyDeps({ savePath: '/tmp/data.txt' });
-  const frames = [frame('RX', [1, 2, 3])];
-
-  assert.equal(api.isExporting.value, false, 'not exporting initially');
-  const done = api.exportData(frames, 'txt', 'UTF8' as DisplayMode);
-  assert.equal(api.isExporting.value, true, 'isExporting flips on during the call');
-  const result = await done;
-  assert.equal(api.isExporting.value, false, 'isExporting resets after the call');
-
-  assert.deepEqual(result, { ok: true });
-  assert.equal(calls.length, 1, 'legacy export invoked exactly once');
-  assert.equal(calls[0].path, '/tmp/data.txt');
-});
-
-test('useExport (legacy): backend error is surfaced as ok:false with a message', async () => {
-  const boom = new Error('too many frames');
-  const { api } = legacyDeps({
-    exportFrames: async () => {
-      throw boom;
-    },
-  });
-
-  const result = await api.exportData([frame('RX', [1])], 'csv', 'ASCII' as DisplayMode);
-
-  assert.equal(result.ok, false);
-  assert.ok(result.error, 'error message present');
-  assert.equal(result.error!.includes('too many frames'), true, 'error text propagated');
-});
 
 // ---- Bounded session protocol (production default) ----
 
@@ -166,7 +117,7 @@ test('createExportBatches enforces frame-count and byte limits with plain-array 
 });
 
 test('useExport: streams bounded batches then finishes exactly once without aborting', async () => {
-  const { api, calls } = sessionDeps({ savePath: '/tmp/data.jsonl' });
+  const { api, calls } = sessionDeps({ targetGrant: 'grant-data-jsonl' });
   const frames = Array.from({ length: EXPORT_BATCH_MAX_FRAMES + 1 }, (_, index) =>
     frame('RX', [index & 0xff], index),
   );
@@ -174,7 +125,7 @@ test('useExport: streams bounded batches then finishes exactly once without abor
   const result = await api.exportData(frames, 'jsonl', 'UTF8' as DisplayMode);
 
   assert.deepEqual(result, { ok: true });
-  assert.deepEqual(calls.begins, [{ format: 'jsonl', path: '/tmp/data.jsonl' }]);
+  assert.deepEqual(calls.begins, [{ format: 'jsonl', targetGrant: 'grant-data-jsonl' }]);
   assert.deepEqual(
     calls.batches.map((call) => call.frames.length),
     [EXPORT_BATCH_MAX_FRAMES, 1],
@@ -244,38 +195,79 @@ test('useExport: oversized frame aborts after begin without appending', async ()
 
 // ---- Shared behavior ----
 
-test('useExport: cancelled dialog (null path) returns ok:false with no export call', async () => {
-  const { api, calls } = sessionDeps({ savePath: null });
+test('useExport: cancelled dialog returns ok:false with no export call', async () => {
+  const { api, calls } = sessionDeps({ targetGrant: null });
   const result = await api.exportData([frame('RX', [1])], 'txt', 'HEX' as DisplayMode);
 
   assert.deepEqual(result, { ok: false }, 'cancel yields ok:false without an error');
   assert.deepEqual(calls.order, [], 'no export session is opened on dialog cancel');
 });
 
-test('useExport: choice drives the requested save path filter via promptSave', async () => {
-  const prompted: ExportChoice[] = [];
-  // Override promptSave to record the choice (the legacy helper already stubs it;
-  // re-create with a recording promptSave for this assertion).
+test('useExport: choice drives the backend save-target purpose', async () => {
+  const purposes: string[] = [];
   const api2 = useExport({
-    promptSave: async (choice: ExportChoice) => {
-      prompted.push(choice);
-      return '/x.bin';
+    requestTarget: async (purpose) => {
+      purposes.push(purpose);
+      return { token: 'grant-bin', displayPath: '/display-only/x.bin' };
     },
-    exportFrames: async () => {},
+    sessionClient: {
+      begin: async () => 'export-1',
+      append: async () => {},
+      finish: async () => {},
+      abort: async () => {},
+    },
   });
   await api2.exportData([frame('TX', [0xaa])], 'bin', 'HEX' as DisplayMode);
 
-  assert.deepEqual(prompted, ['bin'], 'the chosen ExportChoice is forwarded to promptSave');
+  assert.deepEqual(purposes, ['export-bin']);
+});
+
+test('useExport: production save flow passes only the opaque grant to begin', async () => {
+  const begins: Array<{ format: ExportFormat; targetGrant: string }> = [];
+  const requested: Array<{ purpose: string; suggestedName: string }> = [];
+  const api = useExport({
+    requestTarget: async (purpose, suggestedName) => {
+      requested.push({ purpose, suggestedName });
+      return { token: 'opaque-export-grant', displayPath: 'C:\\Users\\me\\capture.csv' };
+    },
+    sessionClient: {
+      begin: async (format, targetGrant) => {
+        begins.push({ format, targetGrant });
+        return 'export-1';
+      },
+      append: async () => {},
+      finish: async () => {},
+      abort: async () => {},
+    },
+  });
+
+  const result = await api.exportData([frame('RX', [1])], 'csv', 'HEX' as DisplayMode);
+  assert.deepEqual(result, { ok: true });
+  assert.equal(requested[0].purpose, 'export-csv');
+  assert.match(requested[0].suggestedName, /^bbcom-export-\d+\.csv$/);
+  assert.deepEqual(begins, [{ format: 'csv', targetGrant: 'opaque-export-grant' }]);
+  assert.notEqual(begins[0].targetGrant, 'C:\\Users\\me\\capture.csv');
+});
+
+test('savePurposeForFormat covers every export wire format', () => {
+  assert.deepEqual(
+    ['txt-hex', 'txt-ascii', 'csv', 'jsonl', 'bin'].map((format) =>
+      savePurposeForFormat(format as ExportFormat),
+    ),
+    ['export-txt-hex', 'export-txt-ascii', 'export-csv', 'export-jsonl', 'export-bin'],
+  );
 });
 
 test('useExport: isExporting resets even when export throws', async () => {
-  const { api } = legacyDeps({
-    exportFrames: async () => {
+  const { api } = sessionDeps({
+    begin: async () => {
       throw new Error('io');
     },
   });
 
-  await api.exportData([frame('RX', [1])], 'jsonl', 'UTF8' as DisplayMode);
+  const result = await api.exportData([frame('RX', [1])], 'jsonl', 'UTF8' as DisplayMode);
   await nextTick();
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? '', /io/);
   assert.equal(api.isExporting.value, false, 'isExporting cleared in the finally block');
 });
