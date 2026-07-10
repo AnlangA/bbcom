@@ -25,7 +25,6 @@ import { dirname, resolve } from 'node:path';
 
 import { encodeUtf8, formatHex, formatUtf8 } from '../../src/lib/format.ts';
 import { concatUint8Arrays } from '../../src/lib/bytes.ts';
-import { LRUCache } from '../../src/lib/lru-cache.ts';
 import { ProtocolParser } from '../../src/lib/protocol-parser.ts';
 import { decodeFrameText, parseSampleLine } from '../../src/lib/waveform.ts';
 import { SerialRxQueue } from '../../src/lib/serial-rx-queue.ts';
@@ -337,29 +336,6 @@ test('bench: waveform decode/parse over 50k frames', () => {
       if (samples === 0) throw new Error('waveform parser emitted no samples');
     },
     1,
-  );
-  console.log(`[bench] ${summarize(r)}`);
-  recordResult(r);
-  assertNoRegression(r.name, r.opsPerSec);
-});
-
-test('bench: LRU format cache hit rate (1000-entry, repeated display)', () => {
-  const cache = new LRUCache<string, string>(1000);
-  // Prime the cache as the formatter would, then measure steady-state hits.
-  for (const f of FRAMES.slice(0, 1000)) {
-    cache.set(`f${f.id}:HEX:true`, formatHex(f.data));
-  }
-  const subset = FRAMES.slice(0, 1000);
-  const r = benchMedian(
-    'lru_hit_1000',
-    () => {
-      for (const f of subset) {
-        const key = `f${f.id}:HEX:true`;
-        const v = cache.get(key);
-        if (v === undefined) cache.set(key, formatHex(f.data));
-      }
-    },
-    100,
   );
   console.log(`[bench] ${summarize(r)}`);
   recordResult(r);
