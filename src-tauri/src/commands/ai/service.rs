@@ -3,12 +3,14 @@
 //! The model dispatch is a `match` (a dispatch-table), not `Box<dyn Model>` —
 //! `zai_rs`'s `ModelName: Into<String>` is not dyn-safe, so each supported model
 //! is a concrete arm. `send_chat` is the single generic hot point that builds
-//! the `ChatCompletion` for a concrete model type.
+//! a concrete `ChatCompletion` request and sends it through a credential-owning
+//! `ZaiClient`.
 
 use serde::Serialize;
 use serde_json::Value;
 use std::{future::Future, time::Duration};
 use tokio::sync::{Semaphore, SemaphorePermit};
+use zai_rs::client::ZaiClient;
 use zai_rs::model::{
     chat_base_request::ChatBody, chat_base_response::ChatCompletionResponse, traits::*, *,
 };
@@ -196,18 +198,33 @@ where
     (N, TextMessage): Bounded,
     ChatBody<N, TextMessage>: Serialize,
 {
-    let client = build_chat_client(model, messages, api_key)?;
-    let client = apply_coding_plan(client, use_coding_plan);
-    complete_provider_request(client.send(), Duration::from_secs(AI_REQUEST_TIMEOUT_SECS)).await
+    let provider = build_zai_client(api_key)?;
+    let request = build_chat_request(model, messages)?;
+    let timeout = Duration::from_secs(AI_REQUEST_TIMEOUT_SECS);
+    if use_coding_plan {
+        complete_provider_request(request.send_via_coding_plan(&provider), timeout).await
+    } else {
+        complete_provider_request(request.send_via(&provider), timeout).await
+    }
+}
+
+/// Build the provider client that owns credentials, endpoints, and transport.
+/// Provider configuration errors are collapsed so credentials or endpoint
+/// details can never cross the local IPC boundary.
+pub(crate) fn build_zai_client(api_key: &str) -> Result<ZaiClient, AppError> {
+    ZaiClient::builder(api_key.to_string())
+        .build()
+        .map_err(|_| AppError::AiError {
+            message: "AI provider client configuration failed".to_string(),
+        })
 }
 
 /// Build the deterministic portion of an outbound chat request before any
 /// network I/O. Keeping it separate gives every supported model the same
 /// message ordering and conservative sampling parameters.
-pub(crate) fn build_chat_client<N>(
+pub(crate) fn build_chat_request<N>(
     model: N,
     messages: TextMessages,
-    api_key: &str,
 ) -> Result<ChatCompletion<N, TextMessage>, AppError>
 where
     N: ModelName + Chat + ThinkEnable + Serialize,
@@ -218,33 +235,15 @@ where
     let first = messages.next().ok_or_else(|| AppError::AiError {
         message: "AI 请求消息不能为空".to_string(),
     })?;
-    let mut client = ChatCompletion::new(model, first, api_key.to_string());
+    let mut request = ChatCompletion::new(model, first);
     for message in messages {
-        client = client.add_messages(message);
+        request = request.add_messages(message);
     }
-    let client = client
+    let request = request
         .with_temperature(0.1)
         .with_top_p(0.8)
         .with_thinking(ThinkingType::enabled());
-    Ok(client)
-}
-
-/// The coding-plan endpoint is selected explicitly and never inferred from a
-/// model name or user-provided endpoint string.
-pub(crate) fn apply_coding_plan<N>(
-    client: ChatCompletion<N, TextMessage>,
-    use_coding_plan: bool,
-) -> ChatCompletion<N, TextMessage>
-where
-    N: ModelName + Chat + ThinkEnable + Serialize,
-    (N, TextMessage): Bounded,
-    ChatBody<N, TextMessage>: Serialize,
-{
-    if use_coding_plan {
-        client.with_coding_plan()
-    } else {
-        client
-    }
+    Ok(request)
 }
 
 /// Bound a provider future and collapse all provider failures into the fixed,

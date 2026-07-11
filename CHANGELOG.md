@@ -5,6 +5,18 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-11
+
+### Z.ai client API migration
+
+- Upgraded `zai-rs` from 0.2.0 to 0.5.0 and migrated chat requests to the new
+  credential-owning `ZaiClient` API.
+- Separated provider configuration from `ChatCompletion` request bodies and
+  routed standard and Coding Plan calls through `send_via` and
+  `send_via_coding_plan`, respectively.
+- Added regression coverage proving provider diagnostics redact the API key
+  while preserving role-separated message ordering and sampling settings.
+
 ## [0.6.1] - 2026-07-11
 
 ### Status bar cleanup

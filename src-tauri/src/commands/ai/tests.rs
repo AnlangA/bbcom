@@ -11,8 +11,8 @@ use crate::commands::ai::parser::{
 };
 use crate::commands::ai::service::{
     MAX_AI_CONTEXT_MODE_BYTES, MAX_AI_MODEL_BYTES, MAX_AI_PROMPT_BYTES, MAX_AI_RESPONSE_BYTES,
-    MAX_AI_SESSION_META_BYTES, MAX_AI_SHELL_BYTES, apply_coding_plan, build_ai_messages,
-    build_chat_client, complete_provider_request, completion_text, extract_text_from_content,
+    MAX_AI_SESSION_META_BYTES, MAX_AI_SHELL_BYTES, build_ai_messages, build_chat_request,
+    build_zai_client, complete_provider_request, completion_text, extract_text_from_content,
     finalize_ai_response, run_ai_chat, send_chat_by_name, truncate_to_utf8_boundary,
     try_acquire_ai_request_slot, validate_ai_response_size, validate_optional_max_bytes,
 };
@@ -128,26 +128,26 @@ async fn supported_models_reject_empty_messages_before_network() {
 }
 
 #[test]
-fn chat_request_builder_keeps_message_order_and_selects_only_fixed_endpoints() {
-    let client = build_chat_client(
+fn chat_request_builder_keeps_message_order_and_provider_redacts_credentials() {
+    let mut request = build_chat_request(
         GLM4_5_air {},
         TextMessages::new(TextMessage::system("trusted"))
             .add_message(TextMessage::user("untrusted context"))
             .add_message(TextMessage::user("actual question")),
-        "test-key",
     )
     .unwrap();
-    assert_eq!(client.key, "test-key");
-    let standard_url = client.url.clone();
-    assert!(standard_url.ends_with("/chat/completions"));
+    let body = request.body_mut();
+    assert_eq!(body.messages.len(), 3);
+    assert_eq!(body.temperature, Some(0.1));
+    assert_eq!(body.top_p, Some(0.8));
 
-    let coding_url = apply_coding_plan(client, true).url;
-    assert_ne!(coding_url, standard_url);
-    assert!(coding_url.ends_with("/chat/completions"));
+    let provider = build_zai_client("test-key").unwrap();
+    let provider_debug = format!("{provider:?}");
+    assert!(provider_debug.contains("[REDACTED]"));
+    assert!(!provider_debug.contains("test-key"));
 
-    assert!(
-        build_chat_client(GLM4_5_air {}, TextMessages { messages: vec![] }, "test-key",).is_err()
-    );
+    assert!(build_chat_request(GLM4_5_air {}, TextMessages { messages: vec![] }).is_err());
+    assert!(build_zai_client(" ").is_err());
 }
 
 #[test]
