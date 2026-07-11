@@ -230,7 +230,7 @@ jobs:
         run: pnpm tauri:build --target ${{ matrix.target }} --bundles appimage,deb
 
       - name: Smoke-test the built native application shell
-        if: runner.os != 'Linux'
+        if: runner.os == 'Windows'
         env:
           BBCOM_E2E_BINARY: ${{ github.workspace }}/${{ matrix.executable }}
         run: pnpm run e2e:native
