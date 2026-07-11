@@ -99,6 +99,7 @@ const zh: Catalog = {
   'sidebar.ai.off': '开启 AI',
   'sidebar.locale.toEnglish': 'Switch to English',
   'sidebar.locale.toChinese': '切换到中文',
+  'sidebar.resize': '调整侧边栏宽度',
   'serial.portSelect': '串口选择',
   'serial.portPlaceholder': '选择串口',
   'serial.refreshPorts': '刷新串口',

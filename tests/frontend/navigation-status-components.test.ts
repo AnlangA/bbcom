@@ -909,6 +909,20 @@ test('AppShell handles layout controls, failure notifications, resize cleanup, a
   expect(wrapper.find('.empty-state').exists()).toBe(true);
   expect(wrapper.find('.sidebar').attributes('style')).toContain('292px');
 
+  const resizeHandle = wrapper.find('.resize-handle');
+  expect(resizeHandle.attributes('role')).toBe('separator');
+  expect(resizeHandle.attributes('aria-valuemin')).toBe('252');
+  expect(resizeHandle.attributes('aria-valuemax')).toBe('340');
+  await resizeHandle.trigger('keydown', { key: 'ArrowRight' });
+  expect(app.sidebarWidth).toBe(304);
+  await resizeHandle.trigger('keydown', { key: 'ArrowRight', shiftKey: true });
+  expect(app.sidebarWidth).toBe(328);
+  await resizeHandle.trigger('keydown', { key: 'Home' });
+  expect(app.sidebarWidth).toBe(252);
+  await resizeHandle.trigger('keydown', { key: 'End' });
+  expect(app.sidebarWidth).toBe(340);
+  app.setSidebarWidth(292);
+
   await wrapper.find('.collapse-btn').trigger('click');
   expect(app.sidebarCollapsed).toBe(true);
   await wrapper.find('.collapse-btn').trigger('click');
@@ -921,7 +935,7 @@ test('AppShell handles layout controls, failure notifications, resize cleanup, a
   await wrapper.find('.locale-toggle').trigger('click');
   expect(app.locale).toBe('en');
 
-  await wrapper.find('.resize-handle').trigger('mousedown', { clientX: 100 });
+  await resizeHandle.trigger('mousedown', { clientX: 100 });
   document.dispatchEvent(new MouseEvent('mousemove', { clientX: 132 }));
   expect(app.sidebarWidth).toBe(324);
   document.dispatchEvent(new MouseEvent('mouseup'));

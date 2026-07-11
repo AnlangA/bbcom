@@ -107,7 +107,7 @@
 | 前端       | [Vue 3](https://vuejs.org/) Composition API + [TypeScript](https://www.typescriptlang.org/)         |
 | UI         | [Naive UI](https://www.naiveui.com/)、@lucide/vue                                                   |
 | 状态       | [Pinia](https://pinia.vuejs.org/)                                                                   |
-| 构建       | [Vite 6](https://vite.dev/)、pnpm                                                                   |
+| 构建       | [Vite 8](https://vite.dev/)、pnpm                                                                   |
 | 串口       | tauri-plugin-serialplugin                                                                           |
 | 持久化     | 有界 localStorage 会话快照 + 操作系统 API Key 凭据存储                                              |
 | 测试与质量 | Vitest、V8 coverage、WebdriverIO/Jasmine、ESLint、Prettier、cargo test、clippy、llvm-cov、criterion |
@@ -116,9 +116,9 @@
 
 ### 环境要求
 
-- Rust 1.88.0（edition 2024）
-- Node.js 22.23.1
-- pnpm 11.5.3
+- Rust 1.97.0（edition 2024）
+- Node.js 24.13.0
+- pnpm 11.11.0
 - `cargo-llvm-cov` 0.8.7 与 `cargo-audit` 0.22.2
 - 可在 `PATH` 中找到的 ShellCheck
 - 操作系统允许访问串口

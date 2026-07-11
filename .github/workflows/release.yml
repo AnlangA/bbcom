@@ -46,10 +46,10 @@ jobs:
           test "$package_version" = "$version"
           grep -Fq "## [$version]" CHANGELOG.md
 
-      - name: Setup Rust 1.88.0
+      - name: Setup Rust 1.97.0
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          toolchain: 1.88.0
+          toolchain: 1.97.0
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -140,7 +140,7 @@ jobs:
       - name: Setup Rust target
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          toolchain: 1.88.0
+          toolchain: 1.97.0
           targets: ${{ matrix.target }}
 
       - name: Install frontend dependencies

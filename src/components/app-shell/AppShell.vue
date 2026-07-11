@@ -89,7 +89,16 @@
     <div
       class="resize-handle"
       :class="{ dragging: isDragging, disabled: appStore.sidebarCollapsed }"
+      role="separator"
+      aria-orientation="vertical"
+      :aria-label="t('sidebar.resize')"
+      :aria-valuemin="SIDEBAR_WIDTH_MIN"
+      :aria-valuemax="SIDEBAR_WIDTH_MAX"
+      :aria-valuenow="appStore.sidebarWidth"
+      :aria-disabled="appStore.sidebarCollapsed"
+      :tabindex="appStore.sidebarCollapsed ? -1 : 0"
       @mousedown="startResize"
+      @keydown="onResizeKeydown"
     ></div>
 
     <main class="main">
@@ -163,6 +172,12 @@ import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
 import { AUTO_LOG_FAILURE_EVENT } from '../../composables/useAutoLog';
 import { t, setLocale } from '../../lib/i18n';
+import {
+  SIDEBAR_WIDTH_LARGE_STEP,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN,
+  SIDEBAR_WIDTH_STEP,
+} from '../../lib/sidebar-layout';
 
 // Code-split the heavy modals/panels so their naive-ui dependencies (NModal,
 // NForm, NFormItem) are fetched on first open, not at first paint. Together
@@ -240,6 +255,32 @@ function startResize(e: MouseEvent) {
 function onResize(e: MouseEvent) {
   const delta = e.clientX - startX;
   appStore.setSidebarWidth(startWidth + delta);
+}
+
+function onResizeKeydown(event: KeyboardEvent) {
+  if (appStore.sidebarCollapsed) return;
+
+  const step = event.shiftKey ? SIDEBAR_WIDTH_LARGE_STEP : SIDEBAR_WIDTH_STEP;
+  let nextWidth: number;
+  switch (event.key) {
+    case 'ArrowLeft':
+      nextWidth = appStore.sidebarWidth - step;
+      break;
+    case 'ArrowRight':
+      nextWidth = appStore.sidebarWidth + step;
+      break;
+    case 'Home':
+      nextWidth = SIDEBAR_WIDTH_MIN;
+      break;
+    case 'End':
+      nextWidth = SIDEBAR_WIDTH_MAX;
+      break;
+    default:
+      return;
+  }
+
+  event.preventDefault();
+  appStore.setSidebarWidth(nextWidth);
 }
 
 function stopResize() {
@@ -430,8 +471,14 @@ useAppShortcuts({
 }
 
 .resize-handle:hover,
-.resize-handle.dragging {
+.resize-handle.dragging,
+.resize-handle:focus-visible {
   background: var(--color-primary);
+}
+
+.resize-handle:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
 }
 
 /* When the sidebar is collapsed the handle is inert and visually removed so

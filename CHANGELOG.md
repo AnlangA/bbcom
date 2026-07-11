@@ -5,6 +5,25 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-11
+
+### Toolchain, dependency, and architecture updates
+
+- Updated the supported toolchain to Node 24.13.0, pnpm 11.11.0, and Rust
+  1.97.0 across local checks and release CI. Updated Naive UI to 2.44.1,
+  `getrandom` to 0.4.3, `zeroize` to 1.9.0, and all compatible locked Rust
+  dependencies.
+- Removed the unused in-tree `phf_generator` security backport after the
+  refreshed dependency graph no longer resolves its vulnerable release line.
+- Centralized sidebar width bounds and resize increments in a dependency-free
+  layout module shared by the Store and app shell.
+
+### Accessibility improvements
+
+- Made the sidebar splitter an accessible keyboard-operable separator:
+  arrow keys resize it, Shift changes the increment, and Home/End jump to its
+  persisted minimum/maximum bounds.
+
 ## [0.5.0] - 2026-07-11
 
 ### Changed
