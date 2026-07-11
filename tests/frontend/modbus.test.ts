@@ -9,6 +9,7 @@ import {
   clampSlave,
   clampU16,
   crc16Modbus,
+  crc16ModbusFoldByte,
   decodeBit,
   decodeValue,
   decodeValues,
@@ -45,6 +46,13 @@ function withCrc(...bytes: number[]): Uint8Array {
 test('crc16Modbus matches the standard vector 01 04 02 12 34 -> 0x47B4', () => {
   // Low byte first on the wire; full frame is ...12 34 B4 47.
   assert.equal(crc16Modbus(hex(0x01, 0x04, 0x02, 0x12, 0x34)), 0x47b4);
+});
+
+test('crc16ModbusFoldByte matches one-shot CRC calculation', () => {
+  const bytes = hex(0x01, 0x04, 0x02, 0x12, 0x34);
+  let folded = 0xffff;
+  for (const byte of bytes) folded = crc16ModbusFoldByte(folded, byte);
+  assert.equal(folded, crc16Modbus(bytes));
 });
 
 test('verifyCrc accepts a good frame and rejects a corrupted one', () => {

@@ -28,7 +28,7 @@ import { concatUint8Arrays } from '../../src/lib/bytes.ts';
 import { ProtocolParser } from '../../src/lib/protocol-parser.ts';
 import { decodeFrameText, parseSampleLine } from '../../src/lib/waveform.ts';
 import { SerialRxQueue } from '../../src/lib/serial-rx-queue.ts';
-import { buildModbusReadBatches } from '../../src/lib/modbus';
+import { buildModbusReadBatches, readRequest, scanResponse } from '../../src/lib/modbus';
 import { usePacketFilter } from '../../src/composables/usePacketFilter.ts';
 import { createPinia, setActivePinia } from 'pinia';
 import { useSessionStore } from '../../src/stores/sessions.ts';
@@ -424,6 +424,34 @@ test('bench: Modbus read-batch composition (256 contiguous holding regs)', () =>
     () => {
       const batches = buildModbusReadBatches(regs);
       if (batches.length === 0) throw new Error('expected at least one batch');
+    },
+    200,
+  );
+  console.log(`[bench] ${summarize(r)}`);
+  recordResult(r);
+  assertNoRegression(r.name, r.opsPerSec);
+});
+
+test('bench: scanResponse RTU trailing-noise sweep', () => {
+  // Worst case for the RTU scanner: a valid frame at offset 0 (emitted), then a
+  // long tail of non-frame bytes. The scanner must sweep every candidate length
+  // (4..256) at each noise offset before giving up. Pre-fix this was
+  // O(noise · 252 · avg_len) CRC byte-ops per call; the incremental fold makes
+  // it O(noise · 252) total. This locks that improvement as a regression gate.
+  const valid = readRequest('rtu', 1, 0x03, 0, 2); // 01 03 00 00 00 02 c4 0b
+  // 200 noise bytes (no CRC-valid frame hiding in them), after the real frame.
+  const noise = new Uint8Array(200);
+  for (let i = 0; i < noise.length; i += 1) noise[i] = (i * 7 + 13) & 0xff;
+  const buf = new Uint8Array(valid.length + noise.length);
+  buf.set(valid, 0);
+  buf.set(noise, valid.length);
+  // Correctness anchor: the scanner must still find exactly the one valid frame.
+  const check = scanResponse('rtu', buf);
+  if (check.frames.length !== 1) throw new Error(`expected 1 frame, got ${check.frames.length}`);
+  const r = benchMedian(
+    'modbus_scan_rtu_noise',
+    () => {
+      scanResponse('rtu', buf);
     },
     200,
   );
