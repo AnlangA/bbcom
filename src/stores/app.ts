@@ -12,6 +12,7 @@ import {
 } from '../lib/ai-key';
 import { maxBufferFrames, setMaxBufferFrames } from '../lib/buffer-config';
 import { locale, setLocale } from '../lib/i18n';
+import { SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth } from '../lib/sidebar-layout';
 
 const STORAGE_KEY = 'bbcom-app-settings';
 const MISSING_AI_KEY_STATUS: AiKeyStatus = { configured: false, durability: 'missing' };
@@ -34,7 +35,7 @@ export const useAppStore = defineStore('app', () => {
   const aiCommandSeq = ref(0);
   const pendingAiCommand = ref('');
   const aiApiKeyLoaded = ref(false);
-  const sidebarWidth = ref(292);
+  const sidebarWidth = ref(SIDEBAR_WIDTH_DEFAULT);
   const sidebarCollapsed = ref(false);
   let loaded = false;
 
@@ -53,9 +54,6 @@ export const useAppStore = defineStore('app', () => {
     validate: (raw: unknown) => boolean;
     apply: (raw: unknown) => void;
   }
-
-  const SIDEBAR_WIDTH_MIN = 252;
-  const SIDEBAR_WIDTH_MAX = 340;
 
   const persistedSettings: PersistedSetting[] = [
     {
@@ -135,10 +133,7 @@ export const useAppStore = defineStore('app', () => {
       ref: sidebarWidth,
       validate: (raw) => typeof raw === 'number',
       apply: (raw) => {
-        sidebarWidth.value = Math.max(
-          SIDEBAR_WIDTH_MIN,
-          Math.min(SIDEBAR_WIDTH_MAX, raw as number),
-        );
+        sidebarWidth.value = clampSidebarWidth(raw as number);
       },
     },
     {
@@ -289,7 +284,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   function setSidebarWidth(width: number) {
-    sidebarWidth.value = Math.max(252, Math.min(340, Math.round(width)));
+    sidebarWidth.value = clampSidebarWidth(width);
   }
 
   function toggleSidebarCollapsed() {

@@ -39,6 +39,7 @@ typed command surfaces.
 │   serial-rx-queue       bounded RX buffering                       │
 │   protocol-parser       delimiter/fixed/length frame parsing       │
 │   waveform*             parsing, viewport math, canvas rendering   │
+│   sidebar-layout         shared sidebar geometry and keyboard steps │
 │   session-persistence   versioned snapshot migration               │
 │   ipc                   typed Tauri command wrappers               │
 └───────────────┬────────────────────────────────────────────────────┘
@@ -63,6 +64,10 @@ typed command surfaces.
 - **Frontend protocol engines:** parser, waveform, Modbus, triggers, and simple
   send/delay macros are implemented in framework-free TypeScript where possible
   so they can be unit-tested headlessly.
+- **Shared layout rules:** reusable geometry (such as sidebar bounds and
+  keyboard resize steps) lives in dependency-free `lib/` modules. Stores and
+  UI consume the same values, so persisted state, pointer resizing, and
+  accessibility controls cannot drift.
 - **Rust command layer:** opaque file grants, streaming export/logging,
   checksum calculation, bounded AI network calls, OS credential storage, and
   window management.

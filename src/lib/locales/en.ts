@@ -106,6 +106,7 @@ const en: Catalog = {
   'sidebar.ai.off': 'Open AI',
   'sidebar.locale.toEnglish': 'Switch to English',
   'sidebar.locale.toChinese': 'Switch to Chinese',
+  'sidebar.resize': 'Resize sidebar',
   // Serial / connection
   'serial.portSelect': 'Port',
   'serial.portPlaceholder': 'Select port',

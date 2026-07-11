@@ -117,7 +117,7 @@ sessions, checksums, OS credential storage, and bounded AI client calls.
 | Frontend     | [Vue 3](https://vuejs.org/) Composition API + [TypeScript](https://www.typescriptlang.org/)         |
 | UI           | [Naive UI](https://www.naiveui.com/), @lucide/vue                                                   |
 | State        | [Pinia](https://pinia.vuejs.org/)                                                                   |
-| Build        | [Vite 6](https://vite.dev/), pnpm                                                                   |
+| Build        | [Vite 8](https://vite.dev/), pnpm                                                                   |
 | Serial       | tauri-plugin-serialplugin                                                                           |
 | Persistence  | bounded localStorage snapshots + OS credential store for API keys                                   |
 | Test/Quality | Vitest, V8 coverage, WebdriverIO/Jasmine, ESLint, Prettier, cargo test, clippy, llvm-cov, criterion |
@@ -126,9 +126,9 @@ sessions, checksums, OS credential storage, and bounded AI client calls.
 
 ### Prerequisites
 
-- Rust 1.88.0 (edition 2024)
-- Node.js 22.23.1
-- pnpm 11.5.3
+- Rust 1.97.0 (edition 2024)
+- Node.js 24.13.0
+- pnpm 11.11.0
 - `cargo-llvm-cov` 0.8.7 and `cargo-audit` 0.22.2
 - ShellCheck available on `PATH`
 - OS permission to access serial ports

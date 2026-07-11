@@ -1,6 +1,6 @@
 # Contributing to bbcom
 
-Use Node `22.23.1`, pnpm `11.5.3`, and Rust `1.88.0` (the repository pins all
+Use Node `24.13.0`, pnpm `11.11.0`, and Rust `1.97.0` (the repository pins all
 three). The local commit gate also requires ShellCheck, `cargo-llvm-cov`
 `0.8.7`, and `cargo-audit` `0.22.2`; install them using the commands in the
 README. Install exactly the lockfile with `pnpm install --frozen-lockfile`.
