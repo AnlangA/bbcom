@@ -88,10 +88,13 @@ jobs:
           retention-days: 7
 
   build:
-    name: Build signed ${{ matrix.name }} installer
+    name: Build ${{ matrix.name }} installer
     needs: validate
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      WINDOWS_SIGNING_AVAILABLE: ${{ secrets.WINDOWS_CERTIFICATE != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' }}
+      APPLE_SIGNING_AVAILABLE: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -126,7 +129,8 @@ jobs:
             patchelf \
             libudev-dev \
             dbus-x11 \
-            xvfb
+            xvfb \
+            webkit2gtk-driver
 
       - name: Setup pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
@@ -147,7 +151,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Import Windows signing certificate
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNING_AVAILABLE == 'true'
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
@@ -165,7 +169,7 @@ jobs:
           "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
 
       - name: Verify Apple signing and notarization secrets
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_AVAILABLE == 'true'
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -180,23 +184,34 @@ jobs:
             test -n "${!name}" || { echo "$name is required" >&2; exit 1; }
           done
 
-      - name: Build signed Windows NSIS installer
+      - name: Report unsigned platform fallback
+        if: >-
+          (runner.os == 'Windows' && env.WINDOWS_SIGNING_AVAILABLE != 'true') ||
+          (runner.os == 'macOS' && env.APPLE_SIGNING_AVAILABLE != 'true')
+        shell: bash
+        run: echo "::warning::Platform signing secrets are not configured; this installer will be explicitly marked unsigned."
+
+      - name: Build Windows NSIS installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $config = @{
-            bundle = @{
-              windows = @{
-                certificateThumbprint = $env:WINDOWS_CERTIFICATE_THUMBPRINT
-                digestAlgorithm = 'sha256'
-                timestampUrl = 'http://timestamp.digicert.com'
+          if ($env:WINDOWS_SIGNING_AVAILABLE -eq 'true') {
+            $config = @{
+              bundle = @{
+                windows = @{
+                  certificateThumbprint = $env:WINDOWS_CERTIFICATE_THUMBPRINT
+                  digestAlgorithm = 'sha256'
+                  timestampUrl = 'http://timestamp.digicert.com'
+                }
               }
-            }
-          } | ConvertTo-Json -Compress -Depth 5
-          pnpm tauri:build --target ${{ matrix.target }} --bundles nsis --config $config
+            } | ConvertTo-Json -Compress -Depth 5
+            pnpm tauri:build --target ${{ matrix.target }} --bundles nsis --config $config
+          } else {
+            pnpm tauri:build --target ${{ matrix.target }} --bundles nsis
+          }
 
       - name: Build signed and notarized macOS DMG
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_AVAILABLE == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -204,6 +219,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm tauri:build --target ${{ matrix.target }} --bundles dmg
+
+      - name: Build unsigned macOS DMG
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_AVAILABLE != 'true'
         run: pnpm tauri:build --target ${{ matrix.target }} --bundles dmg
 
       - name: Build Linux AppImage and deb installers
@@ -229,8 +248,15 @@ jobs:
           New-Item -ItemType Directory -Force release-assets | Out-Null
           $installers = Get-ChildItem 'target/${{ matrix.target }}/release/bundle/nsis/*.exe'
           if ($installers.Count -ne 1) { throw "expected one NSIS installer, found $($installers.Count)" }
-          $signature = Get-AuthenticodeSignature $installers[0].FullName
-          if ($signature.Status -ne 'Valid') { throw "invalid Authenticode signature: $($signature.Status)" }
+          if ($env:WINDOWS_SIGNING_AVAILABLE -eq 'true') {
+            $signature = Get-AuthenticodeSignature $installers[0].FullName
+            if ($signature.Status -ne 'Valid') { throw "invalid Authenticode signature: $($signature.Status)" }
+            '- Windows NSIS: Authenticode signed and verified.' |
+              Set-Content release-assets/windows-signing-status.txt
+          } else {
+            '- Windows NSIS: unsigned (signing secrets were not configured).' |
+              Set-Content release-assets/windows-signing-status.txt
+          }
 
           $installRoot = Join-Path $env:RUNNER_TEMP 'bbcom-smoke'
           Start-Process -FilePath $installers[0].FullName -ArgumentList '/S', "/D=$installRoot" -Wait
@@ -261,8 +287,16 @@ jobs:
           dmg=(target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
           test "${#app[@]}" -eq 1
           test "${#dmg[@]}" -eq 1
-          codesign --verify --deep --strict --verbose=2 "${app[0]}"
-          xcrun stapler validate "${dmg[0]}"
+          mkdir -p release-assets
+          if [[ "$APPLE_SIGNING_AVAILABLE" == 'true' ]]; then
+            codesign --verify --deep --strict --verbose=2 "${app[0]}"
+            xcrun stapler validate "${dmg[0]}"
+            echo '- macOS DMG: Developer ID signed and notarized.' \
+              > release-assets/macos-signing-status.txt
+          else
+            echo '- macOS DMG: unsigned and not notarized (signing secrets were not configured).' \
+              > release-assets/macos-signing-status.txt
+          fi
 
           mount_dir="$RUNNER_TEMP/bbcom-dmg"
           install_dir="$RUNNER_TEMP/bbcom-smoke-applications"
@@ -309,7 +343,6 @@ jobs:
           test ! -e "$installed_app"
           hdiutil detach "$mount_dir"
           rm -rf "$mount_dir"
-          mkdir -p release-assets
           cp "${dmg[0]}" release-assets/
 
       - name: Verify, launch, and uninstall Linux installers
@@ -350,6 +383,8 @@ jobs:
           test "$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)" != installed
           mkdir -p release-assets
           cp "${appimage[0]}" "${deb[0]}" release-assets/
+          echo '- Linux AppImage/deb: Sigstore keyless bundles are attached by the release job.' \
+            > release-assets/linux-signing-status.txt
 
       - name: Upload installer
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -387,11 +422,13 @@ jobs:
           appimage=(release/*.AppImage)
           deb=(release/*.deb)
           sbom=(release/*.cdx.json)
+          signing_status=(release/*-signing-status.txt)
           test "${#nsis[@]}" -eq 1
           test "${#dmg[@]}" -eq 1
           test "${#appimage[@]}" -eq 1
           test "${#deb[@]}" -eq 1
           test "${#sbom[@]}" -eq 1
+          test "${#signing_status[@]}" -eq 3
           test -f release/frontend-licenses.json
           test -f release/rust-licenses.json
 
@@ -410,10 +447,12 @@ jobs:
         run: |
           (
             cd release
+            checksum_tmp="../SHA256SUMS.tmp"
             find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
               | sort -z \
               | xargs -0 sha256sum \
-              | sed 's#  \./#  #' > SHA256SUMS
+              | sed 's#  \./#  #' > "$checksum_tmp"
+            mv "$checksum_tmp" SHA256SUMS
           )
           version="${GITHUB_REF_NAME#v}"
           awk -v heading="## [$version]" '
@@ -421,6 +460,11 @@ jobs:
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md > release-notes.md
+          {
+            echo
+            echo '## Artifact signing status'
+            cat release/*-signing-status.txt
+          } >> release-notes.md
           test -s release-notes.md
 
       - name: Attest release artifacts
