@@ -1,7 +1,8 @@
 # Releasing bbcom
 
-`package.json` is the version source. Run `pnpm run version:sync` and then
-`pnpm run version:check`; Cargo and Tauri configuration must match it.
+`package.json` is the version source. Run `pnpm run version:sync`, then
+`pnpm run version:check`, and finally `pnpm precommit`; Cargo and Tauri
+configuration must match it and the local quality gate must pass before tagging.
 
 Only an exact `vX.Y.Z` tag whose commit is on protected `master` can start the
 release workflow. It creates a draft release after all three signed installer

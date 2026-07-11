@@ -193,3 +193,33 @@ test('null bytes and control chars are sanitized out of the rendered text', () =
   assert.match(text, /\\r/);
   assert.match(text, /\\n/);
 });
+
+test('latest-n context handles zero, negative, non-finite, and fractional frame limits defensively', () => {
+  const frames = [
+    frame('one', 'RX', encodeUtf8('one'), 1),
+    frame('two', 'RX', encodeUtf8('two'), 2),
+  ];
+  const select = (frameLimit: number) =>
+    buildLogAiContext(
+      baseSession({ frames, logAiContextMode: 'latest-n-frames', logAiFrameLimit: frameLimit }),
+    );
+
+  assert.deepEqual(select(0), { text: '', truncated: true, frameCount: 0, charLimit: 50_000 });
+  assert.deepEqual(select(-1), { text: '', truncated: true, frameCount: 0, charLimit: 50_000 });
+  assert.equal(select(Number.NaN).frameCount, 2);
+  assert.equal(select(Number.POSITIVE_INFINITY).frameCount, 2);
+  assert.equal(select(0.5).frameCount, 2);
+  assert.equal(select(1.8).frameCount, 1);
+});
+
+test('empty and whitespace serial payloads are deliberately rendered as HEX context', () => {
+  const result = buildLogAiContext(
+    baseSession({
+      frames: [frame('empty', 'RX', new Uint8Array()), frame('blank', 'TX', encodeUtf8('   '))],
+    }),
+  );
+
+  assert.match(result.text, /RX HEX:/);
+  assert.match(result.text, /TX HEX:/);
+  assert.doesNotMatch(result.text, /UTF8:/);
+});

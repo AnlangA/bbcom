@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Versioned, mandatory local quality gate. `pnpm run hooks:install` configures
+# Git to find this hook without copying it into .git/hooks.
+set -euo pipefail
+
+repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  printf '%s\n' 'bbcom pre-commit: unable to locate the Git worktree.' >&2
+  exit 1
+}
+
+cd "$repository_root"
+
+# The quality suite must exercise exactly the index that Git will commit. An
+# unstaged tracked change or a non-ignored untracked file could otherwise make
+# a broken staged snapshot appear healthy.
+if ! git diff --quiet --; then
+  printf '%s\n' 'bbcom pre-commit: stage or stash all tracked changes before committing.' >&2
+  exit 1
+fi
+
+if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+  printf '%s\n' 'bbcom pre-commit: stage or remove all untracked files before committing.' >&2
+  exit 1
+fi
+
+git diff --cached --check
+exec pnpm run precommit

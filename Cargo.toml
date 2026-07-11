@@ -1,3 +1,9 @@
 [workspace]
 members = ["src-tauri"]
 resolver = "3"
+
+[patch.crates-io]
+# Security backports are kept in-tree so the exact reviewed source is built
+# reproducibly until Tauri's Linux backend can consume patched upstream crates.
+glib = { path = "src-tauri/vendor/security-patches/glib-0.18.5" }
+phf_generator = { path = "src-tauri/vendor/security-patches/phf-generator-0.8.0" }

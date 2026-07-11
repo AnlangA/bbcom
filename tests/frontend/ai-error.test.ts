@@ -36,3 +36,16 @@ test('does not crash when details is a non-object value', () => {
   assert.equal(getAiErrorMessage({ details: 'oops', message: 'top' }, FALLBACK), 'top');
   assert.equal(getAiErrorMessage({ details: null }, FALLBACK), FALLBACK);
 });
+
+test('maps every stable AI cancellation and security code before considering backend prose', () => {
+  assert.equal(
+    getAiErrorMessage({ code: 'BUSY', message: 'must not expose provider prose' }, FALLBACK),
+    'AI 请求正在处理中，请稍后重试',
+  );
+  assert.equal(getAiErrorMessage({ code: 'CANCELLED' }, FALLBACK), 'AI 请求已取消');
+  assert.equal(getAiErrorMessage({ code: 'TIMEOUT' }, FALLBACK), 'AI 请求超时，请稍后重试');
+  assert.equal(
+    getAiErrorMessage({ code: 'SECURITY_DENIED' }, FALLBACK),
+    'AI 密钥未配置或当前窗口无权执行该操作',
+  );
+});

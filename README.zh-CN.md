@@ -119,7 +119,18 @@
 - Rust 1.88.0（edition 2024）
 - Node.js 22.23.1
 - pnpm 11.5.3
+- `cargo-llvm-cov` 0.8.7 与 `cargo-audit` 0.22.2
+- 可在 `PATH` 中找到的 ShellCheck
 - 操作系统允许访问串口
+
+首次提交前请安装本地质量门禁工具：
+
+```bash
+cargo install cargo-llvm-cov --version 0.8.7 --locked
+cargo install cargo-audit --version 0.22.2 --locked
+# ShellCheck：macOS 使用 `brew install shellcheck`；Ubuntu/Debian 使用
+# `sudo apt-get install shellcheck`；Windows 使用 `choco install shellcheck`。
+```
 
 Linux 下可能需要把用户加入串口权限组，例如：
 
@@ -158,26 +169,27 @@ chmod +x scripts/dev.sh
 
 ## 脚本
 
-| 命令                        | 说明                                        |
-| --------------------------- | ------------------------------------------- |
-| `pnpm dev`                  | 启动 Vite 开发服务器                        |
-| `pnpm build`                | Vue 类型检查并构建前端                      |
-| `pnpm preview`              | 预览前端构建产物                            |
-| `pnpm tauri:dev`            | 以 HMR 方式运行 Tauri 桌面应用              |
-| `pnpm tauri:build`          | 构建桌面应用包                              |
-| `pnpm format`               | 格式化前端与 Rust 代码                      |
-| `pnpm format:check`         | 检查前端与 Rust 格式                        |
-| `pnpm lint`                 | 对 `src/` 运行 ESLint                       |
-| `pnpm test:frontend`        | 运行前端单元测试                            |
-| `pnpm test:rust`            | 运行 Rust 单元测试                          |
-| `pnpm test`                 | 运行前端与 Rust 测试                        |
-| `pnpm coverage:frontend`    | 运行 Vitest V8 全局覆盖率门禁               |
-| `pnpm coverage:lib`         | 运行 `src/lib/` 的严格 Vitest V8 覆盖率门禁 |
-| `pnpm bench:frontend`       | 运行前端热路径基准                          |
-| `pnpm bench:frontend:write` | 刷新本机前端基准基线                        |
-| `pnpm bench:rust`           | 运行 Rust criterion 基准                    |
-| `pnpm cycles`               | 检查 TypeScript 导入环                      |
-| `pnpm check`                | 运行 lint、格式检查、构建和单元测试         |
+| 命令                        | 说明                                |
+| --------------------------- | ----------------------------------- |
+| `pnpm dev`                  | 启动 Vite 开发服务器                |
+| `pnpm build`                | Vue 类型检查并构建前端              |
+| `pnpm preview`              | 预览前端构建产物                    |
+| `pnpm tauri:dev`            | 以 HMR 方式运行 Tauri 桌面应用      |
+| `pnpm tauri:build`          | 构建桌面应用包                      |
+| `pnpm format`               | 格式化前端与 Rust 代码              |
+| `pnpm format:check`         | 检查前端与 Rust 格式                |
+| `pnpm lint`                 | 对 `src/` 运行 ESLint               |
+| `pnpm test:frontend`        | 运行前端单元测试                    |
+| `pnpm test:rust`            | 运行 Rust 单元测试                  |
+| `pnpm test`                 | 运行前端与 Rust 测试                |
+| `pnpm coverage:frontend`    | 运行 Vitest V8 全局覆盖率门禁       |
+| `pnpm coverage:p0`          | 运行 P0 数据路径的严格覆盖率门禁    |
+| `pnpm bench:frontend`       | 运行前端热路径基准                  |
+| `pnpm bench:frontend:write` | 刷新本机前端基准基线                |
+| `pnpm bench:rust`           | 运行 Rust criterion 基准            |
+| `pnpm cycles`               | 检查 TypeScript 导入环              |
+| `pnpm check`                | 运行 lint、格式检查、构建和单元测试 |
+| `pnpm precommit`            | 运行提交前必须通过的完整本地门禁    |
 
 ## 项目地图
 
@@ -207,7 +219,8 @@ bbcom/
 │   └── benches/hot_paths.rs     # Criterion 基准
 ├── tests/frontend/              # Vitest 单元测试与独立 Node 基准
 ├── images/                      # README 截图
-├── .github/workflows/           # CI 与 release 工作流
+├── .github/workflows/           # 仅标签触发的 release 工作流
+├── .githooks/pre-commit         # 版本化的本地质量门禁
 ├── ARCHITECTURE.md              # 维护者架构指南
 └── scripts/dev.sh               # 开发辅助脚本
 ```
@@ -217,26 +230,25 @@ bbcom/
 
 ## 验证
 
-CI 强制执行前端 lint、格式检查、构建、测试、覆盖率和架构检查。性能门禁在
-同一 runner 上交替运行 3 个独立 base/head 进程；每个 case 测量 7 轮、每轮
-至少 100 ms，CV 超过 10% 或 head/base 中位数低于 0.85 都会失败。Rust 审计、
-格式、Clippy、测试和 llvm-cov 阈值也都是不可旁路的硬门禁。
+版本化 Git pre-commit hook 强制执行前端 lint、格式检查、构建、测试、全局与
+P0 覆盖率、browser mock E2E、架构检查、审计、Rust fmt/Clippy/test/llvm-cov，
+以及 base/head 前端基准比较。它会校验仓库固定的 Node、pnpm、Rust、
+`cargo-llvm-cov` 与 `cargo-audit` 版本。为确保校验对象正是将要提交的 index，
+hook 会拒绝未暂存或非忽略的未跟踪文件；请勿使用 `--no-verify` 绕过它。
+
+GitHub Actions 仅承担 release：精确 `vX.Y.Z` 标签触发后执行三平台签名打包与
+smoke 验证，不再重复运行本地 PR 检查。
 
 `vX.Y.Z` 标签会生成草稿 release，其中包含已签名 Windows NSIS、已签名并
 公证的 macOS arm64 DMG、Linux AppImage/deb、SHA-256、CycloneDX SBOM、
 许可证清单、Sigstore bundle 和 GitHub 构建来源证明。v0.5.0 不提供自动更新器。
 
-提交 PR 前建议运行：
+`pnpm install` 会自动安装 hook。提交 PR 前，如本次提交尚未运行门禁，请手动
+执行同一命令：
 
 ```bash
-pnpm check
-pnpm cycles
-pnpm coverage:frontend
-pnpm coverage:lib
+pnpm precommit
 ```
-
-修改格式化、RX 队列、会话帧存储、导出、校验和或 Modbus 批处理等热路径
-时，请运行 `pnpm bench:frontend` 或 `pnpm bench:rust`。
 
 ## 常见问题
 

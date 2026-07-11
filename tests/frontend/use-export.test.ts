@@ -6,7 +6,10 @@ import {
   EXPORT_BATCH_MAX_BYTES,
   EXPORT_BATCH_MAX_FRAMES,
   EXPORT_FRAME_MAX_BYTES,
+  EXPORT_MAX_BYTES,
+  EXPORT_MAX_FRAMES,
   savePurposeForFormat,
+  summarizeExportFrames,
   useExport,
   type ExportSessionClient,
 } from '../../src/composables/useExport.ts';
@@ -361,4 +364,89 @@ test('useExport: isExporting resets even when export throws', async () => {
   assert.equal(result.ok, false);
   assert.match(result.error ?? '', /io/);
   assert.equal(api.isExporting.value, false, 'isExporting cleared in the finally block');
+});
+
+test('useExport: limits are enforced before a target dialog, including empty selections', () => {
+  assert.throws(() => summarizeExportFrames([]), /No frames match/);
+
+  function* tooManyFrames(): Generator<DataFrame> {
+    const empty = frame('RX', [], 1);
+    for (let index = 0; index <= EXPORT_MAX_FRAMES; index += 1) yield empty;
+  }
+  assert.throws(() => summarizeExportFrames(tooManyFrames()), /more than/);
+
+  function* oversizedTotal(): Generator<DataFrame> {
+    const maximalFrame = {
+      id: 'maximal-frame',
+      direction: 'RX',
+      timestamp: 1,
+      data: { length: EXPORT_FRAME_MAX_BYTES },
+    } as unknown as DataFrame;
+    for (
+      let index = 0;
+      index <= Math.floor(EXPORT_MAX_BYTES / EXPORT_FRAME_MAX_BYTES);
+      index += 1
+    ) {
+      yield maximalFrame;
+    }
+  }
+  assert.throws(() => summarizeExportFrames(oversizedTotal()), /data exceeds/);
+});
+
+test('useExport: cancellation while the dialog is open keeps progress stable and revokes the grant', async () => {
+  let resolveTarget!: (target: { token: string; displayName: string }) => void;
+  const target = new Promise<{ token: string; displayName: string }>((resolve) => {
+    resolveTarget = resolve;
+  });
+  const revoked: string[] = [];
+  const api = useExport({
+    requestTarget: async () => target,
+    revokeTarget: async (token) => {
+      revoked.push(token);
+    },
+    sessionClient: {
+      begin: async () => {
+        throw new Error('must not start after dialog cancellation');
+      },
+      append: async () => ({ totalFrames: 0, totalRawBytes: 0 }),
+      finish: async () => ({ frames: 0, rawBytes: 0, outputBytes: 0, durationMs: 0 }),
+      abort: async () => {},
+    },
+  });
+
+  api.cancelExport();
+  const exporting = api.exportData([frame('RX', [1])], 'bin', 'HEX');
+  assert.equal(api.progress.value.phase, 'selecting-target');
+  api.resetExportProgress();
+  assert.equal(
+    api.progress.value.phase,
+    'selecting-target',
+    'reset is ignored while work is active',
+  );
+  api.cancelExport();
+  resolveTarget({ token: 'grant-to-revoke', displayName: 'capture.bin' });
+
+  assert.deepEqual(await exporting, { ok: false, cancelled: true });
+  assert.deepEqual(revoked, ['grant-to-revoke']);
+  assert.equal(api.progress.value.phase, 'cancelled');
+  api.resetExportProgress();
+  assert.equal(api.progress.value.phase, 'idle');
+});
+
+test('createExportBatches emits an oversized single frame with and without a preceding batch', () => {
+  const oversizedForBatch = new Uint8Array(EXPORT_BATCH_MAX_BYTES + 1);
+  assert.deepEqual(
+    [...createExportBatches([frame('RX', oversizedForBatch, 1)])].map((batch) => batch.length),
+    [1],
+  );
+  assert.deepEqual(
+    [
+      ...createExportBatches([
+        frame('RX', [1], 1),
+        frame('TX', oversizedForBatch, 2),
+        frame('RX', [3], 3),
+      ]),
+    ].map((batch) => batch.map((entry) => entry.id)),
+    [['f1'], ['f2'], ['f3']],
+  );
 });

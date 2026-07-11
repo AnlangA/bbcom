@@ -148,26 +148,28 @@ These are the rules most likely to protect users from subtle serial bugs:
 
 ## Quality Gates
 
-| Area                         | Command                  |
-| ---------------------------- | ------------------------ |
-| Frontend lint                | `pnpm lint`              |
-| Formatting                   | `pnpm format:check`      |
-| Type-check + frontend build  | `pnpm build`             |
-| Frontend tests               | `pnpm test:frontend`     |
-| Rust tests                   | `pnpm test:rust`         |
-| Frontend coverage            | `pnpm coverage:frontend` |
-| `src/lib/` per-file coverage | `pnpm coverage:lib`      |
-| Frontend benchmarks          | `pnpm bench:frontend`    |
-| Rust benchmarks              | `pnpm bench:rust`        |
-| TypeScript import cycles     | `pnpm cycles`            |
-| Common local gate            | `pnpm check`             |
+| Area                        | Command                  |
+| --------------------------- | ------------------------ |
+| Frontend lint               | `pnpm lint`              |
+| Formatting                  | `pnpm format:check`      |
+| Type-check + frontend build | `pnpm build`             |
+| Frontend tests              | `pnpm test:frontend`     |
+| Rust tests                  | `pnpm test:rust`         |
+| Frontend coverage           | `pnpm coverage:frontend` |
+| P0 per-domain coverage      | `pnpm coverage:p0`       |
+| Frontend benchmarks         | `pnpm bench:frontend`    |
+| Rust benchmarks             | `pnpm bench:rust`        |
+| TypeScript import cycles    | `pnpm cycles`            |
+| Mandatory local commit gate | `pnpm precommit`         |
 
-CI preserves the branch-protection job names while enforcing dependency audits,
-Vitest V8 coverage, Rust fmt/Clippy/tests, and llvm-cov line/function
-thresholds. The benchmark gate alternates three independent base/head processes;
-each case runs seven rounds of at least 100 ms, rejects CV above 10%, and rejects
-a head/base median below 0.85. No audit, coverage, or benchmark command may fail
-open.
+The repository's `.githooks/pre-commit` invokes `pnpm precommit`, which is the
+authoritative quality gate for every commit. It enforces dependency audits,
+Vitest V8 global/P0 coverage, browser-mock E2E, Rust fmt/Clippy/tests/llvm-cov,
+and the base/head benchmark contract. The benchmark comparison alternates three
+independent base/head processes; each case runs seven rounds of at least 100 ms,
+rejects CV above 10%, and rejects a head/base median below 0.85. No audit,
+coverage, or benchmark command may fail open. GitHub Actions is reserved for
+tag-triggered release assembly and platform smoke verification.
 
 ## Manual Verification
 

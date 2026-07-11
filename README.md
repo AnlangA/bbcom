@@ -129,7 +129,18 @@ sessions, checksums, OS credential storage, and bounded AI client calls.
 - Rust 1.88.0 (edition 2024)
 - Node.js 22.23.1
 - pnpm 11.5.3
+- `cargo-llvm-cov` 0.8.7 and `cargo-audit` 0.22.2
+- ShellCheck available on `PATH`
 - OS permission to access serial ports
+
+Install the local quality-gate tools before making a commit:
+
+```bash
+cargo install cargo-llvm-cov --version 0.8.7 --locked
+cargo install cargo-audit --version 0.22.2 --locked
+# ShellCheck: macOS `brew install shellcheck`; Ubuntu/Debian
+# `sudo apt-get install shellcheck`; Windows `choco install shellcheck`.
+```
 
 On Linux you may need to add your user to the serial group, for example:
 
@@ -168,26 +179,27 @@ chmod +x scripts/dev.sh
 
 ## Scripts
 
-| Command                     | Description                                             |
-| --------------------------- | ------------------------------------------------------- |
-| `pnpm dev`                  | Start the Vite dev server                               |
-| `pnpm build`                | Type-check the Vue app and build the frontend           |
-| `pnpm preview`              | Preview the frontend build                              |
-| `pnpm tauri:dev`            | Run the Tauri desktop app with frontend HMR             |
-| `pnpm tauri:build`          | Build the desktop application bundle                    |
-| `pnpm format`               | Format frontend and Rust code                           |
-| `pnpm format:check`         | Check frontend and Rust formatting                      |
-| `pnpm lint`                 | Run ESLint on `src/`                                    |
-| `pnpm test:frontend`        | Run frontend unit tests                                 |
-| `pnpm test:rust`            | Run Rust unit tests                                     |
-| `pnpm test`                 | Run frontend and Rust tests                             |
-| `pnpm coverage:frontend`    | Run the Vitest V8 global coverage gate                  |
-| `pnpm coverage:lib`         | Run the stricter Vitest V8 coverage gate for `src/lib/` |
-| `pnpm bench:frontend`       | Run frontend hot-path benchmarks                        |
-| `pnpm bench:frontend:write` | Refresh the local frontend benchmark baseline           |
-| `pnpm bench:rust`           | Run Rust criterion benchmarks                           |
-| `pnpm cycles`               | Fail on TypeScript import cycles                        |
-| `pnpm check`                | Run lint, format check, build, and unit tests           |
+| Command                     | Description                                   |
+| --------------------------- | --------------------------------------------- |
+| `pnpm dev`                  | Start the Vite dev server                     |
+| `pnpm build`                | Type-check the Vue app and build the frontend |
+| `pnpm preview`              | Preview the frontend build                    |
+| `pnpm tauri:dev`            | Run the Tauri desktop app with frontend HMR   |
+| `pnpm tauri:build`          | Build the desktop application bundle          |
+| `pnpm format`               | Format frontend and Rust code                 |
+| `pnpm format:check`         | Check frontend and Rust formatting            |
+| `pnpm lint`                 | Run ESLint on `src/`                          |
+| `pnpm test:frontend`        | Run frontend unit tests                       |
+| `pnpm test:rust`            | Run Rust unit tests                           |
+| `pnpm test`                 | Run frontend and Rust tests                   |
+| `pnpm coverage:frontend`    | Run the Vitest V8 global coverage gate        |
+| `pnpm coverage:p0`          | Run strict coverage gates for P0 data paths   |
+| `pnpm bench:frontend`       | Run frontend hot-path benchmarks              |
+| `pnpm bench:frontend:write` | Refresh the local frontend benchmark baseline |
+| `pnpm bench:rust`           | Run Rust criterion benchmarks                 |
+| `pnpm cycles`               | Fail on TypeScript import cycles              |
+| `pnpm check`                | Run lint, format check, build, and unit tests |
+| `pnpm precommit`            | Run the complete mandatory local commit gate  |
 
 ## Project Map
 
@@ -217,7 +229,8 @@ bbcom/
 │   └── benches/hot_paths.rs     # Criterion benchmarks
 ├── tests/frontend/              # Vitest unit tests and the standalone Node benchmark
 ├── images/                      # README screenshots
-├── .github/workflows/           # CI and release workflows
+├── .github/workflows/           # Tag-triggered release workflow
+├── .githooks/pre-commit         # Versioned local quality gate
 ├── ARCHITECTURE.md              # Maintainer architecture guide
 └── scripts/dev.sh               # Development helper
 ```
@@ -227,29 +240,29 @@ verification guidance, read [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Verification
 
-CI enforces frontend lint/format/build/test/coverage/architecture gates. Its
-performance job alternates three independent base/head processes; every case
-runs seven measured rounds of at least 100 ms, rejects CV above 10%, and rejects
-a head/base median below 0.85. Rust audit, format, Clippy, tests, and llvm-cov
-coverage thresholds are hard gates; none are allowed to fail open.
+The versioned Git pre-commit hook enforces frontend lint/format/build/test,
+global and P0 coverage, browser-mock E2E, architecture, audit, Rust
+fmt/Clippy/tests/llvm-cov, and the base/head frontend benchmark comparison.
+It uses the repository-pinned Node, pnpm, Rust, `cargo-llvm-cov`, and
+`cargo-audit` versions. To ensure it validates exactly the index Git will
+commit, it rejects unstaged or non-ignored untracked files. Do not use
+`--no-verify` to bypass it.
+
+GitHub Actions is intentionally release-only: it runs after an exact
+`vX.Y.Z` tag and performs signed, three-platform release assembly and smoke
+verification rather than repeating local PR checks.
 
 Tags matching `vX.Y.Z` produce a draft release containing signed Windows NSIS
 and notarized macOS arm64 DMG installers, Linux AppImage/deb packages,
 SHA-256 checksums, a CycloneDX SBOM, license inventories, Sigstore bundles, and
 GitHub build provenance. No automatic updater is shipped in v0.5.0.
 
-Before opening a pull request, run:
+`pnpm install` installs the hook automatically. Before opening a pull request,
+run the exact same gate manually if it has not already run during commit:
 
 ```bash
-pnpm check
-pnpm cycles
-pnpm coverage:frontend
-pnpm coverage:lib
+pnpm precommit
 ```
-
-Use `pnpm bench:frontend` and `pnpm bench:rust` when changing hot paths such as
-formatting, RX queue handling, session frame storage, export, checksums, or
-Modbus batching.
 
 ## FAQ
 

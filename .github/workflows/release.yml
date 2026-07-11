@@ -23,6 +23,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
       - name: Reject non-SemVer tags and non-master commits
         shell: bash
         run: |
@@ -37,46 +46,16 @@ jobs:
           test "$package_version" = "$version"
           grep -Fq "## [$version]" CHANGELOG.md
 
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libudev-dev \
-            shellcheck
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-
       - name: Setup Rust 1.88.0
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           toolchain: 1.88.0
-          components: clippy,rustfmt
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Verify synchronized versions
         run: pnpm run version:check
-
-      - name: Run release quality gate
-        run: pnpm run check
-
-      - name: Audit release dependencies
-        run: |
-          pnpm audit --audit-level moderate
-          cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit --deny unsound --deny yanked --file Cargo.lock
 
       - name: Prepare release metadata directory
         run: mkdir -p release-metadata
@@ -121,14 +100,17 @@ jobs:
             os: windows-2022
             target: x86_64-pc-windows-msvc
             artifact: windows-x64
+            executable: target/x86_64-pc-windows-msvc/release/bbcom.exe
           - name: macOS arm64
             os: macos-14
             target: aarch64-apple-darwin
             artifact: macos-arm64
+            executable: target/aarch64-apple-darwin/release/bbcom
           - name: Linux x64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: linux-x64
+            executable: target/x86_64-unknown-linux-gnu/release/bbcom
     steps:
       - name: Checkout tagged source
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -142,7 +124,9 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
-            libudev-dev
+            libudev-dev \
+            dbus-x11 \
+            xvfb
 
       - name: Setup pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
@@ -226,7 +210,19 @@ jobs:
         if: runner.os == 'Linux'
         run: pnpm tauri:build --target ${{ matrix.target }} --bundles appimage,deb
 
-      - name: Verify Windows signature and stage installer
+      - name: Smoke-test the built native application shell
+        if: runner.os != 'Linux'
+        env:
+          BBCOM_E2E_BINARY: ${{ github.workspace }}/${{ matrix.executable }}
+        run: pnpm run e2e:native
+
+      - name: Smoke-test the built native application shell on Linux
+        if: runner.os == 'Linux'
+        env:
+          BBCOM_E2E_BINARY: ${{ github.workspace }}/${{ matrix.executable }}
+        run: xvfb-run -a pnpm run e2e:native
+
+      - name: Verify, install, launch, and uninstall Windows NSIS installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -235,9 +231,28 @@ jobs:
           if ($installers.Count -ne 1) { throw "expected one NSIS installer, found $($installers.Count)" }
           $signature = Get-AuthenticodeSignature $installers[0].FullName
           if ($signature.Status -ne 'Valid') { throw "invalid Authenticode signature: $($signature.Status)" }
+
+          $installRoot = Join-Path $env:RUNNER_TEMP 'bbcom-smoke'
+          Start-Process -FilePath $installers[0].FullName -ArgumentList '/S', "/D=$installRoot" -Wait
+          $application = Get-ChildItem -Path $installRoot -Filter 'bbcom.exe' -Recurse | Select-Object -First 1
+          if ($null -eq $application) { throw 'NSIS installation did not contain bbcom.exe' }
+
+          $process = Start-Process -FilePath $application.FullName -PassThru
+          Start-Sleep -Seconds 8
+          if ($process.HasExited) { throw "installed bbcom exited during launch smoke with $($process.ExitCode)" }
+          if (-not $process.CloseMainWindow()) { throw 'installed bbcom did not expose a main window to close' }
+          if (-not $process.WaitForExit(10000)) {
+            Stop-Process -Id $process.Id -Force
+            throw 'installed bbcom did not close within 10 seconds'
+          }
+
+          $uninstaller = Get-ChildItem -Path $installRoot -Filter '*uninstall*.exe' -Recurse | Select-Object -First 1
+          if ($null -eq $uninstaller) { throw 'NSIS installation did not contain an uninstaller' }
+          Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -Wait
+          if (Test-Path $installRoot) { throw 'NSIS uninstall left the installation directory behind' }
           Copy-Item $installers[0].FullName release-assets/
 
-      - name: Verify Apple signature/notarization and stage DMG
+      - name: Verify, install, launch, and uninstall notarized macOS DMG
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -248,10 +263,56 @@ jobs:
           test "${#dmg[@]}" -eq 1
           codesign --verify --deep --strict --verbose=2 "${app[0]}"
           xcrun stapler validate "${dmg[0]}"
+
+          mount_dir="$RUNNER_TEMP/bbcom-dmg"
+          install_dir="$RUNNER_TEMP/bbcom-smoke-applications"
+          installed_app="$install_dir/bbcom.app"
+          app_pid=''
+          cleanup() {
+            if [[ -n "$app_pid" ]] && kill -0 "$app_pid" 2>/dev/null; then
+              kill -TERM "$app_pid" || true
+              wait "$app_pid" || true
+            fi
+            if mount | grep -Fq "on $mount_dir "; then
+              hdiutil detach "$mount_dir" || true
+            fi
+            rm -rf "$mount_dir" "$install_dir"
+          }
+          trap cleanup EXIT
+
+          mkdir -p "$mount_dir" "$install_dir"
+          hdiutil attach "${dmg[0]}" -nobrowse -readonly -mountpoint "$mount_dir"
+          mounted_app=("$mount_dir"/*.app)
+          test "${#mounted_app[@]}" -eq 1
+          cp -R "${mounted_app[0]}" "$installed_app"
+          test -x "$installed_app/Contents/MacOS/bbcom"
+
+          "$installed_app/Contents/MacOS/bbcom" > "$RUNNER_TEMP/bbcom-macos-smoke.log" 2>&1 &
+          app_pid="$!"
+          sleep 8
+          if ! kill -0 "$app_pid" 2>/dev/null; then
+            cat "$RUNNER_TEMP/bbcom-macos-smoke.log"
+            exit 1
+          fi
+          kill -TERM "$app_pid"
+          for _ in {1..10}; do
+            kill -0 "$app_pid" 2>/dev/null || break
+            sleep 1
+          done
+          if kill -0 "$app_pid" 2>/dev/null; then
+            cat "$RUNNER_TEMP/bbcom-macos-smoke.log"
+            exit 1
+          fi
+          wait "$app_pid" || true
+          app_pid=''
+          rm -rf "$installed_app"
+          test ! -e "$installed_app"
+          hdiutil detach "$mount_dir"
+          rm -rf "$mount_dir"
           mkdir -p release-assets
           cp "${dmg[0]}" release-assets/
 
-      - name: Smoke-check and stage Linux installers
+      - name: Verify, launch, and uninstall Linux installers
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -260,9 +321,33 @@ jobs:
           deb=(target/${{ matrix.target }}/release/bundle/deb/*.deb)
           test "${#appimage[@]}" -eq 1
           test "${#deb[@]}" -eq 1
+
+          run_gui_smoke() {
+            local label="$1"
+            shift
+            local log="$RUNNER_TEMP/bbcom-${label}-smoke.log"
+            set +e
+            xvfb-run -a timeout --signal=TERM --kill-after=5s 8s "$@" >"$log" 2>&1
+            local status=$?
+            set -e
+            if [[ "$status" -ne 124 ]]; then
+              cat "$log"
+              echo "$label exited before the eight-second launch smoke (status $status)" >&2
+              exit 1
+            fi
+          }
+
           chmod +x "${appimage[0]}"
-          (cd "$RUNNER_TEMP" && "${GITHUB_WORKSPACE}/${appimage[0]}" --appimage-extract >/dev/null)
+          run_gui_smoke appimage env APPIMAGE_EXTRACT_AND_RUN=1 "${GITHUB_WORKSPACE}/${appimage[0]}"
           dpkg-deb --info "${deb[0]}" >/dev/null
+          package="$(dpkg-deb -f "${deb[0]}" Package)"
+          sudo apt-get install -y "${GITHUB_WORKSPACE}/${deb[0]}"
+          binary="$(dpkg -L "$package" | awk '/^\/usr\/bin\// { print; exit }')"
+          test -n "$binary"
+          test -x "$binary"
+          run_gui_smoke deb "$binary"
+          sudo apt-get remove -y "$package"
+          test "$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)" != installed
           mkdir -p release-assets
           cp "${appimage[0]}" "${deb[0]}" release-assets/
 

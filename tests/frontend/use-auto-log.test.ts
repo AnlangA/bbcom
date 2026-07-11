@@ -358,3 +358,82 @@ test('useAutoLog: stale dialog grants are revoked, while stale begun sessions ar
     assert.deepEqual(second.calls.aborts, ['late-log']);
   });
 });
+
+test('useAutoLog: failed grant revocation is contained and never resurrects a stale log', async () => {
+  await withLocalStorageMock(async () => {
+    let resolveDialog!: (grant: SaveTargetGrant) => void;
+    const dialog = new Promise<SaveTargetGrant>((resolve) => {
+      resolveDialog = resolve;
+    });
+    const { sessionId, calls, auto } = setup({
+      requestTarget: async () => dialog,
+      revokeTarget: async () => {
+        throw new Error('revoke unavailable');
+      },
+      terminalTimeoutMs: 20,
+    });
+    const enabling = auto.enable(sessionId);
+    await auto.disable(sessionId);
+    resolveDialog({ token: 'stale-grant', displayName: 'stale.txt' });
+
+    assert.equal(await enabling, null);
+    assert.deepEqual(calls.begins, []);
+  });
+});
+
+test('useAutoLog: a begin failure revokes its unused grant and leaves the store disabled', async () => {
+  await withLocalStorageMock(async () => {
+    const { sessions, sessionId, calls, auto } = setup({
+      client: {
+        begin: async () => {
+          throw new Error('disk unavailable');
+        },
+      },
+    });
+
+    assert.equal(await auto.enable(sessionId), null);
+    assert.deepEqual(calls.revoked, [`grant-${sessionId}`]);
+    assert.equal(sessions.sessions[0].autoLogEnabled, false);
+  });
+});
+
+test('useAutoLog: external toggle-off drains the active log, and inactive disable just clears the target', async () => {
+  await withLocalStorageMock(async () => {
+    const active = setup({ debounceMs: 1 });
+    await active.auto.enable(active.sessionId);
+    active.sessions.setAutoLogTarget(active.sessionId, null);
+    active.auto.appendFrame(active.sessionId, frame('RX', 1));
+    await delay(10);
+    assert.deepEqual(active.calls.finishes, [`log-${active.sessionId}`]);
+
+    const inactive = setup();
+    inactive.sessions.setAutoLogTarget(inactive.sessionId, 'old.txt');
+    await inactive.auto.disable(inactive.sessionId);
+    assert.equal(inactive.sessions.sessions[0].autoLogEnabled, false);
+    assert.deepEqual(inactive.calls.finishes, []);
+  });
+});
+
+test('useAutoLog: a replacement enable that becomes stale during previous cleanup revokes only its new grant', async () => {
+  await withLocalStorageMock(async () => {
+    let releaseFinish!: () => void;
+    const finishBlocked = new Promise<void>((resolve) => {
+      releaseFinish = resolve;
+    });
+    let grantCount = 0;
+    const { sessionId, calls, auto } = setup({
+      requestTarget: async () => ({ token: `grant-${grantCount++}`, displayName: 'capture.txt' }),
+      client: { finish: async () => finishBlocked },
+      terminalTimeoutMs: 50,
+    });
+    await auto.enable(sessionId);
+    const replacing = auto.enable(sessionId);
+    await flush();
+    const disabling = auto.disable(sessionId);
+    releaseFinish();
+
+    assert.equal(await replacing, null);
+    await disabling;
+    assert.deepEqual(calls.revoked, ['grant-1']);
+  });
+});
