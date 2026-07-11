@@ -53,7 +53,8 @@ sessions, checksums, OS credential storage, and bounded AI client calls.
   with model validation, request limits/cancellation, role-separated prompts,
   and risk classification.
 - **Desktop polish** with dark/light themes, English/Chinese UI catalogs,
-  persisted settings, keyboard shortcuts, and signed installer releases.
+  persisted settings, keyboard shortcuts, and installer releases with explicit
+  per-platform signing status.
 
 ## Screenshots
 
@@ -249,11 +250,12 @@ commit, it rejects unstaged or non-ignored untracked files. Do not use
 `--no-verify` to bypass it.
 
 GitHub Actions is intentionally release-only: it runs after an exact
-`vX.Y.Z` tag and performs signed, three-platform release assembly and smoke
-verification rather than repeating local PR checks.
+`vX.Y.Z` tag and performs three-platform release assembly and smoke verification
+rather than repeating local PR checks. Windows and macOS platform signing is
+enabled when the corresponding complete secret set is configured.
 
-Tags matching `vX.Y.Z` produce a draft release containing signed Windows NSIS
-and notarized macOS arm64 DMG installers, Linux AppImage/deb packages,
+Tags matching `vX.Y.Z` produce a draft release containing Windows NSIS, macOS
+arm64 DMG, Linux AppImage/deb packages, explicit signing-status manifests,
 SHA-256 checksums, a CycloneDX SBOM, license inventories, Sigstore bundles, and
 GitHub build provenance. No automatic updater is shipped in v0.5.0.
 

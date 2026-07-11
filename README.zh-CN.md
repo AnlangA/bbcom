@@ -47,7 +47,7 @@
 - **AI 助手**：Linux/BusyBox 命令生成与串口日志分析，包含模型校验、
   请求限制/取消、角色隔离提示词和风险分级。
 - **桌面体验**：深色/浅色主题、中英文界面、本地设置持久化、快捷键
-  和签名安装包发布。
+  和带明确平台签名状态的安装包发布。
 
 ## 截图
 
@@ -236,12 +236,13 @@ P0 覆盖率、browser mock E2E、架构检查、审计、Rust fmt/Clippy/test/l
 `cargo-llvm-cov` 与 `cargo-audit` 版本。为确保校验对象正是将要提交的 index，
 hook 会拒绝未暂存或非忽略的未跟踪文件；请勿使用 `--no-verify` 绕过它。
 
-GitHub Actions 仅承担 release：精确 `vX.Y.Z` 标签触发后执行三平台签名打包与
-smoke 验证，不再重复运行本地 PR 检查。
+GitHub Actions 仅承担 release：精确 `vX.Y.Z` 标签触发后执行三平台打包与
+smoke 验证，不再重复运行本地 PR 检查。Windows 与 macOS 在完整签名 Secret
+已经配置时启用平台签名。
 
-`vX.Y.Z` 标签会生成草稿 release，其中包含已签名 Windows NSIS、已签名并
-公证的 macOS arm64 DMG、Linux AppImage/deb、SHA-256、CycloneDX SBOM、
-许可证清单、Sigstore bundle 和 GitHub 构建来源证明。v0.5.0 不提供自动更新器。
+`vX.Y.Z` 标签会生成草稿 release，其中包含 Windows NSIS、macOS arm64 DMG、
+Linux AppImage/deb、明确的签名状态清单、SHA-256、CycloneDX SBOM、许可证
+清单、Sigstore bundle 和 GitHub 构建来源证明。v0.5.0 不提供自动更新器。
 
 `pnpm install` 会自动安装 hook。提交 PR 前，如本次提交尚未运行门禁，请手动
 执行同一命令：

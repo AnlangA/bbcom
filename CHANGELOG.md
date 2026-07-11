@@ -5,6 +5,18 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-11
+
+### Release workflow recovery
+
+- Installed the WebKit WebDriver required by Tauri's native Linux smoke test.
+- Made Windows Authenticode and Apple signing/notarization conditional on the
+  complete platform secret set, while retaining unsigned installer builds when
+  those credentials are unavailable.
+- Added per-platform signing-status manifests to release assets and draft notes
+  so unsigned fallbacks are explicit and auditable. Linux installers continue
+  to receive Sigstore keyless bundles and GitHub provenance attestations.
+
 ## [0.7.0] - 2026-07-11
 
 ### Z.ai client API migration
