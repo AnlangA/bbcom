@@ -71,6 +71,10 @@ typed command surfaces.
 - **Rust command layer:** opaque file grants, streaming export/logging,
   checksum calculation, bounded AI network calls, OS credential storage, and
   window management.
+- **AI provider boundary:** role-separated messages are built locally, while a
+  request-scoped `ZaiClient` owns the API secret, validated provider endpoints,
+  and HTTP transport. `ChatCompletion` values contain request data only and
+  never carry credentials or arbitrary endpoint strings.
 - **Tauri plugins:** serialplugin provides binary serial channels. Native save
   dialogs and credential access remain behind allowlisted Rust commands; no
   updater plugin is shipped.
