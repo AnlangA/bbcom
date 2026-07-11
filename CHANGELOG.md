@@ -5,6 +5,14 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-11
+
+### macOS smoke compatibility
+
+- Limited Tauri WebDriver smoke testing to Windows and Linux, the desktop
+  platforms supported by `tauri-driver`. macOS continues to validate the built
+  DMG by installing, launching, stopping, and removing the packaged app.
+
 ## [0.7.1] - 2026-07-11
 
 ### Release workflow recovery
