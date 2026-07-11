@@ -5,6 +5,13 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-11
+
+### DMG verification compatibility
+
+- Verified the packaged application from the mounted DMG instead of expecting
+  Tauri's temporary macOS app bundle to remain after DMG assembly.
+
 ## [0.7.2] - 2026-07-11
 
 ### macOS smoke compatibility

@@ -283,19 +283,11 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          app=(target/${{ matrix.target }}/release/bundle/macos/*.app)
           dmg=(target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
-          test "${#app[@]}" -eq 1
           test "${#dmg[@]}" -eq 1
           mkdir -p release-assets
           if [[ "$APPLE_SIGNING_AVAILABLE" == 'true' ]]; then
-            codesign --verify --deep --strict --verbose=2 "${app[0]}"
             xcrun stapler validate "${dmg[0]}"
-            echo '- macOS DMG: Developer ID signed and notarized.' \
-              > release-assets/macos-signing-status.txt
-          else
-            echo '- macOS DMG: unsigned and not notarized (signing secrets were not configured).' \
-              > release-assets/macos-signing-status.txt
           fi
 
           mount_dir="$RUNNER_TEMP/bbcom-dmg"
@@ -318,6 +310,14 @@ jobs:
           hdiutil attach "${dmg[0]}" -nobrowse -readonly -mountpoint "$mount_dir"
           mounted_app=("$mount_dir"/*.app)
           test "${#mounted_app[@]}" -eq 1
+          if [[ "$APPLE_SIGNING_AVAILABLE" == 'true' ]]; then
+            codesign --verify --deep --strict --verbose=2 "${mounted_app[0]}"
+            echo '- macOS DMG: Developer ID signed and notarized.' \
+              > release-assets/macos-signing-status.txt
+          else
+            echo '- macOS DMG: unsigned and not notarized (signing secrets were not configured).' \
+              > release-assets/macos-signing-status.txt
+          fi
           cp -R "${mounted_app[0]}" "$installed_app"
           test -x "$installed_app/Contents/MacOS/bbcom"
 
