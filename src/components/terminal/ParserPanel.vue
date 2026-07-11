@@ -66,11 +66,7 @@
 import { computed, ref, watch } from 'vue';
 import { useMessage } from 'naive-ui';
 import { hexDump, type ParserConfig, type ParserKind } from '../../lib/protocol-parser';
-import {
-  ParserFrameCollector,
-  parserConfigKey,
-  type DisplayParsedFrame,
-} from '../../lib/parser-frame-collector';
+import type { DisplayParsedFrame } from '../../lib/parser-frame-collector';
 import { PARSER_PRESETS } from '../../lib/parser-presets';
 import {
   configForKind,
@@ -91,16 +87,19 @@ import {
 } from '../../lib/parser-panel';
 import { formatHex } from '../../lib/format';
 import { t } from '../../lib/i18n';
-import type { DataFrame } from '../../types';
 import { useSessionStore } from '../../stores/sessions';
 import ParserConfigBar from './ParserConfigBar.vue';
 import ParserStatsBar from './ParserStatsBar.vue';
 import ParserFrameDetail from './ParserFrameDetail.vue';
-import { Copy } from 'lucide-vue-next';
+import { Copy } from '@lucide/vue';
 
 const props = defineProps<{
   sessionId: string;
-  frames: DataFrame[];
+  /** Snapshot produced by the resident raw-byte SessionRuntime parser. */
+  parsedFrames: readonly DisplayParsedFrame[];
+  throughputBps: number;
+  /** Changes only after a config change or explicit terminal clear. */
+  parserResetVersion: number;
 }>();
 
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -200,30 +199,21 @@ function setConfig(config: ParserConfig, selectedPresetId: string | null) {
   sessionStore.setParserState(props.sessionId, config, selectedPresetId);
 }
 
-const parsedFrames = ref<DisplayParsedFrame[]>([]);
 const selectedFrame = ref<DisplayParsedFrame | null>(null);
 const searchTerm = ref('');
-const parserCollector = new ParserFrameCollector(currentConfig.value);
-// Throughput tracking: bytes parsed and the timestamp window they arrived in.
-const throughputBps = ref(0);
 
-function syncParsedFrames() {
-  const result = parserCollector.sync(props.frames, currentConfig.value);
-  parsedFrames.value = result.frames;
-  throughputBps.value = result.throughputBps;
-  if (result.reset) selectedFrame.value = null;
-}
-
+// Reassembly is owned by the resident SessionRuntime, not this view. The panel
+// only drops a selection when that runtime resets its stream due to a settings
+// change or an explicit terminal clear.
 watch(
-  () => [props.frames.length, parserConfigKey(currentConfig.value)] as const,
-  syncParsedFrames,
-  {
-    immediate: true,
+  () => props.parserResetVersion,
+  () => {
+    selectedFrame.value = null;
   },
 );
 
 // Search filter: case-insensitive substring against decoded frame text.
-const filteredFrames = computed(() => filterParsedFrames(parsedFrames.value, searchTerm.value));
+const filteredFrames = computed(() => filterParsedFrames(props.parsedFrames, searchTerm.value));
 
 const renderedFrameWindow = computed(() =>
   renderedParsedFrameWindow(filteredFrames.value, MAX_RENDERED_PARSED_FRAMES),
@@ -232,7 +222,7 @@ const renderedStartIndex = computed(() => renderedFrameWindow.value.startIndex);
 const renderedFilteredFrames = computed(() => renderedFrameWindow.value.frames);
 
 // Aggregate stats over the full parsed set (not the filtered view).
-const stats = computed(() => parsedFrameStats(parsedFrames.value));
+const stats = computed(() => parsedFrameStats(props.parsedFrames));
 const totalBytes = computed(() => stats.value.totalBytes);
 const largestFrame = computed(() => stats.value.largestFrame);
 

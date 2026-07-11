@@ -72,14 +72,14 @@
       </div>
       <div class="form-row">
         <span class="field-label">{{ t('highlight.direction') }}</span>
-        <n-select
+        <AppSelect
           v-model:value="draft.direction"
           :options="directionOptions"
           size="tiny"
           style="width: 86px"
         />
         <span class="field-label">{{ t('highlight.color') }}</span>
-        <n-select
+        <AppSelect
           v-model:value="draft.color"
           :options="colorOptions"
           size="tiny"
@@ -103,8 +103,9 @@
 
 <script setup lang="ts">
 import { computed, ref, shallowReactive } from 'vue';
-import { NButton, NButtonGroup, NCheckbox, NInput, NSelect } from 'naive-ui';
-import { Pencil, Plus, X } from 'lucide-vue-next';
+import { NButton, NButtonGroup, NCheckbox, NInput } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
+import { Pencil, Plus, X } from '@lucide/vue';
 import { useSessionStore } from '../../stores/sessions';
 import { HIGHLIGHT_COLORS } from '../../lib/highlights';
 import { t } from '../../lib/i18n';

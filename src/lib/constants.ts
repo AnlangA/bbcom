@@ -1,4 +1,4 @@
-import type { AiModel, DisplayMode } from '../types';
+import type { DisplayMode } from '../types';
 
 export const BAUD_RATES = [
   { label: '9600', value: 9600 },
@@ -74,17 +74,3 @@ export function resolveExportFormat(choice: ExportChoice, displayMode: DisplayMo
   }
   return choice;
 }
-
-export const AI_MODELS = {
-  glm51: 'glm-5.1',
-  glm5Turbo: 'glm-5-turbo',
-  glm47: 'glm-4.7',
-  glm45Air: 'glm-4.5-air',
-} as const;
-
-export const AI_MODEL_OPTIONS: { label: string; value: AiModel }[] = [
-  { label: 'GLM-5.1', value: AI_MODELS.glm51 },
-  { label: 'GLM-5 Turbo', value: AI_MODELS.glm5Turbo },
-  { label: 'GLM-4.7', value: AI_MODELS.glm47 },
-  { label: 'GLM-4.5 Air', value: AI_MODELS.glm45Air },
-];

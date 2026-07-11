@@ -1,42 +1,68 @@
-use crate::commands::export::ExportFormat;
+use crate::export::ExportFormat;
 use crate::models::data_frame::{DataFrame, Direction};
 use crate::models::errors::AppError;
 use crate::utils::hex;
 use crate::utils::timestamp;
 use std::io::Write as _;
-use tokio::fs::File;
-use tokio::io::{AsyncWriteExt, BufWriter};
 
-pub async fn export(
-    frames: &[DataFrame],
-    format: &ExportFormat,
-    path: &str,
-) -> Result<(), AppError> {
-    match format {
-        ExportFormat::TxtHex => export_text(frames, path, false).await,
-        ExportFormat::TxtAscii => export_text(frames, path, true).await,
-        ExportFormat::Csv => export_csv(frames, path).await,
-        ExportFormat::Jsonl => export_jsonl(frames, path).await,
-        ExportFormat::Bin => export_bin(frames, path).await,
+pub(crate) fn append_header(buf: &mut Vec<u8>, format: ExportFormat) {
+    if format == ExportFormat::Csv {
+        buf.extend_from_slice(b"timestamp,direction,data\n");
     }
 }
 
-async fn export_jsonl(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
-    // Build the whole document into one buffer, then issue a single write.
-    // Collapses ~one async yield per frame into one write per export.
-    let mut buf: Vec<u8> = Vec::with_capacity(frames.len() * 64);
+/// Encode a bounded frame chunk into `buf`. Callers control chunk size so
+/// formatter memory is proportional to one batch rather than the full export.
+pub(crate) fn append_frames(
+    buf: &mut Vec<u8>,
+    frames: &[DataFrame],
+    format: ExportFormat,
+    path: &str,
+) -> Result<(), AppError> {
     for frame in frames {
-        serde_json::to_writer(&mut buf, frame).map_err(|e| AppError::ExportError {
-            message: e.to_string(),
-            format: "jsonl".to_string(),
-            path: path.to_string(),
-        })?;
-        buf.push(b'\n');
+        match format {
+            ExportFormat::Jsonl => {
+                serde_json::to_writer(&mut *buf, frame).map_err(|e| AppError::ExportError {
+                    message: e.to_string(),
+                    format: format.label().to_string(),
+                    path: path.to_string(),
+                    kind: std::io::ErrorKind::InvalidData,
+                })?;
+                buf.push(b'\n');
+            }
+            ExportFormat::TxtHex | ExportFormat::TxtAscii => {
+                writeln!(
+                    buf,
+                    "[{}] {} | {}",
+                    timestamp::format_timestamp(frame.timestamp),
+                    dir_label(&frame.direction),
+                    data_to_string(&frame.data, format == ExportFormat::TxtAscii)
+                )
+                .map_err(|e| encode_error(e, format, path))?;
+            }
+            ExportFormat::Csv => {
+                writeln!(
+                    buf,
+                    "{},{},\"{}\"",
+                    timestamp::format_timestamp(frame.timestamp),
+                    dir_label(&frame.direction),
+                    hex::format_hex(&frame.data)
+                )
+                .map_err(|e| encode_error(e, format, path))?;
+            }
+            ExportFormat::Bin => buf.extend_from_slice(&frame.data),
+        }
     }
-    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
-    w.write_all(&buf).await.map_err(AppError::from)?;
-    w.flush().await.map_err(AppError::from)?;
     Ok(())
+}
+
+fn encode_error(error: std::io::Error, format: ExportFormat, path: &str) -> AppError {
+    AppError::ExportError {
+        message: error.to_string(),
+        format: format.label().to_string(),
+        path: path.to_string(),
+        kind: error.kind(),
+    }
 }
 
 fn dir_label(d: &Direction) -> &'static str {
@@ -54,79 +80,9 @@ fn data_to_string(data: &[u8], ascii: bool) -> String {
     }
 }
 
-async fn export_text(frames: &[DataFrame], path: &str, ascii: bool) -> Result<(), AppError> {
-    let mut buf: Vec<u8> = Vec::with_capacity(frames.len() * 80);
-    for frame in frames {
-        let data_str = data_to_string(&frame.data, ascii);
-        // Vec<u8> implements std::fmt::Write, so write! appends UTF-8 bytes
-        // without allocating a per-frame String.
-        writeln!(
-            &mut buf,
-            "[{}] {} | {}",
-            timestamp::format_timestamp(frame.timestamp),
-            dir_label(&frame.direction),
-            data_str
-        )
-        .map_err(|e| AppError::ExportError {
-            message: e.to_string(),
-            format: "txt".to_string(),
-            path: path.to_string(),
-        })?;
-    }
-    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
-    w.write_all(&buf).await.map_err(AppError::from)?;
-    w.flush().await.map_err(AppError::from)?;
-    Ok(())
-}
-
-async fn export_csv(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
-    let mut buf: Vec<u8> = Vec::with_capacity(frames.len() * 80);
-    buf.extend_from_slice(b"timestamp,direction,data\n");
-    for frame in frames {
-        // hex output is [0-9A-F ]+ — it never contains quotes, so the previous
-        // unconditional replace('"', "\"\"") was dead work; drop it.
-        let data_str = hex::format_hex(&frame.data);
-        writeln!(
-            &mut buf,
-            "{},{},\"{}\"",
-            timestamp::format_timestamp(frame.timestamp),
-            dir_label(&frame.direction),
-            data_str
-        )
-        .map_err(|e| AppError::ExportError {
-            message: e.to_string(),
-            format: "csv".to_string(),
-            path: path.to_string(),
-        })?;
-    }
-    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
-    w.write_all(&buf).await.map_err(AppError::from)?;
-    w.flush().await.map_err(AppError::from)?;
-    Ok(())
-}
-
-async fn export_bin(frames: &[DataFrame], path: &str) -> Result<(), AppError> {
-    let total: usize = frames.iter().map(|frame| frame.data.len()).sum();
-    let mut buf: Vec<u8> = Vec::with_capacity(total);
-    for frame in frames {
-        buf.extend_from_slice(&frame.data);
-    }
-    let mut w = BufWriter::new(File::create(path).await.map_err(AppError::from)?);
-    w.write_all(&buf).await.map_err(AppError::from)?;
-    w.flush().await.map_err(AppError::from)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // Monotonic counter guarantees unique temp paths even when two parallel tests
-    // sample the same nanosecond timestamp (e.g. exports_txt_hex / exports_txt_ascii).
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn frames() -> Vec<DataFrame> {
         vec![
@@ -145,41 +101,24 @@ mod tests {
         ]
     }
 
-    fn temp_path(ext: &str) -> String {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "bbcom-export-{}-{nanos}-{counter}.{ext}",
-            std::process::id()
-        ));
-        path.to_string_lossy().into_owned()
+    fn encoded(format: ExportFormat) -> Vec<u8> {
+        let mut output = Vec::new();
+        append_header(&mut output, format);
+        append_frames(&mut output, &frames(), format, "backend-owned-target").unwrap();
+        output
     }
 
-    #[tokio::test]
-    async fn exports_txt_hex() {
-        let path = temp_path("txt");
-        export(&frames(), &ExportFormat::TxtHex, &path)
-            .await
-            .unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        fs::remove_file(&path).ok();
+    #[test]
+    fn exports_txt_hex() {
+        let content = String::from_utf8(encoded(ExportFormat::TxtHex)).unwrap();
 
         assert!(content.contains("TX | 41 42"));
         assert!(content.contains("RX | 43 44"));
     }
 
-    #[tokio::test]
-    async fn exports_txt_ascii() {
-        let path = temp_path("txt");
-        export(&frames(), &ExportFormat::TxtAscii, &path)
-            .await
-            .unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        fs::remove_file(&path).ok();
+    #[test]
+    fn exports_txt_ascii() {
+        let content = String::from_utf8(encoded(ExportFormat::TxtAscii)).unwrap();
 
         // 0x41/0x42 = "AB", 0x43/0x44 = "CD" — ASCII payload, not hex pairs
         assert!(content.contains("TX | AB"));
@@ -187,39 +126,43 @@ mod tests {
         assert!(!content.contains("TX | 41 42"));
     }
 
-    #[tokio::test]
-    async fn exports_csv() {
-        let path = temp_path("csv");
-        export(&frames(), &ExportFormat::Csv, &path).await.unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        fs::remove_file(&path).ok();
+    #[test]
+    fn exports_csv() {
+        let content = String::from_utf8(encoded(ExportFormat::Csv)).unwrap();
 
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0], "timestamp,direction,data");
         assert!(lines[1].ends_with(",TX,\"41 42\""));
         assert!(lines[2].ends_with(",RX,\"43 44\""));
+
+        let error = encode_error(
+            std::io::Error::new(std::io::ErrorKind::StorageFull, "writer full"),
+            ExportFormat::Csv,
+            "backend-owned-target",
+        );
+        assert!(matches!(
+            error,
+            AppError::ExportError {
+                format,
+                path,
+                kind: std::io::ErrorKind::StorageFull,
+                ..
+            } if format == "csv" && path == "backend-owned-target"
+        ));
     }
 
-    #[tokio::test]
-    async fn exports_jsonl_with_uppercase_direction() {
-        let path = temp_path("jsonl");
-        export(&frames(), &ExportFormat::Jsonl, &path)
-            .await
-            .unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        fs::remove_file(&path).ok();
+    #[test]
+    fn exports_jsonl_with_uppercase_direction() {
+        let content = String::from_utf8(encoded(ExportFormat::Jsonl)).unwrap();
 
         assert!(content.contains("\"direction\":\"TX\""));
         assert!(content.contains("\"direction\":\"RX\""));
     }
 
-    #[tokio::test]
-    async fn exports_bin_concatenated_payloads() {
-        let path = temp_path("bin");
-        export(&frames(), &ExportFormat::Bin, &path).await.unwrap();
-        let content = fs::read(&path).unwrap();
-        fs::remove_file(&path).ok();
+    #[test]
+    fn exports_bin_concatenated_payloads() {
+        let content = encoded(ExportFormat::Bin);
 
         assert_eq!(content, vec![0x41, 0x42, 0x43, 0x44]);
     }
@@ -227,19 +170,38 @@ mod tests {
 
 #[cfg(test)]
 mod ipc_sim_tests {
-    use crate::commands::export::ExportRequest;
+    use crate::commands::export::{AppendExportBatchRequest, BeginExportRequest};
+    use crate::commands::file_grants::{FileGrantManager, SaveTargetPurpose};
+    use crate::export::session::ExportSessionManager;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static SIM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    // EXACT JSON the frontend sends via invoke('export_data', { request: {...} }).
+    fn frontend_begin_payload(format: &str, token: &str) -> String {
+        serde_json::json!({
+            "format": format,
+            "token": token,
+            "expectedFrames": 1,
+            "expectedRawBytes": 5
+        })
+        .to_string()
+    }
+
     // Tauri's IPC serializer converts the Uint8Array to a JSON array via Array.from.
     // "Hello" -> [72,101,108,108,111].
-    fn frontend_payload(format: &str, path: &str) -> String {
-        let data = r#"[{"id":"1","direction":"TX","timestamp":0.0,"data":[72,101,108,108,111]}]"#;
-        format!(r#"{{"frames":{data},"format":"{format}","path":"{path}"}}"#)
+    fn frontend_append_payload(export_id: &str) -> String {
+        serde_json::json!({
+            "exportId": export_id,
+            "frames": [{
+                "id": "1",
+                "direction": "TX",
+                "timestamp": 0.0,
+                "data": [72, 101, 108, 108, 111]
+            }]
+        })
+        .to_string()
     }
 
     async fn run_frontend_export(format: &str, ext: &str) -> Vec<u8> {
@@ -250,13 +212,34 @@ mod ipc_sim_tests {
             .as_nanos();
         let c = SIM_COUNTER.fetch_add(1, Ordering::Relaxed);
         path.push(format!("bbcom-ipc-sim-{nanos}-{c}.{ext}"));
-        let path_str = path.to_string_lossy().to_string();
+        let purpose = match format {
+            "txt-hex" => SaveTargetPurpose::ExportTxtHex,
+            "txt-ascii" => SaveTargetPurpose::ExportTxtAscii,
+            "csv" => SaveTargetPurpose::ExportCsv,
+            "jsonl" => SaveTargetPurpose::ExportJsonl,
+            "bin" => SaveTargetPurpose::ExportBin,
+            other => panic!("unsupported test export format: {other}"),
+        };
+        let grants = FileGrantManager::default();
+        let token = grants.issue(purpose, path.clone()).await.unwrap();
 
-        let json = frontend_payload(format, &path_str);
-        let req: ExportRequest = serde_json::from_str(&json).expect("IPC payload must deserialize");
-        super::export(&req.frames, &req.format, &path_str)
+        let begin: BeginExportRequest =
+            serde_json::from_str(&frontend_begin_payload(format, &token))
+                .expect("begin payload must deserialize");
+        let target = grants
+            .consume_export(&begin.token, begin.format)
             .await
             .unwrap();
+        let manager = ExportSessionManager::default();
+        let export_id = manager.begin(begin.format, target).await.unwrap();
+        let append: AppendExportBatchRequest =
+            serde_json::from_str(&frontend_append_payload(&export_id))
+                .expect("append payload must deserialize");
+        manager
+            .append(&append.export_id, &append.frames)
+            .await
+            .unwrap();
+        manager.finish(&export_id).await.unwrap();
         let bytes = fs::read(&path).unwrap();
         fs::remove_file(&path).ok();
         bytes

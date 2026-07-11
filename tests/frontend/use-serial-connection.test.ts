@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { buildSendPayload } from '../../src/composables/useSerialConnection.ts';
 import { encodeUtf8 } from '../../src/lib/format.ts';
@@ -19,10 +19,7 @@ test('buildSendPayload: text mode encodes UTF-8 and accepts non-empty input', ()
 test('buildSendPayload: hex mode parses hex into bytes', () => {
   const r = buildSendPayload('AA BB CC', true);
   assert.equal(r.ok, true);
-  assert.deepEqual(
-    Array.from((r as { payload: Uint8Array }).payload),
-    [0xaa, 0xbb, 0xcc],
-  );
+  assert.deepEqual(Array.from((r as { payload: Uint8Array }).payload), [0xaa, 0xbb, 0xcc]);
 });
 
 test('buildSendPayload: rejects empty text and empty/whitespace-only hex', () => {
@@ -55,8 +52,5 @@ test('buildSendPayload: accepts a payload exactly at the MAX_INPUT_SIZE boundary
 test('buildSendPayload: hex mode handles compact (no-space) hex', () => {
   const r = buildSendPayload('DEADBEEF', true);
   assert.equal(r.ok, true);
-  assert.deepEqual(
-    Array.from((r as { payload: Uint8Array }).payload),
-    [0xde, 0xad, 0xbe, 0xef],
-  );
+  assert.deepEqual(Array.from((r as { payload: Uint8Array }).payload), [0xde, 0xad, 0xbe, 0xef]);
 });

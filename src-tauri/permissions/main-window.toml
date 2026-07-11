@@ -1,0 +1,39 @@
+[[permission]]
+identifier = "main-window-commands"
+description = "Allows only the bbcom commands needed by the main application window."
+commands.allow = [
+  "calculate_checksum",
+  "abort_export",
+  "append_export_batch",
+  "begin_export",
+  "finish_export",
+  "request_save_target",
+  "revoke_file_grant",
+  "abort_auto_log",
+  "append_auto_log_batch",
+  "begin_auto_log",
+  "finish_auto_log",
+  "clear_ai_api_key",
+  "get_ai_key_status",
+  "migrate_ai_api_key",
+  "set_ai_api_key",
+  "run_ai_request",
+  "cancel_ai_request",
+  "get_ai_window_state",
+  "hide_ai_window",
+  "resize_ai_window",
+  "show_ai_window",
+]
+
+[[permission]]
+identifier = "ai-assistant-commands"
+description = "Allows only AI request and floating-window commands from the AI assistant webview."
+commands.allow = [
+  "run_ai_request",
+  "cancel_ai_request",
+  "get_ai_key_status",
+  "get_ai_window_state",
+  "hide_ai_window",
+  "resize_ai_window",
+  "start_ai_window_drag",
+]

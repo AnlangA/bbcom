@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-append-export-batch"
+description = "Enables the append_export_batch command without any pre-configured scope."
+commands.allow = ["append_export_batch"]
+
+[[permission]]
+identifier = "deny-append-export-batch"
+description = "Denies the append_export_batch command without any pre-configured scope."
+commands.deny = ["append_export_batch"]

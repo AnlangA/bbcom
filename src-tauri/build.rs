@@ -1,3 +1,29 @@
 fn main() {
-    tauri_build::build();
+    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
+        tauri_build::AppManifest::new().commands(&[
+            "cancel_ai_request",
+            "run_ai_request",
+            "calculate_checksum",
+            "abort_export",
+            "append_export_batch",
+            "begin_export",
+            "finish_export",
+            "request_save_target",
+            "revoke_file_grant",
+            "abort_auto_log",
+            "append_auto_log_batch",
+            "begin_auto_log",
+            "finish_auto_log",
+            "clear_ai_api_key",
+            "get_ai_key_status",
+            "migrate_ai_api_key",
+            "set_ai_api_key",
+            "get_ai_window_state",
+            "hide_ai_window",
+            "resize_ai_window",
+            "show_ai_window",
+            "start_ai_window_drag",
+        ]),
+    ))
+    .expect("failed to build bbcom Tauri command permissions");
 }

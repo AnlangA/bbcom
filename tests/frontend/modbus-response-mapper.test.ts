@@ -1,9 +1,6 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import {
-  isExpectedModbusWriteAck,
-  mapModbusReadResponse,
-} from '../../src/lib/modbus';
+import { isExpectedModbusWriteAck, mapModbusReadResponse } from '../../src/lib/modbus';
 import type { ModbusReadBatch, ModbusWriteBatch } from '../../src/lib/modbus';
 import type { ModbusResponse } from '../../src/lib/modbus';
 import type { ModbusFunctionCode, ModbusRegister, ModbusValueType } from '../../src/types/index.ts';

@@ -1,8 +1,9 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   MIGRATION_STEPS,
   SESSION_STORAGE_VERSION,
+  UnsupportedSessionStorageVersionError,
   migratePersistedFile,
   type PersistedSessionsFile,
 } from '../../src/lib/session-persistence.ts';
@@ -13,7 +14,10 @@ import {
  * be re-stamped, so a user upgrading the app never loses their session snapshots.
  */
 
-function minimalFile(version: number, overrides: Partial<PersistedSessionsFile> = {}): PersistedSessionsFile {
+function minimalFile(
+  version: number,
+  overrides: Partial<PersistedSessionsFile> = {},
+): PersistedSessionsFile {
   return {
     version,
     activeSessionId: null,
@@ -28,6 +32,34 @@ test('migratePersistedFile: a current-version blob passes through re-stamped', (
 
   assert.equal(out.version, SESSION_STORAGE_VERSION, 'version unchanged');
   assert.equal(out.sessions.length, 0, 'sessions untouched');
+  assert.notEqual(out, file, 'migration never mutates the caller-owned blob');
+});
+
+test('migratePersistedFile: malformed top-level fields normalize safely', () => {
+  assert.deepEqual(migratePersistedFile({ version: 'bad', activeSessionId: 42, sessions: null }), {
+    version: SESSION_STORAGE_VERSION,
+    activeSessionId: null,
+    mruSessionIds: [],
+    sessions: [],
+  });
+  assert.deepEqual(migratePersistedFile(null), {
+    version: SESSION_STORAGE_VERSION,
+    activeSessionId: null,
+    mruSessionIds: [],
+    sessions: [],
+  });
+});
+
+test('migratePersistedFile: future schemas are rejected without mutation', () => {
+  const future = minimalFile(SESSION_STORAGE_VERSION + 1, { activeSessionId: 'future' });
+  assert.throws(
+    () => migratePersistedFile(future),
+    (error) =>
+      error instanceof UnsupportedSessionStorageVersionError &&
+      error.storedVersion === SESSION_STORAGE_VERSION + 1,
+  );
+  assert.equal(future.version, SESSION_STORAGE_VERSION + 1);
+  assert.equal(future.activeSessionId, 'future');
 });
 
 test('migratePersistedFile: a legacy (version 0 / missing) blob is re-stamped to current', () => {
@@ -59,7 +91,11 @@ test('migratePersistedFile: walks every registered step in order', () => {
   current.version = target;
 
   assert.equal(current.version, target, 'chain lands on the new version');
-  assert.equal((current as { marker?: string }).marker, 'v2->v3', 'last step wins, order preserved');
+  assert.equal(
+    (current as { marker?: string }).marker,
+    'v2->v3',
+    'last step wins, order preserved',
+  );
 });
 
 test('MIGRATION_STEPS: registry length matches (current version - 1)', () => {

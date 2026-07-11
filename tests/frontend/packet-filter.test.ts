@@ -1,8 +1,13 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { effectScope, nextTick, ref, shallowRef } from 'vue';
 import { formatHex, formatUtf8 } from '../../src/lib/format.ts';
-import { usePacketFilter } from '../../src/composables/usePacketFilter.ts';
+import {
+  hexChunksInclude,
+  textChunksInclude,
+  usePacketFilter,
+} from '../../src/composables/usePacketFilter.ts';
+import { MAX_MERGED_VISIBLE_BYTES } from '../../src/lib/merged-frame-rope.ts';
 import type { DataFrame, PacketViewMode, SearchMode } from '../../src/types/index.ts';
 
 function makeFrame(id: string, direction: DataFrame['direction'], data: number[]): DataFrame {
@@ -37,11 +42,17 @@ test('filters by direction and debounced text search', async () => {
     });
 
     filter.directionFilter.value = 'RX';
-    assert.deepEqual(filter.filteredFrames.value.map((frame) => frame.id), ['2', '3']);
+    assert.deepEqual(
+      filter.filteredFrames.value.map((frame) => frame.id),
+      ['2', '3'],
+    );
 
     filter.searchInput.value = 'ac';
     await delay(180);
-    assert.deepEqual(filter.filteredFrames.value.map((frame) => frame.id), ['3']);
+    assert.deepEqual(
+      filter.filteredFrames.value.map((frame) => frame.id),
+      ['3'],
+    );
   });
   scope.stop();
 });
@@ -49,10 +60,7 @@ test('filters by direction and debounced text search', async () => {
 test('filters by normalized hex search', async () => {
   const scope = effectScope();
   await scope.run(async () => {
-    const frames = ref([
-      makeFrame('1', 'TX', [0xaa, 0xbb]),
-      makeFrame('2', 'RX', [0xcc, 0xdd]),
-    ]);
+    const frames = ref([makeFrame('1', 'TX', [0xaa, 0xbb]), makeFrame('2', 'RX', [0xcc, 0xdd])]);
     const searchMode = ref<SearchMode>('HEX');
     const packetViewMode = ref<PacketViewMode>('FRAME');
     const filter = usePacketFilter({
@@ -65,7 +73,10 @@ test('filters by normalized hex search', async () => {
 
     filter.searchInput.value = 'AA BB';
     await delay(180);
-    assert.deepEqual(filter.filteredFrames.value.map((frame) => frame.id), ['1']);
+    assert.deepEqual(
+      filter.filteredFrames.value.map((frame) => frame.id),
+      ['1'],
+    );
   });
   scope.stop();
 });
@@ -256,6 +267,108 @@ test('clearing an active search restores all frames (full rebuild)', async () =>
       filter.filteredFrames.value.map((f) => f.id),
       ['1', '2'],
     );
+  });
+  scope.stop();
+});
+
+test('merged view appends to one rope descriptor and caps its UI tail at 64 KiB', async () => {
+  const scope = effectScope();
+  await scope.run(async () => {
+    const frames = shallowRef([makeFrame('1', 'RX', [1])]);
+    const framesVersion = ref(0);
+    const filter = usePacketFilter({
+      frames,
+      framesVersion,
+      searchMode: ref<SearchMode>('TEXT'),
+      packetViewMode: ref<PacketViewMode>('MERGED'),
+      getHexSearchData: (frame) => formatHex(frame.data).replace(/\s/g, '').toLowerCase(),
+      getTextSearchData: (frame) => formatUtf8(frame.data).toLowerCase(),
+    });
+
+    const initial = filter.visibleFrames.value[0];
+    for (let index = 0; index < 80; index += 1) {
+      frames.value.push(makeFrame(`a${index}`, 'RX', new Array(1024).fill(index & 0xff)));
+    }
+    framesVersion.value += 1;
+    await nextTick();
+
+    const updated = filter.visibleFrames.value[0];
+    assert.equal(updated, initial, 'append preserves the descriptor identity');
+    assert.equal(updated.contentVersion, 81);
+    assert.equal(updated.data.byteLength, MAX_MERGED_VISIBLE_BYTES);
+    assert.equal(updated.omittedBytes, 1 + 80 * 1024 - MAX_MERGED_VISIBLE_BYTES);
+    assert.equal(filter.getMergedChunks(updated)?.length, 81);
+
+    const full = filter.materializeFrame(updated);
+    assert.equal(full.data.byteLength, 1 + 80 * 1024);
+    assert.equal(full.data[0], 1);
+    assert.equal(full.data.at(-1), 79);
+  });
+  scope.stop();
+});
+
+test('rolling frame replacement rebuilds the rope and clears dependent caches synchronously', async () => {
+  const scope = effectScope();
+  await scope.run(async () => {
+    const frames = shallowRef([makeFrame('1', 'RX', [1]), makeFrame('2', 'RX', [2])]);
+    const framesVersion = ref(0);
+    let replaced = 0;
+    const filter = usePacketFilter({
+      frames,
+      framesVersion,
+      searchMode: ref<SearchMode>('TEXT'),
+      packetViewMode: ref<PacketViewMode>('MERGED'),
+      getHexSearchData: (frame) => formatHex(frame.data).replace(/\s/g, '').toLowerCase(),
+      getTextSearchData: (frame) => formatUtf8(frame.data).toLowerCase(),
+      onFramesReplaced: () => {
+        replaced += 1;
+      },
+    });
+
+    assert.equal(filter.visibleFrames.value[0].id, 'merged-1');
+    frames.value.splice(0, 2, makeFrame('3', 'TX', [3]));
+    framesVersion.value += 1;
+    await nextTick();
+
+    assert.equal(replaced, 1);
+    assert.equal(filter.visibleFrames.value.length, 1);
+    assert.equal(filter.visibleFrames.value[0].id, 'merged-3');
+  });
+  scope.stop();
+});
+
+test('large chunk searches stream across byte, UTF-8, and ANSI boundaries', () => {
+  assert.equal(hexChunksInclude([new Uint8Array([0xaa]), new Uint8Array([0xbb])], 'AABB'), true);
+  assert.equal(
+    textChunksInclude([new TextEncoder().encode('hel'), new TextEncoder().encode('lo')], 'HELLO'),
+    true,
+  );
+  assert.equal(
+    textChunksInclude(
+      [new TextEncoder().encode('\x1b[3'), new TextEncoder().encode('1mserial')],
+      'serial',
+    ),
+    true,
+  );
+});
+
+test('merged search matches a query spanning source frames without materializing the run', async () => {
+  const scope = effectScope();
+  await scope.run(async () => {
+    const filter = usePacketFilter({
+      frames: ref([makeFrame('1', 'RX', [65, 66]), makeFrame('2', 'RX', [67, 68])]),
+      searchMode: ref<SearchMode>('TEXT'),
+      packetViewMode: ref<PacketViewMode>('MERGED'),
+      getHexSearchData: (frame) => formatHex(frame.data).replace(/\s/g, '').toLowerCase(),
+      getTextSearchData: (frame) => formatUtf8(frame.data).toLowerCase(),
+    });
+
+    filter.searchInput.value = 'abcd';
+    await delay(180);
+
+    assert.equal(filter.visibleFrames.value.length, 1);
+    assert.deepEqual(Array.from(filter.visibleFrames.value[0].data), [65, 66, 67, 68]);
+    assert.equal(filter.getMergedChunks(filter.visibleFrames.value[0])?.length, 2);
   });
   scope.stop();
 });

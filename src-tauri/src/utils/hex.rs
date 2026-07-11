@@ -9,7 +9,7 @@ pub fn format_hex(data: &[u8]) -> String {
         if i > 0 {
             s.push(' ');
         }
-        write!(s, "{:02X}", byte).unwrap();
+        write!(s, "{byte:02X}").unwrap();
     }
     s
 }

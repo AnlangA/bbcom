@@ -1,14 +1,20 @@
 import { defineStore } from 'pinia';
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
-import { loadJson, loadString, saveJson, saveString } from '../lib/storage';
-import { clearSecretString, loadSecretString, saveSecretString } from '../lib/secure-settings';
+import { loadJson, saveJson } from '../lib/storage';
+import {
+  clearAiApiKey as clearAiApiKeyInKeyring,
+  getAiKeyStatus,
+  migrateLegacyAiApiKey,
+  removeLegacyAiApiKey,
+  setAiApiKey as setAiApiKeyInKeyring,
+  type AiKeyStatus,
+} from '../lib/ai-key';
 import { maxBufferFrames, setMaxBufferFrames } from '../lib/buffer-config';
 import { locale, setLocale } from '../lib/i18n';
 
 const STORAGE_KEY = 'bbcom-app-settings';
-const AI_API_KEY_STORAGE_KEY = `${STORAGE_KEY}:ai-api-key`;
-const AI_API_KEY_SECRET_KEY = 'ai-api-key';
+const MISSING_AI_KEY_STATUS: AiKeyStatus = { configured: false, durability: 'missing' };
 
 export const useAppStore = defineStore('app', () => {
   const displayMode = ref<DisplayMode>('HEX');
@@ -22,8 +28,8 @@ export const useAppStore = defineStore('app', () => {
   const ansiColorEnabled = ref(true);
   const autoReconnect = ref(false);
   const theme = ref<'dark' | 'light'>('dark');
-  const aiApiKey = ref('');
-  const aiEnableCodingPlan = ref(false);
+  const aiKeyStatus = ref<AiKeyStatus>(MISSING_AI_KEY_STATUS);
+  const aiKeyConfigured = computed(() => aiKeyStatus.value.configured);
   const aiCommandDraft = ref('');
   const aiCommandSeq = ref(0);
   const pendingAiCommand = ref('');
@@ -31,7 +37,6 @@ export const useAppStore = defineStore('app', () => {
   const sidebarWidth = ref(292);
   const sidebarCollapsed = ref(false);
   let loaded = false;
-  let aiKeyLoadSeq = 0;
 
   // Single source of truth for every persisted (non-secret) setting.
   //
@@ -126,14 +131,6 @@ export const useAppStore = defineStore('app', () => {
       },
     },
     {
-      key: 'aiEnableCodingPlan',
-      ref: aiEnableCodingPlan,
-      validate: (raw) => typeof raw === 'boolean',
-      apply: (raw) => {
-        aiEnableCodingPlan.value = raw as boolean;
-      },
-    },
-    {
       key: 'sidebarWidth',
       ref: sidebarWidth,
       validate: (raw) => typeof raw === 'number',
@@ -194,9 +191,8 @@ export const useAppStore = defineStore('app', () => {
       const raw = (saved as Record<string, unknown>)[s.key];
       if (s.validate(raw)) s.apply(raw);
     }
-    aiApiKey.value = loadString(AI_API_KEY_STORAGE_KEY);
     loaded = true;
-    void loadAiApiKey();
+    void refreshAiKeyStatus();
   }
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -254,17 +250,23 @@ export const useAppStore = defineStore('app', () => {
 
   async function setAiApiKey(value: string): Promise<boolean> {
     const normalized = value.trim();
-    const previous = aiApiKey.value;
-    aiApiKey.value = normalized;
-    const ok = await persistAiApiKey(normalized);
-    if (!ok) {
-      aiApiKey.value = previous;
+    aiApiKeyLoaded.value = false;
+    try {
+      if (normalized) {
+        aiKeyStatus.value = await setAiApiKeyInKeyring(normalized);
+      } else {
+        // Explicit user clear is a deletion request, not a migration: erase a
+        // stale legacy plaintext copy even if the native backend is offline.
+        removeLegacyAiApiKey();
+        await clearAiApiKeyInKeyring();
+        aiKeyStatus.value = MISSING_AI_KEY_STATUS;
+      }
+      return true;
+    } catch {
+      return false;
+    } finally {
+      aiApiKeyLoaded.value = true;
     }
-    return ok;
-  }
-
-  function setAiEnableCodingPlan(value: boolean) {
-    aiEnableCodingPlan.value = value;
   }
 
   function setTheme(value: 'dark' | 'light') {
@@ -294,42 +296,22 @@ export const useAppStore = defineStore('app', () => {
     sidebarCollapsed.value = !sidebarCollapsed.value;
   }
 
-  async function loadAiApiKey() {
-    const seq = (aiKeyLoadSeq += 1);
+  async function refreshAiKeyStatus(): Promise<void> {
     aiApiKeyLoaded.value = false;
     try {
-      const legacyValue = loadString(AI_API_KEY_STORAGE_KEY);
-      const storedValue = await loadSecretString(AI_API_KEY_SECRET_KEY);
-      if (seq !== aiKeyLoadSeq) return;
-
-      if (storedValue) {
-        aiApiKey.value = storedValue;
-        if (legacyValue) saveString(AI_API_KEY_STORAGE_KEY, '');
-        return;
-      }
-
-      if (legacyValue) {
-        aiApiKey.value = legacyValue;
-        const migrated = await saveSecretString(AI_API_KEY_SECRET_KEY, legacyValue);
-        if (migrated) saveString(AI_API_KEY_STORAGE_KEY, '');
+      aiKeyStatus.value = await migrateLegacyAiApiKey();
+    } catch {
+      try {
+        aiKeyStatus.value = await getAiKeyStatus();
+      } catch {
+        aiKeyStatus.value = MISSING_AI_KEY_STATUS;
       }
     } finally {
-      if (seq === aiKeyLoadSeq) {
-        aiApiKeyLoaded.value = true;
-      }
+      aiApiKeyLoaded.value = true;
     }
   }
 
-  async function persistAiApiKey(value: string): Promise<boolean> {
-    const storeOk = value
-      ? await saveSecretString(AI_API_KEY_SECRET_KEY, value)
-      : await clearSecretString(AI_API_KEY_SECRET_KEY);
-
-    const fallbackOk = saveString(AI_API_KEY_STORAGE_KEY, storeOk ? '' : value);
-    return storeOk || fallbackOk;
-  }
-
-  load();
+  void load();
 
   return {
     displayMode,
@@ -341,8 +323,8 @@ export const useAppStore = defineStore('app', () => {
     sendAsHex,
     loopIntervalMs,
     ansiColorEnabled,
-    aiApiKey,
-    aiEnableCodingPlan,
+    aiKeyStatus,
+    aiKeyConfigured,
     maxBufferFrames,
     autoReconnect,
     theme,
@@ -363,7 +345,7 @@ export const useAppStore = defineStore('app', () => {
     setSendAsHex,
     setLoopIntervalMs,
     setAiApiKey,
-    setAiEnableCodingPlan,
+    refreshAiKeyStatus,
     setTheme,
     setMaxBufferFrames,
     setLocale,

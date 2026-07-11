@@ -1,19 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for bbcom",
-  "windows": [
-    "main",
-    "ai-assistant"
-  ],
+  "description": "Main-window capabilities for bbcom",
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:default",
     "core:window:allow-set-always-on-top",
     "core:window:allow-is-always-on-top",
-    "dialog:default",
     "serialplugin:default",
-    "store:default",
-    "updater:default"
+    "main-window-commands"
   ]
 }

@@ -93,6 +93,15 @@
     ></div>
 
     <main class="main">
+      <div
+        v-if="sessionStore.persistenceReadOnly"
+        class="persistence-readonly-banner"
+        role="status"
+        aria-live="polite"
+      >
+        <strong>{{ t('persistence.readOnly.title') }}</strong>
+        <span>{{ t('persistence.readOnly.description') }}</span>
+      </div>
       <SessionTabs @create="showCreateDialog = true" />
       <div class="session-viewport">
         <div v-if="sessions.length === 0" class="empty-state">
@@ -118,11 +127,9 @@
             >
           </div>
         </div>
-        <Transition name="fade-slide" mode="out-in">
-          <SessionView v-if="activeSession" :key="activeSession.id" :session="activeSession" />
-        </Transition>
+        <SessionRuntimeHost :sessions="sessions" :active-session-id="activeSession?.id ?? null" />
       </div>
-      <StatusBar :session="activeSession" />
+      <StatusBar :session="activeSession" :frames-version="activeFramesVersion" />
     </main>
 
     <CreateSessionDialog v-model:show="showCreateDialog" />
@@ -131,7 +138,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onErrorCaptured, onUnmounted, ref } from 'vue';
+import { computed, defineAsyncComponent, onErrorCaptured, onMounted, onUnmounted, ref } from 'vue';
 import { NButton, useMessage } from 'naive-ui';
 import {
   Bot,
@@ -144,16 +151,17 @@ import {
   Plus,
   Settings,
   Sun,
-} from 'lucide-vue-next';
+} from '@lucide/vue';
 import PortSelector from '../port-selector/PortSelector.vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
-import SessionView from '../session/SessionView.vue';
 import StatusBar from '../status-bar/StatusBar.vue';
+import { SessionRuntimeHost } from '../../features/sessions';
 import { useAiWindowState } from '../../composables/useAiWindowState';
 import { useAppShortcuts } from '../../composables/useAppShortcuts';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
+import { AUTO_LOG_FAILURE_EVENT } from '../../composables/useAutoLog';
 import { t, setLocale } from '../../lib/i18n';
 
 // Code-split the heavy modals/panels so their naive-ui dependencies (NModal,
@@ -171,9 +179,24 @@ const { visible: aiWindowVisible, toggle: toggleAiWindow } = useAiWindowState();
 
 const sessions = computed(() => sessionStore.sessions);
 const activeSession = computed(() => sessionStore.activeSession);
+const activeFramesVersion = computed(() =>
+  activeSession.value ? sessionStore.getSessionFramesVersion(activeSession.value.id) : 0,
+);
 const showCreateDialog = ref(false);
 const showSettings = ref(false);
 const message = useMessage();
+
+function onAutoLogFailure(event: Event) {
+  const detail = (event as CustomEvent<unknown>).detail;
+  if (!detail || typeof detail !== 'object') return;
+  const value = detail as { sessionId?: unknown; reason?: unknown };
+  if (typeof value.sessionId !== 'string' || typeof value.reason !== 'string') return;
+  message.error(t('message.autoLogFailed'));
+}
+
+onMounted(() => {
+  window.addEventListener(AUTO_LOG_FAILURE_EVENT, onAutoLogFailure);
+});
 
 function toggleTheme() {
   appStore.setTheme(appStore.theme === 'light' ? 'dark' : 'light');
@@ -230,6 +253,7 @@ function stopResize() {
 onUnmounted(() => {
   document.removeEventListener('mousemove', onResize);
   document.removeEventListener('mouseup', stopResize);
+  window.removeEventListener(AUTO_LOG_FAILURE_EVENT, onAutoLogFailure);
 });
 
 useAppShortcuts({
@@ -428,6 +452,23 @@ useAppShortcuts({
   min-width: 0;
 }
 
+.persistence-readonly-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 12px;
+  color: var(--accent-amber);
+  background: var(--accent-amber-subtle);
+  border-bottom: 1px solid var(--accent-amber-border);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+  flex-shrink: 0;
+}
+
+.persistence-readonly-banner strong {
+  white-space: nowrap;
+}
+
 .session-viewport {
   flex: 1;
   overflow: hidden;
@@ -504,23 +545,6 @@ useAppShortcuts({
   font-size: var(--font-size-xs);
   color: var(--text-secondary);
   line-height: 1.4;
-}
-
-.fade-slide-enter-active,
-.fade-slide-leave-active {
-  transition:
-    opacity 150ms ease,
-    transform 150ms ease;
-}
-
-.fade-slide-enter-from {
-  opacity: 0;
-  transform: translateY(8px);
-}
-
-.fade-slide-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
 }
 
 @media (max-width: 760px) {

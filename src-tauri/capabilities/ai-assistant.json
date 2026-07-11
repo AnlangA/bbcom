@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "ai-assistant",
+  "description": "Least-privilege capabilities for the AI assistant window",
+  "windows": ["ai-assistant"],
+  "permissions": [
+    "core:event:default",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-is-always-on-top",
+    "ai-assistant-commands"
+  ]
+}

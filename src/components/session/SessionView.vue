@@ -8,15 +8,15 @@
     -->
     <SessionToolbar
       :session="props.session"
-      :is-connected="serialState.isConnected.value"
-      :is-connecting="serialState.isConnecting.value"
-      :reconnecting="serialState.reconnecting.value"
-      :error="serialState.error.value"
-      :total-dropped-bytes="serialState.totalDroppedBytes.value"
-      :sending-break="sendingBreak"
+      :frames-version="visibleFramesVersion"
+      :is-connected="runtime.isConnected.value"
+      :is-connecting="runtime.isConnecting.value"
+      :reconnecting="runtime.reconnecting.value"
+      :error="runtime.error.value"
+      :total-dropped-bytes="runtime.totalDroppedBytes.value"
+      :sending-break="runtime.sendingBreak.value"
       :is-exporting="isExporting"
       :view-mode="viewMode"
-      :export-options="exportOptions"
       @connect="connect"
       @disconnect="disconnect"
       @clear="clear"
@@ -26,66 +26,84 @@
       @toggle-auto-scroll="toggleAutoScroll"
       @toggle-timestamp="toggleTimestamp"
       @toggle-auto-log="toggleAutoLog"
-      @export="handleExport"
+      @export="openExportDialog"
     />
+    <KeepAlive>
+      <ExportDialog
+        v-if="exportDialogVisible || isExporting"
+        :show="exportDialogVisible"
+        :frames="props.session.frames"
+        :is-exporting="isExporting"
+        :progress="progress"
+        @confirm="handleExport"
+        @cancel="handleExportCancel"
+      />
+    </KeepAlive>
     <div class="display-area">
       <!--
-        View-mode switcher: only one of terminal / waveform / parser renders at
-        a time, so they never stack and compete for vertical space. The terminal
-        stays mounted (cheap to keep alive) while waveform/parser swap in only
-        when selected, keeping the default view dense.
+        Only one display mode renders at a time. Non-terminal panels load on
+        first use, then KeepAlive preserves their local viewport/editor state
+        while the user switches modes.
       -->
-      <WaveformPanel
-        v-if="viewMode === 'waveform'"
-        ref="waveformRef"
-        :frames="props.session.frames"
-        :frames-version="sessionStore.framesVersion"
-        direction="RX"
-        :mode="props.session.waveformSourceMode"
-        :channel-labels="waveformChannelLabels"
-        @toggle-mode="toggleWaveformSourceMode"
-      />
-      <ModbusPanel
-        v-else-if="viewMode === 'modbus'"
-        :session-id="props.session.id"
-        :config="props.session.modbusConfig"
-        :registers="props.session.modbusRegisters"
-        :is-connected="props.session.isConnected"
-        :busy="modbusBusy"
-        :status-text="modbusStatusText"
-        :status-class="modbusStatusClass"
-        :replaying="master.replaying.value"
-        :write-source-name="writeSourceName"
-        :on-read-all="onModbusReadAll"
-        :on-read-row="onModbusReadRow"
-        :on-send-all="onModbusSendAll"
-        :on-send-row="onModbusSendRow"
-        :on-replay="onModbusReplay"
-        :on-stop-replay="onModbusStopReplay"
-        :on-load-write-source="onLoadWriteSource"
-        :on-clear-write-source="onClearWriteSource"
-        :on-pick-write-source="onPickWriteSource"
-        @plot-in-waveform="onPlotInWaveform"
-        @close="viewMode = 'terminal'"
-      />
-      <ParserPanel
-        v-else-if="viewMode === 'parser'"
-        :session-id="props.session.id"
-        :frames="props.session.frames"
-        @close="viewMode = 'terminal'"
-      />
-      <DataPacketList
-        v-else
-        :frames="props.session.frames"
-        :highlights="props.session.highlights"
-      />
+      <KeepAlive :max="4">
+        <WaveformPanel
+          v-if="viewMode === 'waveform'"
+          ref="waveformRef"
+          :frames="props.session.frames"
+          :frames-version="visibleFramesVersion"
+          direction="RX"
+          :mode="props.session.waveformSourceMode"
+          :channel-labels="waveformChannelLabels"
+          @toggle-mode="toggleWaveformSourceMode"
+        />
+        <ModbusPanel
+          v-else-if="viewMode === 'modbus'"
+          :session-id="props.session.id"
+          :config="props.session.modbusConfig"
+          :registers="props.session.modbusRegisters"
+          :is-connected="runtime.isConnected.value"
+          :busy="modbusBusy"
+          :status-text="modbusStatusText"
+          :status-class="modbusStatusClass"
+          :replaying="master.replaying.value"
+          :write-source-name="writeSourceName"
+          :on-read-all="onModbusReadAll"
+          :on-read-row="onModbusReadRow"
+          :on-send-all="onModbusSendAll"
+          :on-send-row="onModbusSendRow"
+          :on-replay="onModbusReplay"
+          :on-stop-replay="onModbusStopReplay"
+          :on-load-write-source="onLoadWriteSource"
+          :on-clear-write-source="onClearWriteSource"
+          :on-pick-write-source="onPickWriteSource"
+          @plot-in-waveform="onPlotInWaveform"
+          @close="viewMode = 'terminal'"
+        />
+        <ParserPanel
+          v-else-if="viewMode === 'parser'"
+          :session-id="props.session.id"
+          :parsed-frames="runtime.parser.frames.value"
+          :throughput-bps="runtime.parser.throughputBps.value"
+          :parser-reset-version="runtime.parser.resetVersion.value"
+          @close="viewMode = 'terminal'"
+        />
+        <DataPacketList
+          v-else
+          :frames="props.session.frames"
+          :frames-version="visibleFramesVersion"
+          :highlights="props.session.highlights"
+        />
+      </KeepAlive>
     </div>
     <div class="send-area">
       <SendPanel
         :on-send="handleSend"
+        :on-start-loop="runtime.startSendLoop"
+        :on-stop-loop="runtime.stopSendLoop"
+        :looping="runtime.looping.value"
         :session-id="props.session.id"
         :model-value="props.session.sendDraft"
-        :disabled="!props.session.isConnected"
+        :disabled="!runtime.isConnected.value"
         :history="props.session.sendHistory"
         :quick-commands="props.session.quickCommands"
         @update:model-value="updateSendDraft"
@@ -95,7 +113,7 @@
       />
     </div>
     <input
-      ref="writeSourceInput"
+      :ref="setWriteSourceInput"
       type="file"
       accept=".bbreg,.jsonl,.txt"
       hidden
@@ -105,96 +123,50 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, defineAsyncComponent, onUnmounted, ref } from 'vue';
 import DataPacketList from '../terminal/DataPacketList.vue';
-import WaveformPanel from '../terminal/WaveformPanel.vue';
-import ParserPanel from '../terminal/ParserPanel.vue';
-import ModbusPanel from '../terminal/ModbusPanel.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
-import SessionToolbar, { type SessionViewMode } from './SessionToolbar.vue';
-import { useSerialConnection } from '../../composables/useSerialConnection';
+import SessionToolbar from './SessionToolbar.vue';
 import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
-import { useSessionModbus } from '../../composables/useSessionModbus';
 import { useExport } from '../../composables/useExport';
-import { useAutoLog } from '../../composables/useAutoLog';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { useSessionShortcuts } from '../../composables/useSessionShortcuts';
-import { useTriggers } from '../../composables/useTriggers';
 import { useMessage } from 'naive-ui';
-import { EXPORT_OPTIONS, type ExportChoice } from '../../lib/constants';
-import { formatBytes } from '../../lib/format';
+import type { ExportChoice } from '../../lib/constants';
+import type { ExportFrameSnapshot } from '../../lib/export-filters';
 import { t } from '../../lib/i18n';
 import type { SerialSession } from '../../types';
+import type {
+  SessionRuntimeController,
+  SessionRuntimeWaveformSink,
+} from '../../features/sessions/runtime/session-runtime-controller';
 
 const props = defineProps<{
   session: SerialSession;
+  runtime: SessionRuntimeController;
 }>();
 
+const WaveformPanel = defineAsyncComponent(() => import('../terminal/WaveformPanel.vue'));
+const ParserPanel = defineAsyncComponent(() => import('../terminal/ParserPanel.vue'));
+const ModbusPanel = defineAsyncComponent(() => import('../terminal/ModbusPanel.vue'));
+const ExportDialog = defineAsyncComponent(() => import('./ExportDialog.vue'));
+
 const sessionStore = useSessionStore();
+const runtime = props.runtime;
+const visibleFramesVersion = computed(() => sessionStore.getSessionFramesVersion(props.session.id));
 const appStore = useAppStore();
 const { requestClearFrames } = useSessionActions();
-const { isExporting, exportData } = useExport();
-const { enable: enableAutoLog, disable: disableAutoLog } = useAutoLog();
+const { isExporting, progress, cancelExport, resetExportProgress, exportData } = useExport();
 const message = useMessage();
-
-// Scripted triggers: watch RX bytes and auto-send a configured response on
-// match. `handleSend` is defined below but hoisted via function declaration, so
-// it is safely referenceable here. The engine itself is debounced/cooldown'd.
-const triggersRef = computed(() => props.session.triggers);
-const { feedFrame: feedTriggerFrame } = useTriggers({
-  triggers: triggersRef,
-  send: (data, isHex) => handleSend(data, isHex),
-  onFire: (fire) => {
-    const trigger = props.session.triggers.find((x) => x.id === fire.triggerId);
-    message.info(t('message.triggerFired', { name: trigger?.name ?? fire.triggerId }));
-  },
-});
-
-const serialState = useSerialConnection(
-  props.session.id,
-  props.session.portName,
-  props.session.portConfig,
-  {
-    onDisconnect: () => {
-      message.warning(t('serial.error.disconnected'));
-    },
-    onOverflow: (total) => {
-      message.warning(t('serial.error.rxOverflow', { bytes: formatBytes(total) }));
-      // Mirror the cumulative dropped-byte count onto the session so the
-      // StatusBar can surface it as a live metric without the connection composable.
-      sessionStore.updateDroppedBytes(props.session.id, total);
-    },
-    autoReconnect: () => appStore.autoReconnect,
-    onReconnecting: () => {
-      message.info(t('serial.error.reconnecting'));
-    },
-    onReconnected: () => {
-      message.success(t('serial.error.reconnected'));
-    },
-    onRxFrame: (frame) => {
-      void feedTriggerFrame(frame);
-    },
-  },
-);
-
-const exportOptions = computed(() =>
-  EXPORT_OPTIONS.map((option) => ({ ...option, label: t(`export.${option.key}`) })),
-);
-
-onMounted(() => {
-  sessionStore.registerCleanup(props.session.id, serialState.stop);
-});
+const exportDialogVisible = ref(false);
 
 async function connect() {
-  const ok = await serialState.start();
-  if (!ok && serialState.error.value) {
-    message.error(t('serial.error.connectFailed', { error: serialState.error.value }));
-  }
+  await runtime.connect();
 }
 
 async function disconnect() {
-  await serialState.stop();
+  await runtime.disconnect();
 }
 
 function clear() {
@@ -211,25 +183,19 @@ useSessionShortcuts({
   onClear: clear,
   onTogglePause: togglePause,
   isConnected: () => props.session.isConnected,
+  isActive: () => sessionStore.activeSessionId === props.session.id,
 });
 
-const sendingBreak = ref(false);
 // Single view-mode switcher for the display area: terminal (default, dense),
 // waveform (live RX plot), parser (frame reassembly), or modbus (register
 // table). Only the selected view renders, so they never stack and compete for
 // vertical space.
-const viewMode = ref<SessionViewMode>('terminal');
+const viewMode = runtime.viewMode;
 
 // --- Modbus master ---------------------------------------------------------
-// All Modbus wiring (master lifecycle, the imperative read/write/replay
-// handlers, the periodic-write source file picking) is encapsulated in
-// useSessionModbus so this component stays a thin orchestrator.
-const waveformRef = ref<{
-  pushRegisterSample: (channel: number, value: number, timestamp?: number) => void;
-  pushRegisterSamples: (
-    samples: readonly { channel: number; value: number; timestamp?: number }[],
-  ) => void;
-} | null>(null);
+// The runtime owns the Modbus master and its periodic loops. This active-only
+// view attaches the optional waveform sink and consumes the controller API.
+const waveformRef = ref<SessionRuntimeWaveformSink | null>(null);
 
 const {
   modbusBusy,
@@ -251,36 +217,22 @@ const {
   clearWriteSource: onClearWriteSource,
   onWriteSourcePicked,
   plotInWaveform: onPlotInWaveform,
-} = useSessionModbus({
-  session: computed(() => props.session),
-  sendBytes: (payload) => serialState.sendBytes(payload),
-  rawBytes: (cb) => serialState.rawBytes(cb),
-  isConnected: serialState.isConnected,
-  waveformRef,
-  showWaveform: () => {
-    viewMode.value = 'waveform';
-  },
-});
+} = runtime.modbus;
+
+const detachRuntimeView = runtime.attachView({ waveformRef });
+
+onUnmounted(detachRuntimeView);
+
+function setWriteSourceInput(element: unknown) {
+  writeSourceInput.value = element instanceof HTMLInputElement ? element : null;
+}
 
 async function handleSendBreak() {
-  sendingBreak.value = true;
-  const ok = await serialState.sendBreak();
-  sendingBreak.value = false;
-  if (ok) {
-    message.success(t('message.breakSent'));
-  } else {
-    message.warning(t('message.breakFailed'));
-  }
+  await runtime.sendBreak();
 }
 
 async function handleSend(data: string, isHex: boolean) {
-  const ok = await serialState.send(data, isHex);
-  if (ok) {
-    sessionStore.addSendHistory(props.session.id, { data, isHex });
-    // SendPanel owns draft clearing and skips it while cyclic send is active.
-    // Clearing here would empty the payload after the first loop tick.
-  }
-  return ok;
+  return runtime.send(data, isHex);
 }
 
 function updateSendDraft(value: string) {
@@ -308,27 +260,31 @@ function toggleTimestamp() {
 }
 
 async function toggleAutoLog() {
-  if (props.session.autoLogEnabled) {
-    disableAutoLog(props.session.id);
-    message.info(t('message.autoLogStopped'));
-    return;
-  }
-  const path = await enableAutoLog(props.session.id);
-  if (path) {
-    message.success(t('message.autoLogStarted', { path }));
+  await runtime.toggleAutoLog();
+}
+
+async function handleExport(payload: { snapshot: ExportFrameSnapshot; choice: ExportChoice }) {
+  const result = await exportData(payload.snapshot, payload.choice, appStore.displayMode);
+  if (result.ok) {
+    exportDialogVisible.value = false;
+    message.success(t('message.exportSuccess'));
+  } else if (result.cancelled) {
+    exportDialogVisible.value = false;
+  } else if (result.error) {
+    message.error(t('message.exportFailed', { error: result.error }));
   }
 }
 
-async function handleExport(choice: string) {
-  const result = await exportData(
-    props.session.frames,
-    choice as ExportChoice,
-    appStore.displayMode,
-  );
-  if (result.ok) {
-    message.success(t('message.exportSuccess'));
-  } else if (result.error) {
-    message.error(t('message.exportFailed', { error: result.error }));
+function openExportDialog() {
+  resetExportProgress();
+  exportDialogVisible.value = true;
+}
+
+function handleExportCancel() {
+  if (isExporting.value) {
+    cancelExport();
+  } else {
+    exportDialogVisible.value = false;
   }
 }
 </script>

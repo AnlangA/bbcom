@@ -2,7 +2,7 @@
   <div class="packet-list">
     <div class="packet-toolbar">
       <div class="filter-left">
-        <n-select
+        <AppSelect
           v-model:value="directionFilter"
           :options="directionOptions"
           size="tiny"
@@ -50,9 +50,9 @@
         <n-dropdown
           :options="copyOptions"
           @select="handleCopySelect"
-          :disabled="filteredFrameCount === 0"
+          :disabled="copyFrameCount === 0"
         >
-          <n-button size="tiny" quaternary :disabled="filteredFrameCount === 0">
+          <n-button size="tiny" quaternary :disabled="copyFrameCount === 0">
             <template #icon>
               <Copy class="icon-sm" />
             </template>
@@ -86,6 +86,7 @@
             row.key,
             row.start,
             row.size,
+            row.contentVersion,
             appStore.displayMode,
             appStore.ansiColorEnabled,
             appStore.showTimestamp,
@@ -119,10 +120,10 @@
 
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from 'vue';
-import { NButtonGroup, NButton, NInput, NDropdown, NSelect, useMessage } from 'naive-ui';
-import { Copy, Search } from 'lucide-vue-next';
+import { NButtonGroup, NButton, NInput, NDropdown, useMessage } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
+import { Copy, Search } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
-import { useSessionStore } from '../../stores/sessions';
 import { usePacketFilter } from '../../composables/usePacketFilter';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
 import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
@@ -148,14 +149,14 @@ import type { DataFrame, DirectionFilter, HighlightRule } from '../../types';
 
 const props = defineProps<{
   frames: DataFrame[];
+  framesVersion: number;
   highlights?: HighlightRule[];
 }>();
 
 const appStore = useAppStore();
-const sessionStore = useSessionStore();
 const message = useMessage();
 const framesRef = toRef(props, 'frames');
-const framesVersion = computed(() => sessionStore.framesVersion);
+const framesVersion = toRef(props, 'framesVersion');
 const totalFrameCount = computed(() => {
   void framesVersion.value;
   return props.frames.length;
@@ -212,6 +213,7 @@ const {
   filteredFrameCount,
   visibleFrames,
   visibleFrameCount,
+  materializeFrame,
 } = usePacketFilter({
   frames: framesRef,
   framesVersion,
@@ -219,6 +221,7 @@ const {
   packetViewMode: computed(() => appStore.packetViewMode),
   getHexSearchData,
   getTextSearchData,
+  onFramesReplaced: clearCaches,
 });
 
 const { scrollRef, virtualItems, totalSize, onScroll } = usePacketVirtualScroll({
@@ -228,6 +231,12 @@ const { scrollRef, virtualItems, totalSize, onScroll } = usePacketVirtualScroll(
 
 const displayLabel = computed(() =>
   packetDisplayLabel(appStore.packetViewMode, appStore.displayMode),
+);
+
+// A MERGED query can span source chunks, so its visible logical rows—not the
+// per-source-frame filter count—determine whether filtered copy is available.
+const copyFrameCount = computed(() =>
+  appStore.packetViewMode === 'MERGED' ? visibleFrameCount.value : filteredFrameCount.value,
 );
 
 const useHtml = computed(() => packetUsesHtml(appStore.displayMode, appStore.ansiColorEnabled));
@@ -283,7 +292,8 @@ function onKeydown(e: KeyboardEvent) {
     e.preventDefault();
     const frame = frames.find((f) => f.id === selectedFrameId.value);
     if (frame) {
-      const text = packetKeyboardCopyText(frame, formatFrame);
+      const materialized = materializeFrame(frame);
+      const text = packetKeyboardCopyText(materialized, formatFrame);
       navigator.clipboard.writeText(text).then(
         () => message.success(t('packet.copied')),
         () => message.error(t('packet.copyFailed')),
@@ -312,7 +322,7 @@ function onRowContextMenu(e: MouseEvent, frame: DataFrame) {
 async function handleCtxSelect(key: string) {
   ctxShow.value = false;
   if (!ctxFrame) return;
-  const text = packetContextCopyText(key as PacketContextCopyKey, ctxFrame, {
+  const text = packetContextCopyText(key as PacketContextCopyKey, materializeFrame(ctxFrame), {
     formatFrame,
     stripAnsi,
   });
@@ -327,13 +337,19 @@ async function handleCtxSelect(key: string) {
 
 async function handleCopySelect(key: string) {
   const copyKey = key as PacketBatchCopyKey;
-  const frames = framesForPacketCopy(copyKey, props.frames, filteredFrames.value);
+  const mergedFilteredCopy = appStore.packetViewMode === 'MERGED' && !copyKey.startsWith('all');
+  const frames = mergedFilteredCopy
+    ? visibleFrames.value
+    : framesForPacketCopy(copyKey, props.frames, filteredFrames.value);
   const { tooLarge } = packetCopySizeStatus(frames);
   if (tooLarge) {
     message.warning(t('packet.copyTooLarge'));
     return;
   }
-  const text = packetBatchCopyText(copyKey, frames);
+  // A visible rope exposes only its 64 KiB display tail. Materialize it after
+  // the size guard and only for the user-initiated filtered-copy action.
+  const copyFrames = mergedFilteredCopy ? frames.map(materializeFrame) : frames;
+  const text = packetBatchCopyText(copyKey, copyFrames);
   try {
     await navigator.clipboard.writeText(text);
     message.success(t('packet.copied'));

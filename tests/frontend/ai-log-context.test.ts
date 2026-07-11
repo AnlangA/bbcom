@@ -1,11 +1,43 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { buildLogAiContext } from '../../src/lib/ai-log-context.ts';
 import { encodeUtf8 } from '../../src/lib/format.ts';
-import type { DataFrame, LogAiContextMode, SerialSession } from '../../src/types/index.ts';
+import type { DataFrame, SerialSession } from '../../src/types/index.ts';
 
-function frame(id: string, direction: DataFrame['direction'], data: Uint8Array, timestamp = 0): DataFrame {
+function frame(
+  id: string,
+  direction: DataFrame['direction'],
+  data: Uint8Array,
+  timestamp = 0,
+): DataFrame {
   return { id, direction, timestamp, data };
+}
+
+function arrayIndex(property: string | symbol): number | null {
+  if (typeof property !== 'string' || !/^(0|[1-9]\d*)$/.test(property)) return null;
+  const index = Number(property);
+  return Number.isSafeInteger(index) ? index : null;
+}
+
+/** Lazily materialize frames so a test can observe exactly which indices are read. */
+function observedFrames(
+  count: number,
+  onRead: (index: number) => void,
+  data: Uint8Array,
+): DataFrame[] {
+  const target = new Array<DataFrame>(count);
+  return new Proxy(target, {
+    has(array, property) {
+      const index = arrayIndex(property);
+      return index === null ? Reflect.has(array, property) : index < count;
+    },
+    get(array, property, receiver) {
+      const index = arrayIndex(property);
+      if (index === null) return Reflect.get(array, property, receiver);
+      onRead(index);
+      return frame(String(index), index % 2 === 0 ? 'RX' : 'TX', data, index);
+    },
+  });
 }
 
 function baseSession(overrides: Partial<SerialSession> = {}): SerialSession {
@@ -33,16 +65,13 @@ function baseSession(overrides: Partial<SerialSession> = {}): SerialSession {
   };
 }
 
-test('latest-10k mode includes all frames and reports the 10k char limit', () => {
+test('latest-10k mode includes all frames and reports the 50k safety cap', () => {
   const session = baseSession({
-    frames: [
-      frame('1', 'RX', encodeUtf8('boot ok')),
-      frame('2', 'TX', encodeUtf8('ping')),
-    ],
+    frames: [frame('1', 'RX', encodeUtf8('boot ok')), frame('2', 'TX', encodeUtf8('ping'))],
   });
   const result = buildLogAiContext(session);
 
-  assert.equal(result.charLimit, 10_000);
+  assert.equal(result.charLimit, 50_000);
   assert.equal(result.frameCount, 2);
   assert.equal(result.truncated, false);
   assert.match(result.text, /boot ok/);
@@ -65,8 +94,11 @@ test('latest-n-frames mode selects only the trailing N frames', () => {
   assert.equal(result.truncated, true);
 });
 
-test('full-capped mode uses the larger 50k char limit', () => {
-  const session = baseSession({ frames: [frame('1', 'RX', encodeUtf8('hi'))], logAiContextMode: 'full-capped' });
+test('full-capped mode uses the same 50k char limit', () => {
+  const session = baseSession({
+    frames: [frame('1', 'RX', encodeUtf8('hi'))],
+    logAiContextMode: 'full-capped',
+  });
   assert.equal(buildLogAiContext(session).charLimit, 50_000);
 });
 
@@ -82,18 +114,67 @@ test('binary frames are rendered as HEX instead of UTF8', () => {
 });
 
 test('context is trimmed to the char limit from the front (keeps the tail)', () => {
-  // Each line is ~marker + 8 chars; build enough to exceed the 10k limit.
+  // Each line is ~marker + 8 chars; build enough to exceed the 50k limit.
   const frames: DataFrame[] = [];
-  for (let i = 0; i < 1500; i += 1) {
+  for (let i = 0; i < 7000; i += 1) {
     frames.push(frame(`${i}`, 'RX', encodeUtf8('AAAAAAAAAA'), i)); // 10 chars each
   }
   const session = baseSession({ frames });
 
   const result = buildLogAiContext(session);
   assert.equal(result.truncated, true);
-  assert.ok(result.text.length <= 10_000, 'trimmed text must respect the char limit');
+  assert.ok(result.text.length <= 50_000, 'trimmed text must respect the char limit');
   // the most recent frame marker should survive (tail kept)
   assert.match(result.text, /AAAAAAAAAA/);
+});
+
+test('large histories only access and format the tail needed by the character budget', () => {
+  const totalFrames = 100_000;
+  const accessed: number[] = [];
+  const payload = encodeUtf8('A'.repeat(200));
+  const frames = observedFrames(totalFrames, (index) => accessed.push(index), payload);
+  const session = baseSession({ frames, logAiContextMode: 'latest-10k' });
+
+  const result = buildLogAiContext(session);
+
+  assert.equal(
+    result.frameCount,
+    totalFrames,
+    'frameCount keeps the existing selected-frame contract',
+  );
+  assert.equal(result.charLimit, 50_000);
+  assert.equal(result.truncated, true);
+  assert.equal(result.text.length, 50_000);
+  assert.equal(accessed[0], totalFrames - 1, 'scan starts at the newest frame');
+  assert.ok(
+    accessed.length < 300,
+    `only budget-relevant tail frames should be formatted, read ${accessed.length}`,
+  );
+  assert.ok(accessed.at(-1)! > totalFrames - 300, 'no old history frame should be touched');
+});
+
+test('latest-n mode preserves selected frameCount while stopping at the character budget', () => {
+  const totalFrames = 20_000;
+  const selectedFrames = 5_000;
+  const accessed: number[] = [];
+  const frames = observedFrames(
+    totalFrames,
+    (index) => accessed.push(index),
+    encodeUtf8('B'.repeat(200)),
+  );
+  const session = baseSession({
+    frames,
+    logAiContextMode: 'latest-n-frames',
+    logAiFrameLimit: selectedFrames,
+  });
+
+  const result = buildLogAiContext(session);
+
+  assert.equal(result.frameCount, selectedFrames);
+  assert.equal(result.truncated, true);
+  assert.ok(accessed.length < 300);
+  assert.equal(accessed[0], totalFrames - 1);
+  assert.ok(accessed.at(-1)! >= totalFrames - selectedFrames);
 });
 
 test('empty session yields empty, non-truncated context', () => {
@@ -111,4 +192,34 @@ test('null bytes and control chars are sanitized out of the rendered text', () =
   assert.doesNotMatch(text, /\0/);
   assert.match(text, /\\r/);
   assert.match(text, /\\n/);
+});
+
+test('latest-n context handles zero, negative, non-finite, and fractional frame limits defensively', () => {
+  const frames = [
+    frame('one', 'RX', encodeUtf8('one'), 1),
+    frame('two', 'RX', encodeUtf8('two'), 2),
+  ];
+  const select = (frameLimit: number) =>
+    buildLogAiContext(
+      baseSession({ frames, logAiContextMode: 'latest-n-frames', logAiFrameLimit: frameLimit }),
+    );
+
+  assert.deepEqual(select(0), { text: '', truncated: true, frameCount: 0, charLimit: 50_000 });
+  assert.deepEqual(select(-1), { text: '', truncated: true, frameCount: 0, charLimit: 50_000 });
+  assert.equal(select(Number.NaN).frameCount, 2);
+  assert.equal(select(Number.POSITIVE_INFINITY).frameCount, 2);
+  assert.equal(select(0.5).frameCount, 2);
+  assert.equal(select(1.8).frameCount, 1);
+});
+
+test('empty and whitespace serial payloads are deliberately rendered as HEX context', () => {
+  const result = buildLogAiContext(
+    baseSession({
+      frames: [frame('empty', 'RX', new Uint8Array()), frame('blank', 'TX', encodeUtf8('   '))],
+    }),
+  );
+
+  assert.match(result.text, /RX HEX:/);
+  assert.match(result.text, /TX HEX:/);
+  assert.doesNotMatch(result.text, /UTF8:/);
 });

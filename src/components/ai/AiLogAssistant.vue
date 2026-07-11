@@ -6,7 +6,7 @@
           <Bot class="icon-sm" />
           {{ t('ai.log.model') }}
         </span>
-        <n-select
+        <AppSelect
           size="small"
           :value="session.logAiModel"
           :options="aiModelOptions"
@@ -19,7 +19,7 @@
           <MessageSquareText class="icon-sm" />
           {{ t('ai.log.context') }}
         </span>
-        <n-select
+        <AppSelect
           size="small"
           :value="session.logAiContextMode"
           :options="localizedLogContextModeOptions"
@@ -98,14 +98,14 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { NButton, NInput, NInputNumber, NSelect, NTag, useMessage } from 'naive-ui';
-import { Bot, MessageSquareText, Trash2, WandSparkles } from 'lucide-vue-next';
-import { invoke } from '@tauri-apps/api/core';
+import { NButton, NInput, NInputNumber, NTag, useMessage } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
+import { Bot, MessageSquareText, Trash2, WandSparkles } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
-import type { AiModel, LogAiContextMode, SerialSession } from '../../types';
+import type { AiModel, AiWindowSession, LogAiContextMode } from '../../types';
 import type { useAiWindowSession } from '../../composables/useAiWindowSession';
-import { buildLogAiContext } from '../../lib/ai-log-context';
 import { getAiErrorMessage } from '../../lib/ai-error';
+import { runAiRequest } from '../../lib/ipc';
 import { t } from '../../lib/i18n';
 import { aiModelMenuProps, aiModelOptions, getLogContextModeOptions } from './ai-options';
 
@@ -117,7 +117,7 @@ interface LogAiResponse {
 }
 
 const props = defineProps<{
-  session: SerialSession;
+  session: AiWindowSession;
   bridge: ReturnType<typeof useAiWindowSession>;
 }>();
 
@@ -127,7 +127,7 @@ const prompt = ref('');
 const loading = ref(false);
 const result = ref<LogAiResponse | null>(null);
 
-const hasApiKey = computed(() => Boolean(appStore.aiApiKey.trim()));
+const hasApiKey = computed(() => appStore.aiKeyConfigured);
 const canAsk = computed(() => prompt.value.trim().length > 0 && !loading.value);
 const localizedLogContextModeOptions = computed(() => getLogContextModeOptions());
 
@@ -143,25 +143,23 @@ async function ask() {
   result.value = null;
   try {
     const latestSession = (await props.bridge.refreshSession()) ?? props.session;
-    if (latestSession.frames.length === 0) {
+    const context = await props.bridge.getLogContext();
+    if (!context || context.frameCount === 0) {
       message.warning(t('ai.log.noData'));
       return;
     }
-    const context = buildLogAiContext(latestSession);
     const question = prompt.value.trim();
     await props.bridge.addLogAiMessage({ role: 'user', content: question });
-    const response = await invoke<LogAiResponse>('log_ai_assist', {
-      request: {
-        prompt: question,
-        apiKey: appStore.aiApiKey,
-        model: latestSession.logAiModel,
-        enableCodingPlan: appStore.aiEnableCodingPlan,
-        context: context.text,
-        contextMode: latestSession.logAiContextMode,
-        contextTruncated: context.truncated,
-        sessionMeta: `${latestSession.portName}, ${latestSession.portConfig.baudRate} bps, ${context.frameCount} frames, max ${context.charLimit} chars`,
-      },
+    const response = await runAiRequest({
+      requestId: crypto.randomUUID(),
+      kind: 'log',
+      prompt: question,
+      model: latestSession.logAiModel,
+      context: context.text,
+      contextMode: latestSession.logAiContextMode,
+      sessionMeta: `${latestSession.portName}, ${latestSession.baudRate ?? 0} bps, ${context.frameCount} frames, max ${context.charLimit} chars`,
     });
+    if (response.kind !== 'log') throw new Error('unexpected AI response kind');
     result.value = response;
     await props.bridge.addLogAiMessage({ role: 'assistant', content: response.answer });
     prompt.value = '';

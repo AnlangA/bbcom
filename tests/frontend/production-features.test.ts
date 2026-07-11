@@ -1,9 +1,83 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { formatHexAscii } from '../../src/lib/format.ts';
-import { chunkPayload, sendChunked, WRITE_CHUNK_SIZE } from '../../src/lib/write-chunking.ts';
-import { filterFramesByTimeRange, type TimeRangeFilter } from '../../src/lib/export-filters.ts';
+import {
+  createExportPreview,
+  createExportFrameSnapshot,
+  filterFramesByTimeRange,
+  isValidCustomTimeRange,
+  iterateExportFrames,
+  resolveExportFilter,
+  type TimeRangeFilter,
+} from '../../src/lib/export-filters.ts';
 import type { DataFrame } from '../../src/types.ts';
+
+test('production CSP excludes development HTTP and WebSocket origins', () => {
+  const config = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')) as {
+    app: { security: { csp: string; devCsp: string } };
+  };
+  const { csp, devCsp } = config.app.security;
+  assert.equal(csp.includes('localhost:5173'), false);
+  assert.equal(csp.includes('ws://'), false);
+  assert.equal(devCsp.includes('http://localhost:5173'), true);
+  assert.equal(devCsp.includes('ws://localhost:5173'), true);
+});
+
+test('frontend capabilities cannot open arbitrary native file dialogs', () => {
+  const capability = JSON.parse(readFileSync('src-tauri/capabilities/default.json', 'utf8')) as {
+    permissions: string[];
+  };
+  const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    dependencies: Record<string, string>;
+  };
+
+  assert.equal(
+    capability.permissions.some((item) => item.startsWith('dialog:')),
+    false,
+  );
+  assert.equal('@tauri-apps/plugin-dialog' in manifest.dependencies, false);
+});
+
+test('file-writing commands stay registered behind main-window-only native services', () => {
+  const mainCapability = JSON.parse(
+    readFileSync('src-tauri/capabilities/default.json', 'utf8'),
+  ) as { windows: string[]; permissions: string[] };
+  const aiCapability = JSON.parse(
+    readFileSync('src-tauri/capabilities/ai-assistant.json', 'utf8'),
+  ) as { windows: string[]; permissions: string[] };
+  const handlers = readFileSync('src-tauri/src/lib.rs', 'utf8');
+
+  assert.deepEqual(mainCapability.windows, ['main']);
+  assert.deepEqual(aiCapability.windows, ['ai-assistant']);
+  assert.equal(
+    aiCapability.permissions.some((item) => item.startsWith('serialplugin:')),
+    false,
+  );
+  assert.equal(
+    aiCapability.permissions.some((item) => item.startsWith('dialog:')),
+    false,
+  );
+
+  for (const registration of [
+    '.manage(commands::file_grants::FileGrantManager::default())',
+    '.manage(export::session::ExportSessionManager::default())',
+    '.manage(commands::log::AutoLogSessionManager::default())',
+    'commands::file_grants::request_save_target',
+    'commands::file_grants::revoke_file_grant',
+    'commands::export::begin_export',
+    'commands::export::append_export_batch',
+    'commands::export::finish_export',
+    'commands::export::abort_export',
+    'commands::log::begin_auto_log',
+    'commands::log::append_auto_log_batch',
+    'commands::log::finish_auto_log',
+    'commands::log::abort_auto_log',
+  ]) {
+    assert.ok(handlers.includes(registration), `${registration} must stay registered`);
+  }
+  assert.equal(handlers.includes('commands::log::append_log'), false);
+});
 
 // ---- F-h: HEX+ASCII dual display mode ----
 
@@ -30,93 +104,6 @@ test('formatHexAscii: wraps at bytesPerLine boundary', () => {
 
 test('formatHexAscii: empty input produces empty string', () => {
   assert.equal(formatHexAscii(new Uint8Array(0)), '');
-});
-
-// ---- Production-safe write chunking ----
-
-test('chunkPayload: splits a payload into chunkSize pieces', () => {
-  const payload = new Uint8Array(10000);
-  const chunks = chunkPayload(payload, 4096);
-  assert.equal(chunks.length, 3, '10000 / 4096 = 3 chunks');
-  assert.equal(chunks[0].length, 4096);
-  assert.equal(chunks[1].length, 4096);
-  assert.equal(chunks[2].length, 1808);
-  // Total bytes preserved.
-  assert.equal(
-    chunks.reduce((s, c) => s + c.length, 0),
-    10000,
-  );
-});
-
-test('chunkPayload: a payload smaller than chunkSize is one chunk', () => {
-  const chunks = chunkPayload(new Uint8Array(100), 4096);
-  assert.equal(chunks.length, 1);
-  assert.equal(chunks[0].length, 100);
-});
-
-test('chunkPayload: default chunk size is WRITE_CHUNK_SIZE', () => {
-  const chunks = chunkPayload(new Uint8Array(WRITE_CHUNK_SIZE + 1));
-  assert.equal(chunks.length, 2);
-  assert.equal(chunks[0].length, WRITE_CHUNK_SIZE);
-});
-
-test('sendChunked: writes all chunks, resolves ok', async () => {
-  const written: Uint8Array[] = [];
-  const result = await sendChunked(
-    new Uint8Array(5000),
-    async (chunk) => {
-      written.push(chunk);
-      return true;
-    },
-    { chunkSize: 2000 },
-  );
-  assert.equal(result.ok, true);
-  assert.equal(result.chunksWritten, 3);
-  assert.equal(result.bytesWritten, 5000);
-  assert.equal(result.retriesUsed, 0);
-  assert.equal(written.length, 3);
-});
-
-test('sendChunked: retries a failing chunk then succeeds', async () => {
-  let calls = 0;
-  const result = await sendChunked(
-    new Uint8Array(100),
-    async () => {
-      calls += 1;
-      return calls >= 3; // fail twice, succeed on 3rd
-    },
-    { chunkSize: 100, maxRetries: 3, backoffMs: 1, delay: async () => {} },
-  );
-  assert.equal(result.ok, true);
-  assert.equal(result.retriesUsed, 2, 'two retries consumed');
-  assert.equal(calls, 3);
-});
-
-test('sendChunked: gives up after maxRetries and reports the error', async () => {
-  const result = await sendChunked(new Uint8Array(100), async () => false, {
-    chunkSize: 100,
-    maxRetries: 2,
-    backoffMs: 1,
-    delay: async () => {},
-  });
-  assert.equal(result.ok, false);
-  assert.ok(result.error!.includes('failed after'));
-  assert.equal(result.chunksWritten, 0);
-});
-
-test('sendChunked: a throw is treated as a failure and retried', async () => {
-  let calls = 0;
-  const result = await sendChunked(
-    new Uint8Array(50),
-    async () => {
-      calls += 1;
-      if (calls === 1) throw new Error('driver error');
-      return true;
-    },
-    { chunkSize: 50, maxRetries: 2, backoffMs: 1, delay: async () => {} },
-  );
-  assert.equal(result.ok, true);
-  assert.equal(result.retriesUsed, 1);
 });
 
 // ---- F-e: Export time-range filtering ----
@@ -166,4 +153,72 @@ test('filterFramesByTimeRange: does not mutate the input', () => {
   const original = [...frames];
   filterFramesByTimeRange(frames, { startMs: 50, endMs: null, direction: null });
   assert.deepEqual(frames, original, 'input unchanged');
+});
+
+test('resolveExportFilter: relative presets anchor to the newest captured timestamp', () => {
+  const frames = [frame('RX', 500_000, 'latest'), frame('TX', 10_000, 'old')];
+  assert.deepEqual(
+    resolveExportFilter(frames, {
+      direction: 'TX',
+      timePreset: 'last-1m',
+      customStartMs: null,
+      customEndMs: null,
+    }),
+    { startMs: 440_000, endMs: null, direction: 'TX' },
+  );
+  assert.deepEqual(
+    resolveExportFilter(frames, {
+      direction: 'all',
+      timePreset: 'last-5m',
+      customStartMs: null,
+      customEndMs: null,
+    }),
+    { startMs: 200_000, endMs: null, direction: null },
+  );
+});
+
+test('custom export ranges require finite start < end', () => {
+  assert.equal(isValidCustomTimeRange(1, 2), true);
+  assert.equal(isValidCustomTimeRange(2, 2), false);
+  assert.equal(isValidCustomTimeRange(3, 2), false);
+  assert.equal(isValidCustomTimeRange(null, 2), false);
+  assert.throws(() =>
+    resolveExportFilter([], {
+      direction: 'all',
+      timePreset: 'custom',
+      customStartMs: 2,
+      customEndMs: 1,
+    }),
+  );
+});
+
+test('createExportPreview returns exact filtered frame and raw-byte totals', () => {
+  const frames = [frame('RX', 1, 'rx'), frame('TX', 2, 'tx')];
+  frames[0].data = new Uint8Array(3);
+  frames[1].data = new Uint8Array(7);
+  const preview = createExportPreview(frames, {
+    direction: 'TX',
+    timePreset: 'all',
+    customStartMs: null,
+    customEndMs: null,
+  });
+  assert.equal(preview.frameCount, 1);
+  assert.equal(preview.rawBytes, 7);
+  assert.equal(preview.maxFrameBytes, 7);
+});
+
+test('export snapshot preserves a zero-copy confirmed prefix while capture keeps appending', () => {
+  const frames = [frame('RX', 1, 'first'), frame('TX', 2, 'second')];
+  const snapshot = createExportFrameSnapshot(frames, {
+    direction: 'all',
+    timePreset: 'all',
+    customStartMs: null,
+    customEndMs: null,
+  });
+  assert.equal(snapshot.frames, frames, 'selection stores references, not a filtered frame copy');
+  frames.push(frame('RX', 3, 'later'));
+  assert.deepEqual(
+    Array.from(iterateExportFrames(snapshot), (item) => item.id),
+    ['first', 'second'],
+  );
 });

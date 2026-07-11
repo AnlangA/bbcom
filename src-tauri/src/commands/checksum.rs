@@ -33,6 +33,7 @@ pub fn calculate_checksum(request: ChecksumRequest) -> Result<ChecksumResponse, 
         ChecksumType::Checksum => checksum::calculate_checksum(&request.data),
         ChecksumType::Crc8 => checksum::calculate_crc8(&request.data),
         ChecksumType::Crc16 => checksum::calculate_crc16(&request.data),
+        ChecksumType::Crc16Modbus => checksum::calculate_crc16_modbus(&request.data),
         ChecksumType::Crc32 => checksum::calculate_crc32(&request.data),
     };
     Ok(ChecksumResponse { result })
@@ -68,6 +69,12 @@ mod tests {
                 .unwrap()
                 .result,
             "906E"
+        );
+        assert_eq!(
+            calculate_checksum(req(ChecksumType::Crc16Modbus, b"123456789"))
+                .unwrap()
+                .result,
+            "374B"
         );
         assert_eq!(
             calculate_checksum(req(ChecksumType::Crc32, b"123456789"))

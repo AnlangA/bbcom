@@ -30,6 +30,9 @@ export interface PacketRowData {
     transform: string;
   };
   frame: DataFrame;
+  /** Changes whenever immutable frame content changes, including MERGED rows
+   * whose stable first-frame id is intentionally reused as data grows. */
+  contentVersion: number;
   formatted: string;
   timestamp: string;
   showTimestamp: boolean;
@@ -100,6 +103,9 @@ export function buildPacketRows({
         transform: `translateY(${item.start}px)`,
       },
       frame,
+      // Rope-backed MERGED rows expose a stable id and a 64 KiB UI tail. Their
+      // monotonic contentVersion, not the capped tail length, drives v-memo.
+      contentVersion: frame.contentVersion ?? frame.data.byteLength,
       formatted: formatFrame(frame),
       timestamp: formatTimestamp(frame.timestamp),
       showTimestamp,
@@ -183,7 +189,12 @@ export function packetCopySizeStatus(
   frames: readonly DataFrame[],
   limits = PACKET_COPY_LIMITS,
 ): { tooLarge: boolean; totalBytes: number } {
-  const totalBytes = frames.reduce((sum, frame) => sum + frame.data.length, 0);
+  // Rope rows carry only a 64 KiB UI tail in `data`; omittedBytes completes
+  // the logical payload length before a copy can request full materialization.
+  const totalBytes = frames.reduce(
+    (sum, frame) => sum + frame.data.length + (frame.omittedBytes ?? 0),
+    0,
+  );
   return {
     tooLarge: frames.length > limits.maxFrames || totalBytes > limits.maxBytes,
     totalBytes,

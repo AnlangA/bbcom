@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { exportMacros, importMacros, defaultExportFilename } from '../../src/lib/macro-library.ts';
 import { setLocale, t } from '../../src/lib/i18n.ts';

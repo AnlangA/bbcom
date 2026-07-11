@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   MAX_PERSISTED_FRAMES_PER_SESSION,
@@ -108,6 +108,39 @@ test('hydrateSession restores frames, totals, tools, and decorates frames', () =
   assert.equal(session.logAiFrameLimit, 2_000);
 });
 
+test('binary v2 frames round-trip TX completion metadata while legacy HEX remains readable', () => {
+  const source = createSessionRecord('binary', 'COM8', cfg, {
+    frames: [
+      {
+        id: 'partial',
+        direction: 'TX',
+        timestamp: 10,
+        data: new Uint8Array([0xaa, 0xbb]),
+        txStatus: 'partial-unknown',
+        requestedBytes: 8,
+      },
+    ],
+  });
+  const persisted = serializeSessionSnapshots([source], 'binary');
+  assert.ok(persisted.sessions[0].frames[0].data instanceof Uint8Array);
+  assert.equal(persisted.sessions[0].frames[0].txStatus, 'partial-unknown');
+  assert.equal(persisted.sessions[0].frames[0].requestedBytes, 8);
+
+  const restored = hydrateSession(persisted.sessions[0]);
+  assert.ok(restored);
+  assert.deepEqual(Array.from(restored.frames[0].data), [0xaa, 0xbb]);
+  assert.equal(restored.frames[0].txStatus, 'partial-unknown');
+  assert.equal(restored.frames[0].requestedBytes, 8);
+
+  const legacy = hydrateSession({
+    id: 'legacy',
+    portName: 'COM9',
+    portConfig: cfg,
+    frames: [{ id: 'hex', direction: 'RX', timestamp: 1, dataHex: '41 42' }],
+  });
+  assert.deepEqual(Array.from(legacy?.frames[0].data ?? []), [0x41, 0x42]);
+});
+
 test('hydrateSession rejects invalid persisted sessions', () => {
   assert.equal(hydrateSession(null), null);
   assert.equal(hydrateSession({ portName: '' }), null);
@@ -163,4 +196,17 @@ test('normalizeParserState clamps malformed parser configs', () => {
     },
     presetId: null,
   });
+
+  const delimiter = normalizeParserState({
+    config: {
+      kind: 'delimiter',
+      delimiter: Array.from({ length: 300 }, (_, i) => i),
+      includeDelimiter: true,
+    },
+  }).config;
+  assert.equal(delimiter.kind, 'delimiter');
+  if (delimiter.kind === 'delimiter') {
+    assert.equal(delimiter.delimiter.length, 256);
+    assert.deepEqual(delimiter.delimiter.slice(-3), [253, 254, 255]);
+  }
 });

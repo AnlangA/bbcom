@@ -1,56 +1,100 @@
-import { onMounted, onUnmounted, ref } from 'vue';
+import { getCurrentInstance, onMounted, onUnmounted, ref } from 'vue';
 import { emit, listen } from '@tauri-apps/api/event';
-import type { AiChatMessage, AiModel, LogAiContextMode, SerialSession } from '../types';
+import type {
+  AiChatMessage,
+  AiChatSnapshot,
+  AiLogContextSnapshot,
+  AiModel,
+  AiSessionSummary,
+  AiWindowSession,
+  LogAiContextMode,
+} from '../types';
 
 interface AiSessionSnapshot {
-  session: SerialSession | null;
+  session: AiSessionSummary | null;
 }
 
-interface PendingSnapshotResolver {
-  resolve: (value: SerialSession | null) => void;
+interface PendingResolver<T> {
+  resolve: (value: T) => void;
   timer: ReturnType<typeof setTimeout>;
 }
 
-/** Injectable Tauri event emitter so the session-mutation + emission logic is
- *  unit-testable without the Tauri event bus. Defaults to the real `emit`. */
+/** Injectable emitter so the local mutation/event contract stays unit-testable. */
 export interface UseAiWindowSessionDeps {
   emit?: (event: string, payload?: unknown) => Promise<void>;
 }
 
+function localSession(
+  summary: AiSessionSummary,
+  previous: AiWindowSession | null,
+): AiWindowSession {
+  return {
+    ...summary,
+    // Chat text is intentionally delivered only in its bounded snapshot, not
+    // in the regular session summary event.
+    logAiMessages: previous?.id === summary.id ? previous.logAiMessages : [],
+  };
+}
+
 export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
-  const session = ref<SerialSession | null>(null);
+  const session = ref<AiWindowSession | null>(null);
   const unlisteners: Array<() => void> = [];
-  const pendingSnapshotResolvers: PendingSnapshotResolver[] = [];
+  const pendingSnapshotResolvers: PendingResolver<AiWindowSession | null>[] = [];
+  const pendingContextResolvers: PendingResolver<AiLogContextSnapshot | null>[] = [];
   const doEmit = deps.emit ?? emit;
 
-  onMounted(async () => {
-    unlisteners.push(
-      await listen<AiSessionSnapshot>('ai-session-snapshot', (event) => {
-        session.value = event.payload.session;
-        resolvePendingSnapshots(session.value);
-      }),
-    );
-    await refreshSession();
-  });
+  if (getCurrentInstance()) {
+    onMounted(async () => {
+      unlisteners.push(
+        await listen<AiSessionSnapshot>('ai-session-snapshot', (event) => {
+          session.value = event.payload.session
+            ? localSession(event.payload.session, session.value)
+            : null;
+          resolvePendingSnapshots(session.value);
+        }),
+      );
+      unlisteners.push(
+        await listen<AiChatSnapshot>('ai-chat-snapshot', (event) => {
+          if (!session.value || event.payload.sessionId !== session.value.id) return;
+          session.value.logAiMessages = event.payload.messages;
+        }),
+      );
+      unlisteners.push(
+        await listen<AiLogContextSnapshot>('ai-log-context', (event) => {
+          resolvePendingContexts(event.payload);
+        }),
+      );
+      await refreshSession();
+    });
 
-  onUnmounted(() => {
-    unlisteners.forEach((unlisten) => unlisten());
-    unlisteners.length = 0;
-    resolvePendingSnapshots(session.value);
-  });
+    onUnmounted(() => {
+      unlisteners.forEach((unlisten) => unlisten());
+      unlisteners.length = 0;
+      resolvePendingSnapshots(session.value);
+      resolvePendingContexts(null);
+    });
+  }
 
-  async function refreshSession(timeoutMs = 1000): Promise<SerialSession | null> {
+  async function refreshSession(timeoutMs = 1000): Promise<AiWindowSession | null> {
     const pending = waitForSnapshot(timeoutMs);
     await doEmit('ai-session-snapshot-request');
     return pending;
   }
 
-  function waitForSnapshot(timeoutMs: number): Promise<SerialSession | null> {
+  async function getLogContext(timeoutMs = 1000): Promise<AiLogContextSnapshot | null> {
+    const sessionId = session.value?.id;
+    if (!sessionId) return null;
+    const pending = waitForContext(timeoutMs);
+    await doEmit('ai-log-context-request', { sessionId });
+    return pending;
+  }
+
+  function waitForSnapshot(timeoutMs: number): Promise<AiWindowSession | null> {
     return new Promise((resolve) => {
-      const pending: PendingSnapshotResolver = {
+      const pending: PendingResolver<AiWindowSession | null> = {
         resolve,
         timer: setTimeout(() => {
-          removePendingSnapshot(pending);
+          removePending(pendingSnapshotResolvers, pending);
           resolve(session.value);
         }, timeoutMs),
       };
@@ -58,14 +102,35 @@ export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
     });
   }
 
-  function removePendingSnapshot(pending: PendingSnapshotResolver) {
-    const index = pendingSnapshotResolvers.indexOf(pending);
-    if (index >= 0) pendingSnapshotResolvers.splice(index, 1);
+  function waitForContext(timeoutMs: number): Promise<AiLogContextSnapshot | null> {
+    return new Promise((resolve) => {
+      const pending: PendingResolver<AiLogContextSnapshot | null> = {
+        resolve,
+        timer: setTimeout(() => {
+          removePending(pendingContextResolvers, pending);
+          resolve(null);
+        }, timeoutMs),
+      };
+      pendingContextResolvers.push(pending);
+    });
+  }
+
+  function removePending<T>(items: PendingResolver<T>[], pending: PendingResolver<T>) {
+    const index = items.indexOf(pending);
+    if (index >= 0) items.splice(index, 1);
     clearTimeout(pending.timer);
   }
 
-  function resolvePendingSnapshots(value: SerialSession | null) {
+  function resolvePendingSnapshots(value: AiWindowSession | null) {
     const pending = pendingSnapshotResolvers.splice(0);
+    pending.forEach((item) => {
+      clearTimeout(item.timer);
+      item.resolve(value);
+    });
+  }
+
+  function resolvePendingContexts(value: AiLogContextSnapshot | null) {
+    const pending = pendingContextResolvers.splice(0);
     pending.forEach((item) => {
       clearTimeout(item.timer);
       item.resolve(value);
@@ -128,6 +193,7 @@ export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
   return {
     session,
     refreshSession,
+    getLogContext,
     applyCommand,
     setTerminalAiModel,
     setLogAiModel,

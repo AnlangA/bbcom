@@ -47,7 +47,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { Plus, X } from 'lucide-vue-next';
+import { Plus, X } from '@lucide/vue';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { t } from '../../lib/i18n';
@@ -101,6 +101,8 @@ function switchSession(id: string) {
 }
 
 function tabTooltip(session: SerialSession): string {
+  // Track only this session's raw frame-buffer invalidation signal.
+  void sessionStore.getSessionFramesVersion(session.id);
   const status = session.isConnected ? t('session.connected') : t('session.disconnected');
   const baud = session.portConfig.baudRate;
   const frames = session.frames.length;

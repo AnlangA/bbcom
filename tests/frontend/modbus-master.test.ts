@@ -1,13 +1,9 @@
-import test from 'node:test';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
 import { computed, effectScope, ref, type EffectScope } from 'vue';
 import { useModbusMaster, type ModbusMasterStatus } from '../../src/composables/useModbusMaster.ts';
-import {
-  frameRequest,
-  readRequest,
-  writeSingleRegisterRequest,
-} from '../../src/lib/modbus';
+import { frameRequest, readRequest, writeSingleRegisterRequest } from '../../src/lib/modbus';
 import { useSessionStore } from '../../src/stores/sessions.ts';
 import type {
   ModbusFunctionCode,
@@ -69,10 +65,30 @@ function createHarness(
       sessionId,
       config: computed(() => store.sessions[0].modbusConfig),
       registers: computed(() => store.sessions[0].modbusRegisters),
-      sendBytes(payload) {
+      sendBytes(payload, options) {
         const index = sent.length;
         sent.push(payload);
-        return Promise.resolve(handler(payload, (bytes) => rx?.(bytes), index));
+        options?.onWriteStarted?.();
+        return Promise.resolve(handler(payload, (bytes) => rx?.(bytes), index)).then((ok) =>
+          ok
+            ? {
+                status: 'complete' as const,
+                ok: true as const,
+                requestedBytes: payload.length,
+                confirmedBytes: payload.length,
+                bytesWritten: payload.length,
+                reason: null,
+              }
+            : {
+                status: 'partial-unknown' as const,
+                ok: false as const,
+                requestedBytes: payload.length,
+                confirmedBytes: 0,
+                bytesWritten: 0,
+                reason: 'write-error' as const,
+                code: 'SERIAL_PARTIAL_WRITE' as const,
+              },
+        );
       },
       rawBytes(cb) {
         listens += 1;
@@ -960,5 +976,146 @@ test('reconnect uses register and transport changes made while disconnected', as
     );
   } finally {
     h.scope.stop();
+  }
+});
+
+test('imperative Modbus no-op paths leave the half-duplex runtime idle and bounded', async () => {
+  const h = createHarness(() => true);
+  try {
+    const read = addRegister(h, {
+      id: 'read-only',
+      fc: 0x03,
+      periodicRead: false,
+    });
+    const write = addRegister(h, {
+      id: 'write-only',
+      fc: 0x06,
+      periodicRead: false,
+      periodicWrite: false,
+    });
+
+    assert.equal(await h.master.readOnce(write), null);
+    assert.equal(await h.master.sendRow(read), false);
+    await h.master.readAll();
+    assert.deepEqual(await h.master.sendAll(), { sent: 0, ok: 0 });
+    assert.equal(h.sent.length, 0);
+
+    h.master.clearWriteSource();
+    h.master.startReplay([]);
+    assert.equal(h.master.replaying.value, false);
+
+    h.master.start();
+    h.master.start();
+    assert.equal(h.master.running.value, true);
+    h.master.stop();
+    assert.equal(h.master.running.value, false);
+  } finally {
+    h.scope.stop();
+  }
+});
+
+test('periodic batches relay protocol exceptions through the batch-status sink', async () => {
+  vi.useFakeTimers();
+  let h: Harness | null = null;
+  try {
+    h = createHarness(
+      (_payload, reply) => {
+        reply(frameRequest('rtu', 1, new Uint8Array([0x83, 0x02])));
+        return true;
+      },
+      { enabled: true, pollIntervalMs: 100, timeoutMs: 500 },
+    );
+    addRegister(h, { id: 'periodic-exception', address: 0 });
+    h.master.start();
+    await vi.advanceTimersByTimeAsync(100);
+    assert.deepEqual(
+      h.statuses.find((status) => status.kind === 'exception'),
+      { kind: 'exception', code: 0x02 },
+    );
+  } finally {
+    h?.scope.stop();
+    vi.useRealTimers();
+  }
+});
+
+test('a read response with a valid but incompatible shape does not mutate a register', async () => {
+  let request = 0;
+  const h = createHarness((_payload, reply) => {
+    request += 1;
+    if (request === 1) {
+      reply(frameRequest('rtu', 1, new Uint8Array([0x83, 0x02])));
+    } else {
+      // This is a valid RTU write acknowledgement, but not a readable payload
+      // for the outstanding FC03 row. It must produce no value update.
+      reply(rtuWriteSingleAck(1, 0, 1));
+    }
+    return true;
+  });
+
+  try {
+    const reg = addRegister(h, { id: 'shape-check', address: 0 });
+    assert.equal(await h.master.readOnce(reg), null);
+    assert.deepEqual(h.statuses.at(-1), { kind: 'exception', code: 0x02 });
+
+    assert.equal(await h.master.readOnce(reg), null);
+    assert.equal(h.store.sessions[0].modbusRegisters[0].value, null);
+  } finally {
+    h.scope.stop();
+  }
+});
+
+test('an empty periodic write source returns writing state to idle without transmitting', async () => {
+  vi.useFakeTimers();
+  let h: Harness | null = null;
+  try {
+    h = createHarness(() => true, { enabled: true, writeIntervalMs: 100 });
+    addRegister(h, {
+      id: 'empty-write-source',
+      fc: 0x06,
+      periodicRead: false,
+      periodicWrite: true,
+    });
+    h.master.status.value = { kind: 'writing', count: 1 };
+    h.master.start();
+    await vi.advanceTimersByTimeAsync(100);
+    assert.equal(h.master.status.value.kind, 'idle');
+    assert.equal(h.sent.length, 0);
+  } finally {
+    h?.scope.stop();
+    vi.useRealTimers();
+  }
+});
+
+test('stopping a pending periodic write clears its visible in-flight state', async () => {
+  vi.useFakeTimers();
+  let h: Harness | null = null;
+  try {
+    h = createHarness(() => true, {
+      enabled: true,
+      writeIntervalMs: 100,
+      timeoutMs: 1000,
+    });
+    addRegister(h, {
+      id: 'stop-pending-write',
+      fc: 0x06,
+      address: 5,
+      periodicRead: false,
+      periodicWrite: true,
+    });
+    h.master.loadWriteSource(
+      [{ t: 1, slave: 1, fc: 0x03, addr: 5, type: 'uint16', value: 7 }],
+      'pending.bbreg',
+    );
+    h.master.start();
+    await vi.advanceTimersByTimeAsync(100);
+    assert.equal(h.master.writing.value, true);
+    assert.equal(h.sent.length, 1);
+    h.master.stop();
+
+    assert.equal(h.master.writing.value, false);
+    assert.equal(h.master.status.value.kind, 'idle');
+  } finally {
+    h?.scope.stop();
+    vi.useRealTimers();
   }
 });

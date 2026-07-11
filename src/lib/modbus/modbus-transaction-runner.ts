@@ -1,18 +1,28 @@
 import { parseFrame, scanResponse, type ModbusTransport } from './modbus-transport';
 import type { ModbusResponse } from './modbus-core';
+import type { SerialSendResult, SerialWriteOptions } from '../../types/serial';
+
+/**
+ * Modbus RTU ADUs are capped at 256 bytes (and Modbus PDUs at 253 bytes).
+ * Retaining at most one incomplete ADU prevents a noisy serial stream from
+ * growing a per-request RX buffer until the request times out.
+ */
+export const MAX_MODBUS_TRANSACTION_RX_BYTES = 256;
+const MODBUS_RX_PROCESS_CHUNK_BYTES = 4 * 1024;
 
 export type ModbusTransactionStatus = { kind: 'timeout' } | { kind: 'error'; message: string };
 
 interface PendingTransaction<TContext> {
   context: TContext;
   resolve: (response: ModbusResponse | null) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | null;
+  started: boolean;
   /** Expected PDU length for the response (PDU transport needs this). */
   expectedLen?: number;
 }
 
 export interface ModbusTransactionRunnerOptions {
-  sendBytes: (payload: Uint8Array) => Promise<boolean>;
+  sendBytes: (payload: Uint8Array, options?: SerialWriteOptions) => Promise<SerialSendResult>;
   getTransport: () => ModbusTransport;
   getTimeoutMs: () => number;
   onStatus?: (status: ModbusTransactionStatus) => void;
@@ -33,30 +43,36 @@ export class ModbusTransactionRunner<TContext = unknown> {
   }
 
   receive(bytes: Uint8Array): void {
-    if (!this.pending) {
+    if (!this.pending || !this.pending.started) {
       // Unsolicited bytes (e.g. late echo, noise). Drop to avoid framing drift.
       this.rxBuffer = new Uint8Array(0);
       return;
     }
 
-    const concat = new Uint8Array(this.rxBuffer.length + bytes.length);
-    concat.set(this.rxBuffer, 0);
-    concat.set(bytes, this.rxBuffer.length);
-    this.rxBuffer = concat;
+    let offset = 0;
+    while (offset < bytes.length && this.pending?.started) {
+      const end = Math.min(bytes.length, offset + MODBUS_RX_PROCESS_CHUNK_BYTES);
+      this.rxBuffer = appendRxChunk(this.rxBuffer, bytes.subarray(offset, end));
+      offset = end;
 
-    const { frames, remainder } = scanResponse(
-      this.options.getTransport(),
-      this.rxBuffer,
-      this.pending.expectedLen,
-    );
-    this.rxBuffer = remainder;
-    if (frames.length === 0) return;
+      const { frames, remainder } = scanResponse(
+        this.options.getTransport(),
+        this.rxBuffer,
+        this.pending.expectedLen,
+      );
+      this.rxBuffer = retainIncompleteAdu(remainder);
+      if (frames.length === 0) continue;
 
-    const response = parseFrame(this.options.getTransport(), frames[0]);
-    const current = this.pending;
-    clearTimeout(current.timer);
-    this.pending = null;
-    current.resolve(response);
+      const response = parseFrame(this.options.getTransport(), frames[0]);
+      const current = this.pending;
+      if (current.timer) clearTimeout(current.timer);
+      this.pending = null;
+      // A response resolves exactly one half-duplex request. Extra bytes from
+      // the same native callback are unsolicited for the next request and must
+      // not retain a large backing allocation.
+      this.rxBuffer = new Uint8Array(0);
+      current.resolve(response);
+    }
   }
 
   transact(
@@ -79,11 +95,7 @@ export class ModbusTransactionRunner<TContext = unknown> {
         if (!this.cancelForContext(context, status)) resolve(null);
       };
 
-      const timer = setTimeout(() => {
-        if (!this.cancelForContext(context, { kind: 'timeout' })) resolve(null);
-      }, this.options.getTimeoutMs());
-
-      this.pending = { context, resolve, timer, expectedLen };
+      this.pending = { context, resolve, timer: null, started: false, expectedLen };
       this.rxBuffer = new Uint8Array(0);
 
       let wire: Uint8Array;
@@ -94,16 +106,23 @@ export class ModbusTransactionRunner<TContext = unknown> {
         return;
       }
 
-      let sent: Promise<boolean>;
+      let sent: Promise<SerialSendResult>;
       try {
-        sent = this.options.sendBytes(wire);
+        sent = this.options.sendBytes(wire, {
+          onWriteStarted: () => this.startTimeout(context),
+        });
       } catch (error) {
         failSend(error);
         return;
       }
 
-      void sent.then((ok) => {
-        if (!ok) failSend();
+      void sent.then((result) => {
+        if (!result.ok) {
+          failSend(result.error ?? result.reason ?? undefined);
+          return;
+        }
+        // Defensive fallback for a custom transport that ignores the hook.
+        this.startTimeout(context);
       }, failSend);
     });
   }
@@ -114,7 +133,7 @@ export class ModbusTransactionRunner<TContext = unknown> {
       return false;
     }
     const current = this.pending;
-    clearTimeout(current.timer);
+    if (current.timer) clearTimeout(current.timer);
     this.pending = null;
     this.rxBuffer = new Uint8Array(0);
     if (status) this.options.onStatus?.(status);
@@ -126,6 +145,22 @@ export class ModbusTransactionRunner<TContext = unknown> {
     return this.pending !== null;
   }
 
+  /** Number of retained incomplete-response bytes (always protocol-bounded). */
+  get pendingRxBytes(): number {
+    return this.rxBuffer.length;
+  }
+
+  private startTimeout(context: TContext): void {
+    if (!this.pending || this.pending.context !== context || this.pending.timer !== null) {
+      return;
+    }
+    this.pending.started = true;
+    this.rxBuffer = new Uint8Array(0);
+    this.pending.timer = setTimeout(() => {
+      this.cancelForContext(context, { kind: 'timeout' });
+    }, this.options.getTimeoutMs());
+  }
+
   private cancelForContext(context: TContext, status?: ModbusTransactionStatus): boolean {
     if (!this.pending || this.pending.context !== context) return false;
     return this.cancel(status);
@@ -134,4 +169,18 @@ export class ModbusTransactionRunner<TContext = unknown> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function appendRxChunk(existing: Uint8Array, incoming: Uint8Array): Uint8Array {
+  const combined = new Uint8Array(existing.length + incoming.length);
+  combined.set(existing, 0);
+  combined.set(incoming, existing.length);
+  return combined;
+}
+
+function retainIncompleteAdu(remainder: Uint8Array): Uint8Array {
+  // A complete 256-byte ADU would have been emitted by `scanResponse`; retain
+  // at most the 255-byte prefix that could still become a complete future ADU.
+  const start = Math.max(0, remainder.length - (MAX_MODBUS_TRANSACTION_RX_BYTES - 1));
+  return remainder.slice(start);
 }

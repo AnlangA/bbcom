@@ -1,156 +1,452 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { nextTick } from 'vue';
-import { useExport } from '../../src/composables/useExport.ts';
+import {
+  createExportBatches,
+  EXPORT_BATCH_MAX_BYTES,
+  EXPORT_BATCH_MAX_FRAMES,
+  EXPORT_FRAME_MAX_BYTES,
+  EXPORT_MAX_BYTES,
+  EXPORT_MAX_FRAMES,
+  savePurposeForFormat,
+  summarizeExportFrames,
+  useExport,
+  type ExportSessionClient,
+} from '../../src/composables/useExport.ts';
+import type { ExportFramePayload } from '../../src/lib/ipc.ts';
 import type { DataFrame, DisplayMode } from '../../src/types.ts';
-import type { ExportChoice, ExportFormat } from '../../src/lib/constants.ts';
+import type { ExportFormat } from '../../src/lib/constants.ts';
+import { createExportFrameSnapshot } from '../../src/lib/export-filters.ts';
 
-function frame(direction: 'RX' | 'TX', data: number[], id = 1): DataFrame {
+function frame(direction: 'RX' | 'TX', data: number[] | Uint8Array, id = 1): DataFrame {
   return {
     id: `f${id}`,
     timestamp: id,
     direction,
-    data: new Uint8Array(data),
+    data: data instanceof Uint8Array ? data : new Uint8Array(data),
   };
 }
 
-function legacyDeps(overrides: {
-  savePath?: string | null;
-  exportFrames?: (frames: DataFrame[], format: ExportFormat, path: string) => Promise<void>;
-} = {}) {
-  const calls: Array<{ frames: DataFrame[]; format: ExportFormat; path: string }> = [];
-  return {
-    calls,
-    api: useExport({
-      // Legacy path only: explicitly disable the capture-file bypass so
-      // exportFrames is the path under test.
-      exportViaCaptureFile: undefined,
-      promptSave: async () => (overrides.savePath === undefined ? '/tmp/out.txt' : overrides.savePath),
-      exportFrames:
-        overrides.exportFrames ??
-        (async (frames, format, path) => {
-          calls.push({ frames, format, path });
-        }),
-    }),
-  };
+interface SessionCalls {
+  begins: Array<{
+    format: ExportFormat;
+    targetGrant: string;
+    expectedFrames: number;
+    expectedRawBytes: number;
+  }>;
+  batches: Array<{ exportId: string; frames: ExportFramePayload[] }>;
+  finishes: string[];
+  aborts: string[];
+  order: string[];
 }
 
-/** Deps that route through the capture-file bypass (the production default). */
-function f12Deps(overrides: {
-  savePath?: string | null;
-  exportViaCaptureFile?: (frames: DataFrame[], format: ExportFormat, path: string) => Promise<void>;
-} = {}) {
-  const calls: Array<{ frames: DataFrame[]; format: ExportFormat; path: string }> = [];
-  return {
-    calls,
-    api: useExport({
-      promptSave: async () => (overrides.savePath === undefined ? '/tmp/out.jsonl' : overrides.savePath),
-      exportViaCaptureFile:
-        overrides.exportViaCaptureFile ??
-        (async (frames, format, path) => {
-          calls.push({ frames, format, path });
-        }),
-    }),
+function sessionDeps(
+  overrides: {
+    targetGrant?: string | null;
+    begin?: ExportSessionClient['begin'];
+    append?: ExportSessionClient['append'];
+    finish?: ExportSessionClient['finish'];
+    abort?: ExportSessionClient['abort'];
+  } = {},
+) {
+  const calls: SessionCalls = {
+    begins: [],
+    batches: [],
+    finishes: [],
+    aborts: [],
+    order: [],
   };
-}
-
-// ---- Legacy path (exportFrames) ----
-
-test('useExport (legacy): happy path invokes exportFrames and sets isExporting', async () => {
-  const { api, calls } = legacyDeps({ savePath: '/tmp/data.txt' });
-  const frames = [frame('RX', [1, 2, 3])];
-
-  assert.equal(api.isExporting.value, false, 'not exporting initially');
-  const done = api.exportData(frames, 'txt', 'UTF8' as DisplayMode);
-  assert.equal(api.isExporting.value, true, 'isExporting flips on during the call');
-  const result = await done;
-  assert.equal(api.isExporting.value, false, 'isExporting resets after the call');
-
-  assert.deepEqual(result, { ok: true });
-  assert.equal(calls.length, 1, 'legacy export invoked exactly once');
-  assert.equal(calls[0].path, '/tmp/data.txt');
-});
-
-test('useExport (legacy): backend error is surfaced as ok:false with a message', async () => {
-  const boom = new Error('too many frames');
-  const { api } = legacyDeps({
-    exportFrames: async () => {
-      throw boom;
+  let totalFrames = 0;
+  let totalRawBytes = 0;
+  const sessionClient: ExportSessionClient = {
+    async begin(format, targetGrant, expectedFrames, expectedRawBytes) {
+      calls.begins.push({ format, targetGrant, expectedFrames, expectedRawBytes });
+      calls.order.push('begin');
+      return overrides.begin
+        ? overrides.begin(format, targetGrant, expectedFrames, expectedRawBytes)
+        : { exportId: '00000000000000000000000000000001' };
     },
-  });
+    async append(exportId, frames) {
+      calls.batches.push({ exportId, frames });
+      calls.order.push('append');
+      if (overrides.append) return overrides.append(exportId, frames);
+      totalFrames += frames.length;
+      totalRawBytes += frames.reduce((total, frame) => total + frame.data.length, 0);
+      return { totalFrames, totalRawBytes };
+    },
+    async finish(exportId) {
+      calls.finishes.push(exportId);
+      calls.order.push('finish');
+      if (overrides.finish) return overrides.finish(exportId);
+      return {
+        frames: totalFrames,
+        rawBytes: totalRawBytes,
+        outputBytes: totalRawBytes,
+        durationMs: 1,
+      };
+    },
+    async abort(exportId) {
+      calls.aborts.push(exportId);
+      calls.order.push('abort');
+      await overrides.abort?.(exportId);
+    },
+  };
+  return {
+    calls,
+    api: useExport({
+      requestTarget: async () => {
+        const token =
+          overrides.targetGrant === undefined ? 'grant-out-jsonl' : overrides.targetGrant;
+        return token ? { token, displayName: 'out.jsonl' } : null;
+      },
+      sessionClient,
+    }),
+  };
+}
 
-  const result = await api.exportData([frame('RX', [1])], 'csv', 'ASCII' as DisplayMode);
+// ---- Bounded session protocol (production default) ----
 
-  assert.equal(result.ok, false);
-  assert.ok(result.error, 'error message present');
-  assert.equal(result.error!.includes('too many frames'), true, 'error text propagated');
+test('createExportBatches enforces frame-count and byte limits with plain-array data', () => {
+  const countLimited = Array.from({ length: EXPORT_BATCH_MAX_FRAMES + 1 }, (_, index) =>
+    frame('RX', [index & 0xff], index),
+  );
+  const countBatches = [...createExportBatches(countLimited)];
+  assert.deepEqual(
+    countBatches.map((batch) => batch.length),
+    [EXPORT_BATCH_MAX_FRAMES, 1],
+  );
+  assert.equal(Array.isArray(countBatches[0][0].data), true, 'wire data is an explicit number[]');
+
+  const byteLimited = [
+    frame('RX', new Uint8Array(EXPORT_BATCH_MAX_BYTES), 1),
+    frame('TX', new Uint8Array(1), 2),
+    frame('RX', new Uint8Array(EXPORT_FRAME_MAX_BYTES), 3),
+    frame('RX', [3], 3),
+  ];
+  const byteBatches = [...createExportBatches(byteLimited)];
+  assert.deepEqual(
+    byteBatches.map((batch) => batch.length),
+    [1, 1, 1, 1],
+  );
+  assert.equal(
+    byteBatches[0].reduce((total, item) => total + item.data.length, 0),
+    EXPORT_BATCH_MAX_BYTES,
+  );
+
+  assert.throws(
+    () => [...createExportBatches([frame('RX', new Uint8Array(EXPORT_FRAME_MAX_BYTES + 1))])],
+    /exceeds the .* export limit/,
+  );
 });
 
-// ---- Capture-file path (production default) ----
-
-test('useExport: prefers exportViaCaptureFile over exportFrames when provided', async () => {
-  const { api, calls } = f12Deps({ savePath: '/tmp/out.jsonl' });
-  const frames = [frame('RX', [1, 2, 3])];
+test('useExport: streams bounded batches then finishes exactly once without aborting', async () => {
+  const { api, calls } = sessionDeps({ targetGrant: 'grant-data-jsonl' });
+  const frames = Array.from({ length: EXPORT_BATCH_MAX_FRAMES + 1 }, (_, index) =>
+    frame('RX', [index & 0xff], index),
+  );
 
   const result = await api.exportData(frames, 'jsonl', 'UTF8' as DisplayMode);
 
   assert.deepEqual(result, { ok: true });
-  assert.equal(calls.length, 1, 'capture-file path invoked');
-  assert.equal(calls[0].path, '/tmp/out.jsonl');
+  assert.deepEqual(calls.begins, [
+    {
+      format: 'jsonl',
+      targetGrant: 'grant-data-jsonl',
+      expectedFrames: EXPORT_BATCH_MAX_FRAMES + 1,
+      expectedRawBytes: EXPORT_BATCH_MAX_FRAMES + 1,
+    },
+  ]);
   assert.deepEqual(
-    calls[0].frames.map((f) => f.direction),
-    ['RX'],
-    'frames forwarded to the capture-file path',
+    calls.batches.map((call) => call.frames.length),
+    [EXPORT_BATCH_MAX_FRAMES, 1],
   );
+  assert.deepEqual(
+    calls.batches.map((call) => call.exportId),
+    ['00000000000000000000000000000001', '00000000000000000000000000000001'],
+  );
+  assert.deepEqual(calls.finishes, ['00000000000000000000000000000001']);
+  assert.deepEqual(calls.aborts, []);
+  assert.deepEqual(calls.order, ['begin', 'append', 'append', 'finish']);
 });
 
-test('useExport: a failing capture-file export surfaces as ok:false', async () => {
-  const { api } = f12Deps({
-    exportViaCaptureFile: async () => {
-      throw new Error('capture read failed');
+test('useExport: append failure aborts the opened session and skips finish', async () => {
+  let appendCalls = 0;
+  const { api, calls } = sessionDeps({
+    append: async () => {
+      appendCalls += 1;
+      if (appendCalls === 2) throw new Error('batch write failed');
+      return { totalFrames: EXPORT_BATCH_MAX_FRAMES, totalRawBytes: EXPORT_BATCH_MAX_FRAMES };
     },
   });
-  const result = await api.exportData([frame('RX', [1])], 'jsonl', 'UTF8' as DisplayMode);
+  const frames = Array.from({ length: EXPORT_BATCH_MAX_FRAMES + 1 }, (_, index) =>
+    frame('TX', [index & 0xff], index),
+  );
+
+  const result = await api.exportData(frames, 'csv', 'ASCII' as DisplayMode);
+
   assert.equal(result.ok, false);
-  assert.ok(result.error!.includes('capture read failed'), 'capture-file error propagated');
+  assert.ok(result.error!.includes('batch write failed'));
+  assert.deepEqual(calls.finishes, []);
+  assert.deepEqual(calls.aborts, ['00000000000000000000000000000001']);
+  assert.deepEqual(calls.order, ['begin', 'append', 'append', 'abort']);
+});
+
+test('useExport: finish failure still aborts and preserves the finish error', async () => {
+  const { api, calls } = sessionDeps({
+    finish: async () => {
+      throw new Error('atomic replace failed');
+    },
+    abort: async () => {
+      throw new Error('cleanup also failed');
+    },
+  });
+
+  const result = await api.exportData([frame('RX', [1])], 'bin', 'HEX' as DisplayMode);
+
+  assert.equal(result.ok, false);
+  assert.ok(result.error!.includes('atomic replace failed'));
+  assert.deepEqual(calls.finishes, ['00000000000000000000000000000001']);
+  assert.deepEqual(calls.aborts, ['00000000000000000000000000000001']);
+  assert.deepEqual(calls.order, ['begin', 'append', 'finish', 'abort']);
+});
+
+test('useExport: oversized frame is rejected before requesting a target', async () => {
+  const { api, calls } = sessionDeps();
+  const result = await api.exportData(
+    [frame('RX', new Uint8Array(EXPORT_FRAME_MAX_BYTES + 1))],
+    'bin',
+    'HEX' as DisplayMode,
+  );
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(calls.batches, []);
+  assert.deepEqual(calls.finishes, []);
+  assert.deepEqual(calls.aborts, []);
+  assert.deepEqual(calls.begins, []);
+});
+
+test('useExport: backend stats drive progress and cancellation aborts before finish', async () => {
+  const setup = sessionDeps({
+    append: async (_exportId, frames) => {
+      api.cancelExport();
+      return {
+        totalFrames: frames.length,
+        totalRawBytes: frames.reduce((total, item) => total + item.data.length, 0),
+      };
+    },
+  });
+  const api = setup.api;
+  const result = await api.exportData(
+    Array.from({ length: EXPORT_BATCH_MAX_FRAMES + 1 }, (_, index) =>
+      frame('RX', [index & 0xff], index),
+    ),
+    'jsonl',
+    'HEX',
+  );
+
+  assert.deepEqual(result, { ok: false, cancelled: true });
+  assert.equal(api.progress.value.completedFrames, EXPORT_BATCH_MAX_FRAMES);
+  assert.equal(api.progress.value.phase, 'cancelled');
+  assert.deepEqual(setup.calls.finishes, []);
+  assert.deepEqual(setup.calls.aborts, ['00000000000000000000000000000001']);
+});
+
+test('useExport: only the dialog-filtered frame ids cross the append boundary', async () => {
+  const { api, calls } = sessionDeps();
+  const frames = [frame('RX', [1], 1), frame('TX', [2, 3], 2), frame('RX', [4], 3)];
+  const snapshot = createExportFrameSnapshot(frames, {
+    direction: 'TX',
+    timePreset: 'all',
+    customStartMs: null,
+    customEndMs: null,
+  });
+  const result = await api.exportData(snapshot, 'csv', 'HEX');
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(
+    calls.batches.flatMap((batch) => batch.frames.map((item) => item.id)),
+    ['f2'],
+  );
+  assert.equal(calls.begins[0].expectedFrames, 1);
+  assert.equal(calls.begins[0].expectedRawBytes, 2);
 });
 
 // ---- Shared behavior ----
 
-test('useExport: cancelled dialog (null path) returns ok:false with no export call', async () => {
-  const { api, calls } = legacyDeps({ savePath: null });
+test('useExport: cancelled dialog returns ok:false with no export call', async () => {
+  const { api, calls } = sessionDeps({ targetGrant: null });
   const result = await api.exportData([frame('RX', [1])], 'txt', 'HEX' as DisplayMode);
 
-  assert.deepEqual(result, { ok: false }, 'cancel yields ok:false without an error');
-  assert.equal(calls.length, 0, 'no export performed on cancel');
+  assert.deepEqual(
+    result,
+    { ok: false, cancelled: true },
+    'cancel yields an explicit non-error cancellation',
+  );
+  assert.deepEqual(calls.order, [], 'no export session is opened on dialog cancel');
 });
 
-test('useExport: choice drives the requested save path filter via promptSave', async () => {
-  const prompted: ExportChoice[] = [];
-  const { api } = legacyDeps({});
-  // Override promptSave to record the choice (the legacy helper already stubs it;
-  // re-create with a recording promptSave for this assertion).
+test('useExport: choice drives the backend save-target purpose', async () => {
+  const purposes: string[] = [];
   const api2 = useExport({
-    exportViaCaptureFile: undefined,
-    promptSave: async (choice: ExportChoice) => {
-      prompted.push(choice);
-      return '/x.bin';
+    requestTarget: async (purpose) => {
+      purposes.push(purpose);
+      return { token: 'grant-bin', displayName: 'x.bin' };
     },
-    exportFrames: async () => {},
+    sessionClient: {
+      begin: async () => ({ exportId: '00000000000000000000000000000001' }),
+      append: async () => ({ totalFrames: 1, totalRawBytes: 1 }),
+      finish: async () => ({ frames: 1, rawBytes: 1, outputBytes: 1, durationMs: 1 }),
+      abort: async () => {},
+    },
   });
   await api2.exportData([frame('TX', [0xaa])], 'bin', 'HEX' as DisplayMode);
 
-  assert.deepEqual(prompted, ['bin'], 'the chosen ExportChoice is forwarded to promptSave');
+  assert.deepEqual(purposes, ['export-bin']);
+});
+
+test('useExport: production save flow passes only the opaque grant to begin', async () => {
+  const begins: Array<{
+    format: ExportFormat;
+    targetGrant: string;
+    expectedFrames: number;
+    expectedRawBytes: number;
+  }> = [];
+  const requested: Array<{ purpose: string; suggestedName: string }> = [];
+  const api = useExport({
+    requestTarget: async (purpose, suggestedName) => {
+      requested.push({ purpose, suggestedName });
+      return { token: 'opaque-export-grant', displayName: 'capture.csv' };
+    },
+    sessionClient: {
+      begin: async (format, targetGrant, expectedFrames, expectedRawBytes) => {
+        begins.push({ format, targetGrant, expectedFrames, expectedRawBytes });
+        return { exportId: '00000000000000000000000000000001' };
+      },
+      append: async () => ({ totalFrames: 1, totalRawBytes: 1 }),
+      finish: async () => ({ frames: 1, rawBytes: 1, outputBytes: 1, durationMs: 1 }),
+      abort: async () => {},
+    },
+  });
+
+  const result = await api.exportData([frame('RX', [1])], 'csv', 'HEX' as DisplayMode);
+  assert.deepEqual(result, { ok: true });
+  assert.equal(requested[0].purpose, 'export-csv');
+  assert.match(requested[0].suggestedName, /^bbcom-export-\d+\.csv$/);
+  assert.deepEqual(begins, [
+    {
+      format: 'csv',
+      targetGrant: 'opaque-export-grant',
+      expectedFrames: 1,
+      expectedRawBytes: 1,
+    },
+  ]);
+  assert.notEqual(begins[0].targetGrant, 'C:\\Users\\me\\capture.csv');
+});
+
+test('savePurposeForFormat covers every export wire format', () => {
+  assert.deepEqual(
+    ['txt-hex', 'txt-ascii', 'csv', 'jsonl', 'bin'].map((format) =>
+      savePurposeForFormat(format as ExportFormat),
+    ),
+    ['export-txt-hex', 'export-txt-ascii', 'export-csv', 'export-jsonl', 'export-bin'],
+  );
 });
 
 test('useExport: isExporting resets even when export throws', async () => {
-  const { api } = legacyDeps({
-    exportFrames: async () => {
+  const { api } = sessionDeps({
+    begin: async () => {
       throw new Error('io');
     },
   });
 
-  await api.exportData([frame('RX', [1])], 'jsonl', 'UTF8' as DisplayMode);
+  const result = await api.exportData([frame('RX', [1])], 'jsonl', 'UTF8' as DisplayMode);
   await nextTick();
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? '', /io/);
   assert.equal(api.isExporting.value, false, 'isExporting cleared in the finally block');
+});
+
+test('useExport: limits are enforced before a target dialog, including empty selections', () => {
+  assert.throws(() => summarizeExportFrames([]), /No frames match/);
+
+  function* tooManyFrames(): Generator<DataFrame> {
+    const empty = frame('RX', [], 1);
+    for (let index = 0; index <= EXPORT_MAX_FRAMES; index += 1) yield empty;
+  }
+  assert.throws(() => summarizeExportFrames(tooManyFrames()), /more than/);
+
+  function* oversizedTotal(): Generator<DataFrame> {
+    const maximalFrame = {
+      id: 'maximal-frame',
+      direction: 'RX',
+      timestamp: 1,
+      data: { length: EXPORT_FRAME_MAX_BYTES },
+    } as unknown as DataFrame;
+    for (
+      let index = 0;
+      index <= Math.floor(EXPORT_MAX_BYTES / EXPORT_FRAME_MAX_BYTES);
+      index += 1
+    ) {
+      yield maximalFrame;
+    }
+  }
+  assert.throws(() => summarizeExportFrames(oversizedTotal()), /data exceeds/);
+});
+
+test('useExport: cancellation while the dialog is open keeps progress stable and revokes the grant', async () => {
+  let resolveTarget!: (target: { token: string; displayName: string }) => void;
+  const target = new Promise<{ token: string; displayName: string }>((resolve) => {
+    resolveTarget = resolve;
+  });
+  const revoked: string[] = [];
+  const api = useExport({
+    requestTarget: async () => target,
+    revokeTarget: async (token) => {
+      revoked.push(token);
+    },
+    sessionClient: {
+      begin: async () => {
+        throw new Error('must not start after dialog cancellation');
+      },
+      append: async () => ({ totalFrames: 0, totalRawBytes: 0 }),
+      finish: async () => ({ frames: 0, rawBytes: 0, outputBytes: 0, durationMs: 0 }),
+      abort: async () => {},
+    },
+  });
+
+  api.cancelExport();
+  const exporting = api.exportData([frame('RX', [1])], 'bin', 'HEX');
+  assert.equal(api.progress.value.phase, 'selecting-target');
+  api.resetExportProgress();
+  assert.equal(
+    api.progress.value.phase,
+    'selecting-target',
+    'reset is ignored while work is active',
+  );
+  api.cancelExport();
+  resolveTarget({ token: 'grant-to-revoke', displayName: 'capture.bin' });
+
+  assert.deepEqual(await exporting, { ok: false, cancelled: true });
+  assert.deepEqual(revoked, ['grant-to-revoke']);
+  assert.equal(api.progress.value.phase, 'cancelled');
+  api.resetExportProgress();
+  assert.equal(api.progress.value.phase, 'idle');
+});
+
+test('createExportBatches emits an oversized single frame with and without a preceding batch', () => {
+  const oversizedForBatch = new Uint8Array(EXPORT_BATCH_MAX_BYTES + 1);
+  assert.deepEqual(
+    [...createExportBatches([frame('RX', oversizedForBatch, 1)])].map((batch) => batch.length),
+    [1],
+  );
+  assert.deepEqual(
+    [
+      ...createExportBatches([
+        frame('RX', [1], 1),
+        frame('TX', oversizedForBatch, 2),
+        frame('RX', [3], 3),
+      ]),
+    ].map((batch) => batch.map((entry) => entry.id)),
+    [['f1'], ['f2'], ['f3']],
+  );
 });

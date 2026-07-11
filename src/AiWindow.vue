@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider :theme="naiveTheme" :theme-overrides="activeOverrides">
+  <n-config-provider :theme-overrides="activeOverrides">
     <n-message-provider>
       <div ref="contentEl" class="ai-window-content">
         <AiPanel />
@@ -10,7 +10,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, onErrorCaptured, ref, watch } from 'vue';
-import { darkTheme, NConfigProvider, NMessageProvider } from 'naive-ui';
+import { NConfigProvider, NMessageProvider } from 'naive-ui';
 import { emit } from '@tauri-apps/api/event';
 import { resizeAiWindow } from './lib/ipc';
 import AiPanel from './components/ai/AiPanel.vue';
@@ -18,7 +18,8 @@ import { useAppStore } from './stores/app';
 import { lightThemeOverrides, themeOverrides } from './styles/naive-theme';
 
 const appStore = useAppStore();
-const naiveTheme = computed(() => (appStore.theme === 'light' ? null : darkTheme));
+// Both palettes are fully expressed as local overrides; loading naive-ui's
+// aggregate dark theme would otherwise emit unused component themes.
 const activeOverrides = computed(() =>
   appStore.theme === 'light' ? lightThemeOverrides : themeOverrides,
 );

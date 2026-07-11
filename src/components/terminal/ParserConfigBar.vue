@@ -10,7 +10,7 @@
       {{ t('parser.title') }}
     </span>
     <div class="pp-config">
-      <n-select
+      <AppSelect
         :value="presetId"
         :options="presetOptions"
         :placeholder="t('parser.presetPlaceholder')"
@@ -18,7 +18,7 @@
         style="width: 150px"
         @update:value="(v) => $emit('apply-preset', v)"
       />
-      <n-select
+      <AppSelect
         :value="kind"
         @update:value="(v) => $emit('update:kind', v)"
         :options="kindOptions"
@@ -63,7 +63,7 @@
         >
           <template #suffix>off</template>
         </n-input-number>
-        <n-select
+        <AppSelect
           :value="lenSize"
           @update:value="(v) => $emit('update:lenSize', v)"
           :options="lenSizeOptions"
@@ -95,8 +95,9 @@
 </template>
 
 <script setup lang="ts">
-import { NCheckbox, NInput, NInputNumber, NSelect } from 'naive-ui';
-import { Binary, X } from 'lucide-vue-next';
+import { NCheckbox, NInput, NInputNumber } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
+import { Binary, X } from '@lucide/vue';
 import { t } from '../../lib/i18n';
 
 defineProps<{

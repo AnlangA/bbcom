@@ -51,26 +51,35 @@
     </div>
 
     <!-- Register rows -->
-    <div class="mb-list scrollbar-thin">
+    <div ref="registerListRef" class="mb-list scrollbar-thin">
       <div v-if="registers.length === 0" class="mb-empty">{{ t('modbus.empty') }}</div>
-      <ModbusRegisterRow
-        v-for="(reg, idx) in registers"
-        :key="reg.id"
-        :reg="reg"
-        :session-id="sessionId"
-        :busy="busy"
-        :is-connected="isConnected"
-        :flashed="flashRowId === reg.id"
-        :alt="idx % 2 === 1"
-        :fc-options="fcOptions"
-        :channel-options="channelOptions"
-        :type-options="typeOptions"
-        :bit-type-options="bitTypeOptions"
-        @plot="emit('plotInWaveform', reg)"
-        @read="onReadRow(reg)"
-        @send="handleSendRow(reg)"
-        @remove="remove(reg.id)"
-      />
+      <div v-else class="mb-list-window" :style="{ height: `${registerListSize}px` }">
+        <ModbusRegisterRow
+          v-for="row in virtualRegisterRows"
+          :key="row.reg.id"
+          class="mb-virtual-row"
+          :style="{
+            height: `${row.size}px`,
+            transform: `translateY(${row.start}px)`,
+          }"
+          :reg="row.reg"
+          :session-id="sessionId"
+          :busy="busy"
+          :is-connected="isConnected"
+          :flashed="flashRowId === row.reg.id"
+          :alt="row.index % 2 === 1"
+          :value-draft="valueDrafts[row.reg.id]"
+          :fc-options="fcOptions"
+          :channel-options="channelOptions"
+          :type-options="typeOptions"
+          :bit-type-options="bitTypeOptions"
+          @plot="emit('plotInWaveform', row.reg)"
+          @read="onReadRow(row.reg)"
+          @send="handleSendRow(row.reg)"
+          @remove="remove(row.reg.id)"
+          @update-value-draft="updateValueDraft(row.reg.id, $event)"
+        />
+      </div>
     </div>
 
     <!-- Add-register form: shares the table's grid columns so each field sits
@@ -84,7 +93,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue';
+import { computed, onUnmounted, ref, shallowReactive } from 'vue';
+import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useMessage } from 'naive-ui';
 import { useSessionStore } from '../../stores/sessions';
 import {
@@ -98,6 +108,11 @@ import {
   modbusWriteRowValues,
   normalizeModbusDataQuantity,
 } from '../../lib/modbus';
+import {
+  boundModbusVirtualItems,
+  MODBUS_REGISTER_OVERSCAN,
+  MODBUS_REGISTER_ROW_HEIGHT,
+} from '../../lib/modbus-virtual-list';
 import { t } from '../../lib/i18n';
 import type {
   ModbusFunctionCode,
@@ -144,6 +159,38 @@ const emit = defineEmits<{
 const sessionStore = useSessionStore();
 const message = useMessage();
 const fileInput = ref<HTMLInputElement | null>(null);
+const registerListRef = ref<HTMLDivElement | null>(null);
+
+const registerVirtualizer = useVirtualizer(
+  computed(() => ({
+    count: props.registers.length,
+    getScrollElement: () => registerListRef.value,
+    estimateSize: () => MODBUS_REGISTER_ROW_HEIGHT,
+    overscan: MODBUS_REGISTER_OVERSCAN,
+    getItemKey: (index: number) => props.registers[index]?.id ?? index,
+  })),
+);
+
+const registerListSize = computed(() => registerVirtualizer.value.getTotalSize());
+const virtualRegisterRows = computed(() =>
+  boundModbusVirtualItems(registerVirtualizer.value.getVirtualItems()).flatMap((item) => {
+    const reg = props.registers[item.index];
+    return reg ? [{ reg, index: item.index, start: item.start, size: item.size }] : [];
+  }),
+);
+
+// Raw input is intentionally retained above the recycled row components. An
+// invalid/intermediate edit (for example a leading minus sign) must survive a
+// scroll out of the virtual window just as it did when every row stayed mounted.
+const valueDrafts = shallowReactive<Record<string, string>>({});
+
+function updateValueDraft(regId: string, value: string | undefined) {
+  if (value === undefined) {
+    delete valueDrafts[regId];
+  } else {
+    valueDrafts[regId] = value;
+  }
+}
 
 // Per-row send-success flash. Mirrors SendPanel's send-flash sweep so a write
 // that landed gives the same immediate, non-modal confirmation as a serial TX.
@@ -250,6 +297,7 @@ async function handleSendRow(reg: ModbusRegister) {
 }
 
 function remove(regId: string) {
+  delete valueDrafts[regId];
   sessionStore.removeModbusRegister(props.sessionId, regId);
 }
 
@@ -361,6 +409,18 @@ function onFilePicked(e: Event) {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
+}
+
+.mb-list-window {
+  position: relative;
+  width: 100%;
+}
+
+.mb-virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
 }
 
 .mb-empty {

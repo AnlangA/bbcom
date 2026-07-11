@@ -26,35 +26,34 @@ parsing, Modbus master tooling, waveform plotting, export, and an optional
 Z.ai-powered command/log assistant in one application.
 
 The frontend owns session state and protocol engines so high-volume serial data
-can stay responsive in the webview. The Rust side stays deliberately small:
-Tauri commands, filesystem/export work, checksums, updater integration, and AI
-client calls.
+can stay responsive in the webview. Rust owns privileged filesystem/export
+sessions, checksums, OS credential storage, and bounded AI client calls.
 
 ## Highlights
 
 - **Multi-session serial console** with independent connection state, TX/RX
   counters, pause/resume, search, direction filters, and restored recent
   captures.
-- **High-throughput rendering path** using an O(1) RX queue, batched
-  `requestAnimationFrame` flushes, virtual scrolling, and explicit frame
-  reactivity.
+- **High-throughput rendering path** using a bounded O(1) RX queue, threshold/
+  timer-based runtime drains, virtual scrolling, and per-session frame
+  invalidation.
 - **Modbus master** for RTU and raw-PDU transports, FC01-FC06/FC10 operations,
   contiguous read/write batching, periodic read/write loops, replay sources,
   and register-to-waveform bindings.
 - **Protocol tools** for delimiter, fixed-length, and length-field frame
-  parsing, plus `.bbrec` raw stream record/replay.
+  parsing with bounded resynchronization and absolute stream offsets.
 - **Waveform plotting** for numeric RX streams or Modbus register samples, with
   channel visibility, statistics, autoscale, pause, clear, and CSV export.
-- **Automation helpers** including macros with control flow, RX-triggered
+- **Automation helpers** including ordered send/delay macros, RX-triggered
   responses, quick commands, send history, highlights, connection presets,
   DTR/RTS control, and a 250 ms BREAK pulse.
-- **Export and logging** to TXT, CSV, JSONL, and BIN; large exports use a
-  capture-file path so big frame sets do not cross IPC as one giant argument.
+- **Export and logging** to TXT, CSV, JSONL, and BIN through bounded backend
+  sessions, opaque save grants, incremental batches, and atomic replacement.
 - **AI assistant** for Linux/BusyBox command generation and serial-log analysis,
-  with model validation, request cooldown, risk classification, and streaming
-  response assembly.
+  with model validation, request limits/cancellation, role-separated prompts,
+  and risk classification.
 - **Desktop polish** with dark/light themes, English/Chinese UI catalogs,
-  persisted settings, keyboard shortcuts, and optional update checks.
+  persisted settings, keyboard shortcuts, and signed installer releases.
 
 ## Screenshots
 
@@ -86,8 +85,8 @@ client calls.
   and RTS.
 - Hot-plug port refresh, reconnect attempts, millisecond timestamps, per-frame
   and merged views.
-- Cyclic sending, quick commands, send history, and large-write chunking with
-  retry/backoff.
+- Cyclic sending, quick commands, send history, and serialized 4 KiB write
+  chunks without unsafe automatic retransmission after partial failure.
 - Trigger rules that match text or HEX in RX and send a response with cooldown.
 - Keyword highlights scoped to All/TX/RX with text or HEX matching.
 
@@ -95,10 +94,9 @@ client calls.
 
 - Parser presets for CRLF, NMEA 0183, AT/modem, SCPI, NUL-delimited binary, and
   length-prefixed frames.
-- `.bbrec` capture/replay for raw RX/TX byte streams.
 - Modbus `.bbreg` import/export for register tables and replay data sources.
 - Export filters by time range and direction.
-- Checksum / CRC-8 / CRC-16 / CRC-32 calculations.
+- Checksum, CRC-8, CRC-16/X-25, CRC-16/Modbus, and CRC-32 calculations.
 
 ### AI Workflows
 
@@ -107,30 +105,42 @@ client calls.
   classification.
 - Serial-log Q&A scoped to the current session context.
 - Z.ai model registry shared between frontend validation and Rust dispatch.
-- Stream accumulator for incremental SSE responses and abort handling.
+- Explicit cancellation, 60-second timeout, bounded context, and at most two
+  concurrent requests without a hidden queue.
 
 ## Tech Stack
 
-| Layer | Technology |
-| --- | --- |
-| Desktop | [Tauri v2](https://v2.tauri.app/) |
-| Backend | [Rust](https://www.rust-lang.org/) 2024, tokio, serde, thiserror, crc, zai-rs |
-| Frontend | [Vue 3](https://vuejs.org/) Composition API + [TypeScript](https://www.typescriptlang.org/) |
-| UI | [Naive UI](https://www.naiveui.com/), lucide-vue-next |
-| State | [Pinia](https://pinia.vuejs.org/) |
-| Build | [Vite 6](https://vite.dev/), pnpm |
-| Serial | tauri-plugin-serialplugin |
-| Persistence | localStorage snapshots + Tauri Store for local secrets |
-| Test/Quality | node:test, c8, ESLint, Prettier, madge, cargo test, clippy, criterion |
+| Layer        | Technology                                                                                          |
+| ------------ | --------------------------------------------------------------------------------------------------- |
+| Desktop      | [Tauri v2](https://v2.tauri.app/)                                                                   |
+| Backend      | [Rust](https://www.rust-lang.org/) 2024, tokio, serde, thiserror, crc, zai-rs                       |
+| Frontend     | [Vue 3](https://vuejs.org/) Composition API + [TypeScript](https://www.typescriptlang.org/)         |
+| UI           | [Naive UI](https://www.naiveui.com/), @lucide/vue                                                   |
+| State        | [Pinia](https://pinia.vuejs.org/)                                                                   |
+| Build        | [Vite 6](https://vite.dev/), pnpm                                                                   |
+| Serial       | tauri-plugin-serialplugin                                                                           |
+| Persistence  | bounded localStorage snapshots + OS credential store for API keys                                   |
+| Test/Quality | Vitest, V8 coverage, WebdriverIO/Jasmine, ESLint, Prettier, cargo test, clippy, llvm-cov, criterion |
 
 ## Getting Started
 
 ### Prerequisites
 
-- Rust stable 1.85+ (edition 2024)
-- Node.js 22+
-- pnpm 11+
+- Rust 1.88.0 (edition 2024)
+- Node.js 22.23.1
+- pnpm 11.5.3
+- `cargo-llvm-cov` 0.8.7 and `cargo-audit` 0.22.2
+- ShellCheck available on `PATH`
 - OS permission to access serial ports
+
+Install the local quality-gate tools before making a commit:
+
+```bash
+cargo install cargo-llvm-cov --version 0.8.7 --locked
+cargo install cargo-audit --version 0.22.2 --locked
+# ShellCheck: macOS `brew install shellcheck`; Ubuntu/Debian
+# `sudo apt-get install shellcheck`; Windows `choco install shellcheck`.
+```
 
 On Linux you may need to add your user to the serial group, for example:
 
@@ -169,26 +179,27 @@ chmod +x scripts/dev.sh
 
 ## Scripts
 
-| Command | Description |
-| --- | --- |
-| `pnpm dev` | Start the Vite dev server |
-| `pnpm build` | Type-check the Vue app and build the frontend |
-| `pnpm preview` | Preview the frontend build |
-| `pnpm tauri:dev` | Run the Tauri desktop app with frontend HMR |
-| `pnpm tauri:build` | Build the desktop application bundle |
-| `pnpm format` | Format frontend and Rust code |
-| `pnpm format:check` | Check frontend and Rust formatting |
-| `pnpm lint` | Run ESLint on `src/` |
-| `pnpm test:frontend` | Run frontend unit tests |
-| `pnpm test:rust` | Run Rust unit tests |
-| `pnpm test` | Run frontend and Rust tests |
-| `pnpm coverage:frontend` | Run frontend tests under the `.c8rc.json` coverage gate |
-| `pnpm coverage:lib` | Enforce per-file line coverage for framework-free `src/lib/` modules |
-| `pnpm bench:frontend` | Run frontend hot-path benchmarks |
+| Command                     | Description                                   |
+| --------------------------- | --------------------------------------------- |
+| `pnpm dev`                  | Start the Vite dev server                     |
+| `pnpm build`                | Type-check the Vue app and build the frontend |
+| `pnpm preview`              | Preview the frontend build                    |
+| `pnpm tauri:dev`            | Run the Tauri desktop app with frontend HMR   |
+| `pnpm tauri:build`          | Build the desktop application bundle          |
+| `pnpm format`               | Format frontend and Rust code                 |
+| `pnpm format:check`         | Check frontend and Rust formatting            |
+| `pnpm lint`                 | Run ESLint on `src/`                          |
+| `pnpm test:frontend`        | Run frontend unit tests                       |
+| `pnpm test:rust`            | Run Rust unit tests                           |
+| `pnpm test`                 | Run frontend and Rust tests                   |
+| `pnpm coverage:frontend`    | Run the Vitest V8 global coverage gate        |
+| `pnpm coverage:p0`          | Run strict coverage gates for P0 data paths   |
+| `pnpm bench:frontend`       | Run frontend hot-path benchmarks              |
 | `pnpm bench:frontend:write` | Refresh the local frontend benchmark baseline |
-| `pnpm bench:rust` | Run Rust criterion benchmarks |
-| `pnpm cycles` | Fail on TypeScript import cycles |
-| `pnpm check` | Run lint, format check, build, and unit tests |
+| `pnpm bench:rust`           | Run Rust criterion benchmarks                 |
+| `pnpm cycles`               | Fail on TypeScript import cycles              |
+| `pnpm check`                | Run lint, format check, build, and unit tests |
+| `pnpm precommit`            | Run the complete mandatory local commit gate  |
 
 ## Project Map
 
@@ -211,14 +222,15 @@ bbcom/
 │   ├── App.vue                  # Main window entry
 │   └── AiWindow.vue             # Floating AI window entry
 ├── src-tauri/                   # Rust backend
-│   ├── src/commands/            # Tauri commands: ai, checksum, export, log, updater, window
+│   ├── src/commands/            # Tauri commands: ai, checksum, export/log sessions, window
 │   ├── src/export/              # TXT/CSV/JSONL/BIN formatters
 │   ├── src/models/              # IPC data and app error models
 │   ├── src/utils/               # HEX, timestamp, checksum helpers
 │   └── benches/hot_paths.rs     # Criterion benchmarks
-├── tests/frontend/              # node:test unit tests and frontend benchmarks
+├── tests/frontend/              # Vitest unit tests and the standalone Node benchmark
 ├── images/                      # README screenshots
-├── .github/workflows/           # CI and release workflows
+├── .github/workflows/           # Tag-triggered release workflow
+├── .githooks/pre-commit         # Versioned local quality gate
 ├── ARCHITECTURE.md              # Maintainer architecture guide
 └── scripts/dev.sh               # Development helper
 ```
@@ -228,22 +240,29 @@ verification guidance, read [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Verification
 
-CI runs frontend lint/format/build/test/coverage/benchmark/cycle gates plus Rust
-format, clippy, and tests. Rust coverage is collected as a best-effort tarpaulin
-report in CI, while frontend coverage gates are enforced through c8.
+The versioned Git pre-commit hook enforces frontend lint/format/build/test,
+global and P0 coverage, browser-mock E2E, architecture, audit, Rust
+fmt/Clippy/tests/llvm-cov, and the base/head frontend benchmark comparison.
+It uses the repository-pinned Node, pnpm, Rust, `cargo-llvm-cov`, and
+`cargo-audit` versions. To ensure it validates exactly the index Git will
+commit, it rejects unstaged or non-ignored untracked files. Do not use
+`--no-verify` to bypass it.
 
-Before opening a pull request, run:
+GitHub Actions is intentionally release-only: it runs after an exact
+`vX.Y.Z` tag and performs signed, three-platform release assembly and smoke
+verification rather than repeating local PR checks.
+
+Tags matching `vX.Y.Z` produce a draft release containing signed Windows NSIS
+and notarized macOS arm64 DMG installers, Linux AppImage/deb packages,
+SHA-256 checksums, a CycloneDX SBOM, license inventories, Sigstore bundles, and
+GitHub build provenance. No automatic updater is shipped in v0.5.0.
+
+`pnpm install` installs the hook automatically. Before opening a pull request,
+run the exact same gate manually if it has not already run during commit:
 
 ```bash
-pnpm check
-pnpm cycles
-pnpm coverage:frontend
-pnpm coverage:lib
+pnpm precommit
 ```
-
-Use `pnpm bench:frontend` and `pnpm bench:rust` when changing hot paths such as
-formatting, RX queue handling, session frame storage, export, checksums, or
-Modbus batching.
 
 ## FAQ
 

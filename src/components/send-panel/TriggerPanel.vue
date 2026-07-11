@@ -109,7 +109,7 @@
 <script setup lang="ts">
 import { computed, ref, shallowReactive } from 'vue';
 import { NInput, NButton, NButtonGroup, NCheckbox, NInputNumber } from 'naive-ui';
-import { ArrowRight, Pencil, Plus, X } from 'lucide-vue-next';
+import { ArrowRight, Pencil, Plus, X } from '@lucide/vue';
 import { useSessionStore } from '../../stores/sessions';
 import { t } from '../../lib/i18n';
 import {

@@ -10,16 +10,12 @@
       <span class="direction-badge" :class="directionClass">{{ frame.direction }}</span>
     </span>
     <span v-if="showTimestamp" class="col-time">{{ timestamp }}</span>
-    <span
-      v-if="useHtml"
-      class="col-data data ansi-data"
-      v-html="formatted"
-      :title="formatted.length > 240 ? formatted.slice(0, 240) + '…' : undefined"
-    ></span>
-    <span
-      v-else
-      class="col-data data"
-      :title="formatted.length > 240 ? formatted.slice(0, 240) + '…' : undefined"
+    <span v-if="useHtml" class="col-data data ansi-data" :title="dataTitle">
+      <span v-if="omittedLabel" class="data-omitted">{{ omittedLabel }}</span>
+      <span v-html="formatted"></span>
+    </span>
+    <span v-else class="col-data data" :title="dataTitle"
+      ><span v-if="omittedLabel" class="data-omitted">{{ omittedLabel }}</span
       >{{ formatted }}</span
     >
     <span class="col-mode">{{ displayLabel }}</span>
@@ -29,6 +25,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { DataFrame } from '../../types';
+import { formatBytes } from '../../lib/format';
 
 const props = defineProps<{
   frame: DataFrame;
@@ -47,6 +44,15 @@ const emit = defineEmits<{
 }>();
 
 const directionClass = computed(() => props.frame.direction.toLowerCase());
+const omittedLabel = computed(() =>
+  props.frame.omittedBytes ? `… ${formatBytes(props.frame.omittedBytes)} omitted · ` : '',
+);
+const dataTitle = computed(() => {
+  const preview = props.formatted.length > 240 ? props.formatted.slice(0, 240) + '…' : undefined;
+  if (!props.frame.omittedBytes) return preview;
+  const omitted = `${props.frame.omittedBytes.toLocaleString()} bytes omitted; `;
+  return omitted + (preview ?? props.formatted);
+});
 
 function onContextMenu(ev: MouseEvent) {
   emit('contextmenu', ev, props.frame);
@@ -179,6 +185,12 @@ function onContextMenu(ev: MouseEvent) {
   white-space: nowrap;
   word-break: normal;
   font-variant-numeric: normal;
+}
+
+.data-omitted {
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0;
 }
 
 .col-mode {

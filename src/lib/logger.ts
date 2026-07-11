@@ -14,7 +14,10 @@ type Sink = (...args: unknown[]) => void;
 
 // import.meta.env is Vite-injected; guard for non-Vite (e.g. node test) contexts.
 const env = (import.meta as unknown as { env?: Record<string, unknown> }).env ?? {};
-const isDev = env.DEV === true || env.MODE === 'development';
+// Vitest intentionally exposes Vite's development flag. Test diagnostics must
+// stay deterministic and be asserted explicitly, so it is not a development
+// runtime for logger purposes.
+const isDev = (env.DEV === true || env.MODE === 'development') && env.MODE !== 'test';
 
 function safe(fn: Sink): Sink {
   return (...args: unknown[]) => {

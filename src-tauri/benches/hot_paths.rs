@@ -5,10 +5,10 @@
 //! These exist to lock in the current performance and catch regressions — the
 //! values are already fast, the benches make sure they stay that way.
 
-use bbcom::export::formatter;
 use bbcom::models::data_frame::{DataFrame, Direction};
 use bbcom::utils::{checksum, hex};
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use std::hint::black_box;
 
 fn bench_data(size: usize) -> Vec<u8> {
     let mut v = Vec::with_capacity(size);
@@ -88,11 +88,6 @@ fn bench_export(c: &mut Criterion) {
             });
     }
     g.finish();
-
-    // Sanity: ensure the real (async, file-writing) export path still compiles
-    // and produces output. Not benchmarked (disk noise) but referenced so the
-    // public API can't drift unnoticed.
-    let _ = formatter::export;
 }
 
 criterion_group!(benches, bench_checksums, bench_hex_format, bench_export);

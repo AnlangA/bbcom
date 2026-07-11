@@ -36,7 +36,7 @@
 </template>
 
 <script setup lang="ts">
-import { Copy, FileText, Binary } from 'lucide-vue-next';
+import { Copy, FileText, Binary } from '@lucide/vue';
 import { t } from '../../lib/i18n';
 
 export interface ParserDetailRow {

@@ -1,6 +1,20 @@
 import type { DataFrame, SendHistoryEntry, SerialSession } from '../types';
 
 export const SESSION_FRAME_TRIM_THRESHOLD = 500;
+export const MAX_SESSION_FRAME_BYTES = 64 * 1024 * 1024;
+export const MAX_GLOBAL_FRAME_BYTES = 256 * 1024 * 1024;
+
+export interface FrameBufferTrimResult {
+  retainedBytes: number;
+  droppedBytes: number;
+  droppedFrames: number;
+}
+
+export interface FrameBufferLimits {
+  trimThreshold?: number;
+  maxBytes?: number;
+  currentBytes?: number;
+}
 
 export function trimFrameBuffer<T>(
   frames: T[],
@@ -28,11 +42,34 @@ export function appendFrameToSession(
   session: SerialSession,
   frame: DataFrame,
   maxFrames: number,
-  trimThreshold = SESSION_FRAME_TRIM_THRESHOLD,
-): void {
+  limits: FrameBufferLimits = {},
+): FrameBufferTrimResult {
   const target = session.capturePaused ? session.pausedFrames : session.frames;
   target.push(frame);
-  trimFrameBuffer(target, maxFrames, trimThreshold);
+
+  const trimThreshold = limits.trimThreshold ?? SESSION_FRAME_TRIM_THRESHOLD;
+  let retainedBytes =
+    (limits.currentBytes ?? frameBuffersByteLength(session) - frame.data.length) +
+    frame.data.length;
+  let droppedBytes = 0;
+  let droppedFrames = 0;
+
+  if (target.length > maxFrames + trimThreshold) {
+    const removed = target.splice(0, target.length - maxFrames);
+    for (const dropped of removed) droppedBytes += dropped.data.length;
+    droppedFrames += removed.length;
+    retainedBytes -= droppedBytes;
+  }
+
+  const maxBytes = limits.maxBytes ?? MAX_SESSION_FRAME_BYTES;
+  while (retainedBytes > maxBytes) {
+    const buffer = oldestSessionBuffer(session);
+    const dropped = buffer?.shift();
+    if (!dropped) break;
+    retainedBytes -= dropped.data.length;
+    droppedBytes += dropped.data.length;
+    droppedFrames += 1;
+  }
 
   if (frame.direction === 'TX') {
     session.txBytes += frame.data.length;
@@ -41,17 +78,106 @@ export function appendFrameToSession(
     session.rxBytes += frame.data.length;
     session.rxFrames += 1;
   }
+
+  return { retainedBytes, droppedBytes, droppedFrames };
 }
 
 export function flushPausedFramesToLive(
   session: SerialSession,
   maxFrames: number,
-  trimThreshold = SESSION_FRAME_TRIM_THRESHOLD,
-): void {
-  if (session.pausedFrames.length === 0) return;
+  limits: number | FrameBufferLimits = {},
+): FrameBufferTrimResult {
+  const normalizedLimits = typeof limits === 'number' ? { trimThreshold: limits } : limits;
+  const currentBytes = normalizedLimits.currentBytes ?? frameBuffersByteLength(session);
+  if (session.pausedFrames.length === 0) {
+    return { retainedBytes: currentBytes, droppedBytes: 0, droppedFrames: 0 };
+  }
   for (const held of session.pausedFrames) session.frames.push(held);
   session.pausedFrames = [];
-  trimFrameBuffer(session.frames, maxFrames, trimThreshold);
+  const trimThreshold = normalizedLimits.trimThreshold ?? SESSION_FRAME_TRIM_THRESHOLD;
+  let retainedBytes = currentBytes;
+  let droppedBytes = 0;
+  let droppedFrames = 0;
+  if (session.frames.length > maxFrames + trimThreshold) {
+    const removed = session.frames.splice(0, session.frames.length - maxFrames);
+    for (const dropped of removed) droppedBytes += dropped.data.length;
+    droppedFrames = removed.length;
+    retainedBytes -= droppedBytes;
+  }
+
+  const maxBytes = normalizedLimits.maxBytes ?? MAX_SESSION_FRAME_BYTES;
+  while (retainedBytes > maxBytes) {
+    const dropped = session.frames.shift();
+    if (!dropped) break;
+    retainedBytes -= dropped.data.length;
+    droppedBytes += dropped.data.length;
+    droppedFrames += 1;
+  }
+  return { retainedBytes, droppedBytes, droppedFrames };
+}
+
+export function frameBuffersByteLength(
+  session: Pick<SerialSession, 'frames' | 'pausedFrames'>,
+): number {
+  let total = 0;
+  for (const frame of session.frames) total += frame.data.length;
+  for (const frame of session.pausedFrames) total += frame.data.length;
+  return total;
+}
+
+export interface GlobalFrameTrimResult {
+  retainedBytes: number;
+  droppedBytesBySession: Map<string, number>;
+}
+
+/** Drop the globally oldest retained frames until the aggregate byte cap fits. */
+export function trimSessionsToGlobalByteLimit(
+  sessions: readonly SerialSession[],
+  currentBytes: number,
+  maxBytes = MAX_GLOBAL_FRAME_BYTES,
+): GlobalFrameTrimResult {
+  let retainedBytes = currentBytes;
+  const droppedBytesBySession = new Map<string, number>();
+
+  while (retainedBytes > maxBytes) {
+    let oldestSession: SerialSession | null = null;
+    let oldestBuffer: DataFrame[] | null = null;
+    let oldestTimestamp = Number.POSITIVE_INFINITY;
+
+    for (const session of sessions) {
+      for (const buffer of [session.frames, session.pausedFrames]) {
+        const candidate = buffer[0];
+        if (!candidate) continue;
+        const timestamp = Number.isFinite(candidate.timestamp) ? candidate.timestamp : 0;
+        if (timestamp >= oldestTimestamp) continue;
+        oldestTimestamp = timestamp;
+        oldestSession = session;
+        oldestBuffer = buffer;
+      }
+    }
+
+    if (!oldestSession || !oldestBuffer) {
+      retainedBytes = 0;
+      break;
+    }
+    const dropped = oldestBuffer.shift();
+    if (!dropped) continue;
+    retainedBytes -= dropped.data.length;
+    droppedBytesBySession.set(
+      oldestSession.id,
+      (droppedBytesBySession.get(oldestSession.id) ?? 0) + dropped.data.length,
+    );
+  }
+
+  return { retainedBytes, droppedBytesBySession };
+}
+
+function oldestSessionBuffer(session: SerialSession): DataFrame[] | null {
+  const live = session.frames[0];
+  const paused = session.pausedFrames[0];
+  if (!live) return paused ? session.pausedFrames : null;
+  if (!paused) return session.frames;
+  return live.timestamp <= paused.timestamp ? session.frames : session.pausedFrames;
 }
 
 export function resetSessionFrames(session: SerialSession): void {

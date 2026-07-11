@@ -10,65 +10,75 @@
     @positive-click="createSession"
     @negative-click="emit('update:show', false)"
   >
-    <n-form class="session-form" label-placement="top">
-      <n-form-item class="form-full" :label="t('create.port')">
-        <n-select
+    <div class="session-form">
+      <div class="form-field form-full">
+        <span class="form-label">{{ t('create.port') }}</span>
+        <AppSelect
           v-model:value="portName"
           :options="portOptions"
           :placeholder="t('create.portPlaceholder')"
         />
-      </n-form-item>
-      <n-form-item class="form-full preset-row" :label="t('create.preset')">
-        <n-select
-          v-model:value="selectedPresetId"
-          :options="presetOptions"
-          :placeholder="t('create.presetPlaceholder')"
-          size="small"
-          clearable
-          @update:value="applyPreset"
-        />
-        <n-button
-          size="small"
-          quaternary
-          :disabled="!canSavePreset"
-          @click="openSavePreset"
-          :title="t('create.savePresetTitle')"
-        >
-          <template #icon><BookmarkPlus class="icon-sm" /></template>
-        </n-button>
-        <n-button
-          size="small"
-          quaternary
-          :disabled="!selectedPresetId"
-          @click="deletePreset"
-          :title="t('create.deletePresetTitle')"
-        >
-          <template #icon><Trash2 class="icon-sm" /></template>
-        </n-button>
-      </n-form-item>
-      <n-form-item :label="t('serial.baudRate')">
-        <n-select v-model:value="baudRate" :options="baudRateOptions" />
-      </n-form-item>
-      <n-form-item :label="t('serial.dataBits')">
-        <n-select v-model:value="dataBits" :options="dataBitsOptions" />
-      </n-form-item>
-      <n-form-item :label="t('serial.stopBits')">
-        <n-select v-model:value="stopBits" :options="stopBitsOptions" />
-      </n-form-item>
-      <n-form-item :label="t('serial.parity')">
-        <n-select v-model:value="parity" :options="parityOptions" />
-      </n-form-item>
-      <n-form-item :label="t('serial.flowControl')">
-        <n-select v-model:value="flowControl" :options="flowControlOptions" />
-      </n-form-item>
-      <n-form-item class="form-full" :label="t('serial.signalControl')">
+      </div>
+      <div class="form-field form-full">
+        <span class="form-label">{{ t('create.preset') }}</span>
+        <div class="preset-controls">
+          <AppSelect
+            v-model:value="selectedPresetId"
+            :options="presetOptions"
+            :placeholder="t('create.presetPlaceholder')"
+            size="small"
+            clearable
+            @update:value="applyPreset"
+          />
+          <n-button
+            size="small"
+            quaternary
+            :disabled="!canSavePreset"
+            @click="openSavePreset"
+            :title="t('create.savePresetTitle')"
+          >
+            <template #icon><BookmarkPlus class="icon-sm" /></template>
+          </n-button>
+          <n-button
+            size="small"
+            quaternary
+            :disabled="!selectedPresetId"
+            @click="deletePreset"
+            :title="t('create.deletePresetTitle')"
+          >
+            <template #icon><Trash2 class="icon-sm" /></template>
+          </n-button>
+        </div>
+      </div>
+      <div class="form-field">
+        <span class="form-label">{{ t('serial.baudRate') }}</span>
+        <AppSelect v-model:value="baudRate" :options="baudRateOptions" />
+      </div>
+      <div class="form-field">
+        <span class="form-label">{{ t('serial.dataBits') }}</span>
+        <AppSelect v-model:value="dataBits" :options="dataBitsOptions" />
+      </div>
+      <div class="form-field">
+        <span class="form-label">{{ t('serial.stopBits') }}</span>
+        <AppSelect v-model:value="stopBits" :options="stopBitsOptions" />
+      </div>
+      <div class="form-field">
+        <span class="form-label">{{ t('serial.parity') }}</span>
+        <AppSelect v-model:value="parity" :options="parityOptions" />
+      </div>
+      <div class="form-field">
+        <span class="form-label">{{ t('serial.flowControl') }}</span>
+        <AppSelect v-model:value="flowControl" :options="flowControlOptions" />
+      </div>
+      <div class="form-field form-full">
+        <span class="form-label">{{ t('serial.signalControl') }}</span>
         <div class="signal-row">
           <label class="signal-toggle"><n-switch v-model:value="dtr" size="small" /> DTR</label>
           <label class="signal-toggle"><n-switch v-model:value="rts" size="small" /> RTS</label>
           <span class="signal-hint">{{ t('serial.signalHint') }}</span>
         </div>
-      </n-form-item>
-    </n-form>
+      </div>
+    </div>
   </n-modal>
   <!-- Lightweight inline prompt for naming a new preset (avoids pulling another
        naive-ui component; reuses a small dialog). -->
@@ -88,8 +98,9 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { NForm, NFormItem, NModal, NSelect, NSwitch, NInput, NButton } from 'naive-ui';
-import { BookmarkPlus, Trash2 } from 'lucide-vue-next';
+import { NModal, NSwitch, NInput, NButton } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
+import { BookmarkPlus, Trash2 } from '@lucide/vue';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
@@ -275,7 +286,17 @@ function currentConfig(): PortConfig {
   grid-column: 1 / -1;
 }
 
-.preset-row :deep(.n-form-item-content) {
+.form-field {
+  display: grid;
+  gap: 4px;
+}
+
+.form-label {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.preset-controls {
   display: flex;
   gap: 4px;
   align-items: center;
@@ -301,10 +322,6 @@ function currentConfig(): PortConfig {
 .signal-hint {
   font-size: var(--font-size-xs);
   color: var(--text-dim);
-}
-
-.session-form :deep(.n-form-item) {
-  margin: 0;
 }
 
 @media (max-width: 560px) {

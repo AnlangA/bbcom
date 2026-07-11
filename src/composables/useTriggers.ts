@@ -31,15 +31,31 @@ export function useTriggers({ triggers, send, onFire }: TriggerOptions) {
     { deep: true },
   );
 
-  /** Feed an RX frame's bytes through the matcher and fire any responses. */
-  async function feedFrame(frame: DataFrame): Promise<void> {
-    if (frame.direction !== 'RX') return;
-    if (triggers.value.length === 0) return;
-    const fires = engine.feed(frame.data);
-    for (const fire of fires) {
-      onFire?.(fire);
-      await send(fire.response, fire.responseIsHex);
-    }
+  // Matching is synchronous, so each raw RX chunk updates the streaming
+  // decoder immediately. Responses themselves stay FIFO without blocking a
+  // later chunk from entering the matcher.
+  let sendTail: Promise<void> = Promise.resolve();
+
+  /** Feed raw RX bytes through the matcher and queue any responses in FIFO order. */
+  function feedBytes(bytes: Uint8Array): Promise<void> {
+    if (triggers.value.length === 0) return Promise.resolve();
+    const fires = engine.feed(bytes);
+    for (const fire of fires) onFire?.(fire);
+    if (fires.length === 0) return Promise.resolve();
+
+    const operation = sendTail.then(async () => {
+      for (const fire of fires) await send(fire.response, fire.responseIsHex);
+    });
+    // Keep the next batch live even if one response fails; callers still get
+    // the original rejection so runtime logging can surface it.
+    sendTail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  /** Backward-compatible frame adapter for callers that have captured frames. */
+  function feedFrame(frame: DataFrame): Promise<void> {
+    if (frame.direction !== 'RX') return Promise.resolve();
+    return feedBytes(frame.data);
   }
 
   /** Reset matcher state (e.g. on capture clear). */
@@ -49,5 +65,5 @@ export function useTriggers({ triggers, send, onFire }: TriggerOptions) {
 
   const enabledCount = computed(() => triggers.value.filter((t) => t.enabled).length);
 
-  return { feedFrame, reset, enabledCount };
+  return { feedBytes, feedFrame, reset, enabledCount };
 }

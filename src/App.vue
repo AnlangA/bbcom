@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider :theme="naiveTheme" :theme-overrides="activeOverrides">
+  <n-config-provider :theme-overrides="activeOverrides">
     <n-message-provider>
       <AppShell />
     </n-message-provider>
@@ -8,14 +8,16 @@
 
 <script setup lang="ts">
 import { computed, onErrorCaptured, watch } from 'vue';
-import { darkTheme, NConfigProvider, NMessageProvider } from 'naive-ui';
+import { NConfigProvider, NMessageProvider } from 'naive-ui';
 import AppShell from './components/app-shell/AppShell.vue';
 import { useAiSessionBridge } from './composables/useAiSessionBridge';
 import { useAppStore } from './stores/app';
 import { lightThemeOverrides, themeOverrides } from './styles/naive-theme';
 
 const appStore = useAppStore();
-const naiveTheme = computed(() => (appStore.theme === 'light' ? null : darkTheme));
+// The explicit theme overrides already define both palettes. Avoid importing
+// naive-ui's aggregate dark theme, which includes styles for every component
+// (including controls bbcom does not ship) in the renderer output.
 const activeOverrides = computed(() =>
   appStore.theme === 'light' ? lightThemeOverrides : themeOverrides,
 );

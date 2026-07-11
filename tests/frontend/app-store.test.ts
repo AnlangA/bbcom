@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
 import { useAppStore } from '../../src/stores/app.ts';
@@ -100,8 +100,7 @@ test('setters update each persisted setting through its validate/apply path', as
     const app = useAppStore();
 
     // Cover each validate/apply shape in the descriptor table: string-enum
-    // (displayMode/packetViewMode/searchMode), boolean (sendAsHex /
-    // aiEnableCodingPlan), clamped number (sidebarWidth), and a number routed
+    // (displayMode/packetViewMode/searchMode), boolean (sendAsHex), clamped number (sidebarWidth), and a number routed
     // through its own setter (maxBufferFrames). These assertions verify the
     // setters and apply() clamping that drive the persisted payload; the
     // freshly-loaded-store test below proves the full disk round-trip.
@@ -109,7 +108,6 @@ test('setters update each persisted setting through its validate/apply path', as
     app.setSendAsHex(true);
     app.setSidebarWidth(999); // above max → clamps to 340
     app.setMaxBufferFrames(50_000);
-    app.setAiEnableCodingPlan(true);
     app.setPacketViewMode('MERGED');
     app.setSearchMode('HEX');
     app.setTheme('light');
@@ -118,7 +116,6 @@ test('setters update each persisted setting through its validate/apply path', as
     assert.equal(app.sendAsHex, true);
     assert.equal(app.sidebarWidth, 340, 'sidebarWidth clamped on set');
     assert.equal(app.maxBufferFrames, 50_000);
-    assert.equal(app.aiEnableCodingPlan, true);
     assert.equal(app.packetViewMode, 'MERGED');
     assert.equal(app.searchMode, 'HEX');
     assert.equal(app.theme, 'light');
@@ -139,7 +136,6 @@ test('a freshly-loaded store re-reads the persisted blob', async () => {
         sendAsHex: true,
         sidebarWidth: 300,
         maxBufferFrames: 42_000,
-        aiEnableCodingPlan: true,
         packetViewMode: 'MERGED',
         searchMode: 'HEX',
         autoScroll: false,
@@ -156,7 +152,6 @@ test('a freshly-loaded store re-reads the persisted blob', async () => {
     assert.equal(app.sendAsHex, true);
     assert.equal(app.sidebarWidth, 300);
     assert.equal(app.maxBufferFrames, 42_000);
-    assert.equal(app.aiEnableCodingPlan, true);
     assert.equal(app.packetViewMode, 'MERGED');
     assert.equal(app.searchMode, 'HEX');
     assert.equal(app.autoScroll, false);

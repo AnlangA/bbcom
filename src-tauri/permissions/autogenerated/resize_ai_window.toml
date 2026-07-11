@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-resize-ai-window"
+description = "Enables the resize_ai_window command without any pre-configured scope."
+commands.allow = ["resize_ai_window"]
+
+[[permission]]
+identifier = "deny-resize-ai-window"
+description = "Denies the resize_ai_window command without any pre-configured scope."
+commands.deny = ["resize_ai_window"]

@@ -1,4 +1,4 @@
-import { ref, onMounted, onUnmounted } from 'vue';
+import { getCurrentInstance, ref, onMounted, onUnmounted } from 'vue';
 import { SerialPort } from 'tauri-plugin-serialplugin-api';
 import { useSerialStore } from '../stores/serial';
 import { isRealSerialPort, mergePortLists } from '../lib/serial-utils';
@@ -40,14 +40,16 @@ export function usePortWatcher(interval = 1500, options: UsePortWatcherOptions =
     }
   }
 
-  onMounted(() => {
-    refresh();
-    timer = setInterval(refresh, interval);
-  });
+  if (getCurrentInstance()) {
+    onMounted(() => {
+      void refresh();
+      timer = setInterval(refresh, interval);
+    });
 
-  onUnmounted(() => {
-    if (timer) clearInterval(timer);
-  });
+    onUnmounted(() => {
+      if (timer) clearInterval(timer);
+    });
+  }
 
   return {
     ports,

@@ -42,9 +42,9 @@ export interface SerialSession {
   /** Waveform sample source: free-text RX parsing ('text') or registers ('register'). */
   waveformSourceMode: WaveformSourceMode;
   autoLogEnabled: boolean;
-  /** Target file path for auto-logging, or null when disabled. Kept in sync
-   * with autoLogEnabled via sessionStore.setAutoLogTarget. Runtime-only — not
-   * persisted, since sessions themselves are not persisted across reloads. */
+  /** Display-only target file name for auto-logging, or null when disabled.
+   * The full native path never enters the WebView. Kept in sync with
+   * autoLogEnabled via sessionStore.setAutoLogTarget. Runtime-only. */
   logPath: string | null;
   terminalAiModel: AiModel;
   logAiModel: AiModel;

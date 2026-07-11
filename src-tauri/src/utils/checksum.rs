@@ -1,8 +1,9 @@
-use crc::{CRC_8_SMBUS, CRC_16_IBM_SDLC, CRC_32_ISO_HDLC, Crc};
+use crc::{CRC_8_SMBUS, CRC_16_IBM_SDLC, CRC_16_MODBUS, CRC_32_ISO_HDLC, Crc};
 use std::sync::LazyLock;
 
 static CRC8: LazyLock<Crc<u8>> = LazyLock::new(|| Crc::<u8>::new(&CRC_8_SMBUS));
 static CRC16: LazyLock<Crc<u16>> = LazyLock::new(|| Crc::<u16>::new(&CRC_16_IBM_SDLC));
+static CRC16_MODBUS: LazyLock<Crc<u16>> = LazyLock::new(|| Crc::<u16>::new(&CRC_16_MODBUS));
 static CRC32: LazyLock<Crc<u32>> = LazyLock::new(|| Crc::<u32>::new(&CRC_32_ISO_HDLC));
 
 pub fn calculate_checksum(data: &[u8]) -> String {
@@ -16,6 +17,12 @@ pub fn calculate_crc8(data: &[u8]) -> String {
 
 pub fn calculate_crc16(data: &[u8]) -> String {
     format!("{:04X}", CRC16.checksum(data))
+}
+
+/// CRC-16/Modbus bytes in wire order (low byte, then high byte).
+pub fn calculate_crc16_modbus(data: &[u8]) -> String {
+    let crc = CRC16_MODBUS.checksum(data);
+    format!("{:02X}{:02X}", crc as u8, (crc >> 8) as u8)
 }
 
 pub fn calculate_crc32(data: &[u8]) -> String {
@@ -47,6 +54,12 @@ mod tests {
     #[test]
     fn test_crc16() {
         assert_eq!(calculate_crc16(b"123456789"), "906E");
+    }
+
+    #[test]
+    fn test_crc16_modbus_uses_wire_byte_order() {
+        // Numeric CRC is 0x4B37; Modbus transmits the low byte first.
+        assert_eq!(calculate_crc16_modbus(b"123456789"), "374B");
     }
 
     #[test]

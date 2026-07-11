@@ -20,6 +20,7 @@ import {
   buildWriteMultipleCoilsPdu,
   buildWriteMultipleRegistersPdu,
   crc16Modbus,
+  crc16ModbusFoldByte,
   parseResponse,
   type ModbusResponse,
   type ReadFc,
@@ -153,18 +154,34 @@ export function scanResponse(
     return { frames, remainder: buf.subarray(offset) };
   }
 
-  // RTU: scan for the smallest CRC-valid frame.
+  // RTU: scan for the smallest CRC-valid frame at each offset. For a fixed
+  // offset, grow the trial length from 4 → upper and fold each new payload byte
+  // into a running CRC (O(1) per byte via crc16ModbusFoldByte) instead of
+  // re-running the full CRC for every candidate length — which made this O(upper²)
+  // per offset and dominated RX cost on a noisy/slow bus.
   const frames: Uint8Array[] = [];
   let i = 0;
   const maxFrame = 256;
   while (i < buf.length) {
     let found = -1;
-    // Min ADU 4B (addr+fc+crc); try increasing lengths from this offset.
     const upper = Math.min(buf.length - i, maxFrame);
+    if (upper < 4) break; // not enough bytes left for even the smallest frame
+    // The CRC covers the first (len - 2) bytes of the candidate; the final two
+    // bytes carry it. Seed the running CRC with the bytes that are in the CRC
+    // window of the shortest candidate (len = 4 → window = bytes 0,1), then
+    // fold one new byte in as len grows.
+    let crc = 0xffff;
+    crc = crc16ModbusFoldByte(crc, buf[i]); // byte 0 (in window at len=4)
+    crc = crc16ModbusFoldByte(crc, buf[i + 1]); // byte 1 (in window at len=4)
     for (let len = 4; len <= upper; len += 1) {
-      const candidate = buf.subarray(i, i + len);
-      const crc = crc16Modbus(candidate.subarray(0, len - 2));
-      if ((crc & 0xff) === candidate[len - 2] && ((crc >>> 8) & 0xff) === candidate[len - 1]) {
+      if (len > 4) {
+        // Byte (len - 3) is the new byte that just entered the CRC window as
+        // the candidate grew from len-1 to len.
+        crc = crc16ModbusFoldByte(crc, buf[i + len - 3]);
+      }
+      const lo = buf[i + len - 2];
+      const hi = buf[i + len - 1];
+      if ((crc & 0xff) === lo && ((crc >>> 8) & 0xff) === hi) {
         found = len;
         break; // shortest valid frame wins
       }

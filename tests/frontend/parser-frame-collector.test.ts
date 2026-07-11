@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { ParserFrameCollector, parserConfigKey } from '../../src/lib/parser-frame-collector.ts';
 import type { ParserConfig } from '../../src/lib/protocol-parser.ts';
@@ -56,8 +56,7 @@ test('collector incrementally parses RX frames and preserves stream offsets', ()
   assert.equal(result.reset, false);
   assert.equal(result.frames.length, 1);
   assert.equal(frameText(result.frames[0]), 'hello');
-  // ProtocolParser reports the chunk-local offset where the delimiter completed.
-  assert.equal(result.frames[0].offset, 2);
+  assert.equal(result.frames[0].offset, 0);
 
   frames.push(tx(ascii('ignored\n')));
   frames.push(rx(ascii('ok\n')));

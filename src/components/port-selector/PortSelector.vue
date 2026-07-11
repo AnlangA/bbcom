@@ -10,7 +10,7 @@
       </button>
       <div class="section-body" :class="{ collapsed: collapsed.port }">
         <div class="port-row">
-          <n-select
+          <AppSelect
             v-model:value="selectedPort"
             :options="portOptions"
             :placeholder="t('serial.portPlaceholder')"
@@ -56,23 +56,23 @@
         <div class="config-grid">
           <div class="config-item">
             <label>{{ t('serial.baudRate') }}</label>
-            <n-select v-model:value="config.baudRate" :options="baudRateOptions" size="small" />
+            <AppSelect v-model:value="config.baudRate" :options="baudRateOptions" size="small" />
           </div>
           <div class="config-item">
             <label>{{ t('serial.dataBits') }}</label>
-            <n-select v-model:value="config.dataBits" :options="dataBitsOptions" size="small" />
+            <AppSelect v-model:value="config.dataBits" :options="dataBitsOptions" size="small" />
           </div>
           <div class="config-item">
             <label>{{ t('serial.stopBits') }}</label>
-            <n-select v-model:value="config.stopBits" :options="stopBitsOptions" size="small" />
+            <AppSelect v-model:value="config.stopBits" :options="stopBitsOptions" size="small" />
           </div>
           <div class="config-item">
             <label>{{ t('serial.parity') }}</label>
-            <n-select v-model:value="config.parity" :options="parityOptions" size="small" />
+            <AppSelect v-model:value="config.parity" :options="parityOptions" size="small" />
           </div>
           <div class="config-item">
             <label>{{ t('serial.flowControl') }}</label>
-            <n-select
+            <AppSelect
               v-model:value="config.flowControl"
               :options="flowControlOptions"
               size="small"
@@ -135,7 +135,7 @@
             }}</span>
           </div>
           <div class="checksum-actions">
-            <n-select v-model:value="checksumAlgo" :options="checksumAlgoOptions" size="small" />
+            <AppSelect v-model:value="checksumAlgo" :options="checksumAlgoOptions" size="small" />
           </div>
           <div
             v-if="checksumResult"
@@ -157,9 +157,10 @@
 
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue';
-import { NSelect, NButton, NInput, NSwitch } from 'naive-ui';
+import { NButton, NInput, NSwitch } from 'naive-ui';
 import type { SelectOption } from 'naive-ui';
-import { Cable, ChevronRight, Hash, Plus, RefreshCw, Settings2 } from 'lucide-vue-next';
+import AppSelect from '../ui/AppSelect.vue';
+import { Cable, ChevronRight, Hash, Plus, RefreshCw, Settings2 } from '@lucide/vue';
 import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
@@ -284,8 +285,7 @@ const checksumByteCount = computed(() => checksumState.value.byteCount);
 const checksumAlgoLabel = computed(
   () =>
     (checksumAlgoOptions.value.find((option) => option.value === checksumAlgo.value)?.label as
-      | string
-      | undefined) ?? checksumAlgo.value,
+      string | undefined) ?? checksumAlgo.value,
 );
 
 watch([checksumInput, checksumAlgo], () => {

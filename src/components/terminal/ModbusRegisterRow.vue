@@ -20,7 +20,7 @@
       />
     </span>
     <span class="col col-fc">
-      <n-select
+      <AppSelect
         :value="reg.functionCode"
         :options="fcOptions"
         size="tiny"
@@ -51,7 +51,7 @@
       <span v-else>—</span>
     </span>
     <span class="col col-type">
-      <n-select
+      <AppSelect
         :value="reg.type"
         :options="typeOptionsFor(reg.functionCode)"
         size="tiny"
@@ -60,7 +60,7 @@
       />
     </span>
     <span class="col col-ch">
-      <n-select
+      <AppSelect
         :value="reg.waveformChannel ?? -1"
         :options="channelOptions"
         size="tiny"
@@ -156,9 +156,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, shallowReactive } from 'vue';
-import { NCheckbox, NInput, NInputNumber, NSelect } from 'naive-ui';
-import { LineChart, RefreshCw, Send, Trash2 } from 'lucide-vue-next';
+import { computed } from 'vue';
+import { NCheckbox, NInput, NInputNumber } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
+import { LineChart, RefreshCw, Send, Trash2 } from '@lucide/vue';
 import { useSessionStore } from '../../stores/sessions';
 import {
   formatModbusRegisterValue,
@@ -180,21 +181,22 @@ const props = defineProps<{
   isConnected: boolean;
   flashed: boolean;
   alt: boolean;
+  valueDraft?: string;
   fcOptions: { label: string; value: number }[];
   channelOptions: { label: string; value: number }[];
   typeOptions: { label: string; value: ModbusValueType }[];
   bitTypeOptions: { label: string; value: ModbusValueType }[];
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   plot: [];
   read: [];
   send: [];
   remove: [];
+  updateValueDraft: [value: string | undefined];
 }>();
 
 const sessionStore = useSessionStore();
-const valueDrafts = shallowReactive<Record<string, string>>({});
 
 const isBitReg = computed(() => isBitFc(props.reg.functionCode));
 const isReadReg = computed(() => isReadFc(props.reg.functionCode));
@@ -217,7 +219,7 @@ function edit(patchValue: Partial<Omit<ModbusRegister, 'id'>>) {
   sessionStore.updateModbusRegister(props.sessionId, props.reg.id, patchValue);
 }
 function editAndClear(patchValue: Partial<Omit<ModbusRegister, 'id'>>) {
-  delete valueDrafts[props.reg.id];
+  emit('updateValueDraft', undefined);
   edit({ ...patchValue, value: null, values: null, valueTs: null });
 }
 function editFunctionCode(fc: ModbusFunctionCode) {
@@ -254,9 +256,7 @@ function formatValue(reg: ModbusRegister): string {
   return formatModbusRegisterValue(reg);
 }
 const editValueText = computed(() => {
-  if (Object.prototype.hasOwnProperty.call(valueDrafts, props.reg.id)) {
-    return valueDrafts[props.reg.id];
-  }
+  if (props.valueDraft !== undefined) return props.valueDraft;
   const values =
     Array.isArray(props.reg.values) && props.reg.values.length > 0 ? props.reg.values : null;
   if (values) return values.join(' ');
@@ -268,7 +268,7 @@ const valuePlaceholder = computed(() =>
   props.reg.functionCode === 0x10 ? t('modbus.valueListPlaceholder') : t('modbus.valuePlaceholder'),
 );
 function editValue(raw: string) {
-  valueDrafts[props.reg.id] = raw;
+  emit('updateValueDraft', raw);
   const values = parseModbusValueInput(raw);
   const value = values[0] ?? null;
   sessionStore.updateModbusRegister(props.sessionId, props.reg.id, {
@@ -282,6 +282,8 @@ function editValue(raw: string) {
 <style scoped>
 .mb-row {
   position: relative;
+  box-sizing: border-box;
+  height: 32px;
   overflow: hidden;
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-secondary);

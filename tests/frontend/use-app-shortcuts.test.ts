@@ -1,11 +1,15 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { effectScope } from 'vue';
 import { isEditable, useAppShortcuts } from '../../src/composables/useAppShortcuts.ts';
 
 function key(
   keyName: string,
-  opts: { ctrl?: boolean; meta?: boolean; target?: { tagName?: string; isContentEditable?: boolean } | null } = {},
+  opts: {
+    ctrl?: boolean;
+    meta?: boolean;
+    target?: { tagName?: string; isContentEditable?: boolean } | null;
+  } = {},
 ): KeyboardEvent {
   return {
     key: keyName,
@@ -20,10 +24,9 @@ function fakeEl(tagName: string, isContentEditable = false): HTMLElement {
   return { tagName, isContentEditable } as unknown as HTMLElement;
 }
 
-function setup(handlers: {
-  onCreateSession: () => void;
-  onCloseSession: () => void;
-}): { handleKeydown: (e: KeyboardEvent) => void } {
+function setup(handlers: { onCreateSession: () => void; onCloseSession: () => void }): {
+  handleKeydown: (e: KeyboardEvent) => void;
+} {
   const scope = effectScope();
   let api!: { handleKeydown: (e: KeyboardEvent) => void };
   scope.run(() => {

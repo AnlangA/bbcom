@@ -11,5 +11,11 @@ export const MAX_HISTORY = 20;
 /** Hard ceiling on a single send payload (1 MiB). Guards both text and hex TX. */
 export const MAX_INPUT_SIZE = 1024 * 1024; // 1MB
 
-/** LRU format-cache size (per-frame display string memoization). */
-export const CACHE_SIZE = 5000;
+/** Maximum payload exposed by one MERGED terminal row to the UI. */
+export const MAX_MERGED_VISIBLE_BYTES = 64 * 1024;
+
+/** Shared ceiling for formatted and search-string caches. */
+export const TERMINAL_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+
+/** A single formatted/search entry larger than this is never cached. */
+export const TERMINAL_CACHE_ENTRY_MAX_BYTES = 64 * 1024;

@@ -1,9 +1,6 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import {
-  ModbusPeriodicOutcomeTracker,
-  isTrackablePeriodicFailure,
-} from '../../src/lib/modbus';
+import { ModbusPeriodicOutcomeTracker, isTrackablePeriodicFailure } from '../../src/lib/modbus';
 import type { ModbusResponse } from '../../src/lib/modbus';
 
 const successResponse: ModbusResponse = {

@@ -17,14 +17,14 @@
       <div class="send-left">
         <n-checkbox v-model:checked="isHex" size="small" :disabled="looping">HEX</n-checkbox>
         <span class="options-divider" aria-hidden="true"></span>
-        <n-select
+        <AppSelect
           v-model:value="lineEnding"
           :options="lineEndingOptions"
           size="tiny"
           style="width: 96px"
           :disabled="isHex || looping"
         />
-        <n-select
+        <AppSelect
           v-model:value="appendChecksum"
           :options="checksumOptions"
           size="tiny"
@@ -89,8 +89,9 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
-import { NInput, NButton, NCheckbox, NSelect, NInputNumber, useMessage } from 'naive-ui';
-import { Repeat2, SendHorizontal, SquareStop } from 'lucide-vue-next';
+import { NInput, NButton, NCheckbox, NInputNumber, useMessage } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
+import { Repeat2, SendHorizontal, SquareStop } from '@lucide/vue';
 import { encodeUtf8, isValidHex as checkValidHex, normalizeHex, parseHex } from '../../lib/format';
 import { checksumAlgoOptionsWithNone } from '../../lib/checksum-constants';
 import { MAX_INPUT_SIZE } from '../../types';
@@ -103,6 +104,9 @@ import ToolsTabs from './ToolsTabs.vue';
 
 const props = defineProps<{
   onSend: (data: string, isHex: boolean) => Promise<boolean>;
+  onStartLoop: (data: string, isHex: boolean) => boolean;
+  onStopLoop: () => void;
+  looping: boolean;
   modelValue: string;
   disabled?: boolean;
   history: SendHistoryEntry[];
@@ -133,9 +137,8 @@ const loopInterval = computed({
   set: (value) => appStore.setLoopIntervalMs(value ?? 1000),
 });
 const appendChecksum = ref<'none' | ChecksumType>('none');
-const looping = ref(false);
+const looping = computed(() => props.looping);
 const showFlash = ref(false);
-let loopTimer: ReturnType<typeof setInterval> | null = null;
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
 const lineEndingOptions = computed(() => [
@@ -180,7 +183,7 @@ const canSend = computed(() => {
 watch(
   () => props.disabled,
   (disabled) => {
-    if (disabled && looping.value) stopLoop();
+    if (disabled && looping.value) props.onStopLoop();
   },
 );
 
@@ -188,6 +191,7 @@ watch(
   () => appStore.aiCommandSeq,
   () => {
     if (!appStore.aiCommandDraft) return;
+    if (props.sessionId && props.sessionId !== sessionStore.activeSessionId) return;
     if (!sessionStore.activeSession) {
       appStore.setPendingAiCommand(appStore.aiCommandDraft);
       return;
@@ -197,7 +201,6 @@ watch(
 );
 
 onUnmounted(() => {
-  stopLoop();
   if (flashTimer) clearTimeout(flashTimer);
 });
 
@@ -258,25 +261,16 @@ function triggerFlash() {
 
 function toggleLoop() {
   if (looping.value) {
-    stopLoop();
+    props.onStopLoop();
   } else {
-    startLoop();
+    void startLoop();
   }
 }
 
-function startLoop() {
-  if (!canSend.value || loopTimer) return;
-  looping.value = true;
-  handleSend();
-  loopTimer = setInterval(handleSend, loopInterval.value);
-}
-
-function stopLoop() {
-  if (loopTimer) {
-    clearInterval(loopTimer);
-    loopTimer = null;
-  }
-  looping.value = false;
+async function startLoop() {
+  if (!canSend.value || looping.value) return;
+  const data = await buildData();
+  if (data !== null) props.onStartLoop(data, isHex.value);
 }
 
 function applyAiCommand(command: string) {

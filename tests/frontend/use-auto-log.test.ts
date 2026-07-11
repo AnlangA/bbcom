@@ -1,9 +1,20 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
 import { useSessionStore } from '../../src/stores/sessions.ts';
 import { useAppStore } from '../../src/stores/app.ts';
-import { useAutoLog } from '../../src/composables/useAutoLog.ts';
+import {
+  AUTO_LOG_DEBOUNCE_MS,
+  AUTO_LOG_IMMEDIATE_FLUSH_BYTES,
+  AUTO_LOG_MAX_BATCH_BYTES,
+  AUTO_LOG_MAX_BATCH_FRAMES,
+  AUTO_LOG_MAX_QUEUED_ENTRIES,
+  autoLogFormatForDisplayMode,
+  useAutoLog,
+  type AutoLogSessionClient,
+  type UseAutoLogDeps,
+} from '../../src/composables/useAutoLog.ts';
+import type { AutoLogFormat, ExportFramePayload } from '../../src/lib/ipc.ts';
 import type { DataFrame, PortConfig } from '../../src/types/index.ts';
 
 interface LocalStorageLike {
@@ -26,160 +37,403 @@ function withLocalStorageMock<T>(fn: () => Promise<T> | T): Promise<T> | T {
   const previous = (globalThis as { localStorage?: LocalStorageLike }).localStorage;
   const data = new Map<string, string>();
   (globalThis as { localStorage: LocalStorageLike }).localStorage = {
-    getItem: (k) => data.get(k) ?? null,
-    setItem: (k, v) => {
-      data.set(k, String(v));
-    },
-    removeItem: (k) => {
-      data.delete(k);
-    },
+    getItem: (key) => data.get(key) ?? null,
+    setItem: (key, value) => data.set(key, String(value)),
+    removeItem: (key) => data.delete(key),
   };
   const restore = () => {
     (globalThis as { localStorage?: LocalStorageLike }).localStorage = previous;
   };
   try {
     const result = fn();
-    if (result instanceof Promise) {
-      return result.then(
-        (v) => {
-          restore();
-          return v;
-        },
-        (e) => {
-          restore();
-          throw e;
-        },
-      );
-    }
+    if (result instanceof Promise) return result.finally(restore);
     restore();
     return result;
-  } catch (e) {
+  } catch (error) {
     restore();
-    throw e;
+    throw error;
   }
 }
 
-function frame(direction: 'RX' | 'TX', data: number[], id = 1): DataFrame {
+function frame(direction: 'RX' | 'TX', size: number, id = 1): DataFrame {
   return {
     id: `f${id}`,
     timestamp: id,
     direction,
-    data: new Uint8Array(data),
+    data: new Uint8Array(size).fill(id & 0xff),
   };
 }
 
-function setup(deps?: { appendLog?: (path: string, line: string) => Promise<void> }) {
+interface Calls {
+  begins: Array<{ token: string; format: AutoLogFormat }>;
+  appends: Array<{ logId: string; frames: ExportFramePayload[] }>;
+  finishes: string[];
+  aborts: string[];
+  revoked: string[];
+}
+
+type SetupOptions = Omit<UseAutoLogDeps, 'sessionClient'> & {
+  client?: Partial<AutoLogSessionClient>;
+};
+
+function setup(options: SetupOptions = {}) {
   setActivePinia(createPinia());
   const sessions = useSessionStore();
   const app = useAppStore();
   const sessionId = sessions.createSession('COM1', cfg);
-  const writes: Array<{ path: string; line: string }> = [];
+  const calls: Calls = { begins: [], appends: [], finishes: [], aborts: [], revoked: [] };
+  let frames = 0;
+  let rawBytes = 0;
+  const client: AutoLogSessionClient = {
+    async begin(token, format) {
+      calls.begins.push({ token, format });
+      if (options.client?.begin) return options.client.begin(token, format);
+      return { logId: `log-${sessionId}` };
+    },
+    async append(logId, batch) {
+      calls.appends.push({ logId, frames: batch });
+      if (options.client?.append) return options.client.append(logId, batch);
+      frames += batch.length;
+      rawBytes += batch.reduce((total, item) => total + item.data.length, 0);
+      return { frames, rawBytes };
+    },
+    async finish(logId) {
+      calls.finishes.push(logId);
+      await options.client?.finish?.(logId);
+    },
+    async abort(logId) {
+      calls.aborts.push(logId);
+      await options.client?.abort?.(logId);
+    },
+  };
   const auto = useAutoLog({
-    appendLog:
-      deps?.appendLog ??
-      (async (path, line) => {
-        writes.push({ path, line });
+    ...options,
+    sessionClient: client,
+    requestTarget:
+      options.requestTarget ?? (async (id) => ({ token: `grant-${id}`, displayName: `${id}.txt` })),
+    revokeTarget:
+      options.revokeTarget ??
+      (async (token) => {
+        calls.revoked.push(token);
       }),
   });
-  return { sessions, app, sessionId, writes, auto };
+  return { sessions, app, sessionId, calls, auto };
 }
 
-function flush() {
-  return new Promise((r) => setImmediate(r));
+function flush(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
-test('useAutoLog: appendFrame is a no-op until a log target is set', async () => {
-  await withLocalStorageMock(async () => {
-    const { sessionId, writes, auto } = setup();
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-    auto.appendFrame(sessionId, frame('RX', [0x41]));
-    await flush();
-
-    assert.equal(writes.length, 0, 'nothing appended when auto-log disabled');
-  });
+test('useAutoLog: fixed debounce/threshold constants and display format mapping', () => {
+  assert.equal(AUTO_LOG_DEBOUNCE_MS, 100);
+  assert.equal(AUTO_LOG_IMMEDIATE_FLUSH_BYTES, 64 * 1024);
+  assert.equal(autoLogFormatForDisplayMode('HEX'), 'hex');
+  assert.equal(autoLogFormatForDisplayMode('HEXASCII'), 'hex');
+  assert.equal(autoLogFormatForDisplayMode('ASCII'), 'text');
+  assert.equal(autoLogFormatForDisplayMode('UTF8'), 'text');
+  assert.equal(autoLogFormatForDisplayMode('ANSI'), 'text');
 });
 
-test('useAutoLog: after enable, frames are formatted and appended in arrival order', async () => {
+test('useAutoLog: begin consumes the grant once and freezes the selected format', async () => {
   await withLocalStorageMock(async () => {
-    const { sessions, app, sessionId, writes, auto } = setup();
-    sessions.setAutoLogTarget(sessionId, '/tmp/log.txt');
+    const { app, sessionId, calls, auto } = setup({ debounceMs: 10 });
+    app.setDisplayMode('HEX');
+    assert.equal(await auto.enable(sessionId), `${sessionId}.txt`);
     app.setDisplayMode('ASCII');
+    auto.appendFrame(sessionId, frame('RX', 1));
+    await auto.disable(sessionId);
 
-    auto.appendFrame(sessionId, frame('RX', [0x41, 0x42], 1));
-    auto.appendFrame(sessionId, frame('TX', [0x43], 2));
-    await flush();
-
-    assert.equal(writes.length, 2, 'both frames appended');
-    assert.equal(writes[0].path, '/tmp/log.txt');
-    assert.equal(writes[1].path, '/tmp/log.txt');
-    // ASCII representation of 0x41 0x42 is "AB".
-    assert.equal(writes[0].line.includes('AB'), true, 'RX frame formatted as ASCII');
-    assert.equal(writes[1].line.includes('C'), true, 'TX frame formatted as ASCII');
-    // Each line is timestamped and tagged with direction then terminated by \n.
-    assert.equal(writes[0].line.endsWith('\n'), true, 'line terminated');
-    // Ordering: the RX frame lands before the TX frame (serialized chain).
-    assert.equal(writes[0].line.includes('RX'), true);
-    assert.equal(writes[1].line.includes('TX'), true);
+    assert.deepEqual(calls.begins, [{ token: `grant-${sessionId}`, format: 'hex' }]);
+    assert.equal(calls.appends.length, 1);
+    assert.deepEqual(calls.finishes, [`log-${sessionId}`]);
+    assert.deepEqual(calls.aborts, []);
+    assert.deepEqual(calls.revoked, [], 'a consumed grant is not sent again');
   });
 });
 
-test('useAutoLog: disable stops further appends (queued writes still drain)', async () => {
+test('useAutoLog: a small burst waits for the debounce window', async () => {
   await withLocalStorageMock(async () => {
-    const { sessions, sessionId, writes, auto } = setup();
-    sessions.setAutoLogTarget(sessionId, '/tmp/log.txt');
-
-    auto.appendFrame(sessionId, frame('RX', [0x41]));
-    auto.disable(sessionId);
-    auto.appendFrame(sessionId, frame('RX', [0x42], 2));
-    await flush();
-
-    assert.equal(writes.length, 1, 'only the frame before disable is appended');
-    assert.equal(sessions.sessions[0].autoLogEnabled, false, 'flag cleared');
-    assert.equal(sessions.sessions[0].logPath, null, 'path cleared');
+    const { sessionId, calls, auto } = setup({ debounceMs: 30 });
+    await auto.enable(sessionId);
+    auto.appendFrame(sessionId, frame('RX', 1));
+    await delay(10);
+    assert.equal(calls.appends.length, 0);
+    await delay(30);
+    assert.equal(calls.appends.length, 1);
+    await auto.disable(sessionId);
   });
 });
 
-test('useAutoLog: a failing append does not break the chain (subsequent appends still land)', async () => {
+test('useAutoLog: reaching 64 KiB flushes immediately without waiting for debounce', async () => {
   await withLocalStorageMock(async () => {
-    let first = true;
-    const { sessions, sessionId, writes, auto } = setup({
-      appendLog: async () => {
-        if (first) {
-          first = false;
-          throw new Error('disk full');
-        }
-        writes.push({ path: 'recovered', line: 'ok' });
+    const { sessionId, calls, auto } = setup({ debounceMs: 1_000 });
+    await auto.enable(sessionId);
+    auto.appendFrame(sessionId, frame('RX', AUTO_LOG_IMMEDIATE_FLUSH_BYTES));
+    await flush();
+    assert.equal(calls.appends.length, 1);
+    await auto.disable(sessionId);
+  });
+});
+
+test('useAutoLog: batches preserve order and obey frame and raw-byte limits', async () => {
+  await withLocalStorageMock(async () => {
+    const { sessionId, calls, auto } = setup({ debounceMs: 1_000 });
+    await auto.enable(sessionId);
+    for (let index = 0; index < 5; index += 1) {
+      auto.appendFrame(sessionId, frame(index % 2 ? 'TX' : 'RX', 60 * 1024, index));
+    }
+    await auto.disable(sessionId);
+
+    assert.deepEqual(
+      calls.appends.flatMap((call) => call.frames.map((item) => item.id)),
+      ['f0', 'f1', 'f2', 'f3', 'f4'],
+    );
+    assert.ok(calls.appends.every((call) => call.frames.length <= AUTO_LOG_MAX_BATCH_FRAMES));
+    assert.ok(
+      calls.appends.every(
+        (call) =>
+          call.frames.reduce((total, item) => total + item.data.length, 0) <=
+          AUTO_LOG_MAX_BATCH_BYTES,
+      ),
+    );
+  });
+});
+
+test('useAutoLog: the 256-frame cap splits even zero-byte frames', async () => {
+  await withLocalStorageMock(async () => {
+    const { sessionId, calls, auto } = setup({ debounceMs: 1_000 });
+    await auto.enable(sessionId);
+    for (let index = 0; index <= AUTO_LOG_MAX_BATCH_FRAMES; index += 1) {
+      auto.appendFrame(sessionId, frame('RX', 0, index));
+    }
+    await auto.disable(sessionId);
+    assert.deepEqual(
+      calls.appends.map((call) => call.frames.length),
+      [AUTO_LOG_MAX_BATCH_FRAMES, 1],
+    );
+  });
+});
+
+test('useAutoLog: entry overflow aborts and clears the bounded queue once', async () => {
+  await withLocalStorageMock(async () => {
+    const { sessions, sessionId, calls, auto } = setup({ debounceMs: 1_000 });
+    await auto.enable(sessionId);
+    for (let index = 0; index <= AUTO_LOG_MAX_QUEUED_ENTRIES; index += 1) {
+      auto.appendFrame(sessionId, frame('RX', 0, index));
+    }
+    await flush();
+    assert.equal(calls.appends.length, 0);
+    assert.deepEqual(calls.aborts, [`log-${sessionId}`]);
+    assert.equal(sessions.sessions[0].autoLogEnabled, false);
+  });
+});
+
+test('useAutoLog: append failure disables and aborts the backend session once', async () => {
+  await withLocalStorageMock(async () => {
+    const { sessions, sessionId, calls, auto } = setup({
+      debounceMs: 1,
+      client: { append: async () => Promise.reject(new Error('disk full')) },
+    });
+    await auto.enable(sessionId);
+    auto.appendFrame(sessionId, frame('RX', 1));
+    await delay(10);
+    assert.deepEqual(calls.aborts, [`log-${sessionId}`]);
+    assert.deepEqual(calls.finishes, []);
+    assert.equal(sessions.sessions[0].autoLogEnabled, false);
+  });
+});
+
+test('useAutoLog: append timeout is terminal and remains bounded', async () => {
+  await withLocalStorageMock(async () => {
+    const never = new Promise<never>(() => undefined);
+    const { sessionId, calls, auto } = setup({
+      debounceMs: 1,
+      appendTimeoutMs: 5,
+      client: { append: async () => never },
+    });
+    await auto.enable(sessionId);
+    auto.appendFrame(sessionId, frame('RX', 1));
+    await delay(15);
+    assert.deepEqual(calls.aborts, [`log-${sessionId}`]);
+    assert.deepEqual(calls.finishes, []);
+  });
+});
+
+test('useAutoLog: a frame over the backend batch limit aborts before IPC', async () => {
+  await withLocalStorageMock(async () => {
+    const { sessionId, calls, auto } = setup({ debounceMs: 1_000 });
+    await auto.enable(sessionId);
+    auto.appendFrame(sessionId, frame('RX', AUTO_LOG_MAX_BATCH_BYTES + 1));
+    await flush();
+    assert.equal(calls.appends.length, 0);
+    assert.deepEqual(calls.aborts, [`log-${sessionId}`]);
+  });
+});
+
+test('useAutoLog: graceful disable stops new frames, drains, then finishes', async () => {
+  await withLocalStorageMock(async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { sessionId, calls, auto } = setup({
+      debounceMs: 1_000,
+      client: {
+        append: async (_logId, batch) => {
+          await blocked;
+          return {
+            frames: batch.length,
+            rawBytes: batch.reduce((total, item) => total + item.data.length, 0),
+          };
+        },
       },
     });
-    sessions.setAutoLogTarget(sessionId, '/tmp/log.txt');
-
-    auto.appendFrame(sessionId, frame('RX', [0x41]));
-    auto.appendFrame(sessionId, frame('RX', [0x42], 2));
+    await auto.enable(sessionId);
+    auto.appendFrame(sessionId, frame('RX', 1));
+    const disabling = auto.disable(sessionId);
     await flush();
-    await flush();
-
-    // The first append failed (caught), but the second still ran — the chain
-    // must not get stuck on a rejected promise.
-    assert.equal(writes.length, 1, 'recovery append landed after a failure');
+    assert.deepEqual(calls.finishes, []);
+    auto.appendFrame(sessionId, frame('TX', 1, 2));
+    release();
+    await disabling;
+    assert.equal(calls.appends.length, 1);
+    assert.deepEqual(calls.finishes, [`log-${sessionId}`]);
   });
 });
 
-test('useAutoLog: appends for different sessions are independent chains', async () => {
+test('useAutoLog: graceful drain is bounded and late append rejection stays observed', async () => {
   await withLocalStorageMock(async () => {
-    const { sessions, sessionId: s1, writes, auto } = setup();
-    const s2 = sessions.createSession('COM2', cfg);
-    sessions.setAutoLogTarget(s1, '/tmp/a.txt');
-    sessions.setAutoLogTarget(s2, '/tmp/b.txt');
-
-    auto.appendFrame(s1, frame('RX', [1]));
-    auto.appendFrame(s2, frame('RX', [2]));
+    const never = new Promise<never>(() => undefined);
+    const { sessionId, calls, auto } = setup({
+      debounceMs: 1_000,
+      drainTimeoutMs: 10,
+      client: { append: async () => never },
+    });
+    await auto.enable(sessionId);
+    auto.appendFrame(sessionId, frame('RX', 1));
+    const started = Date.now();
+    await auto.disable(sessionId);
+    assert.ok(Date.now() - started < 200, 'disable must honor the configured drain deadline');
     await flush();
+    assert.deepEqual(calls.aborts, [`log-${sessionId}`]);
+    assert.deepEqual(calls.finishes, []);
+  });
+});
 
-    assert.equal(writes.length, 2);
-    assert.deepEqual(
-      writes.map((w) => w.path).sort(),
-      ['/tmp/a.txt', '/tmp/b.txt'],
-      'each session wrote to its own path',
-    );
+test('useAutoLog: stale dialog grants are revoked, while stale begun sessions are aborted', async () => {
+  await withLocalStorageMock(async () => {
+    let resolveDialog!: (grant: SaveTargetGrant) => void;
+    const dialog = new Promise<SaveTargetGrant>((resolve) => {
+      resolveDialog = resolve;
+    });
+    const first = setup({ requestTarget: async () => dialog });
+    const enabling = first.auto.enable(first.sessionId);
+    await first.auto.disable(first.sessionId);
+    resolveDialog({ token: 'late-grant', displayName: 'late.txt' });
+    assert.equal(await enabling, null);
+    assert.deepEqual(first.calls.revoked, ['late-grant']);
+
+    let releaseBegin!: () => void;
+    const beginBlocked = new Promise<void>((resolve) => {
+      releaseBegin = resolve;
+    });
+    const second = setup({
+      client: {
+        begin: async () => {
+          await beginBlocked;
+          return { logId: 'late-log' };
+        },
+      },
+    });
+    const secondEnable = second.auto.enable(second.sessionId);
+    await flush();
+    const disabling = second.auto.disable(second.sessionId);
+    releaseBegin();
+    assert.equal(await secondEnable, null);
+    await disabling;
+    assert.deepEqual(second.calls.aborts, ['late-log']);
+  });
+});
+
+test('useAutoLog: failed grant revocation is contained and never resurrects a stale log', async () => {
+  await withLocalStorageMock(async () => {
+    let resolveDialog!: (grant: SaveTargetGrant) => void;
+    const dialog = new Promise<SaveTargetGrant>((resolve) => {
+      resolveDialog = resolve;
+    });
+    const { sessionId, calls, auto } = setup({
+      requestTarget: async () => dialog,
+      revokeTarget: async () => {
+        throw new Error('revoke unavailable');
+      },
+      terminalTimeoutMs: 20,
+    });
+    const enabling = auto.enable(sessionId);
+    await auto.disable(sessionId);
+    resolveDialog({ token: 'stale-grant', displayName: 'stale.txt' });
+
+    assert.equal(await enabling, null);
+    assert.deepEqual(calls.begins, []);
+  });
+});
+
+test('useAutoLog: a begin failure revokes its unused grant and leaves the store disabled', async () => {
+  await withLocalStorageMock(async () => {
+    const { sessions, sessionId, calls, auto } = setup({
+      client: {
+        begin: async () => {
+          throw new Error('disk unavailable');
+        },
+      },
+    });
+
+    assert.equal(await auto.enable(sessionId), null);
+    assert.deepEqual(calls.revoked, [`grant-${sessionId}`]);
+    assert.equal(sessions.sessions[0].autoLogEnabled, false);
+  });
+});
+
+test('useAutoLog: external toggle-off drains the active log, and inactive disable just clears the target', async () => {
+  await withLocalStorageMock(async () => {
+    const active = setup({ debounceMs: 1 });
+    await active.auto.enable(active.sessionId);
+    active.sessions.setAutoLogTarget(active.sessionId, null);
+    active.auto.appendFrame(active.sessionId, frame('RX', 1));
+    await delay(10);
+    assert.deepEqual(active.calls.finishes, [`log-${active.sessionId}`]);
+
+    const inactive = setup();
+    inactive.sessions.setAutoLogTarget(inactive.sessionId, 'old.txt');
+    await inactive.auto.disable(inactive.sessionId);
+    assert.equal(inactive.sessions.sessions[0].autoLogEnabled, false);
+    assert.deepEqual(inactive.calls.finishes, []);
+  });
+});
+
+test('useAutoLog: a replacement enable that becomes stale during previous cleanup revokes only its new grant', async () => {
+  await withLocalStorageMock(async () => {
+    let releaseFinish!: () => void;
+    const finishBlocked = new Promise<void>((resolve) => {
+      releaseFinish = resolve;
+    });
+    let grantCount = 0;
+    const { sessionId, calls, auto } = setup({
+      requestTarget: async () => ({ token: `grant-${grantCount++}`, displayName: 'capture.txt' }),
+      client: { finish: async () => finishBlocked },
+      terminalTimeoutMs: 50,
+    });
+    await auto.enable(sessionId);
+    const replacing = auto.enable(sessionId);
+    await flush();
+    const disabling = auto.disable(sessionId);
+    releaseFinish();
+
+    assert.equal(await replacing, null);
+    await disabling;
+    assert.deepEqual(calls.revoked, ['grant-1']);
   });
 });

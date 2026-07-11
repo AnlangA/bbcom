@@ -1,14 +1,16 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   appendFrameToSession,
   appendIdentifiedItem,
+  frameBuffersByteLength,
   flushPausedFramesToLive,
   normalizeLogAiFrameLimit,
   patchIdentifiedItem,
   removeIdentifiedItem,
   resetSessionFrames,
   trimFrameBuffer,
+  trimSessionsToGlobalByteLimit,
   upsertSendHistory,
 } from '../../src/lib/session-store-helpers.ts';
 import { createSessionRecord } from '../../src/lib/session-persistence.ts';
@@ -63,6 +65,28 @@ test('appendFrameToSession routes frames by pause state and updates counters', (
   assert.equal(session.txFrames, 1);
 });
 
+test('appendFrameToSession enforces a hard combined live/paused byte limit', () => {
+  const session = createSessionRecord('s1', 'COM1', cfg);
+  const first = appendFrameToSession(session, frame('a', 'RX', [1, 2, 3]), 10, {
+    maxBytes: 4,
+    currentBytes: 0,
+  });
+  assert.deepEqual(first, { retainedBytes: 3, droppedBytes: 0, droppedFrames: 0 });
+
+  session.capturePaused = true;
+  const second = appendFrameToSession(session, frame('b', 'RX', [4, 5, 6]), 10, {
+    maxBytes: 4,
+    currentBytes: first.retainedBytes,
+  });
+  assert.deepEqual(second, { retainedBytes: 3, droppedBytes: 3, droppedFrames: 1 });
+  assert.deepEqual(session.frames, []);
+  assert.deepEqual(
+    session.pausedFrames.map((item) => item.id),
+    ['b'],
+  );
+  assert.equal(frameBuffersByteLength(session), 3);
+});
+
 test('flushPausedFramesToLive preserves order and trims the live tail', () => {
   const session = createSessionRecord('s1', 'COM1', cfg, {
     frames: [frame('a', 'RX', [1]), frame('b', 'RX', [2])],
@@ -76,6 +100,29 @@ test('flushPausedFramesToLive preserves order and trims the live tail', () => {
     ['c', 'd'],
   );
   assert.equal(session.pausedFrames.length, 0);
+});
+
+test('trimSessionsToGlobalByteLimit drops globally oldest frames', () => {
+  const first = createSessionRecord('s1', 'COM1', cfg, {
+    frames: [{ ...frame('a', 'RX', [1, 2, 3]), timestamp: 1 }],
+  });
+  const second = createSessionRecord('s2', 'COM2', cfg, {
+    frames: [{ ...frame('b', 'RX', [4, 5, 6]), timestamp: 2 }],
+    pausedFrames: [{ ...frame('c', 'RX', [7, 8, 9]), timestamp: 3 }],
+  });
+
+  const result = trimSessionsToGlobalByteLimit([first, second], 9, 5);
+  assert.equal(result.retainedBytes, 3);
+  assert.deepEqual(
+    [...result.droppedBytesBySession],
+    [
+      ['s1', 3],
+      ['s2', 3],
+    ],
+  );
+  assert.deepEqual(first.frames, []);
+  assert.deepEqual(second.frames, []);
+  assert.equal(second.pausedFrames[0].id, 'c');
 });
 
 test('resetSessionFrames clears live and paused buffers plus counters', () => {

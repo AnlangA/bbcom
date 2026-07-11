@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   findFrameHighlight,
@@ -37,7 +37,10 @@ test('text highlight rules match case-insensitively and respect direction', () =
     color: 'red',
   };
   assert.equal(highlightRuleMatchesFrame(rule, frame('RX', 'error: boot failed'), accessors), true);
-  assert.equal(highlightRuleMatchesFrame(rule, frame('TX', 'error: boot failed'), accessors), false);
+  assert.equal(
+    highlightRuleMatchesFrame(rule, frame('TX', 'error: boot failed'), accessors),
+    false,
+  );
 });
 
 test('hex highlight rules match continuous bytes', () => {

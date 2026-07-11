@@ -1,195 +1,207 @@
-use crate::export::formatter;
+//! Thin Tauri command adapters for bounded export services.
+
+use crate::commands::file_grants::{FileGrantManager, ensure_main_window};
+use crate::export::session::{
+    ExportAppendStats, ExportFinishStats, ExportSessionManager, MAX_EXPORT_BYTES, MAX_EXPORT_FRAMES,
+};
 use crate::models::data_frame::DataFrame;
-use crate::models::errors::AppError;
+use crate::models::ipc_error::{AppErrorCode, IpcError, from_app_error};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use tauri::{State, WebviewWindow};
 
-const MAX_EXPORT_FRAMES: usize = 100_000;
+pub use crate::export::ExportFormat;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ExportFormat {
-    #[serde(alias = "txt")]
-    TxtHex,
-    TxtAscii,
-    Csv,
-    Jsonl,
-    Bin,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ExportRequest {
-    pub frames: Vec<DataFrame>,
-    pub format: ExportFormat,
-    pub path: String,
-}
-
-#[tauri::command]
-pub async fn export_data(request: ExportRequest) -> Result<(), AppError> {
-    if request.frames.len() > MAX_EXPORT_FRAMES {
-        return Err(AppError::ValidationError {
-            message: format!(
-                "too many frames: {} (max {})",
-                request.frames.len(),
-                MAX_EXPORT_FRAMES
-            ),
-            field: "frames".to_string(),
-        });
-    }
-
-    // validate_export_path issues blocking fs stat syscalls (is_dir / parent.exists);
-    // run them off the tokio async worker so a slow/network mount can't stall it.
-    let path_for_validation = request.path.clone();
-    let fmt = request.format;
-    let validation =
-        tokio::task::spawn_blocking(move || validate_export_path(&path_for_validation, fmt))
-            .await
-            .map_err(|e| AppError::ExportError {
-                message: format!("export validation task failed: {e}"),
-                format: "unknown".to_string(),
-                path: request.path.clone(),
-            })?;
-    validation?;
-
-    formatter::export(&request.frames, &request.format, &request.path).await
-}
-
-/// Capture-file export. The frontend serializes the capture to a JSONL temp
-/// file (one `DataFrame` per line — the same shape the JSONL export emits) and
-/// passes only the temp-file path through IPC, instead of pushing up to 100 000
-/// `DataFrame` objects (each with a `data: Vec<u8>` that serde expands to a JSON
-/// number array) through `invoke`. The Rust side reads and parses the file in a
-/// `spawn_blocking` task, then runs the normal formatter.
-///
-/// This avoids the dominant export cost — serializing the `frames` argument
-/// across the IPC boundary — at the price of one temp-file write+read. For a
-/// 10k-frame capture the temp file is far cheaper to transfer than 10k JSON
-/// objects.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CaptureFileExportRequest {
-    /// Path to a JSONL temp file written by the frontend (one DataFrame/line).
-    pub capture_file: String,
+pub struct BeginExportRequest {
     pub format: ExportFormat,
-    pub path: String,
+    pub token: String,
+    pub expected_frames: usize,
+    pub expected_raw_bytes: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppendExportBatchRequest {
+    pub export_id: String,
+    pub frames: Vec<DataFrame>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSessionRequest {
+    pub export_id: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BeginExportResponse {
+    pub export_id: String,
+}
+
+async fn begin_export_from_label(
+    label: &str,
+    grants: &FileGrantManager,
+    manager: &ExportSessionManager,
+    request: BeginExportRequest,
+) -> Result<BeginExportResponse, IpcError> {
+    const OPERATION: &str = "begin_export";
+    ensure_main_window(label).map_err(|error| from_app_error(&error, OPERATION))?;
+    validate_expected_totals(
+        request.expected_frames,
+        request.expected_raw_bytes,
+        OPERATION,
+    )?;
+    let format = request.format;
+    let path = grants
+        .consume_export(&request.token, format)
+        .await
+        .map_err(|error| from_app_error(&error, OPERATION))?;
+    manager
+        .begin(format, path)
+        .await
+        .map(|export_id| BeginExportResponse { export_id })
+        .map_err(|error| from_app_error(&error, OPERATION))
 }
 
 #[tauri::command]
-pub async fn export_data_from_capture_file(
-    request: CaptureFileExportRequest,
-) -> Result<(), AppError> {
-    let fmt = request.format;
-    let target = request.path.clone();
-    let capture_file = request.capture_file.clone();
-
-    // Validate the target path + read+parse the capture file off the async
-    // worker (blocking fs + parse work).
-    let parsed = tokio::task::spawn_blocking(move || -> Result<Vec<DataFrame>, AppError> {
-        validate_export_path(&target, fmt)?;
-        read_capture_file(&capture_file, &target)
-    })
-    .await
-    .map_err(|e| AppError::ExportError {
-        message: format!("capture-file export task failed: {e}"),
-        format: "unknown".to_string(),
-        path: request.path.clone(),
-    })??;
-
-    if parsed.len() > MAX_EXPORT_FRAMES {
-        return Err(AppError::ValidationError {
-            message: format!(
-                "too many frames: {} (max {})",
-                parsed.len(),
-                MAX_EXPORT_FRAMES
-            ),
-            field: "frames".to_string(),
-        });
-    }
-
-    formatter::export(&parsed, &request.format, &request.path).await
+pub async fn begin_export(
+    window: WebviewWindow,
+    grants: State<'_, FileGrantManager>,
+    manager: State<'_, ExportSessionManager>,
+    request: BeginExportRequest,
+) -> Result<BeginExportResponse, IpcError> {
+    begin_export_from_label(window.label(), grants.inner(), manager.inner(), request).await
 }
 
-/// Read a JSONL capture file (one `DataFrame` per line) into a `Vec<DataFrame>`.
-/// Empty lines are skipped; a malformed line yields an ExportError. The `target`
-/// is used only for a more helpful error message.
-fn read_capture_file(capture_file: &str, target: &str) -> Result<Vec<DataFrame>, AppError> {
-    let content = std::fs::read_to_string(capture_file).map_err(|e| AppError::ExportError {
-        message: format!("failed to read capture file '{capture_file}': {e}"),
-        format: "jsonl".to_string(),
-        path: target.to_string(),
-    })?;
-    let mut frames = Vec::new();
-    for (i, line) in content.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let frame: DataFrame =
-            serde_json::from_str(trimmed).map_err(|e| AppError::ExportError {
-                message: format!("capture file line {} is not a valid frame: {e}", i + 1),
-                format: "jsonl".to_string(),
-                path: target.to_string(),
-            })?;
-        frames.push(frame);
+fn validate_expected_totals(
+    expected_frames: usize,
+    expected_raw_bytes: usize,
+    operation: &'static str,
+) -> Result<(), IpcError> {
+    if expected_frames == 0 {
+        return Err(IpcError::invalid_input(operation, "expectedFrames"));
     }
-    Ok(frames)
-}
-
-fn validate_export_path(path: &str, format: ExportFormat) -> Result<(), AppError> {
-    if path.trim().is_empty() {
-        return Err(AppError::ValidationError {
-            message: "导出路径不能为空".to_string(),
-            field: "path".to_string(),
-        });
+    if expected_frames > MAX_EXPORT_FRAMES {
+        return Err(IpcError::new(
+            AppErrorCode::LimitExceeded,
+            "error.limit_exceeded",
+            false,
+            operation,
+        )
+        .with_field("expectedFrames")
+        .with_size(MAX_EXPORT_FRAMES, expected_frames));
     }
-
-    let path_ref = Path::new(path);
-    if path_ref.is_dir() {
-        return Err(AppError::ValidationError {
-            message: "导出路径不能是目录".to_string(),
-            field: "path".to_string(),
-        });
+    if expected_raw_bytes > MAX_EXPORT_BYTES {
+        return Err(IpcError::new(
+            AppErrorCode::LimitExceeded,
+            "error.limit_exceeded",
+            false,
+            operation,
+        )
+        .with_field("expectedRawBytes")
+        .with_size(MAX_EXPORT_BYTES, expected_raw_bytes));
     }
-
-    if let Some(parent) = path_ref.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            return Err(AppError::ValidationError {
-                message: "导出目录不存在".to_string(),
-                field: "path".to_string(),
-            });
-        }
-    }
-
-    let expected_ext = format.extension();
-    let ext = path_ref
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if !ext.is_empty() && ext != expected_ext {
-        return Err(AppError::ValidationError {
-            message: format!("导出文件扩展名应为 .{expected_ext}"),
-            field: "path".to_string(),
-        });
-    }
-
     Ok(())
 }
 
-impl ExportFormat {
-    pub fn extension(self) -> &'static str {
-        match self {
-            ExportFormat::TxtHex | ExportFormat::TxtAscii => "txt",
-            ExportFormat::Csv => "csv",
-            ExportFormat::Jsonl => "jsonl",
-            ExportFormat::Bin => "bin",
-        }
-    }
+async fn append_export_batch_from_label(
+    label: &str,
+    manager: &ExportSessionManager,
+    request: AppendExportBatchRequest,
+) -> Result<ExportAppendStats, IpcError> {
+    const OPERATION: &str = "append_export_batch";
+    ensure_main_window(label).map_err(|error| from_app_error(&error, OPERATION))?;
+    manager
+        .append(&request.export_id, &request.frames)
+        .await
+        .map_err(|error| from_app_error(&error, OPERATION))
+}
+
+#[tauri::command]
+pub async fn append_export_batch(
+    window: WebviewWindow,
+    manager: State<'_, ExportSessionManager>,
+    request: AppendExportBatchRequest,
+) -> Result<ExportAppendStats, IpcError> {
+    append_export_batch_from_label(window.label(), manager.inner(), request).await
+}
+
+async fn finish_export_from_label(
+    label: &str,
+    manager: &ExportSessionManager,
+    request: ExportSessionRequest,
+) -> Result<ExportFinishStats, IpcError> {
+    const OPERATION: &str = "finish_export";
+    ensure_main_window(label).map_err(|error| from_app_error(&error, OPERATION))?;
+    manager
+        .finish(&request.export_id)
+        .await
+        .map_err(|error| from_app_error(&error, OPERATION))
+}
+
+#[tauri::command]
+pub async fn finish_export(
+    window: WebviewWindow,
+    manager: State<'_, ExportSessionManager>,
+    request: ExportSessionRequest,
+) -> Result<ExportFinishStats, IpcError> {
+    finish_export_from_label(window.label(), manager.inner(), request).await
+}
+
+async fn abort_export_from_label(
+    label: &str,
+    manager: &ExportSessionManager,
+    request: ExportSessionRequest,
+) -> Result<(), IpcError> {
+    const OPERATION: &str = "abort_export";
+    ensure_main_window(label).map_err(|error| from_app_error(&error, OPERATION))?;
+    manager
+        .abort(&request.export_id)
+        .await
+        .map_err(|error| from_app_error(&error, OPERATION))
+}
+
+#[tauri::command]
+pub async fn abort_export(
+    window: WebviewWindow,
+    manager: State<'_, ExportSessionManager>,
+    request: ExportSessionRequest,
+) -> Result<(), IpcError> {
+    abort_export_from_label(window.label(), manager.inner(), request).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::data_frame::{DataFrame, Direction};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TARGET_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn target_path(extension: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "bbcom-export-command-{}-{nanos}-{}.{}",
+            std::process::id(),
+            TARGET_COUNTER.fetch_add(1, Ordering::Relaxed),
+            extension
+        ))
+    }
+
+    fn frame() -> DataFrame {
+        DataFrame {
+            id: "frame-1".to_string(),
+            direction: Direction::Tx,
+            timestamp: 0.0,
+            data: vec![0x41],
+        }
+    }
 
     #[test]
     fn deserializes_frontend_export_formats() {
@@ -208,14 +220,221 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_export_path() {
-        let err = validate_export_path("", ExportFormat::Csv).unwrap_err();
-        assert!(matches!(err, AppError::ValidationError { field, .. } if field == "path"));
+    fn begin_request_accepts_only_an_opaque_token() {
+        let request: BeginExportRequest = serde_json::from_str(
+            r#"{"format":"csv","token":"opaque-grant","expectedFrames":0,"expectedRawBytes":0}"#,
+        )
+        .unwrap();
+        assert_eq!(request.format, ExportFormat::Csv);
+        assert_eq!(request.token, "opaque-grant");
+        assert!(
+            serde_json::from_str::<BeginExportRequest>(
+                r#"{"format":"csv","path":"C:\\unsafe.csv"}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
-    fn rejects_mismatched_extension() {
-        let err = validate_export_path("capture.txt", ExportFormat::Csv).unwrap_err();
-        assert!(matches!(err, AppError::ValidationError { field, .. } if field == "path"));
+    fn expected_totals_are_required_and_hard_bounded() {
+        const OPERATION: &str = "begin_export";
+        assert!(
+            serde_json::from_str::<BeginExportRequest>(
+                r#"{"format":"csv","token":"opaque-grant"}"#
+            )
+            .is_err()
+        );
+        assert!(validate_expected_totals(0, 0, OPERATION).is_err());
+        assert!(validate_expected_totals(MAX_EXPORT_FRAMES, MAX_EXPORT_BYTES, OPERATION,).is_ok());
+        let frames = validate_expected_totals(MAX_EXPORT_FRAMES + 1, MAX_EXPORT_BYTES, OPERATION)
+            .unwrap_err();
+        assert_eq!(frames.code, AppErrorCode::LimitExceeded);
+        assert_eq!(frames.field, Some("expectedFrames"));
+        assert_eq!(frames.limit, Some(MAX_EXPORT_FRAMES));
+        assert_eq!(frames.actual, Some(MAX_EXPORT_FRAMES + 1));
+        let bytes = validate_expected_totals(MAX_EXPORT_FRAMES, MAX_EXPORT_BYTES + 1, OPERATION)
+            .unwrap_err();
+        assert_eq!(bytes.field, Some("expectedRawBytes"));
+        assert_eq!(bytes.limit, Some(MAX_EXPORT_BYTES));
+        assert_eq!(bytes.actual, Some(MAX_EXPORT_BYTES + 1));
+    }
+
+    #[test]
+    fn export_responses_use_the_fixed_camel_case_contract() {
+        let begin = serde_json::to_value(BeginExportResponse {
+            export_id: "0123456789abcdef0123456789abcdef".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            begin,
+            serde_json::json!({"exportId":"0123456789abcdef0123456789abcdef"})
+        );
+
+        let append = serde_json::to_value(ExportAppendStats {
+            total_frames: 2,
+            total_raw_bytes: 3,
+        })
+        .unwrap();
+        assert_eq!(
+            append,
+            serde_json::json!({"totalFrames":2,"totalRawBytes":3})
+        );
+
+        let finish = serde_json::to_value(ExportFinishStats {
+            frames: 2,
+            raw_bytes: 3,
+            output_bytes: 9,
+            duration_ms: 4,
+        })
+        .unwrap();
+        assert_eq!(
+            finish,
+            serde_json::json!({"frames":2,"rawBytes":3,"outputBytes":9,"durationMs":4})
+        );
+    }
+
+    #[tokio::test]
+    async fn command_cores_enforce_window_grants_and_streamed_lifecycle() {
+        let grants = FileGrantManager::default();
+        let manager = ExportSessionManager::default();
+        let path = target_path("csv");
+        let token = grants
+            .issue(
+                crate::commands::file_grants::SaveTargetPurpose::ExportCsv,
+                path.clone(),
+            )
+            .await
+            .unwrap();
+        let request = BeginExportRequest {
+            format: ExportFormat::Csv,
+            token,
+            expected_frames: 1,
+            expected_raw_bytes: 1,
+        };
+        let denied = begin_export_from_label("ai-assistant", &grants, &manager, request)
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code, AppErrorCode::SecurityDenied);
+
+        let token = grants
+            .issue(
+                crate::commands::file_grants::SaveTargetPurpose::ExportCsv,
+                path.clone(),
+            )
+            .await
+            .unwrap();
+        let started = begin_export_from_label(
+            "main",
+            &grants,
+            &manager,
+            BeginExportRequest {
+                format: ExportFormat::Csv,
+                token,
+                expected_frames: 1,
+                expected_raw_bytes: 1,
+            },
+        )
+        .await
+        .unwrap();
+        let append = append_export_batch_from_label(
+            "main",
+            &manager,
+            AppendExportBatchRequest {
+                export_id: started.export_id.clone(),
+                frames: vec![frame()],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(append.total_frames, 1);
+        assert_eq!(append.total_raw_bytes, 1);
+        let finished = finish_export_from_label(
+            "main",
+            &manager,
+            ExportSessionRequest {
+                export_id: started.export_id,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(finished.frames, 1);
+        assert_eq!(finished.raw_bytes, 1);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("41"));
+        std::fs::remove_file(&path).ok();
+
+        let token = grants
+            .issue(
+                crate::commands::file_grants::SaveTargetPurpose::ExportCsv,
+                target_path("csv"),
+            )
+            .await
+            .unwrap();
+        let rejected = begin_export_from_label(
+            "main",
+            &grants,
+            &manager,
+            BeginExportRequest {
+                format: ExportFormat::Csv,
+                token,
+                expected_frames: 0,
+                expected_raw_bytes: 0,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(rejected.code, AppErrorCode::InvalidInput);
+
+        let denied_append = append_export_batch_from_label(
+            "other",
+            &manager,
+            AppendExportBatchRequest {
+                export_id: "0".repeat(32),
+                frames: vec![],
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(denied_append.code, AppErrorCode::SecurityDenied);
+        assert!(
+            abort_export_from_label(
+                "other",
+                &manager,
+                ExportSessionRequest {
+                    export_id: "0".repeat(32)
+                }
+            )
+            .await
+            .is_err()
+        );
+
+        let token = grants
+            .issue(
+                crate::commands::file_grants::SaveTargetPurpose::ExportCsv,
+                target_path("csv"),
+            )
+            .await
+            .unwrap();
+        let started = begin_export_from_label(
+            "main",
+            &grants,
+            &manager,
+            BeginExportRequest {
+                format: ExportFormat::Csv,
+                token,
+                expected_frames: 1,
+                expected_raw_bytes: 1,
+            },
+        )
+        .await
+        .unwrap();
+        abort_export_from_label(
+            "main",
+            &manager,
+            ExportSessionRequest {
+                export_id: started.export_id,
+            },
+        )
+        .await
+        .unwrap();
     }
 }

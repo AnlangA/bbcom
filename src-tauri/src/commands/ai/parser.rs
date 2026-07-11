@@ -5,6 +5,7 @@
 //! defensively isolate the JSON object, then normalize the parsed struct
 //! (trim, single-line commands, conservative risk defaulting, dedup).
 
+use crate::commands::ai::service::validate_ai_response_size;
 use crate::commands::ai::{LogAiResponse, TerminalAiResponse};
 use crate::models::errors::AppError;
 
@@ -45,6 +46,7 @@ pub(crate) fn extract_json_payload(content: &str) -> String {
 /// defaulted to `dangerous` so an unclassified (potentially destructive)
 /// command is never auto-filled into the input.
 pub(crate) fn parse_terminal_ai_response(content: &str) -> Result<TerminalAiResponse, AppError> {
+    validate_ai_response_size(content)?;
     let cleaned = extract_json_payload(content);
 
     let mut response: TerminalAiResponse =
@@ -79,6 +81,7 @@ pub(crate) fn parse_log_ai_response(
     content: &str,
     fallback_truncated: bool,
 ) -> Result<LogAiResponse, AppError> {
+    validate_ai_response_size(content)?;
     let cleaned = extract_json_payload(content);
 
     let mut response: LogAiResponse =

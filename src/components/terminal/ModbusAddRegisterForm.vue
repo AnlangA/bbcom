@@ -20,7 +20,7 @@
       />
     </span>
     <span class="col col-fc">
-      <n-select
+      <AppSelect
         :value="draft.functionCode"
         :options="fcOptions"
         size="tiny"
@@ -47,7 +47,7 @@
       />
     </span>
     <span class="col col-type">
-      <n-select
+      <AppSelect
         :value="draft.type"
         :options="typeOptionsFor(draft.functionCode)"
         size="tiny"
@@ -56,7 +56,7 @@
       />
     </span>
     <span class="col col-ch">
-      <n-select v-model:value="draft.waveformChannel" :options="channelOptions" size="tiny" />
+      <AppSelect v-model:value="draft.waveformChannel" :options="channelOptions" size="tiny" />
     </span>
     <span class="col col-rw"></span>
     <span class="col col-value"></span>
@@ -74,8 +74,9 @@
 
 <script setup lang="ts">
 import { computed, shallowReactive } from 'vue';
-import { NButton, NInput, NInputNumber, NSelect } from 'naive-ui';
-import { Plus } from 'lucide-vue-next';
+import { NButton, NInput, NInputNumber } from 'naive-ui';
+import AppSelect from '../ui/AppSelect.vue';
+import { Plus } from '@lucide/vue';
 import {
   isBitFc,
   isModbusDataCountEditable,

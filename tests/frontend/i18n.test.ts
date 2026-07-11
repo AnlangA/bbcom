@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   extraLocaleKeys,
@@ -19,6 +19,13 @@ test('t resolves the same key in English when locale is en', () => {
   setLocale('en');
   assert.equal(t('session.connect'), 'Connect');
   assert.equal(t('toolbar.export'), 'Export');
+});
+
+test('future-schema read-only recovery is visible in both locales', () => {
+  setLocale('zh');
+  assert.equal(t('persistence.readOnly.title'), '只读恢复模式');
+  setLocale('en');
+  assert.equal(t('persistence.readOnly.title'), 'Read-only recovery mode');
 });
 
 test('t falls back to English when a key is missing from the active locale', () => {

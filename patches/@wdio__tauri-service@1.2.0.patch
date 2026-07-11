@@ -1,0 +1,126 @@
+diff --git a/dist/cjs/index.js b/dist/cjs/index.js
+index 199d9ee179defe66f659ca67246db54a34e175ca..ec7810d8b4607321c09710ff064e43b642ee7b2e 100644
+--- a/dist/cjs/index.js
++++ b/dist/cjs/index.js
+@@ -18,6 +18,21 @@ var interceptor$1 = require('@wdio/native-spy/interceptor');
+ var nativeSpy = require('@wdio/native-spy');
+ var http = require('node:http');
+ 
++// @wdio/tauri-service 1.2.0 imports this helper from native-utils 2.4.0, but
++// that published native-utils build does not export it. Keep the service's
++// documented browser-mode mock synchronization by installing the element
++// override locally instead of failing during CommonJS module initialization.
++function installMockSyncOverride(browser, commandName, afterCommand) {
++    if (typeof browser.overwriteCommand !== 'function') {
++        throw new Error('WebdriverIO overwriteCommand is unavailable');
++    }
++    browser.overwriteCommand(commandName, async function (originalCommand, ...args) {
++        const result = await originalCommand(...args);
++        await afterCommand();
++        return result;
++    }, true);
++}
++
+ const log$e = nativeUtils.createLogger('tauri-service', 'utils');
+ function tryStat(path) {
+     try {
+@@ -3900,7 +3915,10 @@ class TauriWorkerService {
+         }
+     }
+     async beforeCommand(commandName, _args) {
+-        if (!this.browser || this.browser.isMultiremote) {
++        // Browser mode has no native Tauri windows. The upstream 1.2.0
++        // browser-mode path otherwise calls the native window-state command
++        // before every element lookup, producing repeated false warnings.
++        if (!this.browser || this.browser.isMultiremote || this.browser.__wdioBrowserMode__) {
+             return;
+         }
+         const browser = this.browser;
+@@ -3925,6 +3943,15 @@ class TauriWorkerService {
+      */
+     async afterSession(_config, _capabilities, _specs) {
+         log$1.debug('Cleaning up session...');
++        // WDIO has already released Chrome by this hook in browser mode, so
++        // issuing WebDriver commands to restore in-page mocks can only yield
++        // a missing-session warning. The page is gone with the session; clear
++        // the service-owned state without a protocol round-trip instead.
++        if (this.browser?.__wdioBrowserMode__) {
++            mockStore.clear();
++            clearWindowState();
++            return;
++        }
+         // Restore and clear mocks to prevent memory leaks. restoreAllMocks only
+         // accepts a single-browser context; for multiremote, iterate instances so
+         // each window's __wdio_mocks__ state is cleared. The session is being torn
+@@ -4238,7 +4265,7 @@ class TauriWorkerService {
+     overrideElementCommand(commandName) {
+         const browser = this.browser;
+         try {
+-            nativeUtils.installMockSyncOverride(browser, commandName, () => getMockUpdateScheduler(browser).schedule());
++            installMockSyncOverride(browser, commandName, () => getMockUpdateScheduler(browser).schedule());
+         }
+         catch (error) {
+             log$1.warn(`Failed to override element command '${commandName}':`, error);
+diff --git a/dist/esm/index.js b/dist/esm/index.js
+index 96bcb93875968ed51ed17cc9ceeca59eacc20bf1..167f2f02bbbffbbda48b7677a11567982555e1b8 100644
+--- a/dist/esm/index.js
++++ b/dist/esm/index.js
+@@ -3,7 +3,7 @@ import '@wdio/native-types';
+ import { statSync, existsSync, mkdirSync, chmodSync, writeFileSync, unlinkSync } from 'node:fs';
+ import { tmpdir } from 'node:os';
+ import { join, dirname } from 'node:path';
+-import { createLogger, Ok, Err, diagnosePlatform, diagnoseDisplay, diagnoseBinary, diagnoseLinuxDependencies, diagnoseDiskSpace, isErr, formatDiagnosticResults, hasTopLevelArrow, hasSemicolonOutsideQuotes, waitUntilWindowAvailable, installMockSyncOverride } from '@wdio/native-utils';
++import { createLogger, Ok, Err, diagnosePlatform, diagnoseDisplay, diagnoseBinary, diagnoseLinuxDependencies, diagnoseDiskSpace, isErr, formatDiagnosticResults, hasTopLevelArrow, hasSemicolonOutsideQuotes, waitUntilWindowAvailable } from '@wdio/native-utils';
+ import { SevereServiceError, remote } from 'webdriverio';
+ import { validateDeeplinkUrl, getPlatformCommand, executeDeeplinkCommand, closeLogWriter as closeLogWriter$1, getLogWriter as getLogWriter$1, isLogWriterInitialized as isLogWriterInitialized$1, shouldLog, createLogCapture as createLogCapture$1, DriverPool as DriverPool$1, PortManager } from '@wdio/native-core';
+ import { exec, execSync, spawn, execFileSync, execFile } from 'node:child_process';
+@@ -14,6 +14,21 @@ import { createIpcInterceptor } from '@wdio/native-spy/interceptor';
+ import { fn } from '@wdio/native-spy';
+ import http from 'node:http';
+ 
++// @wdio/tauri-service 1.2.0 imports this helper from native-utils 2.4.0, but
++// that published native-utils build does not export it. Keep the service's
++// documented browser-mode mock synchronization by installing the element
++// override locally instead of failing during ESM module initialization.
++function installMockSyncOverride(browser, commandName, afterCommand) {
++    if (typeof browser.overwriteCommand !== 'function') {
++        throw new Error('WebdriverIO overwriteCommand is unavailable');
++    }
++    browser.overwriteCommand(commandName, async function (originalCommand, ...args) {
++        const result = await originalCommand(...args);
++        await afterCommand();
++        return result;
++    }, true);
++}
++
+ const log$e = createLogger('tauri-service', 'utils');
+ function tryStat(path) {
+     try {
+@@ -3896,7 +3911,10 @@ class TauriWorkerService {
+         }
+     }
+     async beforeCommand(commandName, _args) {
+-        if (!this.browser || this.browser.isMultiremote) {
++        // Browser mode has no native Tauri windows. The upstream 1.2.0
++        // browser-mode path otherwise calls the native window-state command
++        // before every element lookup, producing repeated false warnings.
++        if (!this.browser || this.browser.isMultiremote || this.browser.__wdioBrowserMode__) {
+             return;
+         }
+         const browser = this.browser;
+@@ -3921,6 +3939,15 @@ class TauriWorkerService {
+      */
+     async afterSession(_config, _capabilities, _specs) {
+         log$1.debug('Cleaning up session...');
++        // WDIO has already released Chrome by this hook in browser mode, so
++        // issuing WebDriver commands to restore in-page mocks can only yield
++        // a missing-session warning. The page is gone with the session; clear
++        // the service-owned state without a protocol round-trip instead.
++        if (this.browser?.__wdioBrowserMode__) {
++            mockStore.clear();
++            clearWindowState();
++            return;
++        }
+         // Restore and clear mocks to prevent memory leaks. restoreAllMocks only
+         // accepts a single-browser context; for multiremote, iterate instances so
+         // each window's __wdio_mocks__ state is cleared. The session is being torn

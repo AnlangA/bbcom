@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { ref } from 'vue';
 import {
@@ -70,7 +70,12 @@ test('toContinuousHex produces lowercase space-less hex for search indexing', ()
   assert.equal(toContinuousHex(new Uint8Array([0xaa, 0xbb, 0x0c, 0xff])), 'aabb0cff');
   assert.equal(toContinuousHex(new Uint8Array()), '');
   // must equal the legacy format-then-strip path it replaces
-  assert.equal(toContinuousHex(new Uint8Array([0, 10, 255])), formatHex(new Uint8Array([0, 10, 255])).replace(/\s/g, '').toLowerCase());
+  assert.equal(
+    toContinuousHex(new Uint8Array([0, 10, 255])),
+    formatHex(new Uint8Array([0, 10, 255]))
+      .replace(/\s/g, '')
+      .toLowerCase(),
+  );
 });
 
 test('formats text, timestamps, and byte counts', () => {
@@ -121,6 +126,7 @@ test('computeSendByteCount counts HEX payload bytes incl. appended checksum', ()
   assert.equal(computeSendByteCount('AA BB', true, 'none', 'none'), 2);
   assert.equal(computeSendByteCount('AA BB', true, 'CHECKSUM', 'none'), 3); // 2 + 1
   assert.equal(computeSendByteCount('AA BB', true, 'CRC16', 'none'), 4); // 2 + 2
+  assert.equal(computeSendByteCount('AA BB', true, 'CRC16_MODBUS', 'none'), 4); // 2 + 2
   assert.equal(computeSendByteCount('AA BB', true, 'CRC32', 'none'), 6); // 2 + 4
   // empty input is zero
   assert.equal(computeSendByteCount('   ', true, 'none', 'none'), 0);
@@ -245,13 +251,22 @@ test('formatFrame must not serve stale output for a stable id with growing data 
     displayMode: ref('UTF8'),
     ansiColorEnabled: ref(false),
   });
-  const f1: DataFrame = { id: 'merged-1', direction: 'RX', timestamp: 0, data: encodeUtf8('hello') };
-  const f2: DataFrame = { id: 'merged-1', direction: 'RX', timestamp: 0, data: encodeUtf8('hello world') };
+  const f1: DataFrame = {
+    id: 'merged-1',
+    direction: 'RX',
+    timestamp: 0,
+    data: encodeUtf8('hello'),
+  };
+  const f2: DataFrame = {
+    id: 'merged-1',
+    direction: 'RX',
+    timestamp: 0,
+    data: encodeUtf8('hello world'),
+  };
 
   assert.equal(formatFrame(f1), 'hello');
   assert.equal(formatFrame(f2), 'hello world');
 });
-
 
 test('stripAnsiEscapes removes CSI color/control sequences', () => {
   const red = '\x1b[31m';

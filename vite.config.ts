@@ -1,49 +1,7 @@
-import { defineConfig } from "vite";
-import vue from "@vitejs/plugin-vue";
-import { resolve } from "path";
-import { visualizer } from "rollup-plugin-visualizer";
-
-const naiveUiVendorPackages = [
-  "@css-render/plugin-bem",
-  "@css-render/vue3-ssr",
-  "async-validator",
-  "css-render",
-  "date-fns",
-  "date-fns-tz",
-  "evtd",
-  "lodash-es",
-  "seemly",
-  "treemate",
-  "vdirs",
-  "vooks",
-  "vueuc",
-];
-
-function vendorChunk(id: string): string | undefined {
-  const normalizedId = id.replaceAll("\\", "/");
-
-  if (!normalizedId.includes("/node_modules/")) {
-    return undefined;
-  }
-
-  if (normalizedId.includes("/node_modules/naive-ui/")) {
-    return "naive-ui";
-  }
-
-  if (naiveUiVendorPackages.some((pkg) => normalizedId.includes(`/node_modules/${pkg}/`))) {
-    return "naive-ui-vendor";
-  }
-
-  if (normalizedId.includes("/node_modules/lucide-vue-next/")) {
-    return "icons";
-  }
-
-  if (normalizedId.includes("/node_modules/ansi_up/")) {
-    return "ansi";
-  }
-
-  return "vendor";
-}
+import { defineConfig } from 'vite';
+import vue from '@vitejs/plugin-vue';
+import { resolve } from 'path';
+import { visualizer } from 'rollup-plugin-visualizer';
 
 export default defineConfig(async () => ({
   plugins: [
@@ -52,17 +10,23 @@ export default defineConfig(async () => ({
     // auditable without affecting normal builds.
     process.env.ANALYZE
       ? visualizer({
-          filename: "dist/stats.html",
-          jsonFilename: "dist/stats.json",
-          template: "treemap",
+          filename: 'dist/stats.html',
+          jsonFilename: 'dist/stats.json',
+          template: 'treemap',
           gzipSize: true,
           brotliSize: true,
         })
       : undefined,
   ].filter(Boolean),
   resolve: {
+    // serialplugin-api 3.0.0 advertises a `development` conditional export
+    // whose target (`guest-js/index.ts`) is not included in its npm package.
+    // Resolve the pinned plugin through its published default build in both
+    // Vite serve and build modes; this keeps the production serial API intact
+    // and makes the WDIO browser-mock renderer executable.
+    conditions: ['module', 'browser', 'production'],
     alias: {
-      "@": resolve(__dirname, "./src"),
+      '@': resolve(__dirname, './src'),
     },
   },
   clearScreen: false,
@@ -70,19 +34,19 @@ export default defineConfig(async () => ({
     port: 5173,
     strictPort: true,
     watch: {
-      ignored: ["**/src-tauri/**"],
+      ignored: ['**/src-tauri/**'],
     },
     host: true,
   },
-  envPrefix: ["VITE_", "TAURI_"],
+  envPrefix: ['VITE_', 'TAURI_'],
   build: {
-    target: "esnext",
-    minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
+    target: 'esnext',
+    // The bundle-size gate consumes the Vite manifest to identify every
+    // emitted entry rather than guessing from a hashed filename.
+    manifest: true,
+    // Vite 8 uses its built-in Oxc minifier. A boolean keeps that optimized
+    // default and avoids pulling the now-optional esbuild service into builds.
+    minify: !process.env.TAURI_DEBUG,
     sourcemap: !!process.env.TAURI_DEBUG,
-    rollupOptions: {
-      output: {
-        manualChunks: vendorChunk,
-      },
-    },
   },
 }));

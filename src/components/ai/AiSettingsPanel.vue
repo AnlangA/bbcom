@@ -6,7 +6,7 @@
         {{ t('ai.settings') }}
       </span>
       <span class="settings-state">{{
-        appStore.aiApiKey ? t('ai.configured') : t('ai.notConfigured')
+        appStore.aiKeyConfigured ? t('ai.configured') : t('ai.notConfigured')
       }}</span>
     </button>
     <div v-if="expanded" class="settings-body">
@@ -18,12 +18,6 @@
         placeholder="Z.ai / ZHIPU API Key"
       />
       <div class="settings-actions">
-        <n-switch
-          size="small"
-          :value="appStore.aiEnableCodingPlan"
-          @update:value="appStore.setAiEnableCodingPlan"
-        />
-        <span class="coding-plan-label">Coding Plan</span>
         <n-button size="tiny" type="primary" :loading="saving" @click="saveApiKey">
           <template #icon>
             <KeyRound class="icon-sm" />
@@ -36,9 +30,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
-import { NButton, NInput, NSwitch, useMessage } from 'naive-ui';
-import { KeyRound, Settings2 } from 'lucide-vue-next';
+import { ref } from 'vue';
+import { NButton, NInput, useMessage } from 'naive-ui';
+import { KeyRound, Settings2 } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
 import { t } from '../../lib/i18n';
 
@@ -48,16 +42,11 @@ defineProps<{
 
 const appStore = useAppStore();
 const message = useMessage();
-const expanded = ref(!appStore.aiApiKey);
-const apiKeyDraft = ref(appStore.aiApiKey);
+const expanded = ref(!appStore.aiKeyConfigured);
+// The input is intentionally the only renderer location that can contain a
+// newly typed secret. Saved credentials are never read back into JavaScript.
+const apiKeyDraft = ref('');
 const saving = ref(false);
-
-watch(
-  () => appStore.aiApiKey,
-  (value) => {
-    apiKeyDraft.value = value;
-  },
-);
 
 async function saveApiKey() {
   saving.value = true;
@@ -65,6 +54,7 @@ async function saveApiKey() {
     const ok = await appStore.setAiApiKey(apiKeyDraft.value.trim());
     if (ok) {
       message.success(apiKeyDraft.value.trim() ? t('ai.keySaved') : t('ai.keyCleared'));
+      apiKeyDraft.value = '';
     } else {
       message.error(t('ai.keySaveFailed'));
     }
@@ -136,11 +126,5 @@ async function saveApiKey() {
 
 .settings-actions {
   gap: 8px;
-}
-
-.coding-plan-label {
-  flex: 1;
-  color: var(--text-muted);
-  font-size: 11px;
 }
 </style>

@@ -11,7 +11,7 @@ import {
   type SessionModbusStatus,
 } from '../lib/session-modbus-view';
 import { t } from '../lib/i18n';
-import type { ModbusRegister, SerialSession } from '../types';
+import type { ModbusRegister, SerialSendResult, SerialSession, SerialWriteOptions } from '../types';
 
 /**
  * Bridges the Modbus master to a serial session and exposes the imperative
@@ -26,7 +26,7 @@ import type { ModbusRegister, SerialSession } from '../types';
 export interface UseSessionModbusOptions {
   session: Ref<SerialSession>;
   /** Serialized binary TX (shares the serial port's write chain). */
-  sendBytes: (payload: Uint8Array) => Promise<boolean>;
+  sendBytes: (payload: Uint8Array, options?: SerialWriteOptions) => Promise<SerialSendResult>;
   /** Subscribe to raw RX bytes; returns an unlisten fn. */
   rawBytes: (cb: (bytes: Uint8Array) => void) => () => void;
   /** Connected flag — the loop only runs while connected. */

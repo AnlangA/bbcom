@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
 import { useSessionStore } from '../../src/stores/sessions.ts';
@@ -119,8 +119,7 @@ test('useSessionFrames: addFrame frames are markRaw (not deeply reactive)', () =
     // A markRaw object carries Vue's __v_skip flag and is not a reactive Proxy.
     assert.equal(toVueRawMark(stored), true, 'stored frame is marked raw');
     assert.equal(
-      Object.getPrototypeOf(stored) === Object.prototype ||
-        Object.getPrototypeOf(stored) === null,
+      Object.getPrototypeOf(stored) === Object.prototype || Object.getPrototypeOf(stored) === null,
       true,
       'stored frame is a plain object, not a Proxy',
     );
