@@ -1,12 +1,6 @@
 <template>
   <div class="status-bar">
     <template v-if="session">
-      <div class="stat">
-        <Usb class="icon-sm stat-icon" />
-        <span class="stat-label">{{ t('status.port') }}</span>
-        <span class="stat-value port-name">{{ session.portName }}</span>
-      </div>
-      <span class="divider">|</span>
       <div class="traffic-stats" :aria-label="t('session.stats.aria')">
         <span class="mini-stat tx" :title="`TX ${session.txFrames} ${t('status.frames')}`">
           <span class="mini-label">TX</span>
@@ -64,7 +58,6 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
-import { Usb } from '@lucide/vue';
 import type { SerialSession } from '../../types';
 import { formatBytes, formatDuration, formatRate } from '../../lib/format';
 import { t } from '../../lib/i18n';
@@ -197,8 +190,8 @@ const droppedDisplay = computed(() => {
 
 .stat,
 .status-pill {
-  /* Unified status-pill base — every metric chip (port, rate,
-     frames/s, buffer, dropped, TX/RX) shares this contract so the StatusBar
+  /* Unified status-pill base — every metric chip (rate, frames/s, buffer,
+     dropped, TX/RX) shares this contract so the StatusBar
      has one visual rhythm instead of two subtly-different ones. */
   display: flex;
   align-items: center;
@@ -206,10 +199,6 @@ const droppedDisplay = computed(() => {
   white-space: nowrap;
   min-height: 20px;
   padding: 0 2px;
-}
-
-.stat-icon {
-  color: var(--text-dim);
 }
 
 .stat-label {
@@ -222,11 +211,6 @@ const droppedDisplay = computed(() => {
 
 .stat-value {
   font-weight: 500;
-}
-
-.stat-value.port-name {
-  color: var(--text-primary);
-  font-weight: 600;
 }
 
 .stat-value.rate {

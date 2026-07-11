@@ -86,7 +86,6 @@ const en: Catalog = {
   'send.error.resendFailed': 'Resend failed. Check the connection state',
   'send.error.quickFailed': 'Quick command failed. Check the connection state',
   // Status bar
-  'status.port': 'Port',
   'status.tx': 'TX',
   'status.rx': 'RX',
   'status.rate': 'Rate',

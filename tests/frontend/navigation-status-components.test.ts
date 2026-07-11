@@ -251,7 +251,7 @@ test('StatusBar renders idle and connected telemetry, including reset-safe rates
   const wrapper = mount(StatusBar, {
     props: { session, framesVersion: 0 },
   });
-  expect(wrapper.text()).toContain('COM9');
+  expect(wrapper.text()).not.toContain('COM9');
   expect(wrapper.text()).toContain('2.0 KB');
   expect(wrapper.text()).toContain('01:02:03');
   expect(wrapper.text()).toContain('1/10000');

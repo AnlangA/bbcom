@@ -80,7 +80,6 @@ const zh: Catalog = {
   'send.error.failed': '发送失败，请检查连接状态',
   'send.error.resendFailed': '重发失败，请检查连接状态',
   'send.error.quickFailed': '快捷发送失败，请检查连接状态',
-  'status.port': '端口',
   'status.tx': 'TX',
   'status.rx': 'RX',
   'status.rate': '速率',

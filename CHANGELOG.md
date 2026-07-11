@@ -5,6 +5,14 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-11
+
+### Status bar cleanup
+
+- Removed the duplicated port label and device path from the bottom status
+  bar. Connection details remain available in the port selector and session
+  tab, while live TX/RX telemetry stays visible.
+
 ## [0.6.0] - 2026-07-11
 
 ### Toolchain, dependency, and architecture updates
