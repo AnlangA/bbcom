@@ -345,7 +345,7 @@ async function copyChecksum() {
   font-weight: var(--font-weight-bold);
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0;
+  letter-spacing: 0.4px;
   margin-bottom: 10px;
   display: flex;
   justify-content: space-between;
@@ -371,6 +371,16 @@ async function copyChecksum() {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.section-heading .icon-sm {
+  color: var(--text-dim);
+  transition: color var(--transition-normal);
+}
+
+.section-title:hover .section-heading .icon-sm,
+.section-title:hover .toggle-icon {
+  color: var(--text-secondary);
 }
 
 .toggle-icon {

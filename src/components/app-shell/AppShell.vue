@@ -12,6 +12,12 @@
             <PanelLeftClose v-if="!appStore.sidebarCollapsed" class="icon" />
             <PanelLeftOpen v-else class="icon" />
           </button>
+          <div v-if="!appStore.sidebarCollapsed" class="brand-lockup">
+            <span class="brand-mark" aria-hidden="true">
+              <Cable class="brand-mark-icon" />
+            </span>
+            <span class="brand-name">bbcom</span>
+          </div>
         </div>
         <div class="sidebar-actions">
           <n-button
@@ -335,7 +341,7 @@ useAppShortcuts({
 
 .sidebar-header {
   min-height: 58px;
-  padding: 12px 14px;
+  padding: 12px 12px 12px 14px;
   border-bottom: 1px solid var(--border-subtle);
   background: linear-gradient(180deg, var(--edge-highlight), transparent), var(--bg-secondary);
   flex-shrink: 0;
@@ -395,6 +401,44 @@ useAppShortcuts({
 .collapse-btn:hover {
   color: var(--text-secondary);
   background: var(--bg-hover);
+}
+
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  user-select: none;
+}
+
+.brand-mark {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+  border: 1px solid var(--color-primary-muted);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-inset);
+}
+
+.brand-mark-icon {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+
+.brand-name {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.2px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar.collapsed .collapse-btn {
@@ -582,16 +626,24 @@ useAppShortcuts({
   color: var(--text-dim);
 }
 
+.shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .shortcut kbd {
   display: inline-block;
   padding: 2px 6px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-color);
+  border-bottom-width: 2px;
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--text-secondary);
   line-height: 1.4;
+  box-shadow: var(--shadow-sm);
 }
 
 @media (max-width: 760px) {

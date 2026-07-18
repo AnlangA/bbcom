@@ -228,6 +228,7 @@ function tabTooltip(session: SerialSession): string {
   padding: 0;
   border-radius: var(--radius-sm);
   margin-left: 2px;
+  opacity: 0;
   transition:
     color var(--transition-fast),
     background var(--transition-fast),
@@ -235,12 +236,13 @@ function tabTooltip(session: SerialSession): string {
 }
 
 .tab-item:hover .tab-close,
-.tab-item.active .tab-close {
+.tab-item.active .tab-close,
+.tab-close:focus-visible {
   opacity: 1;
 }
 
 .tab-close:hover {
-  color: var(--text-primary) !important;
+  color: var(--text-primary);
   background: var(--bg-hover);
 }
 

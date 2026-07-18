@@ -1,23 +1,41 @@
 <template>
-  <select
-    class="app-select"
-    :class="size ? `app-select--${size}` : undefined"
-    :value="selectedOptionIndex"
-    :disabled="disabled"
-    @change="updateValue"
+  <span
+    class="app-select-wrap"
+    :class="[size ? `app-select--${size}` : undefined, { 'is-disabled': disabled }]"
   >
-    <option v-if="showEmptyOption" value="" :disabled="!clearable">
-      {{ placeholder || '—' }}
-    </option>
-    <option
-      v-for="(option, index) in options"
-      :key="`${index}:${String(option.value)}`"
-      :value="String(index)"
-      :disabled="option.disabled"
+    <select
+      class="app-select"
+      :value="selectedOptionIndex"
+      :disabled="disabled"
+      @change="updateValue"
     >
-      {{ option.label ?? '' }}
-    </option>
-  </select>
+      <option v-if="showEmptyOption" value="" :disabled="!clearable">
+        {{ placeholder || '—' }}
+      </option>
+      <option
+        v-for="(option, index) in options"
+        :key="`${index}:${String(option.value)}`"
+        :value="String(index)"
+        :disabled="option.disabled"
+      >
+        {{ option.label ?? '' }}
+      </option>
+    </select>
+    <svg
+      class="app-select-chevron"
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2.4"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  </span>
 </template>
 
 <script setup lang="ts">
@@ -80,44 +98,92 @@ function updateValue(event: Event): void {
 </script>
 
 <style scoped>
-.app-select {
-  box-sizing: border-box;
+/* Wrapper lets us overlay a chevron affordance (native <select> can't render
+   pseudo-elements) and share one disabled/hover state between the control and
+   the indicator. The wrapper is what callers size via inline `style="width:"`. */
+.app-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
   min-width: 0;
-  min-height: 34px;
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  padding: 5px 26px 5px 8px;
-  color: var(--text-primary);
-  background: var(--bg-secondary);
-  font: inherit;
-  line-height: 1.4;
 }
 
-.app-select--tiny {
+.app-select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  appearance: none;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 5px 26px 5px 8px;
+  color: var(--text-primary);
+  background: var(--bg-inset);
+  font: inherit;
+  line-height: 1.4;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  transition:
+    border-color var(--transition-normal),
+    background var(--transition-normal),
+    box-shadow var(--transition-normal);
+}
+
+.app-select:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--bg-secondary);
+}
+
+.app-select-chevron {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  pointer-events: none;
+  transition:
+    color var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.app-select-wrap:hover:not(.is-disabled) .app-select-chevron {
+  color: var(--text-muted);
+}
+
+.app-select:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: var(--shadow-focus);
+}
+
+.app-select:focus-visible + .app-select-chevron {
+  color: var(--color-primary);
+}
+
+.app-select-wrap.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.app-select:disabled {
+  cursor: not-allowed;
+}
+
+.app-select--tiny .app-select {
   min-height: 24px;
   padding-top: 2px;
   padding-bottom: 2px;
   font-size: 12px;
 }
 
-.app-select--small {
+.app-select--small .app-select {
   min-height: 28px;
   padding-top: 3px;
   padding-bottom: 3px;
   font-size: 13px;
 }
 
-.app-select--large {
+.app-select--large .app-select {
   min-height: 40px;
-}
-
-.app-select:focus-visible {
-  outline: 2px solid var(--accent-blue);
-  outline-offset: 1px;
-}
-
-.app-select:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
 }
 </style>
