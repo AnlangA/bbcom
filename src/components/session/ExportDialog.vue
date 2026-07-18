@@ -271,21 +271,29 @@ function confirm(): void {
   min-width: 0;
   min-height: 34px;
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 6px 8px;
   color: var(--text-primary);
-  background: var(--bg-secondary);
+  background: var(--bg-inset);
   font: inherit;
+  transition:
+    border-color var(--transition-normal),
+    box-shadow var(--transition-normal);
+}
+
+.datetime-input:hover:not(:disabled) {
+  border-color: var(--border-strong);
 }
 
 .datetime-input:focus-visible {
-  outline: 2px solid var(--accent-blue);
-  outline-offset: 1px;
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: var(--shadow-focus);
 }
 
 .datetime-input:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.55;
 }
 
 .export-preview,

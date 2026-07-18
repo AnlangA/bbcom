@@ -154,6 +154,8 @@ function onContextMenu(ev: MouseEvent) {
   line-height: 18px;
 }
 
+/* Badge text stays dark in both themes: the TX/RX accent hues are
+   theme-invariant saturated colors, so a fixed dark ink keeps contrast. */
 .packet-item.tx .direction-badge {
   color: #07120e;
   background: var(--accent-green);

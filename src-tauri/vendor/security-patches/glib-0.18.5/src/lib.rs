@@ -3,6 +3,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(clippy::missing_safety_doc)]
 #![allow(renamed_and_removed_lints)]
+// This vendored copy pins upstream glib 0.18.5 plus the RUSTSEC-2024-0429
+// backport. Toolchains newer than the pinned release lint patterns that were
+// idiomatic at the time (unused_parens, mismatched_lifetime_syntaxes); silence
+// them crate-wide instead of hand-editing vendored sources, so future
+// backports stay diff-minimal against upstream.
+#![allow(unused_parens, mismatched_lifetime_syntaxes)]
 #![doc = include_str!("../README.md")]
 
 pub use bitflags;

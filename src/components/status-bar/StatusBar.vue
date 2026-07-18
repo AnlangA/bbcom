@@ -188,11 +188,7 @@ const droppedDisplay = computed(() => {
   overflow-y: hidden;
 }
 
-.stat,
-.status-pill {
-  /* Unified status-pill base — every metric chip (rate, frames/s, buffer,
-     dropped, TX/RX) shares this contract so the StatusBar
-     has one visual rhythm instead of two subtly-different ones. */
+.stat {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -234,8 +230,7 @@ const droppedDisplay = computed(() => {
   border-radius: var(--radius-md);
 }
 
-.mini-stat,
-.status-pill.traffic {
+.mini-stat {
   display: inline-flex;
   align-items: center;
   gap: 5px;
