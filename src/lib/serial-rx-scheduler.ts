@@ -1,6 +1,9 @@
+import { DEFAULT_RX_FRAME_GAP_MS, normalizeRxFrameGapMs } from './serial-framing';
+
 export const SERIAL_RX_DRAIN_BYTES = 64 * 1024;
 export const SERIAL_RX_DRAIN_CHUNKS = 64;
-export const SERIAL_RX_DRAIN_INTERVAL_MS = 16;
+/** @deprecated Use a session's configurable RX frame gap. */
+export const SERIAL_RX_DRAIN_INTERVAL_MS = DEFAULT_RX_FRAME_GAP_MS;
 export const SERIAL_UI_VISIBLE_INTERVAL_MS = 17;
 export const SERIAL_UI_HIDDEN_INTERVAL_MS = 250;
 
@@ -22,13 +25,15 @@ export interface SerialRxPending {
 }
 
 /**
- * Schedules capture work independently of painting. Small bursts wait at most
- * 16ms; 64 KiB or 64 chunks drain on the next microtask.
+ * Schedules capture work independently of painting. Small bursts are framed
+ * after a configurable period of RX inactivity; 64 KiB or 64 native chunks
+ * still drain on the next microtask to keep memory bounded.
  */
 export class SerialRxDrainScheduler {
   private readonly getPending: () => SerialRxPending;
   private readonly drain: () => void;
   private readonly scheduler: SerialTimerScheduler;
+  private readonly inactivityGapMs: number;
   private timer: unknown | null = null;
   private immediateScheduled = false;
   private generation = 0;
@@ -37,10 +42,12 @@ export class SerialRxDrainScheduler {
     getPending: () => SerialRxPending,
     drain: () => void,
     scheduler: SerialTimerScheduler = defaultScheduler,
+    inactivityGapMs: number = DEFAULT_RX_FRAME_GAP_MS,
   ) {
     this.getPending = getPending;
     this.drain = drain;
     this.scheduler = scheduler;
+    this.inactivityGapMs = normalizeRxFrameGapMs(inactivityGapMs);
   }
 
   notify(): void {
@@ -50,6 +57,7 @@ export class SerialRxDrainScheduler {
       if (this.timer !== null) {
         this.scheduler.cancel(this.timer);
         this.timer = null;
+        this.generation += 1;
       }
       if (this.immediateScheduled) return;
       this.immediateScheduled = true;
@@ -61,13 +69,20 @@ export class SerialRxDrainScheduler {
       });
       return;
     }
-    if (this.timer !== null || this.immediateScheduled) return;
+    if (this.immediateScheduled) return;
+    // Frame on silence, not on time elapsed since the first byte. Every new
+    // native chunk restarts the inactivity window.
+    if (this.timer !== null) {
+      this.scheduler.cancel(this.timer);
+      this.timer = null;
+      this.generation += 1;
+    }
     const generation = this.generation;
     this.timer = this.scheduler.schedule(() => {
       if (generation !== this.generation) return;
       this.timer = null;
       this.drainPending();
-    }, SERIAL_RX_DRAIN_INTERVAL_MS);
+    }, this.inactivityGapMs);
   }
 
   flushNow(): void {

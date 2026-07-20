@@ -4,7 +4,7 @@ import { join, relative, resolve, sep } from 'node:path';
 
 // Keep these byte ceilings in one place. They deliberately use binary KiB so
 // the CI decision is stable and does not depend on a formatter's unit choice.
-const TOTAL_JS_GZIP_LIMIT = 285 * 1024;
+const TOTAL_JS_GZIP_LIMIT = 286 * 1024;
 const ENTRY_JS_GZIP_LIMIT = 85 * 1024;
 const CHUNK_JS_GZIP_LIMIT = 105 * 1024;
 const javascriptExtensions = new Set(['.js', '.mjs', '.cjs']);

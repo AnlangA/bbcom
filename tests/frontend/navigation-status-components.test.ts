@@ -60,6 +60,7 @@ const appShellMocks = vi.hoisted(() => ({
 }));
 
 const packetVirtualMocks = vi.hoisted(() => ({
+  measureElement: vi.fn(),
   onScroll: vi.fn(),
 }));
 
@@ -101,6 +102,7 @@ vi.mock('../../src/composables/usePacketVirtualScroll', async () => {
         { index: 1, start: 28, size: 28 },
       ]),
       totalSize: ref(56),
+      measureElement: packetVirtualMocks.measureElement,
       onScroll: packetVirtualMocks.onScroll,
     }),
   };
@@ -167,6 +169,7 @@ const config: PortConfig = {
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
+  rxFrameGapMs: 5,
   dtr: false,
   rts: false,
 };
@@ -189,6 +192,7 @@ beforeEach(() => {
   portWatcher.refresh.mockReset();
   appShellMocks.toggleAiWindow.mockReset();
   appShellMocks.shortcuts = null;
+  packetVirtualMocks.measureElement.mockReset();
   packetVirtualMocks.onScroll.mockReset();
 });
 
@@ -1179,6 +1183,8 @@ test('DataPacketList filters, selects, context-copies, keyboard-copies, and reje
   });
   await wrapper.vm.$nextTick();
   expect(wrapper.findAll('.packet-item')).toHaveLength(2);
+  expect(wrapper.findAll('[data-index]')).toHaveLength(2);
+  expect(packetVirtualMocks.measureElement).toHaveBeenCalled();
   expect(wrapper.find('.packet-item').classes()).toContain('highlight-amber');
 
   const toolbarInput = wrapper.find('.packet-toolbar input');
@@ -1204,6 +1210,8 @@ test('DataPacketList filters, selects, context-copies, keyboard-copies, and reje
   await items.trigger('scroll');
   expect(packetVirtualMocks.onScroll).toHaveBeenCalledTimes(1);
   await items.trigger('keydown', { key: 'ArrowDown' });
+  await wrapper.vm.$nextTick();
+  expect(wrapper.find('.packet-item').classes()).toContain('selected');
   await items.trigger('keydown', { key: 'c', ctrlKey: true });
   await Promise.resolve();
   expect(clipboard.writeText).toHaveBeenCalledTimes(3);

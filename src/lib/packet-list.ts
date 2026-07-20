@@ -1,12 +1,22 @@
 import type { CSSProperties } from 'vue';
 import type { DataFrame, DisplayMode, HighlightRule, PacketViewMode } from '../types';
-import { formatAscii, formatHex, formatTimestamp, formatUtf8 } from './format';
+import {
+  formatAscii,
+  formatHex,
+  formatTimestamp,
+  formatUtf8,
+  HEXASCII_BYTES_PER_LINE,
+} from './format';
 import { findFrameHighlight, type HighlightSearchAccessors } from './highlights';
+import { splitLogDisplayLines } from './log-line-breaks';
 
 export const PACKET_COPY_LIMITS = {
   maxBytes: 2 * 1024 * 1024,
   maxFrames: 5000,
 } as const;
+
+export const PACKET_ROW_HEIGHT = 28;
+export const PACKET_ROW_LINE_HEIGHT = 22;
 
 export type PacketContextCopyKey = 'hex' | 'ascii' | 'utf8' | 'plain' | 'row';
 export type PacketBatchCopyKey = 'filtered-hex' | 'filtered-text' | 'all-hex' | 'all-text';
@@ -19,14 +29,12 @@ export interface PacketVirtualItem {
 
 export interface PacketRowData {
   key: string;
-  start: number;
-  size: number;
+  index: number;
   style: CSSProperties & {
     position: 'absolute';
     top: string;
     left: string;
     width: string;
-    height: string;
     transform: string;
   };
   frame: DataFrame;
@@ -35,21 +43,15 @@ export interface PacketRowData {
   contentVersion: number;
   formatted: string;
   timestamp: string;
-  showTimestamp: boolean;
-  columns: string;
-  displayLabel: string;
-  useHtml: boolean;
   highlightClass: string | null;
   highlightLabel: string | null;
+  /** Alternating-row tint derived from the virtual index, stable per frame. */
+  striped: boolean;
 }
 
 export interface PacketRowBuildOptions extends HighlightSearchAccessors {
   virtualItems: readonly PacketVirtualItem[];
   frames: readonly DataFrame[];
-  showTimestamp: boolean;
-  columns: string;
-  displayLabel: string;
-  useHtml: boolean;
   highlights?: readonly HighlightRule[];
   formatFrame: (frame: DataFrame) => string;
 }
@@ -66,16 +68,56 @@ export function packetDisplayLabel(
 }
 
 export function packetUsesHtml(displayMode: DisplayMode, ansiColorEnabled: boolean): boolean {
-  return displayMode !== 'HEX' && ansiColorEnabled;
+  // HEX and the HEXASCII dump are plain text; only decodable text modes carry
+  // ANSI escape sequences worth rendering as HTML.
+  return displayMode !== 'HEX' && displayMode !== 'HEXASCII' && ansiColorEnabled;
+}
+
+/** Count CR, LF, and CRLF line endings without decoding or allocating. */
+export function packetLineBreakCount(data: Uint8Array): number {
+  let count = 0;
+  for (let index = 0; index < data.byteLength; index += 1) {
+    const byte = data[index];
+    if (byte === 0x0d) {
+      count += 1;
+      if (data[index + 1] === 0x0a) index += 1;
+    } else if (byte === 0x0a) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/**
+ * Exact virtual row height when explicit line endings and recognized log
+ * record prefixes are preserved. A terminal CR/LF sequence is the current
+ * line's delimiter, not a request for an additional empty display line.
+ * HEXASCII is always a multi-line dump (16 bytes per line) regardless of the
+ * preserve-line-breaks toggle.
+ */
+export function packetRowHeight(
+  frame: DataFrame | undefined,
+  displayMode: DisplayMode,
+  preserveLineBreaks: boolean,
+): number {
+  if (!frame) {
+    return PACKET_ROW_HEIGHT;
+  }
+  if (displayMode === 'HEXASCII') {
+    const lineCount = Math.max(1, Math.ceil(frame.data.byteLength / HEXASCII_BYTES_PER_LINE));
+    return PACKET_ROW_HEIGHT + (lineCount - 1) * PACKET_ROW_LINE_HEIGHT;
+  }
+  if (!preserveLineBreaks || displayMode === 'HEX') {
+    return PACKET_ROW_HEIGHT;
+  }
+  const lines = splitLogDisplayLines(formatUtf8(frame.data));
+  const lineCount = lines.length - (lines.length > 1 && lines.at(-1) === '' ? 1 : 0);
+  return PACKET_ROW_HEIGHT + (lineCount - 1) * PACKET_ROW_LINE_HEIGHT;
 }
 
 export function buildPacketRows({
   virtualItems,
   frames,
-  showTimestamp,
-  columns,
-  displayLabel,
-  useHtml,
   highlights = [],
   formatFrame,
   getHexSearchData,
@@ -92,14 +134,12 @@ export function buildPacketRows({
     });
     out.push({
       key: frame.id,
-      start: item.start,
-      size: item.size,
+      index: item.index,
       style: {
         position: 'absolute',
         top: '0px',
         left: '0px',
         width: '100%',
-        height: `${item.size}px`,
         transform: `translateY(${item.start}px)`,
       },
       frame,
@@ -108,12 +148,9 @@ export function buildPacketRows({
       contentVersion: frame.contentVersion ?? frame.data.byteLength,
       formatted: formatFrame(frame),
       timestamp: formatTimestamp(frame.timestamp),
-      showTimestamp,
-      columns,
-      displayLabel,
-      useHtml,
       highlightClass: highlight ? `highlight-${highlight.color}` : null,
       highlightLabel: highlight?.name ?? null,
+      striped: item.index % 2 === 1,
     });
   }
   return out;

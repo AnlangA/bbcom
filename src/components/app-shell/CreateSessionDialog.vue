@@ -70,11 +70,25 @@
         <span class="form-label">{{ t('serial.flowControl') }}</span>
         <AppSelect v-model:value="flowControl" :options="flowControlOptions" />
       </div>
+      <div class="form-field">
+        <span class="form-label" :title="t('serial.rxFrameGapHint')">{{
+          t('serial.rxFrameGap')
+        }}</span>
+        <n-input-number
+          :value="rxFrameGapMs"
+          :min="MIN_RX_FRAME_GAP_MS"
+          :max="MAX_RX_FRAME_GAP_MS"
+          :precision="0"
+          @update:value="rxFrameGapMs = normalizeRxFrameGapMs($event)"
+        >
+          <template #suffix>ms</template>
+        </n-input-number>
+      </div>
       <div class="form-field form-full">
         <span class="form-label">{{ t('serial.signalControl') }}</span>
         <div class="signal-row">
-          <label class="signal-toggle"><n-switch v-model:value="dtr" size="small" /> DTR</label>
-          <label class="signal-toggle"><n-switch v-model:value="rts" size="small" /> RTS</label>
+          <SignalToggle v-model="dtr" label="DTR" />
+          <SignalToggle v-model="rts" label="RTS" />
           <span class="signal-hint">{{ t('serial.signalHint') }}</span>
         </div>
       </div>
@@ -98,8 +112,9 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { NModal, NSwitch, NInput, NButton } from 'naive-ui';
+import { NModal, NInput, NInputNumber, NButton } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
+import SignalToggle from '../ui/SignalToggle.vue';
 import { BookmarkPlus, Trash2 } from '@lucide/vue';
 import { useSerialStore } from '../../stores/serial';
 import { useSessionStore } from '../../stores/sessions';
@@ -120,6 +135,12 @@ import {
 } from '../../lib/connection-presets';
 import { t } from '../../lib/i18n';
 import type { PortConfig } from '../../types';
+import {
+  DEFAULT_RX_FRAME_GAP_MS,
+  MAX_RX_FRAME_GAP_MS,
+  MIN_RX_FRAME_GAP_MS,
+  normalizeRxFrameGapMs,
+} from '../../lib/serial-framing';
 
 const props = defineProps<{
   show: boolean;
@@ -150,6 +171,7 @@ const dataBits = ref<PortConfig['dataBits']>(8);
 const stopBits = ref<PortConfig['stopBits']>(1);
 const parity = ref<PortConfig['parity']>('none');
 const flowControl = ref<PortConfig['flowControl']>('none');
+const rxFrameGapMs = ref(DEFAULT_RX_FRAME_GAP_MS);
 const dtr = ref(false);
 const rts = ref(false);
 
@@ -194,6 +216,7 @@ watch(
     stopBits.value = config.stopBits;
     parity.value = config.parity;
     flowControl.value = config.flowControl;
+    rxFrameGapMs.value = normalizeRxFrameGapMs(config.rxFrameGapMs);
     dtr.value = config.dtr;
     rts.value = config.rts;
   },
@@ -208,6 +231,7 @@ function createSession() {
     stopBits: stopBits.value,
     parity: parity.value,
     flowControl: flowControl.value,
+    rxFrameGapMs: rxFrameGapMs.value,
     dtr: dtr.value,
     rts: rts.value,
   };
@@ -240,6 +264,7 @@ function applyPreset(id: string | null) {
   stopBits.value = c.stopBits;
   parity.value = c.parity;
   flowControl.value = c.flowControl;
+  rxFrameGapMs.value = normalizeRxFrameGapMs(c.rxFrameGapMs);
   dtr.value = c.dtr;
   rts.value = c.rts;
 }
@@ -268,6 +293,7 @@ function currentConfig(): PortConfig {
     stopBits: stopBits.value,
     parity: parity.value,
     flowControl: flowControl.value,
+    rxFrameGapMs: rxFrameGapMs.value,
     dtr: dtr.value,
     rts: rts.value,
   };
@@ -307,16 +333,6 @@ function currentConfig(): PortConfig {
   align-items: center;
   gap: var(--space-lg);
   flex-wrap: wrap;
-}
-
-.signal-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  cursor: pointer;
 }
 
 .signal-hint {

@@ -2,6 +2,7 @@ import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import './styles/variables.css';
 import './styles/global.css';
+import './styles/packet-columns.css';
 
 const params = new URLSearchParams(window.location.search);
 const isAiWindow = params.get('window') === 'ai';

@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import type { PortConfig } from '../types';
 import { loadJson, saveJson } from '../lib/storage';
+import { DEFAULT_RX_FRAME_GAP_MS, normalizeRxFrameGapMs } from '../lib/serial-framing';
 
 const STORAGE_KEY = 'bbcom-serial-settings';
 
@@ -14,6 +15,7 @@ export const useSerialStore = defineStore('serial', () => {
     stopBits: 1,
     parity: 'none',
     flowControl: 'none',
+    rxFrameGapMs: DEFAULT_RX_FRAME_GAP_MS,
     dtr: false,
     rts: false,
   });
@@ -26,7 +28,13 @@ export const useSerialStore = defineStore('serial', () => {
       portConfig: portConfig.value,
     });
     if (saved.selectedPort) selectedPort.value = saved.selectedPort;
-    if (saved.portConfig) portConfig.value = { ...portConfig.value, ...saved.portConfig };
+    if (saved.portConfig) {
+      portConfig.value = {
+        ...portConfig.value,
+        ...saved.portConfig,
+        rxFrameGapMs: normalizeRxFrameGapMs(saved.portConfig.rxFrameGapMs),
+      };
+    }
     loaded = true;
   }
 

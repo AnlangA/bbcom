@@ -27,6 +27,8 @@ export interface PortConfig {
   stopBits: 1 | 2;
   parity: 'none' | 'odd' | 'even';
   flowControl: 'none' | 'software' | 'hardware';
+  /** RX frame closes after this many milliseconds without a new byte. */
+  rxFrameGapMs: number;
   dtr: boolean;
   rts: boolean;
 }

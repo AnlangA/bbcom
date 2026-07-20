@@ -173,14 +173,14 @@ function updateValue(event: Event): void {
   min-height: 24px;
   padding-top: 2px;
   padding-bottom: 2px;
-  font-size: 12px;
+  font-size: var(--font-size-data);
 }
 
 .app-select--small .app-select {
   min-height: 28px;
   padding-top: 3px;
   padding-bottom: 3px;
-  font-size: 13px;
+  font-size: var(--font-size-base);
 }
 
 .app-select--large .app-select {

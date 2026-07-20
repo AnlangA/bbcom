@@ -21,6 +21,7 @@ import { MAX_HISTORY } from '../types';
 import type { ParserConfig } from './protocol-parser';
 import { parseHex, toContinuousHex } from './format';
 import { nowMillis } from './time';
+import { DEFAULT_RX_FRAME_GAP_MS, normalizeRxFrameGapMs } from './serial-framing';
 import {
   DEFAULT_MODBUS_CONFIG,
   cloneModbusConfig,
@@ -43,6 +44,7 @@ export const DEFAULT_PORT_CONFIG: PortConfig = {
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
+  rxFrameGapMs: DEFAULT_RX_FRAME_GAP_MS,
   dtr: false,
   rts: false,
 };
@@ -276,6 +278,7 @@ export function normalizePortConfig(raw: unknown): PortConfig {
     parity: cfg.parity === 'odd' || cfg.parity === 'even' ? cfg.parity : 'none',
     flowControl:
       cfg.flowControl === 'software' || cfg.flowControl === 'hardware' ? cfg.flowControl : 'none',
+    rxFrameGapMs: normalizeRxFrameGapMs(cfg.rxFrameGapMs),
     dtr: cfg.dtr === true,
     rts: cfg.rts === true,
   };

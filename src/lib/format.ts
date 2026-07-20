@@ -234,13 +234,16 @@ export function formatAscii(data: Uint8Array): string {
   return asciiDecoder.decode(data);
 }
 
+/** Fixed row width of the HEXASCII dump; row-height estimation relies on it. */
+export const HEXASCII_BYTES_PER_LINE = 16;
+
 /**
  * Format bytes as a hex-editor dual view: hex pairs on the left, ASCII
  * representation on the right, grouped 16 bytes per line. This is the
  * professional hex-editor display mode: raw byte values and decoded characters
  * side by side, so a user can inspect a binary protocol without toggling modes.
  */
-export function formatHexAscii(data: Uint8Array, bytesPerLine = 16): string {
+export function formatHexAscii(data: Uint8Array, bytesPerLine = HEXASCII_BYTES_PER_LINE): string {
   const lines: string[] = [];
   for (let offset = 0; offset < data.length; offset += bytesPerLine) {
     const slice = data.subarray(offset, Math.min(offset + bytesPerLine, data.length));

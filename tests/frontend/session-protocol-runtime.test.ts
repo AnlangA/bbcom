@@ -19,6 +19,7 @@ const config: PortConfig = {
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
+  rxFrameGapMs: 5,
   dtr: false,
   rts: false,
 };
@@ -99,12 +100,12 @@ test('resident protocol parser consumes raw RX while terminal capture and UI pub
   assert.equal(await connection.start(), true);
   port.handlers?.onData(bytes('first\npar'));
 
-  // The 16ms capture drain remains pending. No frame was materialized for a
+  // The configurable capture drain remains pending. No frame was materialized for a
   // terminal component, but the long-lived raw-byte parser already emitted a
   // complete protocol frame.
   assert.equal(store.sessions[0].frames.length, 0);
   assert.equal(timer.timers.length, 1);
-  assert.equal(timer.timers[0].delay, 16);
+  assert.equal(timer.timers[0].delay, 5);
   assert.deepEqual(parsedText(parser), ['first']);
 
   port.handlers?.onData(bytes('tial\n'));

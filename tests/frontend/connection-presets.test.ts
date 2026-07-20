@@ -36,6 +36,7 @@ const CFG_9600: PortConfig = {
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
+  rxFrameGapMs: 5,
   dtr: false,
   rts: false,
 };
@@ -46,6 +47,7 @@ const CFG_ESP32: PortConfig = {
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
+  rxFrameGapMs: 5,
   dtr: true,
   rts: true,
 };

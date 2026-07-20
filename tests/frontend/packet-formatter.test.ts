@@ -99,3 +99,39 @@ test('evictFrames removes every format/search entry for dropped source frames', 
   source.data = encodeUtf8('new');
   assert.equal(formatFrame(source), 'new');
 });
+
+test('HEXASCII renders a 16-bytes-per-line dump with an ASCII gutter', () => {
+  const displayMode = ref('HEXASCII');
+  const ansi = ref(true);
+  const { formatFrame } = usePacketFormatter({ displayMode, ansiColorEnabled: ansi });
+  const out = formatFrame(frame('1', encodeUtf8('Hello, serial world!'))); // 20 bytes
+  assert.equal(
+    out,
+    '48 65 6C 6C 6F 2C 20 73 65 72 69 61 6C 20 77 6F  |Hello, serial wo|\n' +
+      '72 6C 64 21  |rld!            |',
+  );
+  assert.equal(out.split('\n').length, 2);
+});
+
+test('HEXASCII never passes through ANSI HTML rendering', () => {
+  const displayMode = ref('HEXASCII');
+  const ansi = ref(true);
+  const { formatFrame } = usePacketFormatter({ displayMode, ansiColorEnabled: ansi });
+  const f = frame('1', new Uint8Array([0x1b, 0x5b, 0x33, 0x31, 0x6d])); // ESC[31m
+  const expected = '1B 5B 33 31 6D  |.[31m           |';
+  assert.equal(formatFrame(f), expected);
+  ansi.value = false;
+  assert.equal(formatFrame(f), expected, 'the ANSI flag must not alter the dump');
+});
+
+test('HEX and HEXASCII entries stay separate in the format cache', () => {
+  const displayMode = ref('HEX');
+  const ansi = ref(false);
+  const { formatFrame } = usePacketFormatter({ displayMode, ansiColorEnabled: ansi });
+  const f = frame('1', encodeUtf8('AB'));
+  assert.equal(formatFrame(f), '41 42');
+  displayMode.value = 'HEXASCII';
+  assert.equal(formatFrame(f), '41 42  |AB              |');
+  displayMode.value = 'HEX';
+  assert.equal(formatFrame(f), '41 42');
+});

@@ -38,6 +38,7 @@ const config: PortConfig = {
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
+  rxFrameGapMs: 5,
   dtr: false,
   rts: false,
 };
@@ -108,6 +109,7 @@ test('persistence normalizers retain valid alternatives and reject malformed fra
       stopBits: 2,
       parity: 'odd',
       flowControl: 'software',
+      rxFrameGapMs: 2.8,
       dtr: true,
       rts: true,
     }),
@@ -118,6 +120,7 @@ test('persistence normalizers retain valid alternatives and reject malformed fra
       stopBits: 2,
       parity: 'odd',
       flowControl: 'software',
+      rxFrameGapMs: 2,
       dtr: true,
       rts: true,
     },

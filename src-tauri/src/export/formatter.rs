@@ -2,6 +2,7 @@ use crate::export::ExportFormat;
 use crate::models::data_frame::{DataFrame, Direction};
 use crate::models::errors::AppError;
 use crate::utils::hex;
+use crate::utils::log_text::readable_log_lines;
 use crate::utils::timestamp;
 use std::io::Write as _;
 
@@ -30,15 +31,30 @@ pub(crate) fn append_frames(
                 })?;
                 buf.push(b'\n');
             }
-            ExportFormat::TxtHex | ExportFormat::TxtAscii => {
-                writeln!(
-                    buf,
-                    "[{}] {} | {}",
-                    timestamp::format_timestamp(frame.timestamp),
-                    dir_label(&frame.direction),
-                    data_to_string(&frame.data, format == ExportFormat::TxtAscii)
-                )
-                .map_err(|e| encode_error(e, format, path))?;
+            ExportFormat::TxtHex => {
+                let timestamp = timestamp::format_timestamp(frame.timestamp);
+                let direction = dir_label(&frame.direction);
+                // Same hex-editor dump layout as the auto-log hex format:
+                // 16 bytes per line, full prefix repeated on every line.
+                let dump = hex::format_hex_dump(&frame.data);
+                if dump.is_empty() {
+                    writeln!(buf, "[{timestamp}] {direction} |")
+                        .map_err(|e| encode_error(e, format, path))?;
+                } else {
+                    for line in dump.lines() {
+                        writeln!(buf, "[{timestamp}] {direction} | {line}")
+                            .map_err(|e| encode_error(e, format, path))?;
+                    }
+                }
+            }
+            ExportFormat::TxtAscii => {
+                let timestamp = timestamp::format_timestamp(frame.timestamp);
+                let direction = dir_label(&frame.direction);
+                let infer_record_boundaries = matches!(&frame.direction, &Direction::Rx);
+                for line in readable_log_lines(&frame.data, infer_record_boundaries) {
+                    writeln!(buf, "[{timestamp}] {direction} | {line}")
+                        .map_err(|e| encode_error(e, format, path))?;
+                }
             }
             ExportFormat::Csv => {
                 writeln!(
@@ -69,14 +85,6 @@ fn dir_label(d: &Direction) -> &'static str {
     match d {
         Direction::Tx => "TX",
         Direction::Rx => "RX",
-    }
-}
-
-fn data_to_string(data: &[u8], ascii: bool) -> String {
-    if ascii {
-        String::from_utf8_lossy(data).to_string()
-    } else {
-        hex::format_hex(data)
     }
 }
 
@@ -112,8 +120,38 @@ mod tests {
     fn exports_txt_hex() {
         let content = String::from_utf8(encoded(ExportFormat::TxtHex)).unwrap();
 
-        assert!(content.contains("TX | 41 42"));
-        assert!(content.contains("RX | 43 44"));
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].ends_with("TX | 41 42  |AB              |"));
+        assert!(lines[1].ends_with("RX | 43 44  |CD              |"));
+    }
+
+    #[test]
+    fn txt_hex_wraps_at_sixteen_bytes_with_prefix_on_every_line() {
+        let frames = [DataFrame {
+            id: "1".to_string(),
+            direction: Direction::Rx,
+            timestamp: 0.0,
+            data: vec![0x30_u8; 20],
+        }];
+        let mut output = Vec::new();
+        append_frames(
+            &mut output,
+            &frames,
+            ExportFormat::TxtHex,
+            "backend-owned-target",
+        )
+        .unwrap();
+        let content = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().all(|line| line.contains("] RX | ")));
+        assert!(
+            lines[0]
+                .ends_with("30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30  |0000000000000000|")
+        );
+        assert!(lines[1].ends_with("30 30 30 30  |0000            |"));
     }
 
     #[test]
@@ -124,6 +162,32 @@ mod tests {
         assert!(content.contains("TX | AB"));
         assert!(content.contains("RX | CD"));
         assert!(!content.contains("TX | 41 42"));
+    }
+
+    #[test]
+    fn txt_ascii_removes_ansi_and_prefixes_inferred_rx_records() {
+        let frames = [DataFrame {
+            id: "log".to_string(),
+            direction: Direction::Rx,
+            timestamp: 1.0,
+            data: b"I: firstI: second\x1b[0m".to_vec(),
+        }];
+        let mut output = Vec::new();
+        append_frames(
+            &mut output,
+            &frames,
+            ExportFormat::TxtAscii,
+            "backend-owned-target",
+        )
+        .unwrap();
+        let content = String::from_utf8(output).unwrap();
+        let lines = content.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].ends_with("RX | I: first"));
+        assert!(lines[1].ends_with("RX | I: second"));
+        assert!(!content.contains('\u{1b}'));
+        assert!(!content.contains("[0m"));
     }
 
     #[test]
@@ -251,7 +315,14 @@ mod ipc_sim_tests {
         let s = String::from_utf8(bytes.clone()).unwrap();
         // TXT-HEX must contain hex pairs, NOT the raw "Hello" bytes.
         assert!(s.contains("48 65 6C 6C 6F"), "got: {s}");
-        assert!(!s.contains("Hello"), "raw text leaked into hex export: {s}");
+        // The dump's ASCII gutter legitimately renders printable bytes, so
+        // "Hello" appears after a pipe; what must not appear is the
+        // decoded-text line format (`TX | Hello` right after the direction).
+        assert!(s.contains("|Hello"), "expected ASCII gutter, got: {s}");
+        assert!(
+            !s.contains("TX | Hello"),
+            "raw text leaked into hex export: {s}"
+        );
     }
 
     #[tokio::test]

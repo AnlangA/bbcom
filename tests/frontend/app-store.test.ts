@@ -111,6 +111,7 @@ test('setters update each persisted setting through its validate/apply path', as
     app.setPacketViewMode('MERGED');
     app.setSearchMode('HEX');
     app.setTheme('light');
+    app.toggleLogLineBreaks();
 
     assert.equal(app.displayMode, 'UTF8');
     assert.equal(app.sendAsHex, true);
@@ -119,6 +120,7 @@ test('setters update each persisted setting through its validate/apply path', as
     assert.equal(app.packetViewMode, 'MERGED');
     assert.equal(app.searchMode, 'HEX');
     assert.equal(app.theme, 'light');
+    assert.equal(app.preserveLogLineBreaks, false);
 
     // save() is debounced — flush it so the test does not leave a pending timer
     // that could leak across test boundaries.
@@ -139,6 +141,7 @@ test('a freshly-loaded store re-reads the persisted blob', async () => {
         packetViewMode: 'MERGED',
         searchMode: 'HEX',
         autoScroll: false,
+        preserveLogLineBreaks: false,
         theme: 'dark',
       }),
     );
@@ -155,6 +158,7 @@ test('a freshly-loaded store re-reads the persisted blob', async () => {
     assert.equal(app.packetViewMode, 'MERGED');
     assert.equal(app.searchMode, 'HEX');
     assert.equal(app.autoScroll, false);
+    assert.equal(app.preserveLogLineBreaks, false);
     assert.equal(app.theme, 'dark');
   });
 });

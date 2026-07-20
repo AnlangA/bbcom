@@ -18,35 +18,37 @@
           {{ session.frames.length }}
         </span>
       </div>
-      <span v-if="session.isConnected && dataRate" class="divider">|</span>
-      <div v-if="session.isConnected && dataRate" class="stat">
-        <span class="stat-label">{{ t('status.rate') }}</span>
-        <span class="stat-value rate">{{ dataRate }}</span>
+      <div class="status-group">
+        <div v-if="session.isConnected && dataRate" class="stat">
+          <span class="stat-label">{{ t('status.rate') }}</span>
+          <span class="stat-value rate">{{ dataRate }}</span>
+        </div>
+        <div
+          v-if="session.isConnected && frameRate > 0"
+          class="stat"
+          :title="t('status.frameRate')"
+        >
+          <span class="stat-label">{{ t('status.frameRate') }}</span>
+          <span class="stat-value">{{ frameRate }}/s</span>
+        </div>
+        <div v-if="bufferLevel" class="stat" :title="t('status.bufferLevel')">
+          <span class="stat-label">{{ t('status.bufferLevel') }}</span>
+          <span class="stat-value">{{ bufferLevel }}</span>
+        </div>
+        <div v-if="droppedDisplay" class="stat" :title="t('status.dropped')">
+          <span class="stat-label">{{ t('status.dropped') }}</span>
+          <span class="stat-value dropped">{{ droppedDisplay }}</span>
+        </div>
       </div>
-      <span v-if="session.isConnected && frameRate > 0" class="divider">|</span>
-      <div v-if="session.isConnected && frameRate > 0" class="stat" :title="t('status.frameRate')">
-        <span class="stat-label">{{ t('status.frameRate') }}</span>
-        <span class="stat-value">{{ frameRate }}/s</span>
-      </div>
-      <span v-if="bufferLevel" class="divider">|</span>
-      <div v-if="bufferLevel" class="stat" :title="t('status.bufferLevel')">
-        <span class="stat-label">{{ t('status.bufferLevel') }}</span>
-        <span class="stat-value">{{ bufferLevel }}</span>
-      </div>
-      <span v-if="droppedDisplay" class="divider">|</span>
-      <div v-if="droppedDisplay" class="stat" :title="t('status.dropped')">
-        <span class="stat-label">{{ t('status.dropped') }}</span>
-        <span class="stat-value dropped">{{ droppedDisplay }}</span>
-      </div>
-      <span class="divider">|</span>
-      <div class="stat">
-        <span class="stat-label">{{ t('status.duration') }}</span>
-        <span class="stat-value">{{ duration }}</span>
-      </div>
-      <span class="divider">|</span>
-      <div class="stat">
-        <span class="stat-label">{{ t('status.baud') }}</span>
-        <span class="stat-value">{{ session.portConfig.baudRate }}</span>
+      <div class="status-group">
+        <div class="stat">
+          <span class="stat-label">{{ t('status.duration') }}</span>
+          <span class="stat-value">{{ duration }}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">{{ t('status.baud') }}</span>
+          <span class="stat-value">{{ session.portConfig.baudRate }}</span>
+        </div>
       </div>
       <div class="stat status-indicator">
         <span class="status-dot" :class="session.isConnected ? 'connected' : 'disconnected'"></span>
@@ -160,7 +162,7 @@ const duration = computed(() => {
 const bufferLevel = computed(() => {
   if (!props.session) return '';
   const pct = Math.round((props.session.frames.length / maxBufferFrames.value) * 100);
-  return `${props.session.frames.length}/${maxBufferFrames.value} (${pct}%)`;
+  return `${props.session.frames.length}/${maxBufferFrames.value} ${pct}%`;
 });
 
 /** Cumulative dropped bytes this connection. */
@@ -173,13 +175,15 @@ const droppedDisplay = computed(() => {
 <style scoped>
 .status-bar {
   height: var(--statusbar-height);
-  padding: 0 12px;
+  padding: 0 var(--space-md);
   display: flex;
   align-items: center;
-  gap: 7px;
+  /* Groups separate by whitespace alone: wider between groups, tighter
+     inside a group — no literal divider glyphs to scan past. */
+  gap: var(--space-lg);
   background: var(--bg-secondary);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   border-top: 1px solid var(--border-subtle);
@@ -188,43 +192,49 @@ const droppedDisplay = computed(() => {
   overflow-y: hidden;
 }
 
+.status-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
 .stat {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-xs);
   white-space: nowrap;
   min-height: 20px;
-  padding: 0 2px;
+  padding: 0 var(--space-2xs);
 }
 
 .stat-label {
   color: var(--text-dim);
-  font-size: 10px;
-  font-weight: 600;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
 
 .stat-value {
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
 }
 
 .stat-value.rate {
   color: var(--accent-amber);
-  font-size: 11px;
 }
 
 .stat-value.dropped {
   color: var(--accent-amber);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 
 .traffic-stats {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-xs);
   min-width: 0;
-  padding: 2px;
+  padding: var(--space-2xs);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -233,13 +243,13 @@ const droppedDisplay = computed(() => {
 .mini-stat {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-xs);
   min-width: 0;
-  padding: 3px 7px;
+  padding: var(--space-2xs) var(--space-sm);
   color: var(--text-secondary);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -257,18 +267,8 @@ const droppedDisplay = computed(() => {
 .mini-label {
   color: var(--text-dim);
   font-family: var(--font-sans);
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.divider {
-  width: 1px;
-  height: 14px;
-  overflow: hidden;
-  color: transparent;
-  background: var(--border-subtle);
-  margin: 0 2px;
-  user-select: none;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
 }
 
 .no-session {

@@ -1,23 +1,41 @@
 <template>
   <div
     class="packet-row packet-item"
-    :class="[directionClass, highlightClass]"
+    :class="[directionClass, highlightClass, { selected, striped }]"
     :style="{ gridTemplateColumns: columns }"
     :title="highlightLabel ? `${highlightLabel}: ${formatted}` : undefined"
     @contextmenu.prevent="onContextMenu"
   >
     <span class="col-dir">
-      <span class="direction-badge" :class="directionClass">{{ frame.direction }}</span>
+      <span class="direction-badge" :class="directionClass">
+        <span class="dir-arrow" aria-hidden="true">{{ directionArrow }}</span>
+        {{ frame.direction }}
+      </span>
     </span>
     <span v-if="showTimestamp" class="col-time">{{ timestamp }}</span>
-    <span v-if="useHtml" class="col-data data ansi-data" :title="dataTitle">
-      <span v-if="omittedLabel" class="data-omitted">{{ omittedLabel }}</span>
-      <span v-html="formatted"></span>
-    </span>
-    <span v-else class="col-data data" :title="dataTitle"
-      ><span v-if="omittedLabel" class="data-omitted">{{ omittedLabel }}</span
-      >{{ formatted }}</span
+    <span
+      v-if="useHtml"
+      class="col-data data ansi-data"
+      :class="{ 'preserve-line-breaks': preserveLineBreaks }"
+      :title="dataTitle"
     >
+      <span v-if="omittedLabel" class="data-omitted">{{ omittedLabel }}</span>
+      <span v-html="formattedHtml"></span>
+    </span>
+    <span
+      v-else
+      class="col-data data"
+      :class="{ 'preserve-line-breaks': preserveLineBreaks }"
+      :title="dataTitle"
+    >
+      <span v-if="omittedLabel" class="data-omitted">{{ omittedLabel }}</span>
+      <template v-if="preserveLineBreaks">
+        <template v-for="(line, index) in formattedLines" :key="index">
+          <br v-if="index > 0" />{{ line }}
+        </template>
+      </template>
+      <template v-else>{{ formatted }}</template>
+    </span>
     <span class="col-mode">{{ displayLabel }}</span>
   </div>
 </template>
@@ -26,24 +44,38 @@
 import { computed } from 'vue';
 import type { DataFrame } from '../../types';
 import { formatBytes } from '../../lib/format';
+import { splitLogDisplayLines } from '../../lib/log-line-breaks';
 
-const props = defineProps<{
-  frame: DataFrame;
-  formatted: string;
-  timestamp: string;
-  showTimestamp: boolean;
-  columns: string;
-  displayLabel: string;
-  useHtml: boolean;
-  highlightClass?: string | null;
-  highlightLabel?: string | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    frame: DataFrame;
+    formatted: string;
+    timestamp: string;
+    showTimestamp: boolean;
+    columns: string;
+    displayLabel: string;
+    useHtml: boolean;
+    preserveLineBreaks?: boolean;
+    /** Split on raw '\n' only, skipping the log-record prefix heuristic.
+     * HEXASCII dumps need this: their ASCII gutter can contain text like
+     * "I: " that the heuristic would otherwise re-flow onto new lines. */
+    plainLineBreaks?: boolean;
+    highlightClass?: string | null;
+    highlightLabel?: string | null;
+    selected?: boolean;
+    striped?: boolean;
+  }>(),
+  { preserveLineBreaks: false, plainLineBreaks: false, selected: false, striped: false },
+);
 
 const emit = defineEmits<{
   (e: 'contextmenu', ev: MouseEvent, frame: DataFrame): void;
 }>();
 
 const directionClass = computed(() => props.frame.direction.toLowerCase());
+// TX leaves the host (up), RX arrives at the host (down). A glyph (not an SVG
+// icon) keeps the packet list inside the bundle-size gate.
+const directionArrow = computed(() => (props.frame.direction === 'TX' ? '↑' : '↓'));
 const omittedLabel = computed(() =>
   props.frame.omittedBytes ? `… ${formatBytes(props.frame.omittedBytes)} omitted · ` : '',
 );
@@ -53,6 +85,12 @@ const dataTitle = computed(() => {
   const omitted = `${props.frame.omittedBytes.toLocaleString()} bytes omitted; `;
   return omitted + (preview ?? props.formatted);
 });
+const formattedLines = computed(() =>
+  props.plainLineBreaks ? props.formatted.split('\n') : splitLogDisplayLines(props.formatted),
+);
+const formattedHtml = computed(() =>
+  props.preserveLineBreaks ? formattedLines.value.join('<br>') : props.formatted,
+);
 
 function onContextMenu(ev: MouseEvent) {
   emit('contextmenu', ev, props.frame);
@@ -64,17 +102,9 @@ function onContextMenu(ev: MouseEvent) {
  * Instrument-grade packet row. Pure presentational + v-memo-friendly: the
  * parent pre-formats `formatted`/`timestamp` (shared LRU cache) and passes
  * stable string props, so unchanged rows skip the v-html diff entirely.
+ * The .packet-row grid and .col-* column rules live in
+ * styles/packet-columns.css, shared with DataPacketList.vue's header.
  */
-.packet-row {
-  display: grid;
-  gap: 8px;
-  padding: 3px 10px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 22px;
-  align-items: center;
-}
-
 .packet-item {
   border-bottom: 1px solid var(--border-subtle);
   transition:
@@ -84,13 +114,18 @@ function onContextMenu(ev: MouseEvent) {
   overflow: hidden;
 }
 
+/* Zebra tint must sit below hover/selection so those states always win. */
+.packet-item.striped {
+  background-color: var(--surface-lift);
+}
+
 .packet-item:hover {
   background-color: var(--bg-hover);
 }
 
 .packet-item.tx {
   border-left: 2px solid var(--accent-green);
-  padding-left: 8px;
+  padding-left: var(--space-sm);
   background-image: linear-gradient(90deg, var(--accent-green-subtle), transparent 220px);
 }
 
@@ -100,7 +135,7 @@ function onContextMenu(ev: MouseEvent) {
 
 .packet-item.rx {
   border-left: 2px solid var(--accent-blue);
-  padding-left: 8px;
+  padding-left: var(--space-sm);
   background-image: linear-gradient(90deg, var(--accent-blue-subtle), transparent 220px);
 }
 
@@ -138,20 +173,32 @@ function onContextMenu(ev: MouseEvent) {
   background-image: linear-gradient(90deg, var(--accent-violet-subtle), transparent 260px);
 }
 
-.col-dir {
-  text-align: center;
+/* Keyboard/context-menu selection. An inset outline (not box-shadow) keeps the
+   highlight rules' inset shadows intact when both states apply. */
+.packet-item.selected {
+  background-color: var(--bg-selected);
+  outline: 1px solid var(--border-color);
+  outline-offset: -1px;
 }
 
 .direction-badge {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2xs);
+  min-width: 28px;
   height: 18px;
+  padding: 0 var(--space-xs);
   border-radius: var(--radius-full);
   font-weight: var(--font-weight-bold);
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   letter-spacing: 0.5px;
   line-height: 18px;
+}
+
+.dir-arrow {
+  font-size: var(--font-size-2xs);
+  line-height: 1;
 }
 
 /* Badge text stays dark in both themes: the TX/RX accent hues are
@@ -168,38 +215,20 @@ function onContextMenu(ev: MouseEvent) {
   box-shadow: 0 0 7px -2px var(--accent-blue);
 }
 
-.col-time {
-  color: var(--text-muted);
-  white-space: nowrap;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-
-.col-data {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  letter-spacing: 0.3px;
-  font-variant-numeric: tabular-nums;
-}
-
 .ansi-data {
   white-space: nowrap;
   word-break: normal;
   font-variant-numeric: normal;
 }
 
-.data-omitted {
-  color: var(--text-muted);
-  font-size: 10px;
-  letter-spacing: 0;
+.col-data.preserve-line-breaks {
+  white-space: pre;
+  text-overflow: clip;
 }
 
-.col-mode {
-  text-align: center;
-  color: var(--text-dim);
-  font-size: 9px;
-  text-transform: uppercase;
+.data-omitted {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
   letter-spacing: 0;
 }
 </style>

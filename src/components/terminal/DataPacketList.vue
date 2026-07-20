@@ -76,34 +76,53 @@
       @keydown="onKeydown"
     >
       <div v-if="visibleFrameCount === 0" class="packet-empty">
-        {{ totalFrameCount === 0 ? t('packet.empty') : t('packet.noMatch') }}
+        <div class="packet-empty-card">
+          <component :is="emptyIcon" class="icon-lg packet-empty-icon" aria-hidden="true" />
+          <span class="packet-empty-title">
+            {{ totalFrameCount === 0 ? t('packet.empty') : t('packet.noMatch') }}
+          </span>
+          <span class="packet-empty-hint">
+            {{ totalFrameCount === 0 ? t('packet.emptyHint') : t('packet.noMatchHint') }}
+          </span>
+        </div>
       </div>
       <div :style="{ height: `${totalSize}px`, width: '100%', position: 'relative' }">
-        <PacketRow
+        <div
           v-for="row in rows"
           :key="row.key"
+          :ref="measureElement"
+          :data-index="row.index"
+          :style="row.style"
           v-memo="[
             row.key,
-            row.start,
-            row.size,
+            row.style.transform,
             row.contentVersion,
             appStore.displayMode,
             appStore.ansiColorEnabled,
+            appStore.preserveLogLineBreaks,
             appStore.showTimestamp,
             row.highlightClass,
+            row.striped,
+            row.frame.id === selectedFrameId,
           ]"
-          :style="row.style"
-          :frame="row.frame"
-          :formatted="row.formatted"
-          :timestamp="row.timestamp"
-          :show-timestamp="row.showTimestamp"
-          :columns="row.columns"
-          :display-label="row.displayLabel"
-          :use-html="row.useHtml"
-          :highlight-class="row.highlightClass"
-          :highlight-label="row.highlightLabel"
-          @contextmenu="onRowContextMenu"
-        />
+        >
+          <PacketRow
+            :frame="row.frame"
+            :formatted="row.formatted"
+            :timestamp="row.timestamp"
+            :show-timestamp="appStore.showTimestamp"
+            :columns="columns"
+            :display-label="displayLabel"
+            :use-html="useHtml"
+            :preserve-line-breaks="preserveLineBreaks"
+            :plain-line-breaks="plainLineBreaks"
+            :highlight-class="row.highlightClass"
+            :highlight-label="row.highlightLabel"
+            :striped="row.striped"
+            :selected="row.frame.id === selectedFrameId"
+            @contextmenu="onRowContextMenu"
+          />
+        </div>
       </div>
     </div>
     <n-dropdown
@@ -122,7 +141,7 @@
 import { computed, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, useMessage } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
-import { Copy, Search } from '@lucide/vue';
+import { Cable, Copy, Search } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
 import { usePacketFilter } from '../../composables/usePacketFilter';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
@@ -137,6 +156,7 @@ import {
   packetContextCopyText,
   packetCopySizeStatus,
   packetDisplayLabel,
+  packetRowHeight,
   packetKeyboardCopyText,
   packetSelectionIndex,
   packetUsesHtml,
@@ -161,6 +181,10 @@ const totalFrameCount = computed(() => {
   void framesVersion.value;
   return props.frames.length;
 });
+
+// Both icons are already bundled elsewhere (Cable: PortSelector), so the empty
+// state adds no new icon to the bundle.
+const emptyIcon = computed(() => (totalFrameCount.value === 0 ? Cable : Search));
 
 const ctxShow = ref(false);
 const ctxX = ref(0);
@@ -224,9 +248,36 @@ const {
   onFramesReplaced: clearCaches,
 });
 
-const { scrollRef, virtualItems, totalSize, onScroll } = usePacketVirtualScroll({
+// HEXASCII is a fixed-width hex dump: always multi-line, independent of the
+// log line-break toggle. HEX stays a single line; text modes follow the toggle.
+const preserveLineBreaks = computed(() => {
+  if (appStore.displayMode === 'HEX') return false;
+  if (appStore.displayMode === 'HEXASCII') return true;
+  return appStore.preserveLogLineBreaks;
+});
+
+// The dump's ASCII gutter may contain text like "I: " that the log-record
+// prefix heuristic would re-flow, so HEXASCII rows split on raw '\n' only.
+const plainLineBreaks = computed(() => appStore.displayMode === 'HEXASCII');
+
+const rowSizeVersion = computed(() =>
+  [
+    appStore.displayMode,
+    appStore.preserveLogLineBreaks,
+    appStore.packetViewMode === 'MERGED' ? framesVersion.value : 0,
+  ].join(':'),
+);
+
+const { scrollRef, virtualItems, totalSize, measureElement, onScroll } = usePacketVirtualScroll({
   frameCount: visibleFrameCount,
   autoScroll: computed(() => appStore.autoScroll),
+  rowSize: (index) =>
+    packetRowHeight(
+      visibleFrames.value[index],
+      appStore.displayMode,
+      appStore.preserveLogLineBreaks,
+    ),
+  rowSizeVersion,
 });
 
 const displayLabel = computed(() =>
@@ -255,10 +306,6 @@ const rows = computed<PacketRowData[]>(() => {
   return buildPacketRows({
     virtualItems: virtualItems.value,
     frames: visibleFrames.value,
-    showTimestamp: appStore.showTimestamp,
-    columns: columns.value,
-    displayLabel: displayLabel.value,
-    useHtml: useHtml.value,
     highlights: props.highlights,
     formatFrame,
     getHexSearchData,
@@ -373,7 +420,7 @@ async function handleCopySelect(key: string) {
   justify-content: space-between;
   align-items: center;
   min-height: 42px;
-  padding: 7px 12px;
+  padding: var(--space-sm) var(--space-md);
   background: var(--bg-primary);
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
@@ -383,19 +430,19 @@ async function handleCopySelect(key: string) {
 
 .filter-left {
   display: flex;
-  gap: 7px;
+  gap: var(--space-sm);
   align-items: center;
   flex-wrap: wrap;
   min-width: 0;
 }
 
 .filter-right {
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
   font-family: var(--font-mono);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-sm);
 }
 
 .search-icon {
@@ -404,35 +451,27 @@ async function handleCopySelect(key: string) {
 
 .frame-count {
   color: var(--text-secondary);
-  padding: 2px 7px;
+  padding: var(--space-2xs) var(--space-sm);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-full);
   background: var(--bg-tertiary);
 }
 
-.packet-row {
-  display: grid;
-  gap: 8px;
-  padding: 3px 10px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 22px;
-  align-items: center;
-}
-
+/* .packet-row grid and .col-* column rules live in styles/packet-columns.css,
+   shared with PacketRow.vue so header and rows cannot drift apart. */
 .packet-header {
   font-weight: 600;
   border-bottom: 1px solid var(--border-subtle);
   border-left: 2px solid transparent;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   background: var(--bg-secondary);
   position: sticky;
   top: 0;
   z-index: 1;
-  padding-left: 8px;
+  padding-left: var(--space-sm);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
@@ -444,15 +483,27 @@ async function handleCopySelect(key: string) {
   outline: none;
 }
 
+/* The list is keyboard-focusable (arrow-key selection); keep a visible focus
+   cue since the default outline is removed. */
+.packet-items:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--border-focus);
+}
+
 .packet-empty {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-dim);
-  font-size: 12px;
   pointer-events: none;
+}
+
+/* Grid backdrop lives in a pseudo-element so the mask fades only the grid,
+   never the empty-state content. */
+.packet-empty::before {
+  content: '';
+  position: absolute;
+  inset: 0;
   background:
     linear-gradient(90deg, var(--grid-line) 1px, transparent 1px),
     linear-gradient(180deg, var(--grid-line) 1px, transparent 1px);
@@ -460,30 +511,33 @@ async function handleCopySelect(key: string) {
   mask-image: radial-gradient(circle at center, black 0, transparent 72%);
 }
 
-.col-dir {
+.packet-empty-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-lg) var(--space-xl);
+  max-width: 320px;
   text-align: center;
-  font-size: 10px;
-  letter-spacing: 0.5px;
 }
 
-.col-time {
-  color: var(--text-muted);
-  white-space: nowrap;
-  font-size: 11px;
-}
-
-.col-data {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  letter-spacing: 0.3px;
-}
-
-.col-mode {
-  text-align: center;
+.packet-empty-icon {
   color: var(--text-dim);
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0;
+  opacity: 0.85;
+  margin-bottom: var(--space-2xs);
+}
+
+.packet-empty-title {
+  color: var(--text-muted);
+  font-size: var(--font-size-data);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.2px;
+}
+
+.packet-empty-hint {
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
 }
 </style>
