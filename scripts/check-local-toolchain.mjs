@@ -42,14 +42,43 @@ function requireExact(label, actual, expected, installHint) {
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 const expectedNode = (await readFile(resolve(root, '.node-version'), 'utf8')).trim();
 const expectedPnpm = packageJson.packageManager?.match(/^pnpm@(.+)$/)?.[1];
+const workspaceConfig = await readFile(resolve(root, 'pnpm-workspace.yaml'), 'utf8');
+const workspaceNode = workspaceConfig.match(/^nodeVersion:\s*([^\s#]+)\s*$/m)?.[1];
+const devRuntime = packageJson.devEngines?.runtime;
+const nodeTypes = packageJson.devDependencies?.['@types/node'];
 const toolchainToml = await readFile(resolve(root, 'rust-toolchain.toml'), 'utf8');
 const expectedRust = toolchainToml.match(/^channel\s*=\s*"([^"]+)"/m)?.[1];
 
-if (!expectedNode) errors.push('.node-version must pin an exact Node.js version.');
+if (!/^\d+\.\d+\.\d+$/.test(expectedNode)) {
+  errors.push('.node-version must pin an exact Node.js version.');
+}
 if (!expectedPnpm) errors.push('package.json must pin packageManager as pnpm@<exact-version>.');
 if (!expectedRust) errors.push('rust-toolchain.toml must pin an exact channel.');
 if (packageJson.engines?.node !== expectedNode) {
   errors.push('package.json engines.node must exactly match .node-version.');
+}
+if (
+  !devRuntime ||
+  Array.isArray(devRuntime) ||
+  devRuntime.name !== 'node' ||
+  devRuntime.version !== expectedNode ||
+  devRuntime.onFail !== 'download'
+) {
+  errors.push(
+    'package.json devEngines.runtime must download the exact Node.js version from .node-version.',
+  );
+}
+if (workspaceNode !== expectedNode) {
+  errors.push('pnpm-workspace.yaml nodeVersion must exactly match .node-version.');
+}
+if (!/^\d+\.\d+\.\d+$/.test(nodeTypes) || nodeTypes.split('.')[0] !== expectedNode.split('.')[0]) {
+  errors.push('package.json must exactly pin @types/node to the Node.js major in .node-version.');
+}
+if (!/^engineStrict:\s*true\s*$/m.test(workspaceConfig)) {
+  errors.push('pnpm-workspace.yaml must enable engineStrict.');
+}
+if (!/^runtimeOnFail:\s*download\s*$/m.test(workspaceConfig)) {
+  errors.push('pnpm-workspace.yaml must set runtimeOnFail to download.');
 }
 if (packageJson.engines?.pnpm !== expectedPnpm) {
   errors.push('package.json engines.pnpm must exactly match packageManager.');

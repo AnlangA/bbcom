@@ -5,8 +5,15 @@ import { join, relative, resolve, sep } from 'node:path';
 // Keep these byte ceilings in one place. They deliberately use binary KiB so
 // the CI decision is stable and does not depend on a formatter's unit choice.
 const TOTAL_JS_GZIP_LIMIT = 286 * 1024;
-const ENTRY_JS_GZIP_LIMIT = 85 * 1024;
+const BOOTSTRAP_JS_GZIP_LIMIT = 85 * 1024;
 const CHUNK_JS_GZIP_LIMIT = 105 * 1024;
+// main.ts conditionally imports exactly one window root before mounting. Vite
+// records those roots as dynamic imports, but they are mandatory startup work
+// for their respective windows rather than optional feature panels.
+const WINDOW_STARTUP_GZIP_LIMITS = new Map([
+  ['src/App.vue', 235 * 1024],
+  ['src/AiWindow.vue', 130 * 1024],
+]);
 const javascriptExtensions = new Set(['.js', '.mjs', '.cjs']);
 
 const root = resolve(import.meta.dirname, '..');
@@ -75,7 +82,7 @@ function isManifestChunk(chunk) {
   return chunk && typeof chunk === 'object' && !Array.isArray(chunk);
 }
 
-function collectStartupGraph(manifest, entryKey, measurements, violations) {
+function collectStartupGraph(manifest, graphLabel, rootKeys, measurements, violations) {
   const visitedKeys = new Set();
   const outputs = new Set();
 
@@ -85,14 +92,14 @@ function collectStartupGraph(manifest, entryKey, measurements, violations) {
 
     const chunk = manifest[key];
     if (!isManifestChunk(chunk)) {
-      violations.push(`manifest entry ${entryKey} imports missing chunk ${key}`);
+      violations.push(`manifest graph ${graphLabel} imports missing chunk ${key}`);
       return;
     }
 
     const output = resolveManifestOutput(chunk.file);
     if (!output || !measurements.has(output)) {
       violations.push(
-        `manifest entry ${entryKey} references ${String(chunk.file)} outside the emitted JavaScript files`,
+        `manifest graph ${graphLabel} references ${String(chunk.file)} outside the emitted JavaScript files`,
       );
     } else {
       outputs.add(output);
@@ -109,7 +116,7 @@ function collectStartupGraph(manifest, entryKey, measurements, violations) {
     for (const importKey of chunk.imports) visit(importKey);
   }
 
-  visit(entryKey);
+  for (const rootKey of rootKeys) visit(rootKey);
   return [...outputs];
 }
 
@@ -152,14 +159,37 @@ if (!existsSync(distDirectory) || !statSync(distDirectory).isDirectory()) {
     }
   }
 
-  const entryGraphs = manifest
-    ? Object.entries(manifest)
-        .filter(([, chunk]) => isManifestChunk(chunk) && chunk.isEntry === true)
-        .map(([entryKey]) => ({
-          entryKey,
-          outputs: collectStartupGraph(manifest, entryKey, measurements, violations),
-        }))
-    : [];
+  const entryGraphs = [];
+  if (manifest) {
+    for (const [entryKey, entry] of Object.entries(manifest)) {
+      if (!isManifestChunk(entry) || entry.isEntry !== true) continue;
+      entryGraphs.push({
+        label: entryKey,
+        limit: BOOTSTRAP_JS_GZIP_LIMIT,
+        outputs: collectStartupGraph(manifest, entryKey, [entryKey], measurements, violations),
+      });
+
+      const dynamicImports = Array.isArray(entry.dynamicImports) ? entry.dynamicImports : [];
+      for (const [windowRoot, limit] of WINDOW_STARTUP_GZIP_LIMITS) {
+        const label = `${entryKey} + ${windowRoot}`;
+        if (!dynamicImports.includes(windowRoot)) {
+          violations.push(`manifest entry ${entryKey} no longer imports required ${windowRoot}`);
+          continue;
+        }
+        entryGraphs.push({
+          label,
+          limit,
+          outputs: collectStartupGraph(
+            manifest,
+            label,
+            [entryKey, windowRoot],
+            measurements,
+            violations,
+          ),
+        });
+      }
+    }
+  }
 
   if (manifest && entryGraphs.length === 0) {
     violations.push('Vite manifest contains no JavaScript entry');
@@ -174,9 +204,9 @@ if (!existsSync(distDirectory) || !statSync(distDirectory).isDirectory()) {
       0,
     );
     graph.gzipBytes = gzipBytes;
-    if (gzipBytes > ENTRY_JS_GZIP_LIMIT) {
+    if (gzipBytes > graph.limit) {
       violations.push(
-        `entry startup graph ${graph.entryKey} gzip ${formatBytes(gzipBytes)} exceeds ${formatBytes(ENTRY_JS_GZIP_LIMIT)}`,
+        `startup graph ${graph.label} gzip ${formatBytes(gzipBytes)} exceeds ${formatBytes(graph.limit)}`,
       );
     }
   }
@@ -186,7 +216,7 @@ if (!existsSync(distDirectory) || !statSync(distDirectory).isDirectory()) {
   );
   for (const graph of entryGraphs) {
     console.log(
-      `Entry startup graph ${graph.entryKey}: ${formatBytes(graph.gzipBytes)} / ${formatBytes(ENTRY_JS_GZIP_LIMIT)}`,
+      `Startup graph ${graph.label}: ${formatBytes(graph.gzipBytes)} / ${formatBytes(graph.limit)}`,
     );
   }
   const largestChunk = [...measurements.entries()].sort(

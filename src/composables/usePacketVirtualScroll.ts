@@ -5,6 +5,9 @@ interface PacketVirtualScrollOptions {
   frameCount: Ref<number>;
   autoScroll: Ref<boolean>;
   rowSize?: (index: number) => number;
+  /** Stable identity for measured rows; required when a rolling buffer
+   * replaces its head without changing the visible item count. */
+  itemKey?: (index: number) => string | number;
   /** Invalidates cached estimates when row sizing settings/content change. */
   rowSizeVersion?: Ref<unknown>;
 }
@@ -47,6 +50,7 @@ export function usePacketVirtualScroll({
   frameCount,
   autoScroll,
   rowSize,
+  itemKey,
   rowSizeVersion,
 }: PacketVirtualScrollOptions) {
   const scrollRef = ref<HTMLDivElement | null>(null);
@@ -57,6 +61,7 @@ export function usePacketVirtualScroll({
       count: frameCount.value,
       getScrollElement: () => scrollRef.value,
       estimateSize: (index) => rowSize?.(index) ?? ROW_HEIGHT,
+      ...(itemKey ? { getItemKey: itemKey } : {}),
       overscan: 15,
     })),
   );

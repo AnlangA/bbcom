@@ -62,6 +62,10 @@ const appShellMocks = vi.hoisted(() => ({
 const packetVirtualMocks = vi.hoisted(() => ({
   measureElement: vi.fn(),
   onScroll: vi.fn(),
+  options: null as {
+    itemKey?: (index: number) => string | number;
+    rowSizeVersion?: { readonly value: unknown };
+  } | null,
 }));
 
 vi.mock('../../src/composables/useSessionActions', () => ({
@@ -95,16 +99,19 @@ vi.mock('../../src/features/sessions', () => ({
 vi.mock('../../src/composables/usePacketVirtualScroll', async () => {
   const { ref } = await import('vue');
   return {
-    usePacketVirtualScroll: () => ({
-      scrollRef: ref<HTMLDivElement | null>(null),
-      virtualItems: ref([
-        { index: 0, start: 0, size: 28 },
-        { index: 1, start: 28, size: 28 },
-      ]),
-      totalSize: ref(56),
-      measureElement: packetVirtualMocks.measureElement,
-      onScroll: packetVirtualMocks.onScroll,
-    }),
+    usePacketVirtualScroll: (options: NonNullable<typeof packetVirtualMocks.options>) => {
+      packetVirtualMocks.options = options;
+      return {
+        scrollRef: ref<HTMLDivElement | null>(null),
+        virtualItems: ref([
+          { index: 0, start: 0, size: 28 },
+          { index: 1, start: 28, size: 28 },
+        ]),
+        totalSize: ref(56),
+        measureElement: packetVirtualMocks.measureElement,
+        onScroll: packetVirtualMocks.onScroll,
+      };
+    },
   };
 });
 
@@ -194,6 +201,7 @@ beforeEach(() => {
   appShellMocks.shortcuts = null;
   packetVirtualMocks.measureElement.mockReset();
   packetVirtualMocks.onScroll.mockReset();
+  packetVirtualMocks.options = null;
 });
 
 afterEach(() => {
@@ -1186,6 +1194,20 @@ test('DataPacketList filters, selects, context-copies, keyboard-copies, and reje
   expect(wrapper.findAll('[data-index]')).toHaveLength(2);
   expect(packetVirtualMocks.measureElement).toHaveBeenCalled();
   expect(wrapper.find('.packet-item').classes()).toContain('highlight-amber');
+  const virtualOptions = packetVirtualMocks.options;
+  expect(virtualOptions?.itemKey?.(0)).toBe('packet-rx');
+  const initialRowSizeVersion = virtualOptions?.rowSizeVersion?.value;
+
+  // Rolling retention can replace the head while preserving the array length.
+  // Stable frame keys and a replacement-only measurement version prevent the
+  // virtualizer from reusing the old row's measured height for new content.
+  await wrapper.setProps({
+    frames: frames.map((frame) => ({ ...frame, id: `replacement-${frame.id}` })),
+    framesVersion: 2,
+  });
+  await wrapper.vm.$nextTick();
+  expect(virtualOptions?.itemKey?.(0)).toBe('replacement-packet-rx');
+  expect(virtualOptions?.rowSizeVersion?.value).not.toBe(initialRowSizeVersion);
 
   const toolbarInput = wrapper.find('.packet-toolbar input');
   await toolbarInput.setValue('alpha');
@@ -1222,13 +1244,14 @@ test('DataPacketList filters, selects, context-copies, keyboard-copies, and reje
     timestamp: index,
     data: new Uint8Array([index % 256]),
   }));
-  await wrapper.setProps({ frames: oversized, framesVersion: 2 });
+  await wrapper.setProps({ frames: oversized, framesVersion: 3 });
   await wrapper.get('.dropdown-option[data-key="all-text"]').trigger('click');
   await wrapper.vm.$nextTick();
   expect(nativeMocks.message.warning).toHaveBeenCalledTimes(1);
 });
 
 test('ParserPanel edits resident parser settings, filters/selects parsed frames, and copies hex/ascii details', async () => {
+  setLocale('en');
   const sessions = setupSessions();
   const sessionId = sessions.createSession('COM-parser', config);
   const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
@@ -1238,8 +1261,23 @@ test('ParserPanel edits resident parser settings, filters/selects parsed frames,
     { offset: 5, data: new TextEncoder().encode('beta') },
   ];
   const wrapper = mount(ParserPanel, {
-    props: { sessionId, parsedFrames, throughputBps: 256, parserResetVersion: 0 },
+    props: {
+      sessionId,
+      parsedFrames,
+      droppedFrames: 0,
+      droppedBytes: 0,
+      throughputBps: 256,
+      parserResetVersion: 0,
+    },
   });
+  expect(wrapper.find('.parser-dropped-stat').exists()).toBe(false);
+  await wrapper.setProps({ droppedFrames: 3, droppedBytes: 42 });
+  expect(wrapper.get('.parser-dropped-stat').text()).toContain('Dropped');
+  expect(wrapper.get('.parser-dropped-stat').text()).toContain('3 frames / 42 B');
+  setLocale('zh');
+  await wrapper.vm.$nextTick();
+  expect(wrapper.get('.parser-dropped-stat').text()).toContain('丢弃');
+  expect(wrapper.get('.parser-dropped-stat').text()).toContain('3 帧 / 42 B');
   expect(wrapper.findAll('.pp-frame')).toHaveLength(2);
   await wrapper.findAll('.pp-frame')[0].trigger('click');
   expect(wrapper.find('.pp-frame').classes()).toContain('selected');

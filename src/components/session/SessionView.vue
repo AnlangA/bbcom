@@ -83,6 +83,8 @@
           v-else-if="viewMode === 'parser'"
           :session-id="props.session.id"
           :parsed-frames="runtime.parser.frames.value"
+          :dropped-frames="runtime.parser.droppedFrames.value"
+          :dropped-bytes="runtime.parser.droppedBytes.value"
           :throughput-bps="runtime.parser.throughputBps.value"
           :parser-reset-version="runtime.parser.resetVersion.value"
           @close="viewMode = 'terminal'"

@@ -2,7 +2,7 @@ use crate::export::ExportFormat;
 use crate::models::data_frame::{DataFrame, Direction};
 use crate::models::errors::AppError;
 use crate::utils::hex;
-use crate::utils::log_text::readable_log_lines;
+use crate::utils::log_text::visit_readable_log_lines;
 use crate::utils::timestamp;
 use std::io::Write as _;
 
@@ -36,35 +36,38 @@ pub(crate) fn append_frames(
                 let direction = dir_label(&frame.direction);
                 // Same hex-editor dump layout as the auto-log hex format:
                 // 16 bytes per line, full prefix repeated on every line.
-                let dump = hex::format_hex_dump(&frame.data);
-                if dump.is_empty() {
+                if frame.data.is_empty() {
                     writeln!(buf, "[{timestamp}] {direction} |")
                         .map_err(|e| encode_error(e, format, path))?;
                 } else {
-                    for line in dump.lines() {
-                        writeln!(buf, "[{timestamp}] {direction} | {line}")
+                    hex::visit_hex_dump_lines(&frame.data, |line| {
+                        write!(buf, "[{timestamp}] {direction} | ")
                             .map_err(|e| encode_error(e, format, path))?;
-                    }
+                        buf.extend_from_slice(line);
+                        buf.push(b'\n');
+                        Ok::<(), AppError>(())
+                    })?;
                 }
             }
             ExportFormat::TxtAscii => {
                 let timestamp = timestamp::format_timestamp(frame.timestamp);
                 let direction = dir_label(&frame.direction);
                 let infer_record_boundaries = matches!(&frame.direction, &Direction::Rx);
-                for line in readable_log_lines(&frame.data, infer_record_boundaries) {
+                visit_readable_log_lines(&frame.data, infer_record_boundaries, |line| {
                     writeln!(buf, "[{timestamp}] {direction} | {line}")
-                        .map_err(|e| encode_error(e, format, path))?;
-                }
+                        .map_err(|e| encode_error(e, format, path))
+                })?;
             }
             ExportFormat::Csv => {
-                writeln!(
+                write!(
                     buf,
-                    "{},{},\"{}\"",
+                    "{},{},\"",
                     timestamp::format_timestamp(frame.timestamp),
                     dir_label(&frame.direction),
-                    hex::format_hex(&frame.data)
                 )
                 .map_err(|e| encode_error(e, format, path))?;
+                hex::append_hex(buf, &frame.data);
+                buf.extend_from_slice(b"\"\n");
             }
             ExportFormat::Bin => buf.extend_from_slice(&frame.data),
         }

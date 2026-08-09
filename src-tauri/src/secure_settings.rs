@@ -305,22 +305,15 @@ fn status_from_store<S: CredentialStore>(
     store: &S,
     state: &SecureSettingsState,
 ) -> Result<AiKeyStatus, IpcError> {
+    // A session value represents the user's newest key when a durable update
+    // failed. It must override an older credential that may still be readable
+    // from the OS store for the rest of this process.
+    if session_key_present(state)? {
+        return Ok(AiKeyStatus::session());
+    }
     match load_from(store, AI_API_KEY) {
         Ok(Some(_)) => Ok(AiKeyStatus::os()),
-        Ok(None) => {
-            if session_key_present(state)? {
-                Ok(AiKeyStatus::session())
-            } else {
-                Ok(AiKeyStatus::missing())
-            }
-        }
-        Err(SecureSettingsError::StorageUnavailable) => {
-            if session_key_present(state)? {
-                Ok(AiKeyStatus::session())
-            } else {
-                Ok(AiKeyStatus::missing())
-            }
-        }
+        Ok(None) | Err(SecureSettingsError::StorageUnavailable) => Ok(AiKeyStatus::missing()),
         Err(error) => Err(key_error(error, "get_ai_key_status")),
     }
 }
@@ -329,17 +322,17 @@ fn load_ai_key_from_store<S: CredentialStore>(
     store: &S,
     state: &SecureSettingsState,
 ) -> Result<Zeroizing<String>, IpcError> {
+    if let Some(value) = current_session_key(state)? {
+        return Ok(value);
+    }
     match load_from(store, AI_API_KEY) {
         Ok(Some(value)) => Ok(Zeroizing::new(value)),
-        Ok(None) | Err(SecureSettingsError::StorageUnavailable) => current_session_key(state)?
-            .ok_or_else(|| {
-                IpcError::new(
-                    AppErrorCode::SecurityDenied,
-                    "error.ai_key_missing",
-                    false,
-                    "run_ai_request",
-                )
-            }),
+        Ok(None) | Err(SecureSettingsError::StorageUnavailable) => Err(IpcError::new(
+            AppErrorCode::SecurityDenied,
+            "error.ai_key_missing",
+            false,
+            "run_ai_request",
+        )),
         Err(error) => Err(key_error(error, "run_ai_request")),
     }
 }
@@ -649,6 +642,22 @@ mod tests {
         }
     }
 
+    struct StaleCredentialStore;
+
+    impl CredentialStore for StaleCredentialStore {
+        fn load(&self, _key: &str) -> Result<Option<String>, SecureSettingsError> {
+            Ok(Some("stale-os-key".to_string()))
+        }
+
+        fn save(&self, _key: &str, _value: &str) -> Result<(), SecureSettingsError> {
+            Err(SecureSettingsError::StorageUnavailable)
+        }
+
+        fn clear(&self, _key: &str) -> Result<(), SecureSettingsError> {
+            Ok(())
+        }
+    }
+
     fn legacy_path(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -784,6 +793,16 @@ mod tests {
         *store.value.lock().unwrap() = Some("os-key".to_string());
         assert_eq!(
             status_from_store(&store, &state).unwrap(),
+            AiKeyStatus::session()
+        );
+        assert_eq!(
+            load_ai_key_from_store(&store, &state).unwrap().to_string(),
+            "session-key"
+        );
+
+        set_session_key(&state, None).unwrap();
+        assert_eq!(
+            status_from_store(&store, &state).unwrap(),
             AiKeyStatus::os()
         );
         assert_eq!(
@@ -791,6 +810,7 @@ mod tests {
             "os-key"
         );
 
+        set_session_key(&state, Some(Zeroizing::new("session-key".to_string()))).unwrap();
         let unavailable = MemoryCredentialStore {
             fail: true,
             ..Default::default()
@@ -886,6 +906,31 @@ mod tests {
                 .unwrap()
                 .to_string(),
             "readback-key"
+        );
+        assert_eq!(
+            load_ai_key_from_store(&ReadbackMismatchStore, &mismatch_state)
+                .unwrap()
+                .to_string(),
+            "readback-key"
+        );
+
+        let stale_state = SecureSettingsState::default();
+        let status = save_ai_key_to_store(
+            &StaleCredentialStore,
+            &stale_state,
+            "new-session-key".to_string(),
+        )
+        .unwrap();
+        assert_eq!(status, AiKeyStatus::session());
+        assert_eq!(
+            status_from_store(&StaleCredentialStore, &stale_state).unwrap(),
+            AiKeyStatus::session()
+        );
+        assert_eq!(
+            load_ai_key_from_store(&StaleCredentialStore, &stale_state)
+                .unwrap()
+                .to_string(),
+            "new-session-key"
         );
 
         clear_ai_key_from_store(&durable, &state).unwrap();

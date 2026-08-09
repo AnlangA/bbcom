@@ -385,6 +385,7 @@ const zh: Catalog = {
   'parser.detail': '帧详情',
   'parser.copy': '复制帧',
   'parser.totalBytes': '{bytes} 字节',
+  'parser.dropped': '{frames} 帧 / {bytes}',
   'parser.throughput': '{rate} B/s',
   'parser.largest': '最大 {bytes}B',
   'parser.largestFrame': '最大帧',

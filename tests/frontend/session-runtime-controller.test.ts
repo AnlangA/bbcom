@@ -245,6 +245,27 @@ test('resident controller parses raw RX without a panel, rebuilds on settings, a
   scope.stop();
 });
 
+test('resident controller publishes bounded-parser drop counters and resets them on clear', async () => {
+  const { id, runtime, scope, serial, store } = setup();
+  store.setParserState(id, { kind: 'fixed', frameSize: 1 });
+
+  serial.emit(Uint8Array.from({ length: 5_001 }, (_, index) => index));
+  await vi.advanceTimersByTimeAsync(17);
+
+  assert.equal(runtime.parser.frames.value.length, 5_000);
+  assert.equal(runtime.parser.frames.value[0]?.offset, 1);
+  assert.equal(runtime.parser.droppedFrames.value, 1);
+  assert.equal(runtime.parser.droppedBytes.value, 1);
+
+  store.clearFrames(id);
+  assert.equal(runtime.parser.frames.value.length, 0);
+  assert.equal(runtime.parser.droppedFrames.value, 0);
+  assert.equal(runtime.parser.droppedBytes.value, 0);
+
+  await runtime.dispose();
+  scope.stop();
+});
+
 test('controller delegates lifecycle commands and releases every resident resource exactly once', async () => {
   const { id, runtime, scope, serial, store } = setup();
   const session = sessionById(store.sessions, id);

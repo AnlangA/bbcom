@@ -180,8 +180,8 @@ test('hex dump rows split on raw newlines only, never on log-record prefixes', (
   });
 
   assert.equal(wrapper.get('.col-data').classes().includes('preserve-line-breaks'), true);
-  assert.equal(wrapper.findAll('.col-data br').length, 1);
-  assert.equal(wrapper.get('.col-data').text(), '49 3A 20 61  |I: a|62  |b|');
+  assert.equal(wrapper.findAll('.col-data br').length, 0);
+  assert.equal(wrapper.get('.col-data').element.textContent, dump);
 });
 
 test('without plainLineBreaks the prefix heuristic would re-flow the same payload', () => {

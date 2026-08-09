@@ -406,6 +406,7 @@ const en: Catalog = {
   'parser.detail': 'Frame detail',
   'parser.copy': 'Copy frame',
   'parser.totalBytes': '{bytes} bytes',
+  'parser.dropped': '{frames} frames / {bytes}',
   'parser.throughput': '{rate} B/s',
   'parser.largest': 'largest {bytes}B',
   'parser.largestFrame': 'Largest',

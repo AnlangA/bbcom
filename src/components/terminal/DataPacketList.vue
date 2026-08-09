@@ -191,6 +191,7 @@ const ctxX = ref(0);
 const ctxY = ref(0);
 let ctxFrame: DataFrame | null = null;
 const selectedFrameId = ref<string | null>(null);
+const frameReplacementVersion = ref(0);
 
 const ctxOptions = computed(() => [
   { label: t('packet.copyHex'), key: 'hex' },
@@ -245,7 +246,10 @@ const {
   packetViewMode: computed(() => appStore.packetViewMode),
   getHexSearchData,
   getTextSearchData,
-  onFramesReplaced: clearCaches,
+  onFramesReplaced: () => {
+    clearCaches();
+    frameReplacementVersion.value += 1;
+  },
 });
 
 // HEXASCII is a fixed-width hex dump: always multi-line, independent of the
@@ -264,6 +268,7 @@ const rowSizeVersion = computed(() =>
   [
     appStore.displayMode,
     appStore.preserveLogLineBreaks,
+    frameReplacementVersion.value,
     appStore.packetViewMode === 'MERGED' ? framesVersion.value : 0,
   ].join(':'),
 );
@@ -277,6 +282,7 @@ const { scrollRef, virtualItems, totalSize, measureElement, onScroll } = usePack
       appStore.displayMode,
       appStore.preserveLogLineBreaks,
     ),
+  itemKey: (index) => visibleFrames.value[index]?.id ?? index,
   rowSizeVersion,
 });
 

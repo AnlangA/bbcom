@@ -1,6 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
+  MAX_PERSISTED_BYTES_PER_SESSION,
   MAX_PERSISTED_FRAMES_PER_SESSION,
   SESSION_STORAGE_VERSION,
   createSessionRecord,
@@ -184,6 +185,42 @@ test('serializeSessionSnapshots bounds frame tails and strips Modbus runtime val
   assert.equal(snapshot.sessions[0].modbusRegisters[0].value, null);
   assert.equal(snapshot.sessions[0].modbusRegisters[0].values, null);
   assert.equal(snapshot.sessions[0].modbusRegisters[0].valueTs, null);
+});
+
+test('serializeSessionSnapshots scans split frame buffers without bulk iteration', () => {
+  const sizedFrame = (id: string, size: number): DataFrame => ({
+    id,
+    timestamp: 1,
+    direction: 'RX',
+    data: new Uint8Array(size),
+  });
+  const rejectBulkIteration = (items: DataFrame[]): DataFrame[] =>
+    new Proxy(items, {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator) {
+          throw new Error('frame buffers must be scanned by index');
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+  const session = createSessionRecord('split-tail', 'COM2', cfg, {
+    frames: rejectBulkIteration([
+      sizedFrame('older-small', 1),
+      sizedFrame('live-byte-limit', 600_000),
+    ]),
+    pausedFrames: rejectBulkIteration([
+      sizedFrame('paused-oversized', MAX_PERSISTED_BYTES_PER_SESSION + 1),
+      sizedFrame('paused-tail', 600_000),
+    ]),
+  });
+
+  const snapshot = serializeSessionSnapshots([session], session.id);
+
+  assert.deepEqual(
+    snapshot.sessions[0].frames.map((item) => item.id),
+    ['paused-tail'],
+  );
 });
 
 test('normalizeParserState clamps malformed parser configs', () => {

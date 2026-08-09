@@ -134,6 +134,9 @@ sessions, checksums, OS credential storage, and bounded AI client calls.
 - ShellCheck available on `PATH`
 - OS permission to access serial ports
 
+`pnpm install --frozen-lockfile` provisions the exact Node.js runtime declared by
+the repository, and project scripts run with that managed runtime.
+
 Install the local quality-gate tools before making a commit:
 
 ```bash

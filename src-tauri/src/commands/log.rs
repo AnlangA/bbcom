@@ -2,12 +2,13 @@ use crate::commands::file_grants::{FileGrantManager, ensure_main_window};
 use crate::models::data_frame::{DataFrame, Direction};
 use crate::models::errors::AppError;
 use crate::models::ipc_error::{IpcError, from_app_error};
-use crate::utils::hex::format_hex_dump;
-use crate::utils::log_text::readable_log_lines;
+use crate::utils::hex::visit_hex_dump_lines;
+use crate::utils::log_text::visit_readable_log_lines;
 use crate::utils::timestamp::format_timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -86,6 +87,7 @@ struct AutoLogSession {
     raw_bytes: usize,
     output_bytes: usize,
     last_activity: Instant,
+    terminal: bool,
     writer: Option<BufWriter<tokio::fs::File>>,
     _slot: OwnedSemaphorePermit,
 }
@@ -151,6 +153,7 @@ impl AutoLogSessionManager {
                     raw_bytes: 0,
                     output_bytes: 0,
                     last_activity: Instant::now(),
+                    terminal: false,
                     writer: Some(writer),
                     _slot: slot,
                 })),
@@ -170,21 +173,30 @@ impl AutoLogSessionManager {
     ) -> Result<AutoLogAppendStats, AppError> {
         validate_log_id(log_id)?;
         let batch_raw_bytes = validate_auto_log_batch(frames)?;
-        let shared = self
-            .sessions
-            .lock()
-            .await
-            .get(log_id)
-            .cloned()
-            .ok_or_else(|| validation_error("logId", "unknown or expired auto-log session"))?;
+        let shared = self.get(log_id).await?;
         let mut session = shared.lock().await;
+        Self::append_locked(&mut session, frames, batch_raw_bytes).await
+    }
+
+    async fn append_locked(
+        session: &mut AutoLogSession,
+        frames: &[DataFrame],
+        batch_raw_bytes: usize,
+    ) -> Result<AutoLogAppendStats, AppError> {
+        if session.terminal || session.writer.is_none() {
+            return Err(validation_error(
+                "logId",
+                "unknown or finished auto-log session",
+            ));
+        }
+
         let output = format_auto_log_batch(frames, session.format);
         let write_lock = Arc::clone(&session.target.write_lock);
         let _write_guard = write_lock.lock().await;
         let writer = session
             .writer
             .as_mut()
-            .ok_or_else(|| validation_error("logId", "auto-log session is already finishing"))?;
+            .expect("active auto-log session must own its writer");
         writer.write_all(&output).await.map_err(AppError::from)?;
         writer.flush().await.map_err(AppError::from)?;
         session.frames = session.frames.saturating_add(frames.len());
@@ -207,12 +219,19 @@ impl AutoLogSessionManager {
             .ok_or_else(|| validation_error("logId", "unknown or expired auto-log session"))?;
         let (write_lock, mut writer) = {
             let mut session = shared.lock().await;
-            (
-                Arc::clone(&session.target.write_lock),
-                session.writer.take().ok_or_else(|| {
-                    validation_error("logId", "auto-log session is already finishing")
-                })?,
-            )
+            if session.terminal || session.writer.is_none() {
+                return Err(validation_error(
+                    "logId",
+                    "auto-log session is already finishing",
+                ));
+            }
+            session.terminal = true;
+            session.last_activity = Instant::now();
+            let writer = session
+                .writer
+                .take()
+                .expect("active auto-log session must own its writer");
+            (Arc::clone(&session.target.write_lock), writer)
         };
         let _write_guard = write_lock.lock().await;
         let footer = format!(
@@ -230,35 +249,87 @@ impl AutoLogSessionManager {
 
     async fn abort(&self, log_id: &str) -> Result<(), AppError> {
         validate_log_id(log_id)?;
-        self.sessions.lock().await.remove(log_id);
+        let Ok(shared) = self.get(log_id).await else {
+            return Ok(());
+        };
+        let writer = {
+            let mut session = shared.lock().await;
+            session.terminal = true;
+            session.last_activity = Instant::now();
+            session.writer.take()
+        };
+        self.remove_current(log_id, &shared).await;
+        drop(writer);
         Ok(())
+    }
+
+    async fn get(&self, log_id: &str) -> Result<SharedAutoLogSession, AppError> {
+        self.sessions
+            .lock()
+            .await
+            .get(log_id)
+            .cloned()
+            .ok_or_else(|| validation_error("logId", "unknown or expired auto-log session"))
+    }
+
+    async fn remove_current(&self, log_id: &str, shared: &SharedAutoLogSession) -> bool {
+        let mut sessions = self.sessions.lock().await;
+        let is_current = sessions
+            .get(log_id)
+            .is_some_and(|current| Arc::ptr_eq(current, shared));
+        if is_current {
+            sessions.remove(log_id);
+        }
+        is_current
+    }
+
+    async fn cleanup_candidate_locked(
+        &self,
+        log_id: &str,
+        shared: &SharedAutoLogSession,
+        session: &mut AutoLogSession,
+        now: Instant,
+    ) -> Option<bool> {
+        if now.saturating_duration_since(session.last_activity) < self.session_ttl {
+            return None;
+        }
+
+        // The caller retains the session lock across the identity-checked
+        // removal. An append that already cloned this Arc must observe
+        // `terminal` before it can touch the writer, while a newer session
+        // reusing the same id remains untouched.
+        session.terminal = true;
+        session.last_activity = Instant::now();
+        let writer = session.writer.take();
+        let removed = self.remove_current(log_id, shared).await;
+        drop(writer);
+        Some(removed)
     }
 
     async fn cleanup_expired(&self) -> usize {
         let now = Instant::now();
-        let snapshot = self
-            .sessions
-            .lock()
-            .await
-            .iter()
-            .map(|(id, session)| (id.clone(), Arc::clone(session)))
-            .collect::<Vec<_>>();
-        let mut expired = Vec::new();
-        for (id, session) in snapshot {
-            let Ok(session) = session.try_lock() else {
+        let snapshot = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .iter()
+                .map(|(id, session)| (id.clone(), Arc::clone(session)))
+                .collect::<Vec<_>>()
+        };
+        let mut count = 0;
+        for (id, shared) in snapshot {
+            let Ok(mut session) = shared.try_lock() else {
                 continue;
             };
-            if now.saturating_duration_since(session.last_activity) >= self.session_ttl {
-                expired.push(id);
+            let Some(removed) = self
+                .cleanup_candidate_locked(&id, &shared, &mut session, now)
+                .await
+            else {
+                continue;
+            };
+            drop(session);
+            if removed {
+                count += 1;
             }
-        }
-        if expired.is_empty() {
-            return 0;
-        }
-        let mut sessions = self.sessions.lock().await;
-        let count = expired.len();
-        for id in expired {
-            sessions.remove(&id);
         }
         count
     }
@@ -393,8 +464,7 @@ fn validate_auto_log_batch(frames: &[DataFrame]) -> Result<usize, AppError> {
 fn format_auto_log_batch(frames: &[DataFrame], format: AutoLogFormat) -> Vec<u8> {
     let raw_bytes = frames.iter().map(|frame| frame.data.len()).sum::<usize>();
     let multiplier = if format == AutoLogFormat::Hex { 7 } else { 1 };
-    let mut output =
-        String::with_capacity(raw_bytes.saturating_mul(multiplier) + frames.len() * 64);
+    let mut output = Vec::with_capacity(raw_bytes.saturating_mul(multiplier) + frames.len() * 64);
     for frame in frames {
         let direction = match frame.direction {
             Direction::Tx => "TX",
@@ -406,24 +476,28 @@ fn format_auto_log_batch(frames: &[DataFrame], format: AutoLogFormat) -> Vec<u8>
                 // Hex-editor dump, 16 bytes per line, with the full
                 // `[timestamp] DIR |` prefix repeated on every line so the
                 // output stays line-oriented and grep-friendly.
-                let dump = format_hex_dump(&frame.data);
-                if dump.is_empty() {
+                if frame.data.is_empty() {
                     let _ = writeln!(output, "[{timestamp}] {direction} |");
                 } else {
-                    for line in dump.lines() {
-                        let _ = writeln!(output, "[{timestamp}] {direction} | {line}");
-                    }
+                    visit_hex_dump_lines(&frame.data, |line| {
+                        write!(output, "[{timestamp}] {direction} | ")?;
+                        output.extend_from_slice(line);
+                        output.push(b'\n');
+                        Ok::<(), std::io::Error>(())
+                    })
+                    .expect("writing to Vec cannot fail");
                 }
             }
             AutoLogFormat::Text => {
                 let infer_record_boundaries = direction == "RX";
-                for line in readable_log_lines(&frame.data, infer_record_boundaries) {
-                    let _ = writeln!(output, "[{timestamp}] {direction} | {line}");
-                }
+                visit_readable_log_lines(&frame.data, infer_record_boundaries, |line| {
+                    writeln!(output, "[{timestamp}] {direction} | {line}")
+                })
+                .expect("writing to Vec cannot fail");
             }
         }
     }
-    output.into_bytes()
+    output
 }
 
 fn now_millis() -> f64 {
@@ -512,8 +586,11 @@ fn validate_log_path(path: &Path) -> Result<(), AppError> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::future::Future;
     use std::path::PathBuf;
+    use std::pin::Pin;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::task::{Context, Poll, Waker};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static LOG_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -546,6 +623,11 @@ mod tests {
             timestamp: 1_710_000_000_123.0,
             data: data.to_vec(),
         }
+    }
+
+    fn assert_pending<F: Future + ?Sized>(future: Pin<&mut F>) {
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(future.poll(&mut context), Poll::Pending));
     }
 
     #[test]
@@ -628,6 +710,56 @@ mod tests {
         manager.abort(&id).await.unwrap();
         manager.abort(&id).await.unwrap();
         assert!(fs::read_to_string(&path).unwrap().contains("RX | hello"));
+        fs::remove_file(path).ok();
+    }
+
+    #[tokio::test]
+    async fn abort_waits_for_a_precloned_append_and_seals_the_session() {
+        let path = temp_path();
+        let manager = AutoLogSessionManager::default();
+        let id = manager
+            .begin(target(path.clone()), AutoLogFormat::Text)
+            .await
+            .unwrap();
+        let shared = manager.get(&id).await.unwrap();
+        let session_guard = shared.lock().await;
+
+        // Poll both lock futures while the guard is held. This deterministically
+        // queues the pre-cloned append before abort without relying on runtime
+        // task scheduling or sleeps.
+        let mut append_lock = Box::pin(Arc::clone(&shared).lock_owned());
+        assert_pending(append_lock.as_mut());
+        let mut abort = Box::pin(manager.abort(&id));
+        assert_pending(abort.as_mut());
+
+        drop(session_guard);
+        let mut append_session = append_lock.await;
+        AutoLogSessionManager::append_locked(
+            &mut append_session,
+            &[frame("queued", Direction::Rx, b"queued")],
+            6,
+        )
+        .await
+        .unwrap();
+        drop(append_session);
+        abort.await.unwrap();
+        let size_after_abort = fs::metadata(&path).unwrap().len();
+
+        // A stale Arc remains sealed even after it has left the global map.
+        let mut stale = shared.lock().await;
+        assert!(matches!(
+            AutoLogSessionManager::append_locked(
+                &mut stale,
+                &[frame("late", Direction::Rx, b"late")],
+                4,
+            )
+            .await,
+            Err(AppError::ValidationError { field, .. }) if field == "logId"
+        ));
+        drop(stale);
+        assert_eq!(fs::metadata(&path).unwrap().len(), size_after_abort);
+        assert!(manager.append(&id, &[]).await.is_err());
+        manager.abort(&id).await.unwrap();
         fs::remove_file(path).ok();
     }
 
@@ -851,6 +983,111 @@ mod tests {
         drop(guard);
         assert_eq!(manager.cleanup_expired().await, 1);
         fs::remove_file(locked_path).ok();
+    }
+
+    #[tokio::test]
+    async fn cleanup_serializes_expiry_against_an_already_cloned_append() {
+        let path = temp_path();
+        let manager = AutoLogSessionManager::default();
+        let id = manager
+            .begin(target(path.clone()), AutoLogFormat::Text)
+            .await
+            .unwrap();
+        let shared = manager.get(&id).await.unwrap();
+        let mut session = shared.lock().await;
+        session.last_activity = Instant::now() - AUTO_LOG_SESSION_TTL - Duration::from_secs(1);
+
+        let size_before_cleanup = fs::metadata(&path).unwrap().len();
+        let mut append_lock = Box::pin(Arc::clone(&shared).lock_owned());
+        assert_pending(append_lock.as_mut());
+        assert_eq!(
+            manager
+                .cleanup_candidate_locked(&id, &shared, &mut session, Instant::now())
+                .await,
+            Some(true)
+        );
+        drop(session);
+
+        let mut stale = append_lock.await;
+        assert!(matches!(
+            AutoLogSessionManager::append_locked(
+                &mut stale,
+                &[frame("refresh", Direction::Rx, b"refresh")],
+                7,
+            )
+            .await,
+            Err(AppError::ValidationError { field, .. }) if field == "logId"
+        ));
+        drop(stale);
+        assert_eq!(fs::metadata(&path).unwrap().len(), size_before_cleanup);
+        assert!(manager.sessions.lock().await.get(&id).is_none());
+        fs::remove_file(path).ok();
+    }
+
+    #[tokio::test]
+    async fn cleanup_never_removes_a_fresh_replacement_with_the_same_id() {
+        let expired_path = temp_path();
+        let replacement_path = temp_path();
+        let manager = AutoLogSessionManager::default();
+        let expired_id = manager
+            .begin(target(expired_path.clone()), AutoLogFormat::Text)
+            .await
+            .unwrap();
+        let replacement_id = manager
+            .begin(target(replacement_path.clone()), AutoLogFormat::Text)
+            .await
+            .unwrap();
+        let expired = manager.get(&expired_id).await.unwrap();
+        let replacement = manager.get(&replacement_id).await.unwrap();
+        expired.lock().await.last_activity =
+            Instant::now() - AUTO_LOG_SESSION_TTL - Duration::from_secs(1);
+
+        // `expired` represents a cleanup snapshot captured before the map was
+        // replaced. Process that stale candidate explicitly after replacement.
+        let mut sessions = manager.sessions.lock().await;
+        let moved_replacement = sessions.remove(&replacement_id).unwrap();
+        assert!(Arc::ptr_eq(&moved_replacement, &replacement));
+        let displaced = sessions
+            .insert(expired_id.clone(), moved_replacement)
+            .unwrap();
+        assert!(Arc::ptr_eq(&displaced, &expired));
+        drop(sessions);
+
+        let mut expired_session = expired.lock().await;
+        assert_eq!(
+            manager
+                .cleanup_candidate_locked(
+                    &expired_id,
+                    &expired,
+                    &mut expired_session,
+                    Instant::now(),
+                )
+                .await,
+            Some(false)
+        );
+        assert!(expired_session.terminal);
+        assert!(expired_session.writer.is_none());
+        drop(expired_session);
+
+        let current = manager.get(&expired_id).await.unwrap();
+        assert!(Arc::ptr_eq(&current, &replacement));
+        manager
+            .append(
+                &expired_id,
+                &[frame("replacement", Direction::Rx, b"replacement")],
+            )
+            .await
+            .unwrap();
+        assert!(
+            fs::read_to_string(&replacement_path)
+                .unwrap()
+                .contains("replacement")
+        );
+
+        manager.abort(&expired_id).await.unwrap();
+        manager.abort(&replacement_id).await.unwrap();
+        fs::remove_file(expired_path).ok();
+        fs::remove_file(replacement_path).ok();
     }
 
     #[tokio::test]

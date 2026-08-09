@@ -576,8 +576,12 @@ export const useSessionStore = defineStore('sessions', () => {
     resetSessionFrames(session);
     if (hadFrames) {
       notifyFramesChanged(sessionId);
-      notifyFramesCleared(sessionId);
     }
+    // The resident raw-byte protocol parser can hold completed/partial data
+    // before the terminal capture queue publishes its first DataFrame. An
+    // explicit clear must reset that independent stream even when both capture
+    // arrays are currently empty.
+    notifyFramesCleared(sessionId);
     schedulePersist('frames');
   }
 

@@ -13,6 +13,12 @@
       <span class="stat-label">{{ t('common.bytes') }}</span>
       <span class="stat-val">{{ t('parser.totalBytes', { bytes: formatBytes(totalBytes) }) }}</span>
     </span>
+    <span v-if="droppedFrames > 0 || droppedBytes > 0" class="stat parser-dropped-stat">
+      <span class="stat-label">{{ t('status.dropped') }}</span>
+      <span class="stat-val">{{
+        t('parser.dropped', { frames: droppedFrames, bytes: formatBytes(droppedBytes) })
+      }}</span>
+    </span>
     <span v-if="throughputBps > 0" class="stat">
       <span class="stat-label">{{ t('status.rate') }}</span>
       <span class="stat-val">{{
@@ -49,6 +55,8 @@ import { t } from '../../lib/i18n';
 defineProps<{
   frameCount: number;
   totalBytes: number;
+  droppedFrames: number;
+  droppedBytes: number;
   throughputBps: number;
   largestFrame: number;
   searchTerm: string;

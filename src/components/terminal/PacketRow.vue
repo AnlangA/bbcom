@@ -30,7 +30,8 @@
     >
       <span v-if="omittedLabel" class="data-omitted">{{ omittedLabel }}</span>
       <template v-if="preserveLineBreaks">
-        <template v-for="(line, index) in formattedLines" :key="index">
+        <template v-if="plainLineBreaks">{{ formatted }}</template>
+        <template v-else v-for="(line, index) in formattedLines" :key="index">
           <br v-if="index > 0" />{{ line }}
         </template>
       </template>
@@ -85,9 +86,7 @@ const dataTitle = computed(() => {
   const omitted = `${props.frame.omittedBytes.toLocaleString()} bytes omitted; `;
   return omitted + (preview ?? props.formatted);
 });
-const formattedLines = computed(() =>
-  props.plainLineBreaks ? props.formatted.split('\n') : splitLogDisplayLines(props.formatted),
-);
+const formattedLines = computed(() => splitLogDisplayLines(props.formatted));
 const formattedHtml = computed(() =>
   props.preserveLineBreaks ? formattedLines.value.join('<br>') : props.formatted,
 );
