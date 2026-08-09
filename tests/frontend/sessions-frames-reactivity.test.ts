@@ -17,6 +17,7 @@ const cfg: PortConfig = {
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
+  rxFrameGapMs: 5,
   dtr: false,
   rts: false,
 };

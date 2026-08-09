@@ -20,6 +20,8 @@
     <ParserStatsBar
       :frame-count="parsedFrames.length"
       :total-bytes="totalBytes"
+      :dropped-frames="droppedFrames"
+      :dropped-bytes="droppedBytes"
       :throughput-bps="throughputBps"
       :largest-frame="largestFrame"
       v-model:search-term="searchTerm"
@@ -97,6 +99,10 @@ const props = defineProps<{
   sessionId: string;
   /** Snapshot produced by the resident raw-byte SessionRuntime parser. */
   parsedFrames: readonly DisplayParsedFrame[];
+  /** Parsed frames evicted from the resident inspection window. */
+  droppedFrames: number;
+  /** Parsed payload bytes evicted from the resident inspection window. */
+  droppedBytes: number;
   throughputBps: number;
   /** Changes only after a config change or explicit terminal clear. */
   parserResetVersion: number;

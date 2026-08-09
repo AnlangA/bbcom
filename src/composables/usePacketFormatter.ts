@@ -3,6 +3,7 @@ import { AnsiUp } from 'ansi_up';
 import {
   formatAscii,
   formatHex,
+  formatHexAscii,
   formatUtf8,
   stripAnsiEscapes,
   toContinuousHex,
@@ -119,8 +120,11 @@ export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketForm
   function formatRaw(frame: DataFrame): string {
     switch (displayMode.value) {
       case 'HEX':
-      case 'HEXASCII':
         return formatHex(frame.data);
+      case 'HEXASCII':
+        // Hex-editor dump: 16 bytes per line plus an ASCII gutter. Never passes
+        // through ansi_up — the multi-line plain text is rendered as-is.
+        return formatHexAscii(frame.data);
       case 'ANSI':
       case 'ASCII': {
         const text = formatAscii(frame.data);

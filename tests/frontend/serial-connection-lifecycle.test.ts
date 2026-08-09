@@ -18,6 +18,7 @@ const config: PortConfig = {
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
+  rxFrameGapMs: 5,
   dtr: false,
   rts: false,
 };
@@ -282,7 +283,7 @@ test('RX capture drains without RAF while frame publication stays throttled', as
 
   fake.handlers?.onData(new Uint8Array(1024));
   assert.equal(store.sessions[0].frames.length, 0);
-  assert.equal(clock.timers[0].delay, 16);
+  assert.equal(clock.timers[0].delay, 5);
   clock.runTimer(0);
 
   assert.deepEqual(rxFrames, [1024]);

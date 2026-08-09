@@ -1,7 +1,12 @@
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { resolve } from 'path';
+import { readFileSync } from 'node:fs';
 import { visualizer } from 'rollup-plugin-visualizer';
+
+const { version: appVersion } = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as { version: string };
 
 export default defineConfig(async () => ({
   plugins: [
@@ -39,6 +44,11 @@ export default defineConfig(async () => ({
     host: true,
   },
   envPrefix: ['VITE_', 'TAURI_'],
+  define: {
+    // Keep the application bundle from importing the entire package manifest
+    // merely to render the About version in Settings.
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
   build: {
     target: 'esnext',
     // The bundle-size gate consumes the Vite manifest to identify every

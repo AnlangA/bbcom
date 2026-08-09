@@ -234,31 +234,59 @@ export function formatAscii(data: Uint8Array): string {
   return asciiDecoder.decode(data);
 }
 
+/** Fixed row width of the HEXASCII dump; row-height estimation relies on it. */
+export const HEXASCII_BYTES_PER_LINE = 16;
+
 /**
  * Format bytes as a hex-editor dual view: hex pairs on the left, ASCII
  * representation on the right, grouped 16 bytes per line. This is the
  * professional hex-editor display mode: raw byte values and decoded characters
  * side by side, so a user can inspect a binary protocol without toggling modes.
  */
-export function formatHexAscii(data: Uint8Array, bytesPerLine = 16): string {
-  const lines: string[] = [];
+export function formatHexAscii(data: Uint8Array, bytesPerLine = HEXASCII_BYTES_PER_LINE): string {
+  if (data.length === 0) return '';
+
+  const lineCount = Math.ceil(data.length / bytesPerLine);
+  let outputLength = lineCount - 1; // one LF between adjacent dump lines
   for (let offset = 0; offset < data.length; offset += bytesPerLine) {
-    const slice = data.subarray(offset, Math.min(offset + bytesPerLine, data.length));
-    let hex = '';
-    let ascii = '';
-    for (let i = 0; i < bytesPerLine; i += 1) {
-      if (i < slice.length) {
-        const b = slice[i];
-        hex += b.toString(16).padStart(2, '0').toUpperCase() + ' ';
-        ascii += b >= 0x20 && b <= 0x7e ? String.fromCharCode(b) : '.';
-      } else {
-        hex += '   ';
-        ascii += ' ';
-      }
-    }
-    lines.push(`${hex.trimEnd()}  |${ascii}|`);
+    const bytesOnLine = Math.min(bytesPerLine, data.length - offset);
+    // `XX XX  |ascii...|`: 3 chars per populated byte, a fixed-width ASCII
+    // gutter, and three delimiter characters. The final hex byte has no
+    // trailing separator, which cancels the fourth delimiter character.
+    outputLength += bytesOnLine * 3 + bytesPerLine + 3;
   }
-  return lines.join('\n');
+
+  // Build the complete ASCII representation once. The previous implementation
+  // allocated two growing strings per line and formatted every byte through
+  // toString/padStart/toUpperCase; this reuses the same pair table as formatHex
+  // and performs a single TextDecoder allocation at the boundary.
+  const output = new Uint8Array(outputLength);
+  let position = 0;
+  for (let offset = 0; offset < data.length; offset += bytesPerLine) {
+    const bytesOnLine = Math.min(bytesPerLine, data.length - offset);
+    if (offset > 0) output[position++] = 0x0a;
+
+    for (let index = 0; index < bytesOnLine; index += 1) {
+      if (index > 0) output[position++] = 0x20;
+      const pairOffset = data[offset + index] * 2;
+      output[position++] = BYTE_HEX_PAIRS_UPPER[pairOffset];
+      output[position++] = BYTE_HEX_PAIRS_UPPER[pairOffset + 1];
+    }
+
+    output[position++] = 0x20;
+    output[position++] = 0x20;
+    output[position++] = 0x7c;
+    for (let index = 0; index < bytesPerLine; index += 1) {
+      if (index >= bytesOnLine) {
+        output[position++] = 0x20;
+        continue;
+      }
+      const byte = data[offset + index];
+      output[position++] = byte >= 0x20 && byte <= 0x7e ? byte : 0x2e;
+    }
+    output[position++] = 0x7c;
+  }
+  return asciiDecoder.decode(output);
 }
 
 export function encodeUtf8(data: string): Uint8Array {

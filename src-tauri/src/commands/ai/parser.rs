@@ -65,8 +65,10 @@ pub(crate) fn parse_terminal_ai_response(content: &str) -> Result<TerminalAiResp
     let risk = response.risk.trim().to_ascii_lowercase();
     response.risk = match risk.as_str() {
         "safe" | "caution" | "dangerous" => risk,
-        unknown => {
-            tracing::warn!("unknown AI risk level '{unknown}', defaulting to 'dangerous'");
+        _ => {
+            // Provider output is untrusted and may contain user/serial context,
+            // newlines, or terminal escapes. Never echo it into process logs.
+            tracing::warn!("unknown AI risk level; defaulting to 'dangerous'");
             "dangerous".to_string()
         }
     };

@@ -1,6 +1,7 @@
 import type { PortConfig } from '../types';
 import { loadJson, saveJson } from './storage';
 import { logger } from './logger';
+import { normalizeRxFrameGapMs } from './serial-framing';
 
 /**
  * Named, reusable connection profiles (baud/data/stop/parity/flow/DTR/RTS).
@@ -25,6 +26,7 @@ export function configsEqual(a: PortConfig, b: PortConfig): boolean {
     a.stopBits === b.stopBits &&
     a.parity === b.parity &&
     a.flowControl === b.flowControl &&
+    a.rxFrameGapMs === b.rxFrameGapMs &&
     a.dtr === b.dtr &&
     a.rts === b.rts
   );
@@ -41,14 +43,22 @@ export function loadPresets(): ConnectionPreset[] {
     const raw = loadJson<{ presets?: ConnectionPreset[] }>(STORAGE_KEY, { presets: [] });
     const list = Array.isArray(raw.presets) ? raw.presets : [];
     // Defensive: drop any malformed entries so a corrupt blob can't crash the dialog.
-    return list.filter(
-      (p): p is ConnectionPreset =>
-        p &&
-        typeof p.id === 'string' &&
-        typeof p.name === 'string' &&
-        p.config &&
-        typeof p.config.baudRate === 'number',
-    );
+    return list
+      .filter(
+        (p): p is ConnectionPreset =>
+          p &&
+          typeof p.id === 'string' &&
+          typeof p.name === 'string' &&
+          p.config &&
+          typeof p.config.baudRate === 'number',
+      )
+      .map((preset) => ({
+        ...preset,
+        config: {
+          ...preset.config,
+          rxFrameGapMs: normalizeRxFrameGapMs(preset.config.rxFrameGapMs),
+        },
+      }));
   } catch (e) {
     logger.warn('connection-presets: load failed', e);
     return [];

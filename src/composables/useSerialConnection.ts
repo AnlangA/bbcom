@@ -20,6 +20,7 @@ import {
 import { SERIAL_WRITE_CLOSE_GRACE_MS, SerialWriteScheduler } from '../lib/serial-write-scheduler';
 import { logger } from '../lib/logger';
 import { t } from '../lib/i18n';
+import { normalizeRxFrameGapMs } from '../lib/serial-framing';
 import { MAX_INPUT_SIZE } from '../types';
 import type {
   DataFrame,
@@ -152,6 +153,7 @@ export function useSerialConnection(
     () => ({ bytes: rxQueue.pendingBytes, chunks: rxQueue.pendingChunks }),
     flushQueue,
     dependencies.timerScheduler,
+    normalizeRxFrameGapMs(config.rxFrameGapMs),
   );
 
   let activeConnection: ConnectionAttempt | null = null;

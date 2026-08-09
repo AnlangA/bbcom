@@ -39,6 +39,8 @@
           :step="100"
           style="width: 112px"
           :disabled="looping"
+          :title="t('send.loopIntervalHint')"
+          :aria-label="t('send.loopIntervalHint')"
         >
           <template #suffix>ms</template>
         </n-input-number>

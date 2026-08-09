@@ -36,6 +36,8 @@ export interface SessionRuntimeViewBinding {
 /** UI-facing, throttled snapshot of the resident raw-byte protocol parser. */
 export interface SessionRuntimeProtocolView {
   readonly frames: Readonly<Ref<readonly DisplayParsedFrame[]>>;
+  readonly droppedFrames: Readonly<Ref<number>>;
+  readonly droppedBytes: Readonly<Ref<number>>;
   readonly throughputBps: Readonly<Ref<number>>;
   /** Increments on a parser configuration change or explicit terminal clear. */
   readonly resetVersion: Readonly<Ref<number>>;
@@ -122,6 +124,8 @@ export function useSessionRuntimeController(
   // resident while the ParserPanel is unmounted and while RAF never runs.
   const protocolRuntime = new SessionProtocolRuntime();
   const parserFrames = shallowRef<readonly DisplayParsedFrame[]>([]);
+  const parserDroppedFrames = ref(0);
+  const parserDroppedBytes = ref(0);
   const parserThroughputBps = ref(0);
   const parserResetVersion = ref(0);
   const parserUiPublisher = new SerialUiPublishScheduler(
@@ -136,6 +140,8 @@ export function useSessionRuntimeController(
   function publishParserSnapshot(): void {
     const snapshot = protocolRuntime.snapshot();
     parserFrames.value = snapshot.frames;
+    parserDroppedFrames.value = snapshot.droppedFrames;
+    parserDroppedBytes.value = snapshot.droppedBytes;
     parserThroughputBps.value = snapshot.throughputBps;
     parserResetVersion.value = snapshot.resetVersion;
   }
@@ -169,6 +175,8 @@ export function useSessionRuntimeController(
   });
   const parser: SessionRuntimeProtocolView = {
     frames: readonly(parserFrames),
+    droppedFrames: readonly(parserDroppedFrames),
+    droppedBytes: readonly(parserDroppedBytes),
     throughputBps: readonly(parserThroughputBps),
     resetVersion: readonly(parserResetVersion),
   };

@@ -48,9 +48,9 @@ export const EXPORT_FORMATS = {
 export type ExportFormat = (typeof EXPORT_FORMATS)[keyof typeof EXPORT_FORMATS];
 
 // User-facing export choices. The text export ("txt") follows the selected
-// display mode so the saved file matches what the user sees on screen — HEX
-// display yields a hex dump, ASCII/UTF-8/ANSI yields decoded text. See
-// useExport.resolveExportFormat. Decoupling the two (a separate "TXT (HEX)"
+// display mode so the saved file matches what the user sees on screen — HEX or
+// HEX+ASCII display yields a hex dump, ASCII/UTF-8/ANSI yields decoded text.
+// See useExport.resolveExportFormat. Decoupling the two (a separate "TXT (HEX)"
 // vs "TXT (ASCII)" picker) was the root cause of saved logs always landing as
 // hex regardless of the encoding the user had selected.
 export type ExportChoice = 'txt' | 'csv' | 'jsonl' | 'bin';
@@ -65,12 +65,15 @@ export const EXPORT_OPTIONS: { label: string; key: ExportChoice }[] = [
 /**
  * Map a user-facing export choice to the wire format the Rust backend expects.
  * The text export ("txt") follows the selected display mode so the saved file
- * matches what the user sees on screen — HEX display yields a hex dump,
- * ASCII/UTF-8/ANSI yields decoded text. Structured/binary choices pass through.
+ * matches what the user sees on screen — HEX/HEX+ASCII display yields a hex
+ * dump, ASCII/UTF-8/ANSI yields decoded text. Structured/binary choices pass
+ * through. Mirrors the auto-log mapping in useAutoLog.ts.
  */
 export function resolveExportFormat(choice: ExportChoice, displayMode: DisplayMode): ExportFormat {
   if (choice === 'txt') {
-    return displayMode === 'HEX' ? EXPORT_FORMATS.txtHex : EXPORT_FORMATS.txtAscii;
+    return displayMode === 'HEX' || displayMode === 'HEXASCII'
+      ? EXPORT_FORMATS.txtHex
+      : EXPORT_FORMATS.txtAscii;
   }
   return choice;
 }

@@ -39,7 +39,7 @@ function fakeScheduler() {
   };
 }
 
-test('small RX bursts drain after exactly one 16ms timer', () => {
+test('small RX bursts restart the configurable inactivity timer', () => {
   const fake = fakeScheduler();
   const pending = { bytes: 1024, chunks: 1 };
   let drains = 0;
@@ -54,12 +54,28 @@ test('small RX bursts drain after exactly one 16ms timer', () => {
   );
 
   drain.notify();
-  drain.notify();
   assert.equal(fake.timers.length, 1);
   assert.equal(fake.timers[0].delay, SERIAL_RX_DRAIN_INTERVAL_MS);
+  drain.notify();
+  assert.equal(fake.timers.length, 2);
+  assert.equal(fake.timers[0].cancelled, true);
   assert.equal(drains, 0);
-  fake.runTimer(0);
+  fake.runTimer(1);
   assert.equal(drains, 1);
+});
+
+test('RX inactivity gap accepts a per-session duration', () => {
+  const fake = fakeScheduler();
+  const pending = { bytes: 1, chunks: 1 };
+  const drain = new SerialRxDrainScheduler(
+    () => pending,
+    () => Object.assign(pending, { bytes: 0, chunks: 0 }),
+    fake.scheduler,
+    2,
+  );
+
+  drain.notify();
+  assert.equal(fake.timers[0].delay, 2);
 });
 
 test('64 KiB or 64 chunks cancels the timer and drains on one microtask', () => {

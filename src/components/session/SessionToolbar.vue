@@ -86,7 +86,7 @@
             :value="appStore.displayMode"
             :options="displayModeOptions"
             size="small"
-            style="width: 112px"
+            style="width: 120px"
             @update:value="appStore.setDisplayMode"
           />
         </div>
@@ -185,6 +185,19 @@
             class="toggle-btn"
             size="small"
             quaternary
+            :type="appStore.preserveLogLineBreaks ? 'primary' : 'default'"
+            :title="t('toolbar.logLineBreaks.title')"
+            :aria-label="t('toolbar.logLineBreaks')"
+            @click="appStore.toggleLogLineBreaks"
+          >
+            <template #icon>
+              <WrapText class="icon-sm" />
+            </template>
+          </n-button>
+          <n-button
+            class="toggle-btn"
+            size="small"
+            quaternary
             :type="appStore.showTimestamp ? 'primary' : 'default'"
             :title="t('toolbar.timestamp')"
             :aria-label="t('toolbar.timestamp')"
@@ -249,6 +262,7 @@ import {
   PowerOff,
   Trash2,
   Unplug,
+  WrapText,
 } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
 import { formatBytes } from '../../lib/format';
@@ -297,7 +311,7 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
 
 <style scoped>
 .session-toolbar {
-  padding: 8px 12px;
+  padding: var(--space-sm) var(--space-md);
   display: grid;
   grid-template-columns: minmax(320px, 1fr) auto;
   align-items: center;
@@ -305,7 +319,7 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   background: var(--bg-secondary);
   min-height: var(--toolbar-height);
   flex-shrink: 0;
-  gap: 8px 12px;
+  gap: var(--space-sm) var(--space-md);
 }
 
 .toolbar-cluster {
@@ -318,7 +332,7 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   flex-wrap: wrap;
   /* Row/column gap matches the display-cluster below so both toolbar halves
      share one spacing rhythm rather than two subtly different ones. */
-  gap: 8px 10px;
+  gap: var(--space-sm);
   justify-self: start;
 }
 
@@ -327,8 +341,8 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   justify-content: flex-end;
   flex-wrap: wrap;
   /* Match connection-cluster's row gap for a single toolbar rhythm. */
-  gap: 8px;
-  padding: 4px;
+  gap: var(--space-sm);
+  padding: var(--space-xs);
   background: var(--bg-tertiary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
@@ -344,11 +358,11 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
 }
 
 .toolbar-feedback {
-  gap: 6px;
+  gap: var(--space-sm);
 }
 
 .toolbar-actions {
-  gap: 8px;
+  gap: var(--space-sm);
 }
 
 .toolbar-format {
@@ -358,7 +372,12 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
 .toolbar-field {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-xs);
+  height: 30px;
+  padding: 0 var(--space-xs) 0 var(--space-sm);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
 }
 
 .toolbar-toggle-sections {
@@ -368,7 +387,7 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   min-width: 0;
   flex-wrap: nowrap;
   justify-content: flex-end;
-  padding: 2px;
+  padding: var(--space-2xs);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -377,7 +396,7 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
 .toggle-group {
   display: inline-flex;
   align-items: center;
-  gap: 1px;
+  gap: var(--space-2xs);
   padding: 0;
   background: transparent;
   border: 0;
@@ -385,8 +404,8 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
 }
 
 .view-toggle-group {
-  padding-right: 6px;
-  margin-right: 6px;
+  padding-right: var(--space-sm);
+  margin-right: var(--space-sm);
   border-right: 1px solid var(--border-subtle);
 }
 
@@ -399,42 +418,34 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   white-space: nowrap;
 }
 
-.toolbar-field {
-  height: 30px;
-  padding: 0 4px 0 6px;
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-sm);
-}
-
 .field-icon {
   color: var(--text-dim);
 }
 
 .field-label {
   color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
 }
 
 .error-hint {
   color: var(--accent-red);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 3px 7px;
+  padding: var(--space-2xs) var(--space-sm);
   background: var(--accent-red-subtle);
-  border: 1px solid rgba(255, 107, 122, 0.22);
+  border: 1px solid var(--accent-red-border);
   border-radius: var(--radius-full);
 }
 
 .drop-hint {
   color: var(--accent-amber);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   white-space: nowrap;
-  padding: 3px 7px;
+  padding: var(--space-2xs) var(--space-sm);
   background: var(--accent-amber-subtle);
   border: 1px solid var(--accent-amber-border);
   border-radius: var(--radius-full);
@@ -446,23 +457,9 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   }
 }
 
+/* Single-column stack: both clusters stretch and left-align. This merges the
+   former 1100px and 900px blocks, whose rules were near-identical. */
 @media (max-width: 1100px) {
-  .session-toolbar {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 7px 10px;
-  }
-
-  .display-cluster {
-    justify-self: stretch;
-    justify-content: flex-start;
-  }
-
-  .toolbar-toggle-sections {
-    justify-content: flex-start;
-  }
-}
-
-@media (max-width: 900px) {
   .session-toolbar {
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;

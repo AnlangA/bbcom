@@ -11,7 +11,7 @@ const MIN_WARMUP_MS = 1000;
 const CALIBRATION_TARGET_MS = 1000;
 const MAX_CV = 0.1;
 const MIN_HEAD_BASE_RATIO = 0.85;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const resultsDirectory = process.argv[2];
 if (!resultsDirectory || process.argv.length !== 3) {

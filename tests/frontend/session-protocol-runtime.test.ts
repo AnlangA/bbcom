@@ -19,6 +19,7 @@ const config: PortConfig = {
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
+  rxFrameGapMs: 5,
   dtr: false,
   rts: false,
 };
@@ -99,12 +100,12 @@ test('resident protocol parser consumes raw RX while terminal capture and UI pub
   assert.equal(await connection.start(), true);
   port.handlers?.onData(bytes('first\npar'));
 
-  // The 16ms capture drain remains pending. No frame was materialized for a
+  // The configurable capture drain remains pending. No frame was materialized for a
   // terminal component, but the long-lived raw-byte parser already emitted a
   // complete protocol frame.
   assert.equal(store.sessions[0].frames.length, 0);
   assert.equal(timer.timers.length, 1);
-  assert.equal(timer.timers[0].delay, 16);
+  assert.equal(timer.timers[0].delay, 5);
   assert.deepEqual(parsedText(parser), ['first']);
 
   port.handlers?.onData(bytes('tial\n'));
@@ -151,4 +152,78 @@ test('resident protocol parser reports raw-byte throughput before a frame comple
   assert.equal(parser.feed(bytes('de'), 1_600), true);
   assert.deepEqual(parsedText(parser), []);
   assert.equal(parser.snapshot().throughputBps, 8);
+});
+
+test('resident protocol parser bounds retained frames and preserves immutable tail snapshots', () => {
+  const parser = new SessionProtocolRuntime({ maxFrames: 3, maxBytes: 64 });
+  parser.configure({ kind: 'fixed', frameSize: 1 });
+
+  parser.feed(new Uint8Array([1, 2, 3]), 1_000);
+  const firstSnapshot = parser.snapshot();
+  parser.feed(new Uint8Array([4, 5]), 1_100);
+  const boundedSnapshot = parser.snapshot();
+
+  assert.deepEqual(
+    firstSnapshot.frames.map((frame) => frame.data[0]),
+    [1, 2, 3],
+    'a published snapshot must not be mutated by later eviction',
+  );
+  assert.deepEqual(
+    boundedSnapshot.frames.map((frame) => frame.data[0]),
+    [3, 4, 5],
+  );
+  assert.equal(boundedSnapshot.droppedFrames, 2);
+  assert.equal(boundedSnapshot.droppedBytes, 2);
+
+  // Drive multiple head-prefix compactions; retention and counters must remain
+  // correct after the backing array is sliced in batches.
+  parser.feed(
+    Uint8Array.from({ length: 20 }, (_, index) => index + 6),
+    1_200,
+  );
+  const compactedSnapshot = parser.snapshot();
+  assert.deepEqual(
+    compactedSnapshot.frames.map((frame) => frame.data[0]),
+    [23, 24, 25],
+  );
+  assert.equal(compactedSnapshot.droppedFrames, 22);
+  assert.equal(compactedSnapshot.droppedBytes, 22);
+});
+
+test('resident protocol parser applies a byte limit and resets drop accounting', () => {
+  const parser = new SessionProtocolRuntime({ maxFrames: 10, maxBytes: 5 });
+  parser.configure({ kind: 'fixed', frameSize: 3 });
+  parser.feed(new Uint8Array([1, 2, 3, 4, 5, 6]), 1_000);
+
+  assert.deepEqual(
+    parser.snapshot().frames.map((frame) => Array.from(frame.data)),
+    [[4, 5, 6]],
+  );
+  assert.equal(parser.snapshot().droppedFrames, 1);
+  assert.equal(parser.snapshot().droppedBytes, 3);
+
+  parser.configure({ kind: 'fixed', frameSize: 2 });
+  assert.deepEqual(parser.snapshot(), {
+    frames: [],
+    droppedFrames: 0,
+    droppedBytes: 0,
+    throughputBps: 0,
+    resetVersion: 2,
+  });
+
+  parser.feed(new Uint8Array([7, 8, 9, 10, 11, 12]), 1_100);
+  assert.equal(parser.snapshot().droppedFrames, 1);
+  parser.clear();
+  const cleared = parser.snapshot();
+  assert.deepEqual(cleared.frames, []);
+  assert.equal(cleared.droppedFrames, 0);
+  assert.equal(cleared.droppedBytes, 0);
+});
+
+test('resident protocol parser rejects invalid injected limits', () => {
+  assert.throws(() => new SessionProtocolRuntime({ maxFrames: 0 }), RangeError);
+  assert.throws(
+    () => new SessionProtocolRuntime({ maxBytes: Number.POSITIVE_INFINITY }),
+    RangeError,
+  );
 });

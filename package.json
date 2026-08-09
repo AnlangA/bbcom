@@ -8,6 +8,13 @@
     "node": "24.13.0",
     "pnpm": "11.11.0"
   },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.13.0",
+      "onFail": "download"
+    }
+  },
   "scripts": {
     "prepare": "pnpm run hooks:install",
     "dev": "vite",
@@ -57,6 +64,7 @@
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@tauri-apps/cli": "2.11.4",
+    "@types/node": "24.13.3",
     "@vitejs/plugin-vue": "6.0.7",
     "@vitest/coverage-v8": "4.1.10",
     "@vue/test-utils": "2.4.11",

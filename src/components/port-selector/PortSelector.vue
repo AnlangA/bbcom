@@ -78,15 +78,24 @@
               size="small"
             />
           </div>
+          <div class="config-item">
+            <label :title="t('serial.rxFrameGapHint')">{{ t('serial.rxFrameGap') }}</label>
+            <n-input-number
+              :value="config.rxFrameGapMs"
+              :min="MIN_RX_FRAME_GAP_MS"
+              :max="MAX_RX_FRAME_GAP_MS"
+              :precision="0"
+              size="small"
+              @update:value="updateRxFrameGap"
+            >
+              <template #suffix>ms</template>
+            </n-input-number>
+          </div>
           <div class="config-item config-signals">
             <label>{{ t('serial.signals') }}</label>
             <div class="signals">
-              <label class="signal-toggle"
-                ><n-switch v-model:value="config.dtr" size="small" /> DTR</label
-              >
-              <label class="signal-toggle"
-                ><n-switch v-model:value="config.rts" size="small" /> RTS</label
-              >
+              <SignalToggle v-model="config.dtr" label="DTR" />
+              <SignalToggle v-model="config.rts" label="RTS" />
             </div>
           </div>
         </div>
@@ -102,6 +111,10 @@
           <span class="summary-chip">
             <span class="summary-label">{{ t('serial.flowControl') }}</span>
             {{ flowControlLabel }}
+          </span>
+          <span class="summary-chip">
+            <span class="summary-label">{{ t('serial.rxFrameGap') }}</span>
+            {{ config.rxFrameGapMs }} ms
           </span>
           <span class="summary-chip">
             <span class="summary-label">{{ t('serial.signals') }}</span>
@@ -157,9 +170,10 @@
 
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue';
-import { NButton, NInput, NSwitch } from 'naive-ui';
+import { NButton, NInput, NInputNumber } from 'naive-ui';
 import type { SelectOption } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
+import SignalToggle from '../ui/SignalToggle.vue';
 import { Cable, ChevronRight, Hash, Plus, RefreshCw, Settings2 } from '@lucide/vue';
 import { usePortWatcher } from '../../composables/usePortWatcher';
 import { useSerialStore } from '../../stores/serial';
@@ -191,6 +205,11 @@ import {
   FLOW_CONTROL_OPTIONS,
 } from '../../lib/constants';
 import type { ChecksumType } from '../../types';
+import {
+  MAX_RX_FRAME_GAP_MS,
+  MIN_RX_FRAME_GAP_MS,
+  normalizeRxFrameGapMs,
+} from '../../lib/serial-framing';
 
 const serialStore = useSerialStore();
 const sessionStore = useSessionStore();
@@ -241,6 +260,10 @@ const serialFormatLabel = computed(() => formatSerialFormatLabel(config.value));
 const flowControlLabel = computed(() => t(`serial.flow.${config.value.flowControl}`));
 
 const signalSummary = computed(() => serialSignalSummary(config.value, t('serial.none')));
+
+function updateRxFrameGap(value: number | null) {
+  serialStore.setPortConfig({ rxFrameGapMs: normalizeRxFrameGapMs(value) });
+}
 
 async function refreshPorts() {
   isRefreshing.value = true;
@@ -424,7 +447,7 @@ async function copyChecksum() {
 
 .empty-hint {
   margin-top: 8px;
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
   text-align: center;
   padding: 9px 8px;
@@ -456,7 +479,7 @@ async function copyChecksum() {
 }
 
 .config-item label {
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
   width: 48px;
   flex-shrink: 0;
@@ -464,7 +487,8 @@ async function copyChecksum() {
   font-weight: 500;
 }
 
-.config-item .n-select {
+.config-item .n-select,
+.config-item .n-input-number {
   flex: 1;
 }
 
@@ -473,16 +497,6 @@ async function copyChecksum() {
   display: flex;
   align-items: center;
   gap: var(--space-md);
-}
-
-.signal-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  cursor: pointer;
 }
 
 .config-summary {
@@ -504,7 +518,7 @@ async function copyChecksum() {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -529,7 +543,7 @@ async function copyChecksum() {
   justify-content: space-between;
   min-height: 16px;
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   font-family: var(--font-mono);
 }
 
@@ -547,7 +561,7 @@ async function copyChecksum() {
   border: 1px solid var(--color-primary-muted);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--font-size-base);
   cursor: copy;
   transition:
     border-color var(--transition-fast),
@@ -561,7 +575,7 @@ async function copyChecksum() {
 
 .checksum-label {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
 }
 
 .checksum-value {
@@ -573,6 +587,6 @@ async function copyChecksum() {
 .checksum-algo {
   margin-left: 6px;
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--font-size-xs);
 }
 </style>

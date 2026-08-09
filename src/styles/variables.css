@@ -81,8 +81,12 @@
   --font-sans: var(--font-family);
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', 'Cascadia Mono', 'Menlo', 'Consolas', monospace;
 
+  /* Micro labels (packet mode column, badge arrows) below the xs step. */
+  --font-size-2xs: 9px;
   --font-size-xs: 10px;
   --font-size-sm: 11px;
+  /* Dense data controls (e.g. tiny selects) sit between sm and base. */
+  --font-size-data: 12px;
   --font-size-base: 13px;
   --font-size-md: 14px;
   --font-size-lg: 16px;

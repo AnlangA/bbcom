@@ -23,7 +23,7 @@
             :value="appStore.locale"
             :options="localeOptions"
             size="small"
-            style="width: 168px"
+            style="width: 160px"
             @update:value="setAppLocale"
           />
           <span class="row-label">{{ t('settings.language') }}</span>
@@ -42,7 +42,7 @@
             :max="100000"
             :step="1000"
             size="small"
-            style="width: 168px"
+            style="width: 160px"
             @update:value="onBufferChange"
           >
             <template #suffix>{{ t('status.frames') }}</template>
@@ -163,7 +163,7 @@ function close() {
 .section-head {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2xs);
 }
 
 .section-title {

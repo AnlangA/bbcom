@@ -1,6 +1,11 @@
 import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import vue from '@vitejs/plugin-vue';
 import { defineConfig } from 'vitest/config';
+
+const { version: appVersion } = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as { version: string };
 
 /**
  * Functional frontend tests run in Node by default. Component tests opt in to
@@ -9,6 +14,9 @@ import { defineConfig } from 'vitest/config';
  */
 export default defineConfig({
   plugins: [vue()],
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
   resolve: {
     alias: {
       '@': resolve(import.meta.dirname, './src'),

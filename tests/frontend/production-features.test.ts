@@ -2,6 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { formatHexAscii } from '../../src/lib/format.ts';
+import { APP_VERSION } from '../../src/lib/version.ts';
 import {
   createExportPreview,
   createExportFrameSnapshot,
@@ -12,6 +13,12 @@ import {
   type TimeRangeFilter,
 } from '../../src/lib/export-filters.ts';
 import type { DataFrame } from '../../src/types.ts';
+
+test('application version is injected without bundling the package manifest', () => {
+  const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string };
+  assert.equal(APP_VERSION, manifest.version);
+  assert.doesNotMatch(readFileSync('src/lib/version.ts', 'utf8'), /package\.json/);
+});
 
 test('production CSP excludes development HTTP and WebSocket origins', () => {
   const config = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')) as {

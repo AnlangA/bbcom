@@ -8,6 +8,8 @@ import {
   packetContextCopyText,
   packetCopySizeStatus,
   packetDisplayLabel,
+  packetLineBreakCount,
+  packetRowHeight,
   packetKeyboardCopyText,
   packetSelectionIndex,
   packetUsesHtml,
@@ -31,8 +33,41 @@ test('derives packet list display labels and columns', () => {
   assert.equal(packetDisplayLabel('FRAME', 'HEX'), 'HEX');
   assert.equal(packetDisplayLabel('MERGED', 'UTF8'), 'UTF8*');
   assert.equal(packetUsesHtml('HEX', true), false);
+  assert.equal(packetUsesHtml('HEXASCII', true), false);
+  assert.equal(packetUsesHtml('HEXASCII', false), false);
   assert.equal(packetUsesHtml('UTF8', true), true);
   assert.equal(packetUsesHtml('UTF8', false), false);
+});
+
+test('sizes text rows from CR/LF log line endings without double-counting CRLF', () => {
+  const f = frame('lines', 'RX', encodeUtf8('one\r\ntwo\nthree\rfour'));
+  assert.equal(packetLineBreakCount(f.data), 3);
+  assert.equal(packetRowHeight(f, 'UTF8', true), 94);
+  assert.equal(packetRowHeight(f, 'UTF8', false), 28);
+  assert.equal(packetRowHeight(f, 'HEX', true), 28);
+  assert.equal(packetRowHeight(frame('trailing', 'RX', encodeUtf8('one\r\n')), 'UTF8', true), 28);
+  assert.equal(packetRowHeight(frame('blank', 'RX', encodeUtf8('one\n\n')), 'UTF8', true), 50);
+  assert.equal(
+    packetRowHeight(frame('zephyr', 'RX', encodeUtf8('I: oneI: two')), 'UTF8', true),
+    50,
+  );
+});
+
+test('sizes HEXASCII dump rows from the fixed 16-bytes-per-line layout', () => {
+  // The dump is always multi-line (one display line per 16 bytes, 28px base +
+  // 22px per extra line), independent of the preserve-line-breaks toggle.
+  assert.equal(packetRowHeight(undefined, 'HEXASCII', true), 28);
+  assert.equal(packetRowHeight(frame('empty', 'RX', new Uint8Array(0)), 'HEXASCII', false), 28);
+  assert.equal(
+    packetRowHeight(frame('full-line', 'RX', new Uint8Array(16)), 'HEXASCII', false),
+    28,
+  );
+  assert.equal(packetRowHeight(frame('two-lines', 'RX', new Uint8Array(17)), 'HEXASCII', true), 50);
+  assert.equal(packetRowHeight(frame('two-full', 'RX', new Uint8Array(32)), 'HEXASCII', false), 50);
+  assert.equal(
+    packetRowHeight(frame('three-lines', 'RX', new Uint8Array(33)), 'HEXASCII', true),
+    72,
+  );
 });
 
 test('buildPacketRows maps virtual rows with formatted data and highlight metadata', () => {
@@ -55,10 +90,6 @@ test('buildPacketRows maps virtual rows with formatted data and highlight metada
   const rows = buildPacketRows({
     virtualItems: [{ index: 1, start: 28, size: 28 }],
     frames,
-    showTimestamp: true,
-    columns: packetColumns(true),
-    displayLabel: 'UTF8',
-    useHtml: false,
     highlights,
     formatFrame: (candidate) => `formatted:${candidate.id}`,
     getHexSearchData: (candidate) => formatHex(candidate.data).replace(/\s/g, '').toLowerCase(),
@@ -67,12 +98,39 @@ test('buildPacketRows maps virtual rows with formatted data and highlight metada
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].key, 'b');
+  assert.equal(rows[0].index, 1);
   assert.equal(rows[0].formatted, 'formatted:b');
   assert.equal(rows[0].timestamp, formatTimestamp(2000));
-  assert.equal(rows[0].style.height, '28px');
+  assert.equal(rows[0].style.height, undefined);
   assert.equal(rows[0].style.transform, 'translateY(28px)');
   assert.equal(rows[0].highlightClass, 'highlight-amber');
   assert.equal(rows[0].highlightLabel, 'Match');
+  assert.equal(rows[0].striped, true);
+});
+
+test('buildPacketRows alternates the zebra tint by virtual index parity', () => {
+  const frames = [
+    frame('a', 'RX', encodeUtf8('one')),
+    frame('b', 'RX', encodeUtf8('two')),
+    frame('c', 'RX', encodeUtf8('three')),
+  ];
+
+  const rows = buildPacketRows({
+    virtualItems: [
+      { index: 0, start: 0, size: 28 },
+      { index: 1, start: 28, size: 28 },
+      { index: 2, start: 56, size: 28 },
+    ],
+    frames,
+    formatFrame: (candidate) => candidate.id,
+    getHexSearchData: () => '',
+    getTextSearchData: () => '',
+  });
+
+  assert.deepEqual(
+    rows.map((row) => row.striped),
+    [false, true, false],
+  );
 });
 
 test('packetSelectionIndex follows current keyboard navigation semantics', () => {

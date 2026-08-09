@@ -21,6 +21,7 @@ import { MAX_HISTORY } from '../types';
 import type { ParserConfig } from './protocol-parser';
 import { parseHex, toContinuousHex } from './format';
 import { nowMillis } from './time';
+import { DEFAULT_RX_FRAME_GAP_MS, normalizeRxFrameGapMs } from './serial-framing';
 import {
   DEFAULT_MODBUS_CONFIG,
   cloneModbusConfig,
@@ -43,6 +44,7 @@ export const DEFAULT_PORT_CONFIG: PortConfig = {
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
+  rxFrameGapMs: DEFAULT_RX_FRAME_GAP_MS,
   dtr: false,
   rts: false,
 };
@@ -276,6 +278,7 @@ export function normalizePortConfig(raw: unknown): PortConfig {
     parity: cfg.parity === 'odd' || cfg.parity === 'even' ? cfg.parity : 'none',
     flowControl:
       cfg.flowControl === 'software' || cfg.flowControl === 'hardware' ? cfg.flowControl : 'none',
+    rxFrameGapMs: normalizeRxFrameGapMs(cfg.rxFrameGapMs),
     dtr: cfg.dtr === true,
     rts: cfg.rts === true,
   };
@@ -339,18 +342,27 @@ export function countFrameTotals(frames: DataFrame[]) {
   return { txBytes, rxBytes, txFrames, rxFrames };
 }
 
-function persistedFrameTail(frames: DataFrame[]): DataFrame[] {
+function persistedFrameTail(
+  frames: readonly DataFrame[],
+  pausedFrames: readonly DataFrame[],
+): DataFrame[] {
   const selected: DataFrame[] = [];
   let bytes = 0;
-  for (let i = frames.length - 1; i >= 0; i -= 1) {
-    const frame = frames[i];
-    if (selected.length >= MAX_PERSISTED_FRAMES_PER_SESSION) break;
-    if (frame.data.length > MAX_PERSISTED_BYTES_PER_SESSION) continue;
-    if (bytes + frame.data.length > MAX_PERSISTED_BYTES_PER_SESSION) {
-      break;
+
+  // `pausedFrames` logically follows `frames`. Walk both buffers from the
+  // logical tail without concatenating them: a high-volume session may retain
+  // 100k frames even though persistence only needs its bounded recent tail.
+  scanTail: for (const buffer of [pausedFrames, frames] as const) {
+    for (let i = buffer.length - 1; i >= 0; i -= 1) {
+      const frame = buffer[i];
+      if (selected.length >= MAX_PERSISTED_FRAMES_PER_SESSION) break scanTail;
+      if (frame.data.length > MAX_PERSISTED_BYTES_PER_SESSION) continue;
+      if (bytes + frame.data.length > MAX_PERSISTED_BYTES_PER_SESSION) {
+        break scanTail;
+      }
+      selected.push(frame);
+      bytes += frame.data.length;
     }
-    selected.push(frame);
-    bytes += frame.data.length;
   }
   return selected.reverse();
 }
@@ -634,7 +646,7 @@ export function serializeSessionSnapshots(
     mruSessionIds,
     sessions: sessions.map((session) => {
       const frames = frameSessionIds.has(session.id)
-        ? persistedFrameTail([...session.frames, ...session.pausedFrames])
+        ? persistedFrameTail(session.frames, session.pausedFrames)
         : [];
       return {
         id: session.id,

@@ -123,6 +123,9 @@
 - 可在 `PATH` 中找到的 ShellCheck
 - 操作系统允许访问串口
 
+`pnpm install --frozen-lockfile` 会自动配置仓库声明的精确 Node.js 运行时，
+后续项目脚本均使用该受管运行时。
+
 首次提交前请安装本地质量门禁工具：
 
 ```bash

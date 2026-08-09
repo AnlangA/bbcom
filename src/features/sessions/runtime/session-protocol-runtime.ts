@@ -5,11 +5,23 @@ import type { DataFrame } from '../../../types';
 export interface SessionProtocolRuntimeSnapshot {
   /** Parsed RX frames accumulated by the resident session runtime. */
   frames: readonly DisplayParsedFrame[];
+  /** Parsed frames evicted from the retained inspection window. */
+  droppedFrames: number;
+  /** Parsed payload bytes evicted from the retained inspection window. */
+  droppedBytes: number;
   /** Bytes per second over the most recently completed half-second window. */
   throughputBps: number;
   /** Changes only when the parser stream is reset, never for normal RX. */
   resetVersion: number;
 }
+
+export interface SessionProtocolRuntimeLimits {
+  maxFrames?: number;
+  maxBytes?: number;
+}
+
+export const DEFAULT_SESSION_PROTOCOL_MAX_FRAMES = 5_000;
+export const DEFAULT_SESSION_PROTOCOL_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
  * Resident, raw-byte protocol data plane for one serial session.
@@ -20,13 +32,29 @@ export interface SessionProtocolRuntimeSnapshot {
  * at the raw RX boundary owned by the long-lived SessionRuntime.
  */
 export class SessionProtocolRuntime {
+  private readonly maxFrames: number;
+  private readonly maxBytes: number;
   private parser: ProtocolParser | null = null;
   private configKey: string | null = null;
   private parsedFrames: DisplayParsedFrame[] = [];
+  /** Oldest live entry; the dead prefix is compacted in batches. */
+  private parsedFrameHead = 0;
+  private retainedBytes = 0;
+  private droppedFrames = 0;
+  private droppedBytes = 0;
   private windowStartedAt: number | null = null;
   private windowBytes = 0;
   private throughputBps = 0;
   private resetVersion = 0;
+
+  constructor(limits: SessionProtocolRuntimeLimits = {}) {
+    this.maxFrames = positiveLimit(
+      'maxFrames',
+      limits.maxFrames,
+      DEFAULT_SESSION_PROTOCOL_MAX_FRAMES,
+    );
+    this.maxBytes = positiveLimit('maxBytes', limits.maxBytes, DEFAULT_SESSION_PROTOCOL_MAX_BYTES);
+  }
 
   /**
    * Replace the parser configuration and optionally rebuild the display from
@@ -85,7 +113,9 @@ export class SessionProtocolRuntime {
     return {
       // The receiver is allowed to retain the snapshot until the next UI
       // publish. Do not expose the mutable collector array itself.
-      frames: this.parsedFrames.slice(),
+      frames: this.parsedFrames.slice(this.parsedFrameHead),
+      droppedFrames: this.droppedFrames,
+      droppedBytes: this.droppedBytes,
       throughputBps: this.throughputBps,
       resetVersion: this.resetVersion,
     };
@@ -93,6 +123,10 @@ export class SessionProtocolRuntime {
 
   private resetState(): void {
     this.parsedFrames = [];
+    this.parsedFrameHead = 0;
+    this.retainedBytes = 0;
+    this.droppedFrames = 0;
+    this.droppedBytes = 0;
     this.windowStartedAt = null;
     this.windowBytes = 0;
     this.throughputBps = 0;
@@ -101,11 +135,43 @@ export class SessionProtocolRuntime {
 
   private appendParsed(parsed: ReturnType<ProtocolParser['feed']>): void {
     for (const frame of parsed) {
-      this.parsedFrames.push({ data: frame.data, offset: frame.offset });
+      this.pushParsedFrame({ data: frame.data, offset: frame.offset });
+    }
+  }
+
+  private pushParsedFrame(frame: DisplayParsedFrame): void {
+    this.parsedFrames.push(frame);
+    this.retainedBytes += frame.data.byteLength;
+
+    while (
+      this.parsedFrames.length - this.parsedFrameHead > this.maxFrames ||
+      this.retainedBytes > this.maxBytes
+    ) {
+      const dropped = this.parsedFrames[this.parsedFrameHead];
+      // Release the payload immediately; compaction of the sparse prefix is
+      // deliberately batched so steady-state overflow remains amortized O(1).
+      this.parsedFrames[this.parsedFrameHead] = undefined as unknown as DisplayParsedFrame;
+      this.parsedFrameHead += 1;
+      this.retainedBytes -= dropped.data.byteLength;
+      this.droppedFrames += 1;
+      this.droppedBytes += dropped.data.byteLength;
+    }
+
+    if (this.parsedFrameHead > 0 && this.parsedFrameHead >= this.parsedFrames.length / 2) {
+      this.parsedFrames = this.parsedFrames.slice(this.parsedFrameHead);
+      this.parsedFrameHead = 0;
     }
   }
 }
 
 function isEmptyDelimiter(config: ParserConfig): boolean {
   return config.kind === 'delimiter' && config.delimiter.length === 0;
+}
+
+function positiveLimit(name: string, value: number | undefined, fallback: number): number {
+  const resolved = value ?? fallback;
+  if (!Number.isFinite(resolved) || resolved < 1) {
+    throw new RangeError(`${name} must be a positive finite number`);
+  }
+  return Math.floor(resolved);
 }

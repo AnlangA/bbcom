@@ -1,9 +1,15 @@
-import { computed, onUnmounted, ref, watch, type Ref } from 'vue';
+import { computed, onUnmounted, ref, watch, type ComponentPublicInstance, type Ref } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 
 interface PacketVirtualScrollOptions {
   frameCount: Ref<number>;
   autoScroll: Ref<boolean>;
+  rowSize?: (index: number) => number;
+  /** Stable identity for measured rows; required when a rolling buffer
+   * replaces its head without changing the visible item count. */
+  itemKey?: (index: number) => string | number;
+  /** Invalidates cached estimates when row sizing settings/content change. */
+  rowSizeVersion?: Ref<unknown>;
 }
 
 const ROW_HEIGHT = 28;
@@ -25,12 +31,12 @@ export function isPinnedToBottom(
 /**
  * Virtual scrolling for the packet list.
  *
- * Rows are a fixed height (ROW_HEIGHT), so the virtualizer never needs a manual
- * `measure()` call: @tanstack/vue-virtual recomputes the visible range on its
- * own internal scroll/resize listeners, and `useVirtualizer` re-derives the
- * instance whenever `count` changes (the options are a computed). Calling
- * `measure()` on every scroll tick (as this previously did) forced a full O(n)
- * offset recompute on every frame of auto-scroll — the dominant scroll jank.
+ * Rows default to ROW_HEIGHT. Log line-break mode supplies estimated heights,
+ * while rendered rows are measured from their actual DOM height so adjacent
+ * multiline records cannot overlap. Estimates are invalidated only when the
+ * sizing mode changes (or a merged row grows). Calling `measure()` on every
+ * scroll tick would force a full O(n) offset recompute on every frame of
+ * auto-scroll — the dominant scroll jank.
  *
  * Auto-scroll is coalesced through a single in-flight RAF guard. At high baud
  * `frameCount` can tick once per flush; without coalescing every tick queued
@@ -40,7 +46,13 @@ export function isPinnedToBottom(
  * instant jump (no animation) so it tracks the data rate instead of lagging it
  * — the behavior of every professional serial terminal.
  */
-export function usePacketVirtualScroll({ frameCount, autoScroll }: PacketVirtualScrollOptions) {
+export function usePacketVirtualScroll({
+  frameCount,
+  autoScroll,
+  rowSize,
+  itemKey,
+  rowSizeVersion,
+}: PacketVirtualScrollOptions) {
   const scrollRef = ref<HTMLDivElement | null>(null);
   const shouldAutoScroll = ref(true);
 
@@ -48,13 +60,22 @@ export function usePacketVirtualScroll({ frameCount, autoScroll }: PacketVirtual
     computed(() => ({
       count: frameCount.value,
       getScrollElement: () => scrollRef.value,
-      estimateSize: () => ROW_HEIGHT,
+      estimateSize: (index) => rowSize?.(index) ?? ROW_HEIGHT,
+      ...(itemKey ? { getItemKey: itemKey } : {}),
       overscan: 15,
     })),
   );
 
   const virtualItems = computed(() => virtualizer.value.getVirtualItems());
   const totalSize = computed(() => virtualizer.value.getTotalSize());
+
+  function measureElement(element: Element | ComponentPublicInstance | null) {
+    virtualizer.value.measureElement(element as Element | null);
+  }
+
+  if (rowSizeVersion) {
+    watch(rowSizeVersion, () => virtualizer.value.measure());
+  }
 
   function onScroll() {
     if (!scrollRef.value) return;
@@ -97,6 +118,7 @@ export function usePacketVirtualScroll({ frameCount, autoScroll }: PacketVirtual
     scrollRef,
     virtualItems,
     totalSize,
+    measureElement,
     onScroll,
   };
 }

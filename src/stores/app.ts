@@ -27,6 +27,7 @@ export const useAppStore = defineStore('app', () => {
   const sendAsHex = ref(false);
   const loopIntervalMs = ref(1000);
   const ansiColorEnabled = ref(true);
+  const preserveLogLineBreaks = ref(true);
   const autoReconnect = ref(false);
   const theme = ref<'dark' | 'light'>('dark');
   const aiKeyStatus = ref<AiKeyStatus>(MISSING_AI_KEY_STATUS);
@@ -126,6 +127,14 @@ export const useAppStore = defineStore('app', () => {
       validate: (raw) => typeof raw === 'boolean',
       apply: (raw) => {
         ansiColorEnabled.value = raw as boolean;
+      },
+    },
+    {
+      key: 'preserveLogLineBreaks',
+      ref: preserveLogLineBreaks,
+      validate: (raw) => typeof raw === 'boolean',
+      apply: (raw) => {
+        preserveLogLineBreaks.value = raw as boolean;
       },
     },
     {
@@ -235,6 +244,10 @@ export const useAppStore = defineStore('app', () => {
     ansiColorEnabled.value = !ansiColorEnabled.value;
   }
 
+  function toggleLogLineBreaks() {
+    preserveLogLineBreaks.value = !preserveLogLineBreaks.value;
+  }
+
   function setSendAsHex(value: boolean) {
     sendAsHex.value = value;
   }
@@ -318,6 +331,7 @@ export const useAppStore = defineStore('app', () => {
     sendAsHex,
     loopIntervalMs,
     ansiColorEnabled,
+    preserveLogLineBreaks,
     aiKeyStatus,
     aiKeyConfigured,
     maxBufferFrames,
@@ -337,6 +351,7 @@ export const useAppStore = defineStore('app', () => {
     setPacketViewMode,
     setLineEnding,
     toggleAnsiColor,
+    toggleLogLineBreaks,
     setSendAsHex,
     setLoopIntervalMs,
     setAiApiKey,
