@@ -221,6 +221,7 @@ test('future session snapshots are backed up and persistence becomes read-only',
 
     s.createSession('COM1', cfg);
     s.flushPersistedSessions();
+    assert.deepEqual(s.sessions, [], 'read-only persistence rejects the in-memory mutation too');
     assert.equal(localStorage.getItem(SESSION_STORAGE_KEY), future, 'read-only mode blocks writes');
   });
 });

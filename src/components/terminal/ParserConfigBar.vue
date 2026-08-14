@@ -9,17 +9,19 @@
       <Binary class="icon-sm" />
       {{ t('parser.title') }}
     </span>
-    <div class="pp-config">
+    <div class="pp-config" role="group" :aria-label="t('parser.title')">
       <AppSelect
         :value="presetId"
         :options="presetOptions"
         :placeholder="t('parser.presetPlaceholder')"
+        :aria-label="t('parser.presetPlaceholder')"
         size="tiny"
         style="width: 150px"
         @update:value="(v) => $emit('apply-preset', v)"
       />
       <AppSelect
         :value="kind"
+        :aria-label="t('parser.title')"
         @update:value="(v) => $emit('update:kind', v)"
         :options="kindOptions"
         size="tiny"
@@ -31,6 +33,7 @@
         @update:value="(v) => $emit('update:delimiterHex', v ?? '')"
         size="tiny"
         :placeholder="t('parser.delimiterPlaceholder')"
+        :aria-label="t('parser.delimiterPlaceholder')"
         style="width: 130px"
       />
       <n-checkbox
@@ -48,6 +51,7 @@
         size="tiny"
         :min="1"
         :max="65535"
+        :aria-label="t('parser.kind.fixed')"
         style="width: 110px"
       >
         <template #suffix>B</template>
@@ -59,12 +63,14 @@
           size="tiny"
           :min="0"
           :max="255"
+          :aria-label="t('parser.detail.offset', { offset: lenOffset })"
           style="width: 90px"
         >
           <template #suffix>off</template>
         </n-input-number>
         <AppSelect
           :value="lenSize"
+          :aria-label="t('parser.kind.length')"
           @update:value="(v) => $emit('update:lenSize', v)"
           :options="lenSizeOptions"
           size="tiny"
@@ -82,13 +88,20 @@
           size="tiny"
           :min="0"
           :max="65535"
+          :aria-label="t('parser.kind.length')"
           style="width: 90px"
         >
           <template #suffix>adj</template>
         </n-input-number>
       </template>
     </div>
-    <button class="pp-close" type="button" :title="t('parser.close')" @click="$emit('close')">
+    <button
+      class="pp-close"
+      type="button"
+      :title="t('parser.close')"
+      :aria-label="t('parser.close')"
+      @click="$emit('close')"
+    >
       <X class="icon-sm" />
     </button>
   </div>

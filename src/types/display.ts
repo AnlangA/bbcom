@@ -7,7 +7,7 @@ export type DisplayMode = 'HEX' | 'HEXASCII' | 'ASCII' | 'ANSI' | 'UTF8';
 export type DirectionFilter = 'ALL' | 'TX' | 'RX';
 
 /** Frame direction — received from the device (RX) or sent to it (TX). */
-export type Direction = 'TX' | 'RX';
+export type { Direction } from '../generated/ipc-contracts';
 
 /** Match scope for the packet search box: decoded text or raw hex bytes. */
 export type SearchMode = 'TEXT' | 'HEX';

@@ -109,8 +109,15 @@ test('register editor helpers clamp editable data quantity and advance addresses
 });
 
 test('register editor helpers parse and format value input consistently', () => {
-  assert.deepEqual(parseModbusValueInput('1, 2;3 4，5；bad NaN Infinity'), [1, 2, 3, 4, 5]);
+  assert.deepEqual(parseModbusValueInput('1, 2;3 4，5；6'), [1, 2, 3, 4, 5, 6]);
   assert.deepEqual(parseModbusValueInput('   '), []);
+  for (const invalid of ['1 bad 2', '1 NaN 2', '1 Infinity 2', '1,,2', ',1', '1;', '1, ,2']) {
+    assert.throws(
+      () => parseModbusValueInput(invalid),
+      RangeError,
+      `${invalid} must reject the entire value list`,
+    );
+  }
 
   assert.equal(formatModbusNumber(12), '12');
   assert.equal(formatModbusNumber(12.345), '12.3');

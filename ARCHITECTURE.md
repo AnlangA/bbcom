@@ -8,6 +8,13 @@ a Rust backend. The most important ownership rule is simple: the frontend owns
 sessions and protocol behavior; Rust owns privileged desktop work and small,
 typed command surfaces.
 
+> **Workspace architecture:** [ADR-0001](docs/ADR-0001-WORKSPACE-RUNTIME-PLUGIN.md)
+> is implemented for the R1 workspace release. Rust is the durable workspace
+> writer, application services own resident runtimes and operations, and Pinia
+> is now a compatibility/view facade. Plugin code remains behind the independent
+> fail-closed release gate in
+> [ADR-0004](docs/ADR-0004-PLUGIN-TRUST-AND-RELEASE-GATE.md).
+
 ## Topology
 
 ```text
@@ -171,14 +178,15 @@ These are the rules most likely to protect users from subtle serial bugs:
 | TypeScript import cycles    | `pnpm cycles`            |
 | Mandatory local commit gate | `pnpm precommit`         |
 
-The repository's `.githooks/pre-commit` invokes `pnpm precommit`, which is the
-authoritative quality gate for every commit. It enforces dependency audits,
-Vitest V8 global/P0 coverage, browser-mock E2E, Rust fmt/Clippy/tests/llvm-cov,
-and the base/head benchmark contract. The benchmark comparison alternates three
-independent base/head processes; each case runs seven rounds of at least 100 ms,
-rejects CV above 10%, and rejects a head/base median below 0.85. No audit,
-coverage, or benchmark command may fail open. GitHub Actions is reserved for
-tag-triggered release assembly and platform smoke verification.
+The repository's `.githooks/pre-commit` invokes `pnpm precommit`, and
+`.github/workflows/quality.yml` runs the same correctness boundaries for every
+pull request, every `master` push, and every tagged release. The workflow runs
+the complete Vitest suite exactly once through V8 coverage and the complete
+Rust suite exactly once through `cargo llvm-cov`; it does not duplicate those
+tests with separate `test` jobs. Browser-mock E2E is a separate required check.
+The benchmark comparison runs only on `master` and manual workflow dispatches,
+so feature work is protected against regressions without turning byte-level or
+microbenchmark tuning into a release prerequisite.
 
 ## Manual Verification
 

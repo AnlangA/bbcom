@@ -1,20 +1,7 @@
-use crate::models::checksum_type::ChecksumType;
 use crate::models::errors::AppError;
 use crate::utils::checksum;
-use serde::{Deserialize, Serialize};
-
-const MAX_CHECKSUM_DATA: usize = 1_048_576;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ChecksumRequest {
-    pub data: Vec<u8>,
-    pub algorithm: ChecksumType,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ChecksumResponse {
-    pub result: String,
-}
+use bbcom_contracts::MAX_CHECKSUM_DATA_BYTES as MAX_CHECKSUM_DATA;
+pub use bbcom_contracts::{ChecksumRequest, ChecksumResponse, ChecksumType};
 
 #[tauri::command]
 pub fn calculate_checksum(request: ChecksumRequest) -> Result<ChecksumResponse, AppError> {

@@ -1,10 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { AiKeyStatus } from '../generated/ipc-contracts';
 
 /** The only renderer-visible representation of an AI credential. */
-export interface AiKeyStatus {
-  configured: boolean;
-  durability: 'os' | 'session' | 'missing';
-}
+export type { AiKeyStatus } from '../generated/ipc-contracts';
 
 const LEGACY_STORAGE_KEY = 'bbcom-app-settings:ai-api-key';
 

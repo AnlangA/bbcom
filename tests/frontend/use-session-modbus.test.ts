@@ -90,17 +90,15 @@ function setup() {
     useSessionModbus({
       session: computed(() => store.sessions[0]),
       sendBytes: async (payload) => ({
-        status: 'complete',
-        ok: true,
+        outcome: 'complete',
         requestedBytes: payload.length,
-        confirmedBytes: payload.length,
-        bytesWritten: payload.length,
-        reason: null,
+        sentBytes: payload.length,
       }),
       rawBytes: () => () => undefined,
       isConnected: ref(true),
       waveformRef,
       showWaveform,
+      notifications: mocked.message,
     }),
   );
   assert.ok(api);

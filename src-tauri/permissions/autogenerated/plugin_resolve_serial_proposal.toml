@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-plugin-resolve-serial-proposal"
+description = "Enables the plugin_resolve_serial_proposal command without any pre-configured scope."
+commands.allow = ["plugin_resolve_serial_proposal"]
+
+[[permission]]
+identifier = "deny-plugin-resolve-serial-proposal"
+description = "Denies the plugin_resolve_serial_proposal command without any pre-configured scope."
+commands.deny = ["plugin_resolve_serial_proposal"]

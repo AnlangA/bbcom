@@ -114,12 +114,26 @@ export function modbusAddressStepFor(
 }
 
 export function parseModbusValueInput(raw: string): number[] {
-  return raw
-    .trim()
-    .split(/[\s,;，；]+/)
-    .filter(Boolean)
-    .map((part) => Number(part))
-    .filter((value) => Number.isFinite(value));
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return [];
+
+  // Commas and semicolons are explicit delimiters, so leading, trailing, or
+  // repeated delimiters represent an empty token and invalidate the complete
+  // edit. Repeated whitespace remains a valid visual separator.
+  if (/(^|[,;，；])\s*([,;，；]|$)/u.test(trimmed)) {
+    throw new RangeError('Modbus value input contains an empty token');
+  }
+
+  const tokens = trimmed.split(/[\s,;，；]+/u);
+  const values = new Array<number>(tokens.length);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const value = Number(tokens[index]);
+    if (!Number.isFinite(value)) {
+      throw new RangeError(`Invalid Modbus value token at position ${index + 1}`);
+    }
+    values[index] = value;
+  }
+  return values;
 }
 
 export function formatModbusNumber(value: number): string {

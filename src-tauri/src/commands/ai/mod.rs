@@ -20,14 +20,14 @@ pub(crate) mod types;
 // Re-export the wire types so existing `crate::commands::ai::{...}` import
 // paths keep resolving (pure move + re-export).
 pub use types::{
-    AiRequestKind, AiRequestResult, CancelAiRequest, LogAiResponse, RunAiRequest,
+    AiRequestKind, AiRequestResult, AiRisk, CancelAiRequest, LogAiResponse, RunAiRequest,
     TerminalAiResponse,
 };
 
 use crate::models::errors::AppError;
 use crate::models::ipc_error::{AppErrorCode, IpcError};
 use crate::secure_settings::{
-    SecureSettingsState, ensure_ai_request_window_label, load_ai_key_for_request,
+    SecureSettingsState, ensure_main_window_label, load_ai_key_for_request,
 };
 use parser::{parse_log_ai_response, parse_terminal_ai_response};
 use prompts::{LOG_SYSTEM_PROMPT, TERMINAL_SYSTEM_PROMPT};
@@ -69,7 +69,7 @@ fn app_error_to_ipc(error: AppError, operation: &'static str, request_id: &str) 
                 .with_request_id(request_id)
         }
         AppError::AiError { .. } => IpcError::new(
-            AppErrorCode::Timeout,
+            AppErrorCode::AiProviderFailed,
             "error.ai_request_failed",
             true,
             operation,
@@ -221,7 +221,7 @@ pub async fn run_ai_request(
     request: RunAiRequest,
 ) -> Result<AiRequestResult, IpcError> {
     const OPERATION: &str = "run_ai_request";
-    ensure_ai_request_window_label(window.label(), OPERATION)?;
+    ensure_main_window_label(window.label(), OPERATION)?;
     validate_v050_request(&request)?;
     let request_id = request.request_id.clone();
     let cancellation = requests.begin(&request_id)?;
@@ -249,7 +249,7 @@ pub fn cancel_ai_request(
     requests: State<'_, AiRequestManager>,
     request: CancelAiRequest,
 ) -> Result<(), IpcError> {
-    ensure_ai_request_window_label(window.label(), "cancel_ai_request")?;
+    ensure_main_window_label(window.label(), "cancel_ai_request")?;
     requests.cancel(&request.request_id)
 }
 

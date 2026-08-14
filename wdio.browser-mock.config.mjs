@@ -22,7 +22,17 @@ export const config = {
       },
     ],
   ],
-  capabilities: [{ browserName: 'tauri' }],
+  capabilities: [
+    {
+      browserName: 'tauri',
+      ...(process.env.CHROME_PATH
+        ? { 'goog:chromeOptions': { binary: process.env.CHROME_PATH } }
+        : {}),
+      ...(process.env.CHROMEDRIVER_PATH
+        ? { 'wdio:chromedriverOptions': { binary: process.env.CHROMEDRIVER_PATH } }
+        : {}),
+    },
+  ],
   framework: 'jasmine',
   reporters: ['spec'],
   jasmineOpts: {

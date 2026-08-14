@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hydrate-workspace-collections"
+description = "Enables the hydrate_workspace_collections command without any pre-configured scope."
+commands.allow = ["hydrate_workspace_collections"]
+
+[[permission]]
+identifier = "deny-hydrate-workspace-collections"
+description = "Denies the hydrate_workspace_collections command without any pre-configured scope."
+commands.deny = ["hydrate_workspace_collections"]

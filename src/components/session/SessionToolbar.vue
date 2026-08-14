@@ -9,8 +9,14 @@
   <div class="session-toolbar">
     <div class="toolbar-cluster connection-cluster">
       <div class="toolbar-actions">
+        <n-button v-if="needsRebind" type="warning" size="small" @click="$emit('rebind')">
+          <template #icon>
+            <Cable class="icon-sm" />
+          </template>
+          {{ t('session.rebind') }}
+        </n-button>
         <n-button
-          v-if="!isConnected"
+          v-else-if="!isConnected"
           type="primary"
           size="small"
           :loading="isConnecting"
@@ -63,10 +69,19 @@
       </div>
 
       <div class="toolbar-feedback">
+        <span v-if="needsRebind" class="rebind-hint">{{ t('session.rebindRequired') }}</span>
         <n-tag v-if="reconnecting" type="warning" size="small" round :bordered="false">
           {{ t('session.reconnecting') }}
         </n-tag>
         <span v-if="error" class="error-hint">{{ error }}</span>
+        <button
+          v-if="connectionConflict"
+          class="conflict-action"
+          type="button"
+          @click="$emit('show-conflicting-session', connectionConflict.ownerSessionId)"
+        >
+          {{ connectionConflict.ownerSessionName }}
+        </button>
         <span
           v-if="totalDroppedBytes > 0"
           class="drop-hint"
@@ -84,6 +99,7 @@
           <span class="field-label">{{ t('toolbar.format') }}</span>
           <AppSelect
             :value="appStore.displayMode"
+            :aria-label="t('toolbar.format')"
             :options="displayModeOptions"
             size="small"
             style="width: 120px"
@@ -249,6 +265,7 @@ import AppSelect from '../ui/AppSelect.vue';
 import {
   ArrowDownUp,
   Binary,
+  Cable,
   Clock,
   Cpu,
   Download,
@@ -268,6 +285,7 @@ import { useAppStore } from '../../stores/app';
 import { formatBytes } from '../../lib/format';
 import { t } from '../../lib/i18n';
 import type { DisplayMode, SerialSession } from '../../types';
+import type { PortLeaseConflict } from '../../generated/ipc-contracts';
 
 export type SessionViewMode = 'terminal' | 'waveform' | 'parser' | 'modbus';
 
@@ -279,6 +297,8 @@ defineProps<{
   isConnecting: boolean;
   reconnecting: boolean;
   error: string | null;
+  connectionConflict?: Readonly<PortLeaseConflict>;
+  needsRebind?: boolean;
   totalDroppedBytes: number;
   sendingBreak: boolean;
   isExporting: boolean;
@@ -296,6 +316,8 @@ defineEmits<{
   'toggle-timestamp': [];
   'toggle-auto-log': [];
   export: [];
+  'show-conflicting-session': [sessionId: string];
+  rebind: [];
 }>();
 
 const appStore = useAppStore();
@@ -439,6 +461,21 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   background: var(--accent-red-subtle);
   border: 1px solid var(--accent-red-border);
   border-radius: var(--radius-full);
+}
+
+.conflict-action {
+  padding: var(--space-2xs) var(--space-sm);
+  border: 1px solid var(--border-focus);
+  border-radius: var(--radius-full);
+  color: var(--color-primary);
+  background: transparent;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.conflict-action:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
 }
 
 .drop-hint {

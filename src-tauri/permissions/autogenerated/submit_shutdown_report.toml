@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-submit-shutdown-report"
+description = "Enables the submit_shutdown_report command without any pre-configured scope."
+commands.allow = ["submit_shutdown_report"]
+
+[[permission]]
+identifier = "deny-submit-shutdown-report"
+description = "Denies the submit_shutdown_report command without any pre-configured scope."
+commands.deny = ["submit_shutdown_report"]

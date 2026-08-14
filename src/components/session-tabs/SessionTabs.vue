@@ -1,7 +1,7 @@
 <template>
   <div class="session-tabs">
     <div class="tabs-header">
-      <div class="tabs-list">
+      <div class="tabs-list" role="tablist" :aria-label="t('session.tabs')">
         <div
           v-for="(session, index) in sessions"
           :key="session.id"
@@ -12,7 +12,7 @@
             dragging: dragIndex === index,
             'drag-over': dragOverIndex === index,
           }"
-          draggable="true"
+          :draggable="sessionStore.userMutationsAllowed"
           @click="switchSession(session.id)"
           @dragstart="onDragStart(index, $event)"
           @dragover.prevent="onDragOver(index)"
@@ -21,11 +21,24 @@
           @dragend="onDragEnd"
           :title="tabTooltip(session)"
         >
-          <span class="tab-status-dot" :class="{ connected: session.isConnected }"></span>
-          <span class="tab-port">{{ session.portName }}</span>
+          <button
+            :id="`session-tab-${session.id}`"
+            class="tab-button"
+            type="button"
+            role="tab"
+            :aria-selected="session.id === activeId"
+            :aria-controls="`session-panel-${session.id}`"
+            :tabindex="session.id === activeId ? 0 : -1"
+            :aria-disabled="!sessionStore.userMutationsAllowed"
+            @keydown="onTabKeydown(index, $event)"
+          >
+            <span class="tab-status-dot" :class="{ connected: session.isConnected }"></span>
+            <span class="tab-port">{{ session.portName }}</span>
+          </button>
           <button
             class="tab-close"
             type="button"
+            :disabled="!sessionStore.userMutationsAllowed"
             @click.stop="closeSession(session.id)"
             :title="t('session.close')"
           >
@@ -36,11 +49,26 @@
       <button
         class="tab-add"
         type="button"
-        @click="emit('create')"
+        :disabled="!sessionStore.userMutationsAllowed"
+        @click="createSession"
         :title="t('session.newWithShortcut')"
       >
         <Plus class="icon-sm" />
       </button>
+    </div>
+    <div v-if="lastDeletedSession" class="undo-banner" role="status" aria-live="polite">
+      <span>{{ lastDeletedSession.session.portName || lastDeletedSession.session.id }}</span>
+      <button
+        type="button"
+        class="undo-action"
+        :disabled="!sessionStore.userMutationsAllowed"
+        @click="undoDelete"
+      >
+        {{ t('session.undoDelete') }}
+      </button>
+      <span v-if="undoFailure" class="undo-conflict" role="alert">
+        {{ t(undoFailure === 'limit' ? 'session.undoDeleteLimit' : 'session.undoDeleteConflict') }}
+      </span>
     </div>
   </div>
 </template>
@@ -62,11 +90,14 @@ const { requestCloseSession } = useSessionActions();
 
 const activeId = computed(() => sessionStore.activeSessionId ?? '');
 const sessions = computed(() => sessionStore.sessions);
+const lastDeletedSession = computed(() => sessionStore.lastDeletedSession);
 
 const dragIndex = ref<number | null>(null);
 const dragOverIndex = ref<number | null>(null);
+const undoFailure = ref<'conflict' | 'limit' | null>(null);
 
 function onDragStart(index: number, e: DragEvent) {
+  if (!sessionStore.userMutationsAllowed) return;
   dragIndex.value = index;
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = 'move';
@@ -83,6 +114,7 @@ function onDragLeave() {
 }
 
 function onDrop(toIndex: number) {
+  if (!sessionStore.userMutationsAllowed) return;
   if (dragIndex.value !== null && dragIndex.value !== toIndex) {
     sessionStore.reorderSessions(dragIndex.value, toIndex);
   }
@@ -94,10 +126,45 @@ function onDragEnd() {
 }
 
 function closeSession(id: string) {
+  if (!sessionStore.userMutationsAllowed) return;
+  undoFailure.value = null;
   requestCloseSession(id);
+}
+
+function undoDelete(): void {
+  if (!sessionStore.userMutationsAllowed) return;
+  const result = sessionStore.undoLastRemovedSession();
+  undoFailure.value = result.ok
+    ? null
+    : result.reason === 'id-conflict'
+      ? 'conflict'
+      : result.reason === 'limit-exceeded'
+        ? 'limit'
+        : null;
 }
 function switchSession(id: string) {
   sessionStore.setActiveSession(id);
+}
+
+function createSession(): void {
+  if (!sessionStore.userMutationsAllowed) return;
+  emit('create');
+}
+
+function onTabKeydown(index: number, event: KeyboardEvent) {
+  if (sessions.value.length === 0) return;
+  let nextIndex: number;
+  if (event.key === 'ArrowRight') nextIndex = (index + 1) % sessions.value.length;
+  else if (event.key === 'ArrowLeft') {
+    nextIndex = (index - 1 + sessions.value.length) % sessions.value.length;
+  } else if (event.key === 'Home') nextIndex = 0;
+  else if (event.key === 'End') nextIndex = sessions.value.length - 1;
+  else return;
+  event.preventDefault();
+  const session = sessions.value[nextIndex];
+  if (!session) return;
+  switchSession(session.id);
+  requestAnimationFrame(() => document.getElementById(`session-tab-${session.id}`)?.focus());
 }
 
 function tabTooltip(session: SerialSession): string {
@@ -113,6 +180,31 @@ function tabTooltip(session: SerialSession): string {
 <style scoped>
 .session-tabs {
   flex-shrink: 0;
+}
+
+.undo-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 34px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.undo-action {
+  padding: 3px 8px;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+.undo-conflict {
+  color: var(--color-error);
 }
 
 .tabs-header {
@@ -162,6 +254,24 @@ function tabTooltip(session: SerialSession): string {
     opacity var(--transition-fast);
   user-select: none;
   position: relative;
+}
+
+.tab-button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tab-button:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
 }
 
 .tab-item:hover {

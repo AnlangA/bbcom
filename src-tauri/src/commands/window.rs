@@ -1,21 +1,8 @@
-use serde::Serialize;
+pub use bbcom_contracts::{AiWindowState, ResizeAiWindowRequest};
 use tauri::{Emitter, LogicalSize, Manager};
 
 use crate::commands::ai::AI_WINDOW_LABEL;
 use crate::models::errors::AppError;
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AiWindowState {
-    pub visible: bool,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResizeAiWindowRequest {
-    pub width: f64,
-    pub height: f64,
-}
 
 #[tauri::command]
 pub fn show_ai_window(app: tauri::AppHandle) -> Result<(), AppError> {

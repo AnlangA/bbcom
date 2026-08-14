@@ -4,15 +4,18 @@ import { join, relative, resolve, sep } from 'node:path';
 
 // Keep these byte ceilings in one place. They deliberately use binary KiB so
 // the CI decision is stable and does not depend on a formatter's unit choice.
-const TOTAL_JS_GZIP_LIMIT = 286 * 1024;
+// The workspace/runtime/plugin architecture landed as one coordinated feature
+// set. Keep a small regression allowance above that complete baseline instead
+// of forcing feature work into byte-level micro-optimisation.
+const TOTAL_JS_GZIP_LIMIT = 376 * 1024;
 const BOOTSTRAP_JS_GZIP_LIMIT = 85 * 1024;
 const CHUNK_JS_GZIP_LIMIT = 105 * 1024;
 // main.ts conditionally imports exactly one window root before mounting. Vite
 // records those roots as dynamic imports, but they are mandatory startup work
 // for their respective windows rather than optional feature panels.
 const WINDOW_STARTUP_GZIP_LIMITS = new Map([
-  ['src/App.vue', 235 * 1024],
-  ['src/AiWindow.vue', 130 * 1024],
+  ['src/App.vue', 290 * 1024],
+  ['src/AiWindow.vue', 145 * 1024],
 ]);
 const javascriptExtensions = new Set(['.js', '.mjs', '.cjs']);
 

@@ -52,6 +52,18 @@ test('importMacros rejects files missing the app/kind marker', () => {
   });
 });
 
+test('importMacros rejects future versions instead of guessing their shape', () => {
+  const payload = JSON.stringify({
+    app: 'bbcom',
+    kind: 'macro-library',
+    version: 2,
+    macros: [],
+  });
+  assert.throws(() => importMacros(payload), {
+    message: t('macroLibrary.unsupportedVersion'),
+  });
+});
+
 test('importMacros rejects a file with no valid macros', () => {
   const payload = JSON.stringify({ app: 'bbcom', kind: 'macro-library', version: 1, macros: [] });
   assert.throws(() => importMacros(payload), {

@@ -1,43 +1,15 @@
 //! Thin Tauri command adapters for bounded export services.
 
 use crate::commands::file_grants::{FileGrantManager, ensure_main_window};
-use crate::export::session::{
-    ExportAppendStats, ExportFinishStats, ExportSessionManager, MAX_EXPORT_BYTES, MAX_EXPORT_FRAMES,
-};
-use crate::models::data_frame::DataFrame;
+use crate::export::session::ExportSessionManager;
 use crate::models::ipc_error::{AppErrorCode, IpcError, from_app_error};
-use serde::{Deserialize, Serialize};
+use bbcom_contracts::{MAX_EXPORT_BYTES, MAX_EXPORT_FRAMES};
 use tauri::{State, WebviewWindow};
 
-pub use crate::export::ExportFormat;
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BeginExportRequest {
-    pub format: ExportFormat,
-    pub token: String,
-    pub expected_frames: usize,
-    pub expected_raw_bytes: usize,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppendExportBatchRequest {
-    pub export_id: String,
-    pub frames: Vec<DataFrame>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExportSessionRequest {
-    pub export_id: String,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BeginExportResponse {
-    pub export_id: String,
-}
+pub use bbcom_contracts::{
+    AppendExportBatchRequest, BeginExportRequest, BeginExportResponse, ExportAppendStats,
+    ExportFinishStats, ExportFormat, ExportSessionRequest,
+};
 
 async fn begin_export_from_label(
     label: &str,
@@ -58,7 +30,12 @@ async fn begin_export_from_label(
         .await
         .map_err(|error| from_app_error(&error, OPERATION))?;
     manager
-        .begin(format, path)
+        .begin_with_expected_totals(
+            format,
+            path,
+            request.expected_frames,
+            request.expected_raw_bytes,
+        )
         .await
         .map(|export_id| BeginExportResponse { export_id })
         .map_err(|error| from_app_error(&error, OPERATION))
@@ -115,6 +92,10 @@ async fn append_export_batch_from_label(
     manager
         .append(&request.export_id, &request.frames)
         .await
+        .map(|stats| ExportAppendStats {
+            total_frames: stats.total_frames,
+            total_raw_bytes: stats.total_raw_bytes,
+        })
         .map_err(|error| from_app_error(&error, OPERATION))
 }
 
@@ -137,6 +118,12 @@ async fn finish_export_from_label(
     manager
         .finish(&request.export_id)
         .await
+        .map(|stats| ExportFinishStats {
+            frames: stats.frames,
+            raw_bytes: stats.raw_bytes,
+            output_bytes: stats.output_bytes,
+            duration_ms: stats.duration_ms,
+        })
         .map_err(|error| from_app_error(&error, OPERATION))
 }
 

@@ -50,6 +50,9 @@ export function importMacros(raw: string): Macro[] {
   if (!file || file.app !== FILE_APP || file.kind !== FILE_KIND) {
     throw new Error(t('macroLibrary.notMacroFile'));
   }
+  if (file.version !== 1) {
+    throw new Error(t('macroLibrary.unsupportedVersion'));
+  }
   if (!Array.isArray(file.macros)) {
     throw new Error(t('macroLibrary.missingMacros'));
   }

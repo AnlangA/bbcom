@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-plugin-cancel-operation"
+description = "Enables the plugin_cancel_operation command without any pre-configured scope."
+commands.allow = ["plugin_cancel_operation"]
+
+[[permission]]
+identifier = "deny-plugin-cancel-operation"
+description = "Denies the plugin_cancel_operation command without any pre-configured scope."
+commands.deny = ["plugin_cancel_operation"]

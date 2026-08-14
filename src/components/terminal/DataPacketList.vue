@@ -5,12 +5,16 @@
         <AppSelect
           v-model:value="directionFilter"
           :options="directionOptions"
+          :aria-label="t('packet.direction')"
           size="tiny"
           style="width: 86px"
         />
         <n-input
           v-model:value="searchInput"
           :placeholder="
+            appStore.searchMode === 'HEX' ? t('packet.searchHex') : t('packet.searchText')
+          "
+          :aria-label="
             appStore.searchMode === 'HEX' ? t('packet.searchHex') : t('packet.searchText')
           "
           size="tiny"
@@ -24,11 +28,13 @@
         <n-button-group size="tiny">
           <n-button
             :type="appStore.searchMode === 'TEXT' ? 'primary' : 'default'"
+            :aria-pressed="appStore.searchMode === 'TEXT'"
             @click="appStore.setSearchMode('TEXT')"
             >{{ t('packet.text') }}</n-button
           >
           <n-button
             :type="appStore.searchMode === 'HEX' ? 'primary' : 'default'"
+            :aria-pressed="appStore.searchMode === 'HEX'"
             @click="appStore.setSearchMode('HEX')"
             >HEX</n-button
           >
@@ -36,11 +42,13 @@
         <n-button-group size="tiny">
           <n-button
             :type="appStore.packetViewMode === 'FRAME' ? 'primary' : 'default'"
+            :aria-pressed="appStore.packetViewMode === 'FRAME'"
             @click="appStore.setPacketViewMode('FRAME')"
             >{{ t('packet.frame') }}</n-button
           >
           <n-button
             :type="appStore.packetViewMode === 'MERGED' ? 'primary' : 'default'"
+            :aria-pressed="appStore.packetViewMode === 'MERGED'"
             @click="appStore.setPacketViewMode('MERGED')"
             >{{ t('packet.merged') }}</n-button
           >
@@ -72,6 +80,8 @@
       ref="scrollRef"
       class="packet-items"
       tabindex="0"
+      role="region"
+      :aria-label="t('packet.data')"
       @scroll.passive="onScroll"
       @keydown="onKeydown"
     >

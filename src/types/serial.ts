@@ -1,5 +1,7 @@
 import type { Direction } from './display';
-import type { AppErrorCode } from './errors';
+
+/** Rust-owned serial send contract. Do not redefine these shapes in TS. */
+export type { SerialSendOutcome, SerialSendResult } from '../generated/ipc-contracts';
 
 /** A single captured TX/RX frame. `data` is the raw byte payload. */
 export interface DataFrame {
@@ -31,37 +33,6 @@ export interface PortConfig {
   rxFrameGapMs: number;
   dtr: boolean;
   rts: boolean;
-}
-
-/** Why a serial send did not complete. */
-export type SerialSendFailureReason =
-  | 'empty'
-  | 'bad-hex'
-  | 'too-large'
-  | 'not-connected'
-  | 'queue-full'
-  | 'disconnecting'
-  | 'write-error'
-  | 'write-stalled';
-
-/**
- * Result returned by every low-level serial send.
- *
- * `bytesWritten` is the confirmed prefix accepted by the driver. It may be
- * non-zero when `ok` is false (for example, a later 4 KiB chunk failed).
- */
-export interface SerialSendResult {
-  status: 'complete' | 'partial-unknown' | 'rejected';
-  ok: boolean;
-  requestedBytes: number;
-  /** Confirmed driver-accepted prefix. A failed native call may still have
-   * reached the device beyond this count, hence `partial-unknown`. */
-  confirmedBytes: number;
-  /** @deprecated Use `confirmedBytes`. Kept while internal callers migrate. */
-  bytesWritten: number;
-  reason: SerialSendFailureReason | null;
-  code?: AppErrorCode;
-  error?: string;
 }
 
 /** Hooks that must run when a queued operation reaches the physical writer. */

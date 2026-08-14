@@ -55,16 +55,22 @@ export function appendFrameToSession(
   let droppedFrames = 0;
 
   if (target.length > maxFrames + trimThreshold) {
-    const removed = target.splice(0, target.length - maxFrames);
-    for (const dropped of removed) droppedBytes += dropped.data.length;
-    droppedFrames += removed.length;
+    const count = target.length - maxFrames;
+    for (let index = 0; index < count; index += 1) {
+      // SQLite trims by append sequence. Even while capture is paused, the
+      // renderer must evict that same per-session prefix instead of trimming
+      // only pausedFrames and retaining different content after restart.
+      const dropped = shiftOldestSessionFrame(session);
+      if (!dropped) break;
+      droppedBytes += dropped.data.length;
+      droppedFrames += 1;
+    }
     retainedBytes -= droppedBytes;
   }
 
   const maxBytes = limits.maxBytes ?? MAX_SESSION_FRAME_BYTES;
   while (retainedBytes > maxBytes) {
-    const buffer = oldestSessionBuffer(session);
-    const dropped = buffer?.shift();
+    const dropped = shiftOldestSessionFrame(session);
     if (!dropped) break;
     retainedBytes -= dropped.data.length;
     droppedBytes += dropped.data.length;
@@ -128,6 +134,7 @@ export function frameBuffersByteLength(
 export interface GlobalFrameTrimResult {
   retainedBytes: number;
   droppedBytesBySession: Map<string, number>;
+  droppedFramesBySession: Map<string, number>;
 }
 
 /** Drop the globally oldest retained frames until the aggregate byte cap fits. */
@@ -138,6 +145,7 @@ export function trimSessionsToGlobalByteLimit(
 ): GlobalFrameTrimResult {
   let retainedBytes = currentBytes;
   const droppedBytesBySession = new Map<string, number>();
+  const droppedFramesBySession = new Map<string, number>();
 
   while (retainedBytes > maxBytes) {
     let oldestSession: SerialSession | null = null;
@@ -145,15 +153,18 @@ export function trimSessionsToGlobalByteLimit(
     let oldestTimestamp = Number.POSITIVE_INFINITY;
 
     for (const session of sessions) {
-      for (const buffer of [session.frames, session.pausedFrames]) {
-        const candidate = buffer[0];
-        if (!candidate) continue;
-        const timestamp = Number.isFinite(candidate.timestamp) ? candidate.timestamp : 0;
-        if (timestamp >= oldestTimestamp) continue;
-        oldestTimestamp = timestamp;
-        oldestSession = session;
-        oldestBuffer = buffer;
-      }
+      // Only the first frame in persisted sequence order is eligible for a
+      // per-session trim. Comparing paused and live timestamps here could
+      // select a non-prefix row that the count-based SQLite mutation cannot
+      // represent.
+      const buffer = oldestSessionBuffer(session);
+      const candidate = buffer?.[0];
+      if (!candidate) continue;
+      const timestamp = Number.isFinite(candidate.timestamp) ? candidate.timestamp : 0;
+      if (timestamp >= oldestTimestamp) continue;
+      oldestTimestamp = timestamp;
+      oldestSession = session;
+      oldestBuffer = buffer;
     }
 
     if (!oldestSession || !oldestBuffer) {
@@ -167,17 +178,25 @@ export function trimSessionsToGlobalByteLimit(
       oldestSession.id,
       (droppedBytesBySession.get(oldestSession.id) ?? 0) + dropped.data.length,
     );
+    droppedFramesBySession.set(
+      oldestSession.id,
+      (droppedFramesBySession.get(oldestSession.id) ?? 0) + 1,
+    );
   }
 
-  return { retainedBytes, droppedBytesBySession };
+  return { retainedBytes, droppedBytesBySession, droppedFramesBySession };
 }
 
 function oldestSessionBuffer(session: SerialSession): DataFrame[] | null {
-  const live = session.frames[0];
-  const paused = session.pausedFrames[0];
-  if (!live) return paused ? session.pausedFrames : null;
-  if (!paused) return session.frames;
-  return live.timestamp <= paused.timestamp ? session.frames : session.pausedFrames;
+  // pausedFrames are appended only after all currently retained live frames;
+  // resuming appends them back to the live tail. This is therefore the exact
+  // persisted sequence order, independent of wall-clock timestamp skew.
+  if (session.frames.length > 0) return session.frames;
+  return session.pausedFrames.length > 0 ? session.pausedFrames : null;
+}
+
+function shiftOldestSessionFrame(session: SerialSession): DataFrame | undefined {
+  return oldestSessionBuffer(session)?.shift();
 }
 
 export function resetSessionFrames(session: SerialSession): void {

@@ -1,0 +1,19 @@
+[package]
+name = "bbcom-workspace"
+version = "0.1.0"
+description = "SQLite workspace persistence service for bbcom"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+age = { version = "=0.12.1", default-features = false }
+bbcom-contracts = { path = "../bbcom-contracts" }
+rusqlite = { version = "=0.40.1", features = ["bundled", "backup"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+sha2 = "=0.10.9"
+thiserror = "=2.0.18"
+
+[dev-dependencies]
+tempfile = "=3.27.0"

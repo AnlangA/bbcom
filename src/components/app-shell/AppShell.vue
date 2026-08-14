@@ -1,6 +1,11 @@
 <template>
   <div class="app-layout">
-    <aside class="sidebar" :class="{ collapsed: appStore.sidebarCollapsed }" :style="sidebarStyle">
+    <aside
+      class="sidebar"
+      :class="{ collapsed: appStore.sidebarCollapsed }"
+      :style="sidebarStyle"
+      :aria-label="t('app.name')"
+    >
       <div class="sidebar-header">
         <div class="app-brand">
           <button
@@ -8,6 +13,9 @@
             type="button"
             @click="appStore.toggleSidebarCollapsed"
             :title="appStore.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')"
+            :aria-label="appStore.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')"
+            :aria-expanded="!appStore.sidebarCollapsed"
+            aria-controls="app-sidebar-body"
           >
             <PanelLeftClose v-if="!appStore.sidebarCollapsed" class="icon" />
             <PanelLeftOpen v-else class="icon" />
@@ -28,6 +36,7 @@
             class="ai-toggle"
             :title="aiWindowVisible ? t('sidebar.ai.on') : t('sidebar.ai.off')"
             :aria-label="aiWindowVisible ? t('sidebar.ai.on') : t('sidebar.ai.off')"
+            :aria-pressed="aiWindowVisible"
             @click="toggleAiWindow"
           >
             <template #icon>
@@ -84,8 +93,15 @@
           </n-button>
         </div>
       </div>
-      <div class="sidebar-body" :class="{ hidden: appStore.sidebarCollapsed }">
+      <div
+        id="app-sidebar-body"
+        class="sidebar-body"
+        :class="{ hidden: appStore.sidebarCollapsed }"
+        :aria-hidden="appStore.sidebarCollapsed"
+        :inert="appStore.sidebarCollapsed ? true : undefined"
+      >
         <AiSettingsPanel v-if="aiWindowVisible" compact />
+        <WorkspacePanel />
         <div class="sidebar-content">
           <PortSelector />
         </div>
@@ -117,7 +133,7 @@
         <strong>{{ t('persistence.readOnly.title') }}</strong>
         <span>{{ t('persistence.readOnly.description') }}</span>
       </div>
-      <SessionTabs @create="showCreateDialog = true" />
+      <SessionTabs @create="requestCreateSession" />
       <div class="session-viewport">
         <div v-if="sessions.length === 0" class="empty-state">
           <div class="empty-mark">
@@ -126,7 +142,12 @@
           <div class="empty-title">{{ t('session.empty.title') }}</div>
           <div class="empty-text">{{ t('session.empty.hint') }}</div>
           <div class="empty-actions">
-            <n-button type="primary" size="medium" @click="showCreateDialog = true">
+            <n-button
+              type="primary"
+              size="medium"
+              :disabled="!sessionStore.userMutationsAllowed"
+              @click="requestCreateSession"
+            >
               <template #icon>
                 <Plus class="icon-sm" />
               </template>
@@ -170,6 +191,7 @@ import {
 import PortSelector from '../port-selector/PortSelector.vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
 import StatusBar from '../status-bar/StatusBar.vue';
+import WorkspacePanel from '../workspace/WorkspacePanel.vue';
 import { SessionRuntimeHost } from '../../features/sessions';
 import { useAiWindowState } from '../../composables/useAiWindowState';
 import { useAppShortcuts } from '../../composables/useAppShortcuts';
@@ -206,6 +228,11 @@ const activeFramesVersion = computed(() =>
 const showCreateDialog = ref(false);
 const showSettings = ref(false);
 const message = useMessage();
+
+function requestCreateSession(): void {
+  if (!sessionStore.userMutationsAllowed) return;
+  showCreateDialog.value = true;
+}
 
 function onAutoLogFailure(event: Event) {
   const detail = (event as CustomEvent<unknown>).detail;
@@ -305,7 +332,7 @@ onUnmounted(() => {
 
 useAppShortcuts({
   onCreateSession: () => {
-    showCreateDialog.value = true;
+    requestCreateSession();
   },
   onCloseSession: () => {
     const id = sessionStore.activeSessionId;
@@ -623,7 +650,7 @@ useAppShortcuts({
   justify-content: center;
   gap: var(--space-md);
   font-size: var(--font-size-sm);
-  color: var(--text-dim);
+  color: var(--text-secondary);
 }
 
 .shortcut {

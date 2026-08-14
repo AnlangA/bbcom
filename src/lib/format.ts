@@ -50,9 +50,30 @@ const HEX_VALUE = (() => {
   return table;
 })();
 
-/** Strip everything except hex digits from a (possibly messy) HEX input string. */
+/** Strip everything except hex digits for display-only normalization helpers. */
 function cleanHex(input: string): string {
   return input.replace(/[^0-9a-fA-F]/g, '');
+}
+
+const HEX_TOKEN = /^[0-9a-fA-F]+$/;
+
+/**
+ * Split strict HEX input. Whitespace and commas are the only separators; each
+ * separated or continuous token must itself contain complete byte pairs.
+ */
+function strictHexTokens(input: string): string[] {
+  const trimmed = input.trim();
+  if (trimmed.length === 0) return [];
+  const tokens = trimmed.split(/[\s,]+/u);
+  for (const token of tokens) {
+    if (!HEX_TOKEN.test(token)) {
+      throw new Error(`Invalid hex token: ${token}`);
+    }
+    if (token.length % 2 !== 0) {
+      throw new Error('Invalid hex string: odd number of digits');
+    }
+  }
+  return tokens;
 }
 
 /** Format byte array as HEX string with spaces (uppercase). */
@@ -177,15 +198,17 @@ export function truncate(str: string, maxLength: number): string {
  * Parse HEX string to byte array
  */
 export function parseHex(input: string): Uint8Array {
-  const cleaned = cleanHex(input);
-  if (cleaned.length % 2 !== 0) {
-    throw new Error('Invalid hex string: odd number of digits');
-  }
-  const result = new Uint8Array(cleaned.length / 2);
-  for (let i = 0, j = 0; i < cleaned.length; i += 2, j += 1) {
-    const hi = HEX_VALUE[cleaned.charCodeAt(i)];
-    const lo = HEX_VALUE[cleaned.charCodeAt(i + 1)];
-    result[j] = (hi << 4) | lo;
+  const tokens = strictHexTokens(input);
+  const byteLength = tokens.reduce((total, token) => total + token.length / 2, 0);
+  const result = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const token of tokens) {
+    for (let index = 0; index < token.length; index += 2) {
+      const hi = HEX_VALUE[token.charCodeAt(index)];
+      const lo = HEX_VALUE[token.charCodeAt(index + 1)];
+      result[offset] = (hi << 4) | lo;
+      offset += 1;
+    }
   }
   return result;
 }
@@ -216,8 +239,11 @@ export function toContinuousHex(data: Uint8Array): string {
  * Validate HEX string
  */
 export function isValidHex(input: string): boolean {
-  const cleaned = cleanHex(input);
-  return cleaned.length > 0 && cleaned.length % 2 === 0;
+  try {
+    return parseHex(input).length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**

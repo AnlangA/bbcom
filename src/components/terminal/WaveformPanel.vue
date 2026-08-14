@@ -40,6 +40,9 @@
     <canvas
       ref="canvasRef"
       class="waveform-canvas"
+      role="img"
+      :aria-label="t('waveform.title')"
+      :aria-describedby="waveformDescriptionId"
       :class="{
         'hover-ruler-enabled': showHoverRuler,
         'is-draggable': sampleCountView > 0,
@@ -53,23 +56,57 @@
       @lostpointercapture="onCanvasPointerCaptureLost"
       @wheel.prevent="onCanvasWheel"
     ></canvas>
+    <p :id="waveformDescriptionId" class="sr-only">
+      {{
+        accessibleSampleRows.length === 0
+          ? t('waveform.noData')
+          : t('session.stats.totalFrames', { count: accessibleSampleRows.length })
+      }}
+    </p>
+    <table :id="waveformTableId" class="sr-only" :aria-label="t('waveform.title')">
+      <caption>
+        {{
+          t('waveform.title')
+        }}
+      </caption>
+      <thead>
+        <tr>
+          <th scope="col">{{ t('packet.time') }}</th>
+          <th v-for="index in 8" :key="index" scope="col">{{ channelLabel(index - 1) }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="row in accessibleSampleRows" :key="row.timestamp">
+          <th scope="row">{{ row.timestamp }}</th>
+          <td v-for="(value, index) in row.values" :key="index">{{ value }}</td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, useId, watch } from 'vue';
 import { useMessage } from 'naive-ui';
-import type { DataFrame } from '../../types';
+import type {
+  DataFrame,
+  SessionWaveformFrameCursor,
+  SessionWaveformSampleInput,
+  SessionWaveformState,
+} from '../../types';
+import { SESSION_WAVEFORM_MAX_GROUPS } from '../../types';
 import { t } from '../../lib/i18n';
 import {
   channelStats,
   createBuffer,
   buildWaveformCsv,
+  ensureWaveformChannels,
   ingestWaveformTextFrames,
   normalizeWaveformTimeViewport,
   panWaveformTimeViewport,
   panWaveformTimeViewportByMs,
   planWaveformFrameIngest,
+  pushSample,
   pushRegisterWaveformSample,
   scaleWaveformTimeViewport,
   syncWaveformTimeViewportAfterSampleChange,
@@ -118,15 +155,50 @@ const props = defineProps<{
   /** Per-channel display labels for register mode (e.g. {0: 'Temp'}). Keys with
    *  no entry fall back to the default 'Ch N' label. */
   channelLabels?: Record<number, string>;
+  /** Application/session-owned durable waveform state. */
+  waveform: SessionWaveformState;
+  /** Separate gates mirror the workspace user/runtime mutation boundaries. */
+  canEdit?: boolean;
+  canAppend?: boolean;
 }>();
 
-defineEmits<{ (e: 'toggleMode'): void }>();
+const emit = defineEmits<{
+  (e: 'toggleMode'): void;
+  (e: 'appendSamples', samples: readonly SessionWaveformSampleInput[]): void;
+  (e: 'replaceSamples', samples: readonly SessionWaveformSampleInput[]): void;
+  (e: 'setChannelVisibility', channelIndex: number, visible: boolean): void;
+  (e: 'updateFrameCursor', cursor: SessionWaveformFrameCursor): void;
+  (
+    e: 'commitFrameIngest',
+    ingest: Readonly<{
+      mode: 'append' | 'replace';
+      samples: readonly SessionWaveformSampleInput[];
+      cursor: SessionWaveformFrameCursor;
+    }>,
+  ): void;
+  (e: 'clear', cursor: SessionWaveformFrameCursor): void;
+}>();
 
 const message = useMessage();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
+const waveformId = useId().replace(/:/g, '');
+const waveformDescriptionId = `waveform-${waveformId}-description`;
+const waveformTableId = `waveform-${waveformId}-table`;
 
-const CAPACITY = 600;
+const CAPACITY = SESSION_WAVEFORM_MAX_GROUPS;
 const buffer = createBuffer(CAPACITY);
+const waveformVersion = ref(0);
+const accessibleSampleRows = computed(() => {
+  void waveformVersion.value;
+  const start = Math.max(0, buffer.timestamps.length - 100);
+  return buffer.timestamps.slice(start).map((timestamp, offset) => ({
+    timestamp,
+    values: Array.from({ length: 8 }, (_, channel) => {
+      const value = buffer.samples[start + offset]?.[channel];
+      return value === undefined || !Number.isFinite(value) ? '' : formatNum(value);
+    }),
+  }));
+});
 
 const channelState = ref<WaveformChannelState[]>([]);
 const showXRuler = ref(true);
@@ -134,10 +206,9 @@ const showYRuler = ref(true);
 const showHoverRuler = ref(true);
 const showSamplePoints = ref(false);
 const dragging = ref(false);
-const waveformVersion = ref(0);
 const timeViewport = ref<WaveformTimeViewport>(fullTimeViewport());
 
-let frameCursor: WaveformFrameCursor = { consumed: 0, lastFrameId: null };
+let frameCursor: WaveformFrameCursor = { ...props.waveform.frameCursor };
 // When paused, new frames are still consumed (so the offset stays aligned) but
 // their samples are dropped — freezing the plot at its last position.
 const paused = ref(false);
@@ -165,11 +236,12 @@ function pushRegisterSample(channel: number, value: number, timestamp = Date.now
 }
 
 function pushRegisterSamples(samples: readonly RegisterWaveformSampleInput[]) {
-  if (samples.length === 0) return;
+  if (samples.length === 0 || props.canAppend === false) return;
   const previousTimestamps = buffer.timestamps.slice();
   let channels = channelState.value;
-  let pushed = false;
+  let pushedSamples = 0;
   for (const sample of samples) {
+    if (!Number.isInteger(sample.channel) || sample.channel < 0 || sample.channel > 7) continue;
     const result = pushRegisterWaveformSample(
       buffer,
       channels,
@@ -179,10 +251,11 @@ function pushRegisterSamples(samples: readonly RegisterWaveformSampleInput[]) {
       sample.timestamp,
     );
     channels = result.channels;
-    pushed = pushed || result.pushed;
+    if (result.pushed) pushedSamples += 1;
   }
   channelState.value = channels;
-  if (pushed) {
+  if (pushedSamples > 0) {
+    emit('appendSamples', waveformInputsFromRecentRows(pushedSamples));
     syncViewportAfterSampleChange(previousTimestamps);
     invalidateWaveform();
   }
@@ -229,15 +302,25 @@ function ingestNewFrames(): boolean {
   // text-parsing path only runs in text mode.
   if ((props.mode ?? 'text') === 'register') {
     frameCursor = waveformFrameCursorAtEnd(props.frames);
+    if (props.canAppend !== false) emit('updateFrameCursor', frameCursor);
     return false;
   }
+
+  if (props.canAppend === false) return false;
 
   const previousChannelCount = channelState.value.length;
   const previousTimestamps = buffer.timestamps.slice();
   const plan = planWaveformFrameIngest(props.frames, frameCursor);
   frameCursor = plan.nextCursor;
   if (plan.reset) resetWaveformBuffer({ clearChannels: true });
-  if (plan.startIndex >= props.frames.length) return plan.reset;
+  if (plan.startIndex >= props.frames.length) {
+    emit('commitFrameIngest', {
+      mode: plan.reset ? 'replace' : 'append',
+      samples: [],
+      cursor: frameCursor,
+    });
+    return plan.reset;
+  }
 
   const result = ingestWaveformTextFrames(buffer, props.frames, {
     startIndex: plan.startIndex,
@@ -247,6 +330,16 @@ function ingestNewFrames(): boolean {
   });
   channelState.value = result.channels;
   frameCursor = waveformFrameCursorAtEnd(props.frames);
+  emit('commitFrameIngest', {
+    mode: plan.reset ? 'replace' : 'append',
+    samples:
+      result.pushedSamples > 0
+        ? plan.reset
+          ? waveformInputsFromRows(0)
+          : waveformInputsFromRecentRows(result.pushedSamples)
+        : [],
+    cursor: frameCursor,
+  });
   if (!plan.reset && result.pushedSamples > 0) {
     syncViewportAfterSampleChange(previousTimestamps);
   }
@@ -254,8 +347,13 @@ function ingestNewFrames(): boolean {
 }
 
 function toggleChannel(i: number) {
+  if (props.canEdit === false) return;
   const next = channelState.value.slice();
-  if (next[i]) next[i] = { ...next[i], visible: !next[i].visible };
+  if (next[i]) {
+    const visible = !next[i].visible;
+    next[i] = { ...next[i], visible };
+    emit('setChannelVisibility', i, visible);
+  }
   channelState.value = next;
   scheduleRender();
 }
@@ -310,7 +408,9 @@ function panViewport(direction: WaveformPanDirection) {
 }
 
 function clearBuffer() {
+  if (props.canEdit === false) return;
   frameCursor = waveformFrameCursorAtEnd(props.frames);
+  emit('clear', frameCursor);
   resetWaveformBuffer({ clearChannels: true });
   invalidateWaveform();
 }
@@ -327,6 +427,82 @@ function resetWaveformBuffer(options: { clearChannels: boolean }) {
   } else {
     channelState.value = channelState.value.map((channel) => ({ ...channel, latest: null }));
   }
+}
+
+function waveformInputsFromRecentRows(rowCount: number): SessionWaveformSampleInput[] {
+  return waveformInputsFromRows(Math.max(0, buffer.samples.length - rowCount));
+}
+
+function waveformInputsFromRows(startIndex: number): SessionWaveformSampleInput[] {
+  const inputs: SessionWaveformSampleInput[] = [];
+  for (let rowIndex = Math.max(0, startIndex); rowIndex < buffer.samples.length; rowIndex += 1) {
+    const row = buffer.samples[rowIndex];
+    const timestampMs = Math.max(0, Math.round(buffer.timestamps[rowIndex] ?? 0));
+    const group = rowIndex - Math.max(0, startIndex);
+    for (let channelIndex = 0; channelIndex < Math.min(row.length, 8); channelIndex += 1) {
+      const value = row[channelIndex];
+      if (!Number.isFinite(value)) continue;
+      inputs.push({ channelIndex, group, timestampMs, value });
+    }
+  }
+  return inputs;
+}
+
+/** Rebuild the bounded canvas cache from the session-owned durable rows. */
+function hydrateSharedWaveform(): void {
+  resetWaveformBuffer({ clearChannels: true });
+  frameCursor = { ...props.waveform.frameCursor };
+  const maximumChannel = props.waveform.channels.reduce(
+    (maximum, channel) => Math.max(maximum, channel.channelIndex),
+    -1,
+  );
+  let channels = ensureWaveformChannels([], maximumChannel + 1);
+  for (const persisted of props.waveform.channels) {
+    const fallback = channels[persisted.channelIndex];
+    if (!fallback) continue;
+    const color =
+      typeof persisted.config.color === 'string' && persisted.config.color.length > 0
+        ? persisted.config.color
+        : fallback.color;
+    channels[persisted.channelIndex] = {
+      color,
+      latest: null,
+      visible: persisted.config.visible !== false,
+    };
+  }
+
+  const orderedSamples = [...props.waveform.samples].sort(
+    (left, right) =>
+      left.seq - right.seq ||
+      left.timestampMs - right.timestampMs ||
+      left.channelIndex - right.channelIndex,
+  );
+  const latest = Array.from({ length: channels.length }, () => 0);
+  const sampledChannels = new Set<number>();
+  for (let offset = 0; offset < orderedSamples.length;) {
+    const sequence = orderedSamples[offset].seq;
+    const groupTimestamp = orderedSamples[offset].timestampMs;
+    const row = latest.slice();
+    while (
+      offset < orderedSamples.length &&
+      orderedSamples[offset].seq === sequence &&
+      orderedSamples[offset].timestampMs === groupTimestamp
+    ) {
+      const sample = orderedSamples[offset];
+      row[sample.channelIndex] = sample.value;
+      latest[sample.channelIndex] = sample.value;
+      sampledChannels.add(sample.channelIndex);
+      offset += 1;
+    }
+    pushSample(buffer, row, groupTimestamp);
+  }
+  channels = channels.map((channel, channelIndex) => ({
+    ...channel,
+    latest: sampledChannels.has(channelIndex) ? (latest[channelIndex] ?? null) : null,
+  }));
+  channelState.value = channels;
+  waveformVersion.value += 1;
+  scheduleRender();
 }
 
 const sampleCountView = computed(() => {
@@ -771,6 +947,11 @@ function observeCanvasResize() {
 }
 
 watch(
+  () => props.waveform,
+  () => hydrateSharedWaveform(),
+);
+
+watch(
   () => [props.framesVersion, props.frames.length] as const,
   () => {
     if (ingestNewFrames()) invalidateWaveform();
@@ -781,6 +962,7 @@ watch(
   () => [props.mode ?? 'text', props.direction ?? 'RX'] as const,
   () => {
     frameCursor = waveformFrameCursorAtEnd(props.frames);
+    if (props.canEdit !== false) emit('clear', frameCursor);
     resetWaveformBuffer({ clearChannels: true });
     invalidateWaveform();
   },
@@ -793,6 +975,7 @@ watch(
 
 onMounted(() => {
   observeCanvasResize();
+  hydrateSharedWaveform();
   if (ingestNewFrames()) invalidateWaveform();
   else scheduleRender();
 });

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-drain-serial-input"
+description = "Enables the drain_serial_input command without any pre-configured scope."
+commands.allow = ["drain_serial_input"]
+
+[[permission]]
+identifier = "deny-drain-serial-input"
+description = "Denies the drain_serial_input command without any pre-configured scope."
+commands.deny = ["drain_serial_input"]

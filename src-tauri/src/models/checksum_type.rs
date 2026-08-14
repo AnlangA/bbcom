@@ -1,14 +1,6 @@
-use serde::{Deserialize, Serialize};
+//! Compatibility name for the canonical checksum IPC enum.
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum ChecksumType {
-    Checksum,
-    Crc8,
-    Crc16,
-    Crc16Modbus,
-    Crc32,
-}
+pub use bbcom_contracts::ChecksumType;
 
 #[cfg(test)]
 mod tests {

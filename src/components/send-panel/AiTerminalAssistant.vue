@@ -1,13 +1,26 @@
 <template>
-  <div class="ai-assistant">
+  <div class="ai-assistant" :aria-busy="loading">
+    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+      {{ loading ? t('ai.terminal.generate') : (result?.explanation ?? '') }}
+    </span>
     <div class="prompt-row">
       <n-input
         v-model:value="prompt"
         size="small"
         :placeholder="hasApiKey ? t('ai.terminal.placeholder') : t('ai.needApiKey')"
+        :aria-label="t('ai.terminal.placeholder')"
         :disabled="loading"
         @keydown.enter.prevent="generateCommand"
       />
+      <n-button
+        v-if="loading"
+        size="small"
+        :loading="cancelling"
+        :aria-label="t('common.cancel')"
+        @click="cancelRequest"
+      >
+        {{ t('common.cancel') }}
+      </n-button>
       <n-button
         size="small"
         type="primary"
@@ -30,6 +43,7 @@
       <AppSelect
         size="small"
         :value="activeSession.terminalAiModel"
+        :aria-label="t('ai.terminal.model')"
         :options="aiModelOptions"
         :menu-props="aiModelMenuProps"
         @update:value="setTerminalModel"
@@ -63,17 +77,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { NButton, NInput, NTag, useMessage } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
 import { Copy, SendHorizontal, Terminal, WandSparkles } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
 import { getAiErrorMessage } from '../../lib/ai-error';
-import { runAiRequest, type TerminalAiResponse } from '../../lib/ipc';
+import type { TerminalAiResponse } from '../../lib/ipc';
 import { logger } from '../../lib/logger';
 import { t } from '../../lib/i18n';
 import type { AiModel, AiWindowSession } from '../../types';
-import type { useAiWindowSession } from '../../composables/useAiWindowSession';
+import type {
+  AiWindowRequestBinding,
+  useAiWindowSession,
+} from '../../composables/useAiWindowSession';
 import { aiModelMenuProps, aiModelOptions, aiRiskLabel, aiRiskTagType } from '../ai/ai-options';
 
 const props = defineProps<{
@@ -85,13 +102,25 @@ const appStore = useAppStore();
 const message = useMessage();
 const prompt = ref('');
 const loading = ref(false);
+const cancelling = ref(false);
+const cancelRequested = ref(false);
+const activeRequestId = ref<string | null>(null);
 const result = ref<TerminalAiResponse | null>(null);
+const resultBinding = ref<AiWindowRequestBinding | null>(null);
 
 const activeSession = computed(() => props.session);
 const hasApiKey = computed(() => appStore.aiKeyConfigured);
 const canGenerate = computed(() => prompt.value.trim().length > 0 && !loading.value);
 const riskLabel = computed(() => (result.value ? aiRiskLabel(result.value.risk) : ''));
 const riskTagType = computed(() => (result.value ? aiRiskTagType(result.value.risk) : 'default'));
+
+watch(
+  () => [props.bridge.workspaceId.value, props.session.id, props.bridge.revision.value] as const,
+  () => {
+    result.value = null;
+    resultBinding.value = null;
+  },
+);
 
 async function generateCommand() {
   if (!canGenerate.value) return;
@@ -104,21 +133,55 @@ async function generateCommand() {
     return;
   }
   loading.value = true;
+  cancelRequested.value = false;
   result.value = null;
-  try {
-    const response = await runAiRequest({
-      requestId: crypto.randomUUID(),
-      kind: 'terminal',
-      prompt: prompt.value.trim(),
-      model: activeSession.value.terminalAiModel,
-      shell: 'linux/busybox',
-    });
-    if (response.kind !== 'terminal') throw new Error('unexpected AI response kind');
-    result.value = response;
-  } catch (e: unknown) {
-    message.error(getAiErrorMessage(e, t('ai.terminal.failed')));
-  } finally {
+  resultBinding.value = null;
+  const binding = props.bridge.createRequestBinding();
+  if (!binding) {
     loading.value = false;
+    message.warning(t('ai.needSession'));
+    return;
+  }
+  activeRequestId.value = binding.requestId;
+  try {
+    const activity = await props.bridge.runRequest(
+      {
+        requestId: binding.requestId,
+        kind: 'terminal',
+        prompt: prompt.value.trim(),
+        model: activeSession.value.terminalAiModel,
+        shell: 'linux/busybox',
+      },
+      binding,
+    );
+    const response = activity.result;
+    if (response.kind !== 'terminal') throw new Error('unexpected AI response kind');
+    if (
+      props.bridge.isBindingCurrent(binding) &&
+      props.bridge.revision.value === binding.revision
+    ) {
+      result.value = response;
+      resultBinding.value = binding;
+    }
+  } catch (e: unknown) {
+    if (!cancelRequested.value) message.error(getAiErrorMessage(e, t('ai.terminal.failed')));
+  } finally {
+    if (activeRequestId.value === binding.requestId) activeRequestId.value = null;
+    cancelling.value = false;
+    cancelRequested.value = false;
+    loading.value = false;
+  }
+}
+
+async function cancelRequest() {
+  const requestId = activeRequestId.value;
+  if (!requestId || cancelling.value) return;
+  cancelRequested.value = true;
+  cancelling.value = true;
+  try {
+    await props.bridge.cancelRequest(requestId);
+  } finally {
+    cancelling.value = false;
   }
 }
 
@@ -134,12 +197,22 @@ async function copyCommand() {
 }
 
 function applyCommand() {
-  if (!result.value?.command) return;
-  applyCommandToApp(result.value.command);
+  const binding = resultBinding.value;
+  if (
+    !result.value?.command ||
+    !binding ||
+    !props.bridge.isBindingCurrent(binding) ||
+    props.bridge.revision.value !== binding.revision
+  ) {
+    result.value = null;
+    resultBinding.value = null;
+    return;
+  }
+  applyCommandToApp(result.value.command, binding);
 }
 
-function applyCommandToApp(command: string) {
-  void props.bridge.applyCommand(command);
+function applyCommandToApp(command: string, binding: AiWindowRequestBinding) {
+  void props.bridge.applyCommand(command, binding);
 }
 
 function setTerminalModel(model: AiModel) {

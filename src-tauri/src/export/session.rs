@@ -49,6 +49,8 @@ struct ExportSession {
     target: PathBuf,
     temp: PathBuf,
     writer: Option<BufWriter<File>>,
+    expected_frames: Option<usize>,
+    expected_raw_bytes: Option<usize>,
     frame_count: usize,
     raw_bytes: usize,
     output_bytes: usize,
@@ -104,6 +106,49 @@ impl Default for ExportSessionManager {
 
 impl ExportSessionManager {
     pub async fn begin(&self, format: ExportFormat, target: PathBuf) -> Result<String, AppError> {
+        self.begin_inner(format, target, None).await
+    }
+
+    /// Start a frontend export whose confirmed totals must match exactly at
+    /// finish. Keeping the expectations in the backend session prevents a
+    /// mutable renderer source from replacing a complete-but-different file.
+    pub async fn begin_with_expected_totals(
+        &self,
+        format: ExportFormat,
+        target: PathBuf,
+        expected_frames: usize,
+        expected_raw_bytes: usize,
+    ) -> Result<String, AppError> {
+        if expected_frames == 0 {
+            return Err(validation_error(
+                "expectedFrames",
+                "expected frame count must be greater than zero",
+            ));
+        }
+        if expected_frames > MAX_EXPORT_FRAMES {
+            return Err(limit_error(
+                "expectedFrames",
+                MAX_EXPORT_FRAMES,
+                expected_frames,
+            ));
+        }
+        if expected_raw_bytes > MAX_EXPORT_BYTES {
+            return Err(limit_error(
+                "expectedRawBytes",
+                MAX_EXPORT_BYTES,
+                expected_raw_bytes,
+            ));
+        }
+        self.begin_inner(format, target, Some((expected_frames, expected_raw_bytes)))
+            .await
+    }
+
+    async fn begin_inner(
+        &self,
+        format: ExportFormat,
+        target: PathBuf,
+        expected_totals: Option<(usize, usize)>,
+    ) -> Result<String, AppError> {
         self.cleanup_expired().await;
         // Reserve capacity before touching the filesystem. A semaphore makes
         // concurrent begin calls part of the same admission decision, so a
@@ -148,6 +193,8 @@ impl ExportSessionManager {
             target,
             temp: temp.clone(),
             writer: Some(writer),
+            expected_frames: expected_totals.map(|totals| totals.0),
+            expected_raw_bytes: expected_totals.map(|totals| totals.1),
             frame_count: 0,
             raw_bytes: 0,
             output_bytes: header.len(),
@@ -230,7 +277,7 @@ impl ExportSessionManager {
     pub async fn finish(&self, id: &str) -> Result<ExportFinishStats, AppError> {
         validate_session_id(id)?;
         let shared = self.get(id).await?;
-        let (format, target, temp, mut writer, stats) = {
+        let (format, target, temp, mut writer, stats, totals_error) = {
             let mut session = shared.lock().await;
             if session.terminal || session.writer.is_none() {
                 return Err(validation_error(
@@ -238,7 +285,7 @@ impl ExportSessionManager {
                     "unknown or finished export session",
                 ));
             }
-            if session.frame_count == 0 {
+            if session.frame_count == 0 && session.expected_frames.is_none() {
                 return Err(validation_error(
                     "frames",
                     "export session must contain a frame",
@@ -250,6 +297,25 @@ impl ExportSessionManager {
                 .writer
                 .take()
                 .expect("active export session must own its writer");
+            let totals_error = if session
+                .expected_frames
+                .is_some_and(|expected| expected != session.frame_count)
+            {
+                Some(validation_error(
+                    "expectedFrames",
+                    "appended frame count does not match the confirmed export",
+                ))
+            } else if session
+                .expected_raw_bytes
+                .is_some_and(|expected| expected != session.raw_bytes)
+            {
+                Some(validation_error(
+                    "expectedRawBytes",
+                    "appended raw byte count does not match the confirmed export",
+                ))
+            } else {
+                None
+            };
             (
                 session.format,
                 session.target.clone(),
@@ -262,8 +328,21 @@ impl ExportSessionManager {
                     duration_ms: u64::try_from(session.started_at.elapsed().as_millis())
                         .unwrap_or(u64::MAX),
                 },
+                totals_error,
             )
         };
+
+        // A mismatch is terminal and is resolved before flush/sync/replace.
+        // Drop the writer first (required by Windows), remove the backend-owned
+        // temp, and release all reservations while leaving any old target byte
+        // for byte unchanged.
+        if let Some(error) = totals_error {
+            self.remove_current(id, &shared).await;
+            drop(writer);
+            remove_if_exists(&temp).await;
+            self.active_temps.lock().await.remove(&temp);
+            return Err(error);
+        }
 
         let result = async {
             writer
@@ -880,6 +959,76 @@ mod tests {
                 .is_empty()
         );
         std::fs::remove_file(target).ok();
+    }
+
+    #[tokio::test]
+    async fn expected_total_mismatches_remove_session_and_preserve_existing_target() {
+        let cases = [
+            (
+                "fewer-frames",
+                2,
+                1,
+                vec![frame("1", &[0x41])],
+                "expectedFrames",
+            ),
+            (
+                "more-frames",
+                1,
+                2,
+                vec![frame("1", &[0x41]), frame("2", &[0x42])],
+                "expectedFrames",
+            ),
+            (
+                "raw-bytes",
+                1,
+                2,
+                vec![frame("1", &[0x41])],
+                "expectedRawBytes",
+            ),
+        ];
+
+        for (name, expected_frames, expected_raw_bytes, frames, expected_field) in cases {
+            let (directory, target) = isolated_target(&format!("{name}.csv"));
+            std::fs::write(&target, b"original target").unwrap();
+            let manager = ExportSessionManager::default();
+            let id = manager
+                .begin_with_expected_totals(
+                    ExportFormat::Csv,
+                    target.clone(),
+                    expected_frames,
+                    expected_raw_bytes,
+                )
+                .await
+                .unwrap();
+            let shared = shared_session(&manager, &id).await;
+            let temp = shared.lock().await.temp.clone();
+            drop(shared);
+            manager.append(&id, &frames).await.unwrap();
+
+            let error = manager.finish(&id).await.unwrap_err();
+            assert!(
+                matches!(&error, AppError::ValidationError { field, .. } if field == expected_field),
+                "unexpected {name} error: {error:?}"
+            );
+            assert_eq!(std::fs::read(&target).unwrap(), b"original target");
+            assert!(!temp.exists(), "{name} temp must be removed");
+            assert!(manager.sessions.lock().await.is_empty());
+            assert!(manager.active_temps.lock().await.is_empty());
+            assert!(
+                manager
+                    .active_targets
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .is_empty()
+            );
+
+            let finished_error = manager.finish(&id).await.unwrap_err();
+            assert!(matches!(
+                finished_error,
+                AppError::ValidationError { ref field, .. } if field == "exportId"
+            ));
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[tokio::test]

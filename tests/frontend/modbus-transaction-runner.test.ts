@@ -8,22 +8,20 @@ import type { SerialSendResult } from '../../src/types/serial.ts';
 function sendResult(ok: boolean, bytes = 8): SerialSendResult {
   return ok
     ? {
-        status: 'complete',
-        ok: true,
+        outcome: 'complete',
         requestedBytes: bytes,
-        confirmedBytes: bytes,
-        bytesWritten: bytes,
-        reason: null,
+        sentBytes: bytes,
       }
     : {
-        status: 'partial-unknown',
-        ok: false,
+        outcome: 'failed',
         requestedBytes: bytes,
-        confirmedBytes: 0,
-        bytesWritten: 0,
-        reason: 'write-error',
-        code: 'SERIAL_PARTIAL_WRITE',
-        error: 'send failed',
+        sentBytes: 0,
+        error: {
+          code: 'SERIAL_PARTIAL_WRITE',
+          messageKey: 'error.serial_partial_write',
+          retryable: false,
+          operation: 'serial_send',
+        },
       };
 }
 
@@ -89,7 +87,14 @@ test('send failure resolves null and emits an error status', async () => {
   );
 
   assert.equal(response, null);
-  assert.deepEqual(statuses, [{ kind: 'error', message: 'send failed' }]);
+  assert.deepEqual(statuses, [
+    {
+      kind: 'error',
+      message: 'error.serial_partial_write',
+      messageKey: 'error.serial_partial_write',
+      ipcCode: 'SERIAL_PARTIAL_WRITE',
+    },
+  ]);
   assert.equal(runner.hasPending(), false);
 });
 
@@ -253,19 +258,22 @@ test('failed send without driver detail uses the stable fallback and late failur
   const runner = new ModbusTransactionRunner<string>({
     sendBytes: () =>
       Promise.resolve({
-        status: 'rejected',
-        ok: false,
+        outcome: 'failed',
         requestedBytes: 1,
-        confirmedBytes: 0,
-        bytesWritten: 0,
-        reason: null,
+        sentBytes: 0,
       }),
     getTransport: () => 'rtu',
     getTimeoutMs: () => 100,
     onStatus: (status) => statuses.push(status),
   });
   assert.equal(await runner.transact('fallback', () => new Uint8Array([1]), undefined), null);
-  assert.deepEqual(statuses, [{ kind: 'error', message: 'send returned false' }]);
+  assert.deepEqual(statuses, [
+    {
+      kind: 'error',
+      message: 'error.serial_send_failed',
+      messageKey: 'error.serial_send_failed',
+    },
+  ]);
 
   const send = deferred<SerialSendResult>();
   const late = new ModbusTransactionRunner<string>({
@@ -276,16 +284,40 @@ test('failed send without driver detail uses the stable fallback and late failur
   const pending = late.transact('late', () => new Uint8Array([1]), undefined);
   assert.equal(late.cancel(), true);
   send.resolve({
-    status: 'partial-unknown',
-    ok: false,
+    outcome: 'partial',
     requestedBytes: 1,
-    confirmedBytes: 0,
-    bytesWritten: 0,
-    reason: 'write-error',
+    sentBytes: 0,
   });
   assert.equal(await pending, null);
   await Promise.resolve();
   assert.equal(late.hasPending(), false);
+});
+
+test('rejects an inconsistent complete result without treating it as a successful request', async () => {
+  const statuses: ModbusTransactionStatus[] = [];
+  const runner = new ModbusTransactionRunner<string>({
+    sendBytes: () =>
+      Promise.resolve({
+        outcome: 'complete',
+        requestedBytes: 2,
+        sentBytes: 1,
+      }),
+    getTransport: () => 'rtu',
+    getTimeoutMs: () => 100,
+    onStatus: (status) => statuses.push(status),
+  });
+
+  assert.equal(
+    await runner.transact('invalid-complete', () => new Uint8Array([1]), undefined),
+    null,
+  );
+  assert.deepEqual(statuses, [
+    {
+      kind: 'error',
+      message: 'error.serial_send_failed',
+      messageKey: 'error.serial_send_failed',
+    },
+  ]);
 });
 
 function deferred<T>() {

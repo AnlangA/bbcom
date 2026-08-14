@@ -1,0 +1,394 @@
+name: Plugin market release gate
+
+# This workflow is intentionally independent from release.yml. Ordinary R1/R2
+# releases remain possible while the marketplace is fail-closed; a future
+# marketplace publishing workflow must call this gate and depend on market-gate.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-market-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Reuse complete correctness gate
+    uses: ./.github/workflows/quality.yml
+
+  platform-sandbox:
+    name: ${{ matrix.name }} G45 packaged-host evidence
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            platform: windows
+            artifact: windows-x64
+          - name: macOS arm64
+            os: macos-15
+            target: aarch64-apple-darwin
+            platform: macos
+            artifact: macos-arm64
+          - name: Linux x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux
+            artifact: linux-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install Linux sandbox and native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libudev-dev \
+            patchelf
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Setup Rust target
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.97.0
+          targets: ${{ matrix.target }}
+
+      - name: Install locked frontend and packaging tools
+        run: pnpm install --frozen-lockfile
+
+      # This is the only execution of the platform fixture on each OS. Broker
+      # and IPC contracts are already covered by the reused quality workflow.
+      - name: Prove native sandbox controls once
+        env:
+          BBCOM_G45_SANDBOX_EVIDENCE: g45-evidence/plugin-g45-sandbox-${{ matrix.platform }}.json
+          BBCOM_G45_COMMIT_SHA: ${{ github.sha }}
+          BBCOM_G45_PLATFORM: ${{ matrix.platform }}
+          BBCOM_G45_TARGET: ${{ matrix.target }}
+        run: >-
+          cargo test -p bbcom --test plugin_platform_sandbox
+          --target ${{ matrix.target }} --locked --
+          --ignored --exact platform_sandbox_self_test_proves_os_controls --nocapture
+
+      - name: Build Windows NSIS package containing the current sidecar
+        if: runner.os == 'Windows'
+        run: pnpm tauri:build --target ${{ matrix.target }} --bundles nsis
+
+      - name: Build macOS DMG containing the current sidecar
+        if: runner.os == 'macOS'
+        run: pnpm tauri:build --target ${{ matrix.target }} --bundles dmg
+
+      - name: Build Linux deb containing the current sidecar
+        if: runner.os == 'Linux'
+        run: pnpm tauri:build --target ${{ matrix.target }} --bundles deb
+
+      - name: Install and inspect Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem 'target/${{ matrix.target }}/release/bundle/nsis/*.exe')
+          if ($installers.Count -ne 1) { throw "expected one NSIS package, found $($installers.Count)" }
+          $installRoot = Join-Path $env:RUNNER_TEMP 'bbcom-g45-installed'
+          $installer = Start-Process -FilePath $installers[0].FullName `
+            -ArgumentList '/S', "/D=$installRoot" -PassThru -Wait
+          if ($installer.ExitCode -ne 0) { throw "NSIS installer exited with $($installer.ExitCode)" }
+          New-Item -ItemType Directory -Force g45-evidence | Out-Null
+          node scripts/plugin-package-proof.mjs `
+            --root $installRoot `
+            --out g45-evidence/plugin-g45-${{ matrix.platform }}.json `
+            --platform ${{ matrix.platform }} `
+            --target ${{ matrix.target }} `
+            --expected-sidecar target/${{ matrix.target }}/release/bbcom-plugin-host.exe
+
+      - name: Mount and inspect macOS package
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          packages=(target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          test "${#packages[@]}" -eq 1
+          mount_root="$RUNNER_TEMP/bbcom-g45-dmg"
+          runtime_root="$RUNNER_TEMP/bbcom-g45-runtime"
+          mkdir -p "$mount_root" "$runtime_root" g45-evidence
+          test ! -e "$runtime_root/bbcom.app"
+          hdiutil attach "${packages[0]}" -nobrowse -readonly -mountpoint "$mount_root"
+          trap 'hdiutil detach "$mount_root"' EXIT
+          node scripts/plugin-package-proof.mjs \
+            --root "$mount_root" \
+            --out g45-evidence/plugin-g45-${{ matrix.platform }}.json \
+            --platform ${{ matrix.platform }} \
+            --target ${{ matrix.target }} \
+            --expected-sidecar target/${{ matrix.target }}/release/bbcom-plugin-host
+          cp -R "$mount_root/bbcom.app" "$runtime_root/bbcom.app"
+          hdiutil detach "$mount_root"
+          trap - EXIT
+
+      - name: Extract and inspect Linux package
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          packages=(target/${{ matrix.target }}/release/bundle/deb/*.deb)
+          test "${#packages[@]}" -eq 1
+          dpkg-deb --field "${packages[0]}" Depends \
+            | tr ',' '\n' \
+            | grep -Eq '^ *bubblewrap( \(>= 0\.6\.1\))? *$'
+          install_root="$RUNNER_TEMP/bbcom-g45-installed"
+          mkdir -p "$install_root" g45-evidence
+          dpkg-deb --extract "${packages[0]}" "$install_root"
+          node scripts/plugin-package-proof.mjs \
+            --root "$install_root" \
+            --out g45-evidence/plugin-g45-${{ matrix.platform }}.json \
+            --platform ${{ matrix.platform }} \
+            --target ${{ matrix.target }} \
+            --expected-sidecar target/${{ matrix.target }}/release/bbcom-plugin-host
+
+      # The OS self-test above is not Component evidence. These executable
+      # probes launch the installed app's byte-matched packaged host with the
+      # reviewed Component suite. The aggregate validator requires both scopes.
+      - name: Run packaged Windows host with reviewed malicious Wasm Component
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:GITHUB_WORKSPACE 'tests/fixtures/plugins/malicious/g45-malicious.component.wasm'
+          if (-not (Test-Path -PathType Leaf $fixture)) {
+            throw 'reviewed G45 malicious Wasm Component is not available'
+          }
+          $application = Join-Path $env:RUNNER_TEMP 'bbcom-g45-installed/bbcom.exe'
+          if (-not (Test-Path -PathType Leaf $application)) { throw 'installed bbcom.exe is absent' }
+          $stdout = Join-Path (Resolve-Path g45-evidence).Path 'plugin-g45-host-${{ matrix.platform }}.json'
+          $stderr = Join-Path $env:RUNNER_TEMP 'bbcom-plugin-host-g45-windows.log'
+          $arguments = @(
+            '--plugin-g45-host-probe', '--format', 'json',
+            '--fixture', $fixture,
+            '--commit', $env:GITHUB_SHA,
+            '--platform', '${{ matrix.platform }}',
+            '--target', '${{ matrix.target }}'
+          )
+          $probe = Start-Process -FilePath $application -ArgumentList $arguments `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          if (-not $probe.WaitForExit(60000)) {
+            Stop-Process -Id $probe.Id -Force
+            throw 'packaged-host malicious-Component probe timed out'
+          }
+          if ($probe.ExitCode -ne 0) { throw "packaged-host probe exited with $($probe.ExitCode)" }
+          if (-not (Test-Path -PathType Leaf $stdout) -or (Get-Item $stdout).Length -eq 0) {
+            throw 'packaged-host probe emitted no evidence'
+          }
+
+      - name: Run packaged macOS host with reviewed malicious Wasm Component
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        shell: bash
+        run: |
+          fixture="$GITHUB_WORKSPACE/tests/fixtures/plugins/malicious/g45-malicious.component.wasm"
+          application="$RUNNER_TEMP/bbcom-g45-runtime/bbcom.app/Contents/MacOS/bbcom"
+          evidence="g45-evidence/plugin-g45-host-${{ matrix.platform }}.json"
+          log="$RUNNER_TEMP/bbcom-plugin-host-g45-macos.log"
+          test -f "$fixture"
+          test -x "$application"
+          set +e
+          "$application" \
+            --plugin-g45-host-probe --format json \
+            --fixture "$fixture" \
+            --commit "$GITHUB_SHA" \
+            --platform '${{ matrix.platform }}' \
+            --target '${{ matrix.target }}' >"$evidence" 2>"$log" &
+          probe_pid=$!
+          probe_status=124
+          for _ in {1..600}; do
+            if ! kill -0 "$probe_pid" 2>/dev/null; then
+              wait "$probe_pid"
+              probe_status=$?
+              break
+            fi
+            sleep 0.1
+          done
+          if kill -0 "$probe_pid" 2>/dev/null; then
+            kill -TERM "$probe_pid" 2>/dev/null
+            wait "$probe_pid" 2>/dev/null
+          fi
+          set -e
+          test "$probe_status" -eq 0
+          test -s "$evidence"
+
+      - name: Run packaged Linux host with reviewed malicious Wasm Component
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        run: |
+          fixture="$GITHUB_WORKSPACE/tests/fixtures/plugins/malicious/g45-malicious.component.wasm"
+          application="$RUNNER_TEMP/bbcom-g45-installed/usr/bin/bbcom"
+          evidence="g45-evidence/plugin-g45-host-${{ matrix.platform }}.json"
+          log="$RUNNER_TEMP/bbcom-plugin-host-g45-linux.log"
+          test -f "$fixture"
+          test -x "$application"
+          set +e
+          timeout --signal=TERM --kill-after=2s 60s \
+            "$application" \
+            --plugin-g45-host-probe --format json \
+            --fixture "$fixture" \
+            --commit "$GITHUB_SHA" \
+            --platform '${{ matrix.platform }}' \
+            --target '${{ matrix.target }}' >"$evidence" 2>"$log"
+          probe_status=$?
+          set -e
+          test "$probe_status" -eq 0
+          test -s "$evidence"
+
+      # G45 package evidence remains useful before production wiring exists.
+      # The probe is allowed to fail here, but G46 requires its exact JSON output,
+      # so a missing, timed-out, or fail-closed runtime can never open the market.
+      - name: Ask installed Windows application for production-runtime evidence
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $installRoot = Join-Path $env:RUNNER_TEMP 'bbcom-g45-installed'
+          $application = Join-Path $installRoot 'bbcom.exe'
+          if (-not (Test-Path -PathType Leaf $application)) { throw 'installed bbcom.exe is absent' }
+          $evidenceRoot = (Resolve-Path g45-evidence).Path
+          $stdout = Join-Path $evidenceRoot 'plugin-g46-runtime-${{ matrix.platform }}.json'
+          $stderr = Join-Path $env:RUNNER_TEMP 'bbcom-plugin-runtime-probe-windows.log'
+          $arguments = @(
+            '--plugin-market-readiness-probe', '--format', 'json',
+            '--commit', $env:GITHUB_SHA,
+            '--platform', '${{ matrix.platform }}',
+            '--target', '${{ matrix.target }}'
+          )
+          $probe = Start-Process -FilePath $application -ArgumentList $arguments `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          if (-not $probe.WaitForExit(15000)) {
+            Stop-Process -Id $probe.Id -Force
+            throw 'production-runtime probe timed out'
+          }
+          if ($probe.ExitCode -ne 0) { throw "production-runtime probe exited with $($probe.ExitCode)" }
+          if (-not (Test-Path -PathType Leaf $stdout) -or (Get-Item $stdout).Length -eq 0) {
+            throw 'production-runtime probe emitted no evidence'
+          }
+
+      - name: Ask installed macOS application for production-runtime evidence
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        shell: bash
+        run: |
+          application="$RUNNER_TEMP/bbcom-g45-runtime/bbcom.app/Contents/MacOS/bbcom"
+          evidence="g45-evidence/plugin-g46-runtime-${{ matrix.platform }}.json"
+          log="$RUNNER_TEMP/bbcom-plugin-runtime-probe-macos.log"
+          test -x "$application"
+          set +e
+          "$application" \
+            --plugin-market-readiness-probe --format json \
+            --commit "$GITHUB_SHA" \
+            --platform '${{ matrix.platform }}' \
+            --target '${{ matrix.target }}' >"$evidence" 2>"$log" &
+          probe_pid=$!
+          probe_status=124
+          for _ in {1..150}; do
+            if ! kill -0 "$probe_pid" 2>/dev/null; then
+              wait "$probe_pid"
+              probe_status=$?
+              break
+            fi
+            sleep 0.1
+          done
+          if kill -0 "$probe_pid" 2>/dev/null; then
+            kill -TERM "$probe_pid" 2>/dev/null
+            wait "$probe_pid" 2>/dev/null
+          fi
+          set -e
+          test "$probe_status" -eq 0
+          test -s "$evidence"
+
+      - name: Ask installed Linux application for production-runtime evidence
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        run: |
+          application="$RUNNER_TEMP/bbcom-g45-installed/usr/bin/bbcom"
+          evidence="g45-evidence/plugin-g46-runtime-${{ matrix.platform }}.json"
+          log="$RUNNER_TEMP/bbcom-plugin-runtime-probe-linux.log"
+          test -x "$application"
+          set +e
+          timeout --signal=TERM --kill-after=2s 15s \
+            "$application" \
+            --plugin-market-readiness-probe --format json \
+            --commit "$GITHUB_SHA" \
+            --platform '${{ matrix.platform }}' \
+            --target '${{ matrix.target }}' >"$evidence" 2>"$log"
+          probe_status=$?
+          set -e
+          test "$probe_status" -eq 0
+          test -s "$evidence"
+
+      - name: Require real packaged-host malicious-Component evidence for G45
+        if: always()
+        run: >-
+          node scripts/plugin-market-readiness.mjs g45-evidence
+          --platform ${{ matrix.platform }}
+
+      - name: Upload installed-package and runtime evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: g45-package-${{ matrix.artifact }}
+          path: g45-evidence/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  market-gate:
+    name: G46 explicit market release gate
+    if: ${{ always() }}
+    needs:
+      - quality
+      - platform-sandbox
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    environment: plugin-market-release-gate
+    steps:
+      - name: Require every native platform
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          PLATFORM_RESULT: ${{ needs.platform-sandbox.result }}
+        run: |
+          test "$QUALITY_RESULT" = success
+          test "$PLATFORM_RESULT" = success
+
+      - name: Checkout gated source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .node-version
+
+      - name: Download all installed-package and runtime proofs
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: g45-package-*
+          path: g45-evidence
+          merge-multiple: true
+
+      - name: Require exact package hashes and executable production wiring
+        run: node scripts/plugin-market-readiness.mjs g45-evidence

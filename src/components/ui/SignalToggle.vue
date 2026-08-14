@@ -1,6 +1,11 @@
 <template>
   <label class="signal-toggle">
-    <n-switch :value="modelValue" size="small" @update:value="emit('update:modelValue', $event)" />
+    <n-switch
+      :value="modelValue"
+      size="small"
+      :aria-label="label"
+      @update:value="emit('update:modelValue', $event)"
+    />
     {{ label }}
   </label>
 </template>

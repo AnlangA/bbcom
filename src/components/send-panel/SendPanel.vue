@@ -5,6 +5,7 @@
         :value="modelValue"
         type="textarea"
         :placeholder="isHex ? t('send.placeholder.hex') : t('send.placeholder.text')"
+        :aria-label="isHex ? t('send.placeholder.hex') : t('send.placeholder.text')"
         :autosize="{ minRows: 2, maxRows: 4 }"
         :disabled="disabled"
         :status="isHex && modelValue && !isValidHex ? 'error' : undefined"
@@ -20,6 +21,7 @@
         <AppSelect
           v-model:value="lineEnding"
           :options="lineEndingOptions"
+          :aria-label="t('send.lineEnding.none')"
           size="tiny"
           style="width: 96px"
           :disabled="isHex || looping"
@@ -27,6 +29,7 @@
         <AppSelect
           v-model:value="appendChecksum"
           :options="checksumOptions"
+          :aria-label="t('checksum.title')"
           size="tiny"
           style="width: 100px"
           :disabled="!isHex || looping"
@@ -82,6 +85,7 @@
       :history="history"
       :quick-commands="quickCommands"
       :on-send="onSend"
+      :macro-runner="macroRunner"
       @add-quick-command="emit('addQuickCommand', $event)"
       @remove-quick-command="emit('removeQuickCommand', $event)"
       @clear-history="emit('clearHistory')"
@@ -102,10 +106,12 @@ import { useSessionStore } from '../../stores/sessions';
 import { calculateChecksum } from '../../lib/ipc';
 import { t } from '../../lib/i18n';
 import type { ChecksumType, LineEnding, QuickCommand, SendHistoryEntry } from '../../types';
+import type { SessionRuntimeMacroController } from '../../features/sessions/runtime/session-runtime-controller';
 import ToolsTabs from './ToolsTabs.vue';
 
 const props = defineProps<{
   onSend: (data: string, isHex: boolean) => Promise<boolean>;
+  macroRunner: SessionRuntimeMacroController;
   onStartLoop: (data: string, isHex: boolean) => boolean;
   onStopLoop: () => void;
   looping: boolean;

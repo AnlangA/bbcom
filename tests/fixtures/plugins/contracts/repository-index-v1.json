@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "generated_at": "2026-08-12T00:00:00Z",
+  "origin": "https://plugins.bbcom.dev",
+  "update_policy": "manual",
+  "plugins": [
+    {
+      "id": "dev.bbcom.golden",
+      "publisher_identity": "publisher:bbcom-contract-fixtures",
+      "packages": [
+        {
+          "version": "1.2.3",
+          "url": "https://plugins.bbcom.dev/packages/dev.bbcom.golden-1.2.3.zip",
+          "sha256": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+          "download_bytes": 1048576,
+          "expanded_bytes": 2097152,
+          "files": 4
+        }
+      ]
+    }
+  ]
+}

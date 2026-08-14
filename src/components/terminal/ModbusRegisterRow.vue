@@ -7,7 +7,12 @@
 <template>
   <div class="mb-row" :class="{ alt: alt, 'send-flash': flashed }">
     <span class="col col-name" :title="reg.name">
-      <n-input :value="reg.name" size="tiny" @update:value="(v) => edit({ name: v })" />
+      <n-input
+        :value="reg.name"
+        size="tiny"
+        :aria-label="t('modbus.col.name')"
+        @update:value="(v) => edit({ name: v })"
+      />
     </span>
     <span class="col col-slave">
       <n-input-number
@@ -16,12 +21,14 @@
         :min="0"
         :max="247"
         :show-button="false"
+        :aria-label="t('modbus.col.slave')"
         @update:value="(v) => editAndClear({ slaveAddress: v ?? 1 })"
       />
     </span>
     <span class="col col-fc">
       <AppSelect
         :value="reg.functionCode"
+        :aria-label="t('modbus.col.fc')"
         :options="fcOptions"
         size="tiny"
         @update:value="(v) => editFunctionCode(v)"
@@ -34,6 +41,7 @@
         :min="0"
         :max="65535"
         :show-button="false"
+        :aria-label="t('modbus.col.addr')"
         @update:value="(v) => editAndClear({ address: v ?? 0 })"
       />
     </span>
@@ -46,6 +54,7 @@
         :max="dataQuantityMax(reg.functionCode, reg.type)"
         :show-button="false"
         style="width: 54px"
+        :aria-label="t('modbus.col.quantity')"
         @update:value="(v) => editQuantity(v ?? 1)"
       />
       <span v-else>—</span>
@@ -53,6 +62,7 @@
     <span class="col col-type">
       <AppSelect
         :value="reg.type"
+        :aria-label="t('modbus.col.type')"
         :options="typeOptionsFor(reg.functionCode)"
         size="tiny"
         :disabled="isBitReg"
@@ -62,6 +72,7 @@
     <span class="col col-ch">
       <AppSelect
         :value="reg.waveformChannel ?? -1"
+        :aria-label="t('modbus.col.ch')"
         :options="channelOptions"
         size="tiny"
         style="width: 60px"
@@ -98,11 +109,13 @@
         :value="editValueText"
         size="tiny"
         :placeholder="valuePlaceholder"
+        :aria-label="t('modbus.col.value')"
         @update:value="(v) => editValue(v)"
       />
       <n-checkbox
         v-else-if="isWriteReg && isBitReg"
         :checked="(reg.value ?? 0) !== 0"
+        :aria-label="t('modbus.col.value')"
         size="small"
         @update:checked="(v) => editValue(v ? '1' : '0')"
       />
@@ -115,6 +128,7 @@
         :value="reg.unit ?? ''"
         size="tiny"
         placeholder="°C"
+        :aria-label="t('modbus.col.unit')"
         @update:value="(v) => edit({ unit: v || undefined })"
       />
     </span>

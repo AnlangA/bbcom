@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hydrate-workspace-sessions"
+description = "Enables the hydrate_workspace_sessions command without any pre-configured scope."
+commands.allow = ["hydrate_workspace_sessions"]
+
+[[permission]]
+identifier = "deny-hydrate-workspace-sessions"
+description = "Denies the hydrate_workspace_sessions command without any pre-configured scope."
+commands.deny = ["hydrate_workspace_sessions"]

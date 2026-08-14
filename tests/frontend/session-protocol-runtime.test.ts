@@ -12,6 +12,7 @@ import type {
 import type { SerialTimerScheduler } from '../../src/lib/serial-rx-scheduler.ts';
 import { useSessionStore } from '../../src/stores/sessions.ts';
 import type { PortConfig } from '../../src/types/serial.ts';
+import { PortLeaseRegistry } from '../../src/features/serial/application/port-lease-registry.ts';
 
 const config: PortConfig = {
   baudRate: 115200,
@@ -84,6 +85,8 @@ test('resident protocol parser consumes raw RX while terminal capture and UI pub
   const scope = effectScope();
   const connection = scope.run(() =>
     useSerialConnection(sessionId, 'COM1', config, undefined, {
+      leaseClient: new PortLeaseRegistry({ platform: 'windows' }),
+      sessionName: 'COM1',
       createPort: () => port,
       timerScheduler: timer.scheduler,
       isDocumentVisible: () => true,

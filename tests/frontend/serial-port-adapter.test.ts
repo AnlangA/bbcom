@@ -5,6 +5,17 @@ const mocked = vi.hoisted(() => ({
   calls: [] as Array<{ method: string; args: unknown[] }>,
 }));
 
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: async (command: string, args: unknown) => {
+    mocked.calls.push({ method: command, args: [args] });
+    return {
+      bytes: [0xaa, 0xbb],
+      guaranteed: true,
+      completion: 'idle-gap-observed',
+    };
+  },
+}));
+
 vi.mock('tauri-plugin-serialplugin-api', () => {
   class SerialPort {
     constructor(options: unknown) {
@@ -77,6 +88,12 @@ test('Tauri serial adapter forwards every v3 operation to the path-scoped plugin
   await port.writeRequestToSend(false);
   await port.setBreak();
   await port.clearBreak();
+  assert.deepEqual(await port.drainNativeInput?.(), {
+    bytes: [0xaa, 0xbb],
+    guaranteed: true,
+    completion: 'idle-gap-observed',
+  });
+  await port.yieldQueuedChannelEvents?.();
   await port.close();
   await port.forceClose?.();
 
@@ -91,6 +108,7 @@ test('Tauri serial adapter forwards every v3 operation to the path-scoped plugin
       'rts',
       'setBreak',
       'clearBreak',
+      'drain_serial_input',
       'close',
       'forceClose',
     ],
@@ -98,5 +116,6 @@ test('Tauri serial adapter forwards every v3 operation to the path-scoped plugin
   assert.equal(mocked.calls[0].args[0].path, 'COM9');
   assert.equal(mocked.calls[2].args[0], handlers);
   assert.equal(mocked.calls[2].args[1], watchOptions);
+  assert.deepEqual(mocked.calls[8].args[0], { request: { path: 'COM9' } });
   assert.equal(mocked.calls.at(-1)?.args[0], 'COM9');
 });

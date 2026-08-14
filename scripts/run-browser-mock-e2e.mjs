@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+const pnpm = process.env.npm_execpath || (process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
 const serverUrl = 'http://127.0.0.1:5173/';
 const readyDeadlineMs = 40_000;
 const viteCli = resolve(root, 'node_modules', 'vite', 'bin', 'vite.js');
@@ -91,7 +91,7 @@ async function main() {
   });
   if (startError) throw startError;
   await waitForServer();
-  await run(pnpm, ['run', 'e2e:browser']);
+  await run(pnpm, ['run', 'e2e:browser', ...process.argv.slice(2)]);
 }
 
 try {

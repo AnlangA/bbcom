@@ -5,109 +5,9 @@
 //! so callers can make a deterministic decision without parsing prose and so
 //! logs never need to include request bodies, secrets, or file paths.
 
-use serde::Serialize;
-use thiserror::Error;
-
 use crate::models::errors::AppError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum AppErrorCode {
-    Busy,
-    RateLimited,
-    Cancelled,
-    Timeout,
-    InvalidInput,
-    LimitExceeded,
-    SecurityDenied,
-    SerialDisconnected,
-    SerialQueueFull,
-    SerialPartialWrite,
-    IoPermissionDenied,
-    IoDiskFull,
-    ExportReplaceFailed,
-}
-
-#[derive(Clone, Debug, Error, Serialize)]
-#[error("{code:?}: {operation}")]
-#[serde(rename_all = "camelCase")]
-pub struct IpcError {
-    pub code: AppErrorCode,
-    pub message_key: &'static str,
-    pub retryable: bool,
-    pub operation: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<Box<str>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub field: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub actual: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retry_after_ms: Option<u64>,
-}
-
-impl IpcError {
-    pub const fn new(
-        code: AppErrorCode,
-        message_key: &'static str,
-        retryable: bool,
-        operation: &'static str,
-    ) -> Self {
-        Self {
-            code,
-            message_key,
-            retryable,
-            operation,
-            request_id: None,
-            field: None,
-            limit: None,
-            actual: None,
-            retry_after_ms: None,
-        }
-    }
-
-    pub fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
-        self.request_id = Some(request_id.into().into_boxed_str());
-        self
-    }
-
-    pub const fn with_field(mut self, field: &'static str) -> Self {
-        self.field = Some(field);
-        self
-    }
-
-    pub const fn with_size(mut self, limit: usize, actual: usize) -> Self {
-        self.limit = Some(limit);
-        self.actual = Some(actual);
-        self
-    }
-
-    pub const fn with_retry_after(mut self, retry_after_ms: u64) -> Self {
-        self.retry_after_ms = Some(retry_after_ms);
-        self
-    }
-
-    pub const fn invalid_input(operation: &'static str, field: &'static str) -> Self {
-        Self::new(
-            AppErrorCode::InvalidInput,
-            "error.invalid_input",
-            false,
-            operation,
-        )
-        .with_field(field)
-    }
-
-    pub const fn security_denied(operation: &'static str) -> Self {
-        Self::new(
-            AppErrorCode::SecurityDenied,
-            "error.security_denied",
-            false,
-            operation,
-        )
-    }
-}
+pub use bbcom_contracts::{AppErrorCode, IpcError};
 
 /// Convert an internal error to the stable command boundary shape without
 /// carrying a native error message, path, serial payload, or secret across IPC.
@@ -119,7 +19,7 @@ pub fn from_app_error(error: &AppError, operation: &'static str) -> IpcError {
                 return IpcError::security_denied(operation);
             }
             let code = match field {
-                "frames" | "expectedFrames" | "expectedRawBytes" => AppErrorCode::LimitExceeded,
+                "frames" => AppErrorCode::LimitExceeded,
                 _ => AppErrorCode::InvalidInput,
             };
             IpcError::new(
@@ -192,7 +92,7 @@ pub fn from_app_error(error: &AppError, operation: &'static str) -> IpcError {
         },
         AppError::ConfigError { .. } => IpcError::security_denied(operation),
         AppError::AiError { .. } => IpcError::new(
-            AppErrorCode::Timeout,
+            AppErrorCode::AiProviderFailed,
             "error.ai_request_failed",
             true,
             operation,
@@ -299,6 +199,26 @@ mod tests {
     }
 
     #[test]
+    fn export_total_mismatch_and_finished_session_are_stable_non_retryable_errors() {
+        for field in ["expectedFrames", "expectedRawBytes", "exportId"] {
+            let error = AppError::ValidationError {
+                message: "internal mismatch detail".to_string(),
+                field: field.to_string(),
+            };
+            let mapped = from_app_error(&error, "finish_export");
+            assert_eq!(mapped.code, AppErrorCode::InvalidInput);
+            assert_eq!(mapped.field, Some(field));
+            assert_eq!(mapped.message_key, "error.invalid_input");
+            assert!(!mapped.retryable);
+            assert!(
+                !serde_json::to_string(&mapped)
+                    .unwrap()
+                    .contains("internal mismatch detail")
+            );
+        }
+    }
+
+    #[test]
     fn all_internal_error_classes_map_without_native_message_or_path() {
         for (error, expected) in [
             (
@@ -306,7 +226,7 @@ mod tests {
                     message: "frame prose".to_string(),
                     field: "expectedFrames".to_string(),
                 },
-                AppErrorCode::LimitExceeded,
+                AppErrorCode::InvalidInput,
             ),
             (
                 AppError::Busy {
@@ -330,7 +250,7 @@ mod tests {
                 AppError::AiError {
                     message: "model prose".to_string(),
                 },
-                AppErrorCode::Timeout,
+                AppErrorCode::AiProviderFailed,
             ),
         ] {
             let mapped = from_app_error(&error, "operation");

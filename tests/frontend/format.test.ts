@@ -48,6 +48,11 @@ test('parseHex rejects odd-length input and handles mixed-case + separators', ()
   assert.deepEqual(Array.from(parseHex('')), []);
   assert.throws(() => parseHex('AAB'), /odd number of digits/i);
   assert.throws(() => parseHex('AA BB C'), /odd number of digits/i);
+  assert.throws(() => parseHex('AA ZZ BB'), /invalid hex token/i);
+  assert.throws(() => parseHex('AA-BB'), /invalid hex token/i);
+  assert.throws(() => parseHex('A A'), /odd number of digits/i);
+  assert.throws(() => parseHex('0xAA'), /invalid hex token/i);
+  assert.equal(isValidHex('AA ZZ BB'), false);
 });
 
 test('hexByteCount counts byte pairs ignoring separators and non-hex chars', () => {
@@ -147,10 +152,12 @@ test('truncate keeps short strings intact and ellipsizes long ones', () => {
   assert.equal(truncate('abc', 3), 'abc');
 });
 
-test('isValidHex treats whitespace, commas, and odd lengths correctly', () => {
+test('isValidHex accepts only paired hex with whitespace or comma separators', () => {
   assert.equal(isValidHex(''), false);
   assert.equal(isValidHex('AABB'), true);
-  assert.equal(isValidHex('aa-bb'), true);
+  assert.equal(isValidHex('aa bb'), true);
+  assert.equal(isValidHex('aa,bb'), true);
+  assert.equal(isValidHex('aa-bb'), false);
   assert.equal(isValidHex('AAB'), false);
 });
 

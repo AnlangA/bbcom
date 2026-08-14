@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-legacy-reset-journal"
+description = "Enables the get_legacy_reset_journal command without any pre-configured scope."
+commands.allow = ["get_legacy_reset_journal"]
+
+[[permission]]
+identifier = "deny-get-legacy-reset-journal"
+description = "Denies the get_legacy_reset_journal command without any pre-configured scope."
+commands.deny = ["get_legacy_reset_journal"]

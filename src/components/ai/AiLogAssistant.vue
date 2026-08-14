@@ -1,5 +1,8 @@
 <template>
-  <div class="log-assistant">
+  <div class="log-assistant" :aria-busy="loading">
+    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+      {{ loading ? t('ai.log.analyze') : (result?.answer ?? '') }}
+    </span>
     <div class="settings-row">
       <div class="field-group">
         <span class="field-label">
@@ -9,6 +12,7 @@
         <AppSelect
           size="small"
           :value="session.logAiModel"
+          :aria-label="t('ai.log.model')"
           :options="aiModelOptions"
           :menu-props="aiModelMenuProps"
           @update:value="setLogModel"
@@ -22,6 +26,7 @@
         <AppSelect
           size="small"
           :value="session.logAiContextMode"
+          :aria-label="t('ai.log.context')"
           :options="localizedLogContextModeOptions"
           @update:value="setContextMode"
         />
@@ -33,12 +38,13 @@
         :min="20"
         :max="2000"
         :step="20"
+        :aria-label="t('ai.log.context')"
         style="width: 112px"
         @update:value="setFrameLimit"
       />
     </div>
 
-    <div class="message-list">
+    <div class="message-list" aria-live="polite" aria-relevant="additions text">
       <div v-if="session.logAiMessages.length === 0" class="empty-hint">
         {{ t('ai.log.emptyHint') }}
       </div>
@@ -77,14 +83,28 @@
         v-model:value="prompt"
         size="small"
         :placeholder="hasApiKey ? t('ai.log.placeholder') : t('ai.needApiKey')"
+        :aria-label="t('ai.log.placeholder')"
         :disabled="loading"
         @keydown.enter.prevent="ask"
       />
-      <n-button size="small" :disabled="session.logAiMessages.length === 0" @click="clearMessages">
+      <n-button
+        size="small"
+        :disabled="loading || session.logAiMessages.length === 0"
+        @click="clearMessages"
+      >
         <template #icon>
           <Trash2 class="icon-sm" />
         </template>
         {{ t('ai.log.clear') }}
+      </n-button>
+      <n-button
+        v-if="loading"
+        size="small"
+        :loading="cancelling"
+        :aria-label="t('common.cancel')"
+        @click="cancelRequest"
+      >
+        {{ t('common.cancel') }}
       </n-button>
       <n-button size="small" type="primary" :loading="loading" :disabled="!canAsk" @click="ask">
         <template #icon>
@@ -105,7 +125,6 @@ import { useAppStore } from '../../stores/app';
 import type { AiModel, AiWindowSession, LogAiContextMode } from '../../types';
 import type { useAiWindowSession } from '../../composables/useAiWindowSession';
 import { getAiErrorMessage } from '../../lib/ai-error';
-import { runAiRequest } from '../../lib/ipc';
 import { t } from '../../lib/i18n';
 import { aiModelMenuProps, aiModelOptions, getLogContextModeOptions } from './ai-options';
 
@@ -125,6 +144,9 @@ const appStore = useAppStore();
 const message = useMessage();
 const prompt = ref('');
 const loading = ref(false);
+const cancelling = ref(false);
+const cancelRequested = ref(false);
+const activeRequestId = ref<string | null>(null);
 const result = ref<LogAiResponse | null>(null);
 
 const hasApiKey = computed(() => appStore.aiKeyConfigured);
@@ -138,35 +160,71 @@ async function ask() {
     return;
   }
   loading.value = true;
+  cancelRequested.value = false;
   // Drop the previous analysis so a stale result card isn't shown while the
   // new answer is loading (matches AiTerminalAssistant.generateCommand).
   result.value = null;
+  let binding: ReturnType<typeof props.bridge.createRequestBinding> = null;
+  let requestSubmitted = false;
+  let bindingReleased = false;
   try {
     const latestSession = (await props.bridge.refreshSession()) ?? props.session;
-    const context = await props.bridge.getLogContext();
+    binding = props.bridge.createRequestBinding();
+    if (!binding) {
+      message.warning(t('ai.needSession'));
+      return;
+    }
+    const context = await props.bridge.getLogContext(binding);
     if (!context || context.frameCount === 0) {
+      await props.bridge.releaseRequestBinding(binding);
+      bindingReleased = true;
       message.warning(t('ai.log.noData'));
       return;
     }
     const question = prompt.value.trim();
-    await props.bridge.addLogAiMessage({ role: 'user', content: question });
-    const response = await runAiRequest({
-      requestId: crypto.randomUUID(),
-      kind: 'log',
-      prompt: question,
-      model: latestSession.logAiModel,
-      context: context.text,
-      contextMode: latestSession.logAiContextMode,
-      sessionMeta: `${latestSession.portName}, ${latestSession.baudRate ?? 0} bps, ${context.frameCount} frames, max ${context.charLimit} chars`,
-    });
+    await props.bridge.addLogAiMessage({ role: 'user', content: question }, binding);
+    activeRequestId.value = binding.requestId;
+    requestSubmitted = true;
+    const activity = await props.bridge.runRequest(
+      {
+        requestId: binding.requestId,
+        kind: 'log',
+        prompt: question,
+        model: latestSession.logAiModel,
+        context: context.text,
+        contextMode: latestSession.logAiContextMode,
+        sessionMeta: `${latestSession.portName}, ${latestSession.baudRate ?? 0} bps, ${context.frameCount} frames, max ${context.charLimit} chars`,
+      },
+      binding,
+    );
+    const response = activity.result;
     if (response.kind !== 'log') throw new Error('unexpected AI response kind');
-    result.value = response;
-    await props.bridge.addLogAiMessage({ role: 'assistant', content: response.answer });
-    prompt.value = '';
+    if (props.bridge.isBindingCurrent(binding)) {
+      result.value = response;
+      prompt.value = '';
+    }
   } catch (e: unknown) {
-    message.error(getAiErrorMessage(e, t('ai.log.failed')));
+    if (!cancelRequested.value) message.error(getAiErrorMessage(e, t('ai.log.failed')));
   } finally {
+    if (binding && !requestSubmitted && !bindingReleased) {
+      await props.bridge.releaseRequestBinding(binding).catch(() => undefined);
+    }
+    if (binding && activeRequestId.value === binding.requestId) activeRequestId.value = null;
+    cancelling.value = false;
+    cancelRequested.value = false;
     loading.value = false;
+  }
+}
+
+async function cancelRequest() {
+  const requestId = activeRequestId.value;
+  if (!requestId || cancelling.value) return;
+  cancelRequested.value = true;
+  cancelling.value = true;
+  try {
+    await props.bridge.cancelRequest(requestId);
+  } finally {
+    cancelling.value = false;
   }
 }
 
@@ -183,6 +241,7 @@ function setFrameLimit(value: number | null) {
 }
 
 function clearMessages() {
+  if (loading.value) return;
   void props.bridge.clearLogAiMessages();
   result.value = null;
 }

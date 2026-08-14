@@ -47,7 +47,7 @@ test('serial port config persists in-place field mutations (deep watch)', async 
     // The store debounces writes by 300ms.
     await delay(360);
 
-    const raw = data.get('bbcom-serial-settings');
+    const raw = data.get('bbcom-v1:serial-settings');
     assert.ok(raw, 'serial settings should be persisted after in-place mutations');
     const saved = JSON.parse(raw as string);
     assert.equal(saved.portConfig.baudRate, 9600);
@@ -63,7 +63,7 @@ test('serial store round-trips persisted config on load', async () => {
   const previous = (globalThis as { localStorage?: LocalStorageLike }).localStorage;
   const data = installLocalStorageMock();
   data.set(
-    'bbcom-serial-settings',
+    'bbcom-v1:serial-settings',
     JSON.stringify({ selectedPort: 'COM7', portConfig: { baudRate: 57600 } }),
   );
 

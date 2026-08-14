@@ -13,17 +13,25 @@
     visible without switching tabs.
   -->
   <div class="tools-tabs">
-    <div class="tools-tabbar" role="tablist">
+    <div
+      class="tools-tabbar"
+      role="tablist"
+      :aria-label="t('toolbar.functionSettings')"
+      @keydown="onTablistKeydown"
+    >
       <button
         v-for="tab in tabs"
         :key="tab.id"
         type="button"
         role="tab"
+        :id="tabDomId(tab.id)"
+        :aria-controls="panelDomId(tab.id)"
         :aria-selected="activeTab === tab.id"
+        :tabindex="activeTab === tab.id ? 0 : -1"
         class="tools-tab"
         :class="{ active: activeTab === tab.id }"
         :title="tab.label"
-        @click="activeTab = tab.id"
+        @click="selectTab(tab.id)"
       >
         <component :is="tab.icon" class="icon-sm" />
         <span class="tab-label">{{ tab.label }}</span>
@@ -32,13 +40,21 @@
     </div>
     <div class="tools-body">
       <!-- Quick commands: the only panel that still owns send/draft state via props -->
-      <div v-if="activeTab === 'quick'" class="tool-pane">
+      <div
+        v-show="activeTab === 'quick'"
+        :id="panelDomId('quick')"
+        class="tool-pane"
+        role="tabpanel"
+        :aria-labelledby="tabDomId('quick')"
+        tabindex="0"
+      >
         <div class="quick-row">
           <div class="quick-form">
             <n-input
               v-model:value="quickName"
               size="tiny"
               :placeholder="t('send.quickName')"
+              :aria-label="t('send.quickName')"
               style="width: 130px"
               @keydown.enter="addQuickCommand"
             />
@@ -55,15 +71,23 @@
               :key="cmd.id"
               class="quick-item"
               :title="cmd.data"
-              @click="sendQuick(cmd)"
+              @click.self="sendQuick(cmd)"
             >
-              <span class="history-tag">{{ cmd.isHex ? 'HEX' : 'TXT' }}</span>
-              <span>{{ cmd.name }}</span>
+              <button
+                class="quick-send"
+                type="button"
+                :disabled="disabled"
+                @click.stop="sendQuick(cmd)"
+              >
+                <span class="history-tag">{{ cmd.isHex ? 'HEX' : 'TXT' }}</span>
+                <span>{{ cmd.name }}</span>
+              </button>
               <button
                 class="quick-remove"
                 type="button"
                 @click.stop="emit('removeQuickCommand', cmd.id)"
                 :title="t('send.deleteQuick')"
+                :aria-label="`${t('send.deleteQuick')}: ${cmd.name}`"
               >
                 <X class="icon-sm" />
               </button>
@@ -73,18 +97,53 @@
         </div>
       </div>
 
-      <KeepAlive :max="3">
-        <MacroPanel
-          v-if="activeTab === 'macros'"
-          :session-id="sessionId"
-          :send="onSend"
-          :disabled="disabled"
-        />
-        <TriggerPanel v-else-if="activeTab === 'triggers'" :session-id="sessionId" />
-        <HighlightPanel v-else-if="activeTab === 'highlights'" :session-id="sessionId" />
-      </KeepAlive>
+      <div
+        v-show="activeTab === 'macros'"
+        :id="panelDomId('macros')"
+        role="tabpanel"
+        :aria-labelledby="tabDomId('macros')"
+        tabindex="0"
+      >
+        <KeepAlive>
+          <MacroPanel
+            v-if="activeTab === 'macros'"
+            :session-id="sessionId"
+            :runner="macroRunner"
+            :disabled="disabled"
+          />
+        </KeepAlive>
+      </div>
+      <div
+        v-show="activeTab === 'triggers'"
+        :id="panelDomId('triggers')"
+        role="tabpanel"
+        :aria-labelledby="tabDomId('triggers')"
+        tabindex="0"
+      >
+        <KeepAlive>
+          <TriggerPanel v-if="activeTab === 'triggers'" :session-id="sessionId" />
+        </KeepAlive>
+      </div>
+      <div
+        v-show="activeTab === 'highlights'"
+        :id="panelDomId('highlights')"
+        role="tabpanel"
+        :aria-labelledby="tabDomId('highlights')"
+        tabindex="0"
+      >
+        <KeepAlive>
+          <HighlightPanel v-if="activeTab === 'highlights'" :session-id="sessionId" />
+        </KeepAlive>
+      </div>
 
-      <div v-if="activeTab === 'history'" class="tool-pane">
+      <div
+        v-show="activeTab === 'history'"
+        :id="panelDomId('history')"
+        class="tool-pane"
+        role="tabpanel"
+        :aria-labelledby="tabDomId('history')"
+        tabindex="0"
+      >
         <div v-if="history.length > 0" class="history-head">
           <button class="history-clear" type="button" @click.stop="emit('clearHistory')">
             <Trash2 class="icon-sm" />
@@ -92,16 +151,18 @@
           </button>
         </div>
         <div v-if="history.length > 0" class="history-list">
-          <div
+          <button
             v-for="(item, i) in history"
             :key="i"
             class="history-item"
+            type="button"
+            :disabled="disabled"
             @click="resend(item)"
             :title="item.data"
           >
             <span class="history-tag">{{ item.isHex ? 'HEX' : 'TXT' }}</span>
             <span class="history-text">{{ truncate(item.data, 48) }}</span>
-          </div>
+          </button>
         </div>
         <div v-else class="tool-empty">{{ t('tools.empty') }}</div>
       </div>
@@ -110,7 +171,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, ref, useId, watch } from 'vue';
 import { NButton, NInput } from 'naive-ui';
 import {
   BookmarkPlus,
@@ -132,6 +193,7 @@ import {
   type ToolsTabId,
 } from '../../lib/tools-tabs';
 import type { QuickCommand, SendHistoryEntry } from '../../types';
+import type { SessionRuntimeMacroController } from '../../features/sessions/runtime/session-runtime-controller';
 
 const props = defineProps<{
   sessionId: string;
@@ -143,6 +205,7 @@ const props = defineProps<{
   history: SendHistoryEntry[];
   quickCommands: QuickCommand[];
   onSend: (data: string, isHex: boolean) => Promise<boolean>;
+  macroRunner: SessionRuntimeMacroController;
 }>();
 
 const emit = defineEmits<{
@@ -158,6 +221,7 @@ const HighlightPanel = defineAsyncComponent(() => import('./HighlightPanel.vue')
 const sessionStore = useSessionStore();
 
 const quickName = ref('');
+const toolsDomId = `tools-${useId().replace(/:/g, '')}`;
 // Default to Quick; if the session has no quick commands but has history, land
 // on history so a returning user immediately sees something useful.
 const activeTab = ref<ToolsTabId>('quick');
@@ -217,6 +281,36 @@ function addQuickCommand() {
   // re-sends as HEX (matches the pre-refactor behaviour).
   emit('addQuickCommand', command);
   quickName.value = '';
+}
+
+function tabDomId(id: ToolsTabId): string {
+  return `${toolsDomId}-tab-${id}`;
+}
+
+function panelDomId(id: ToolsTabId): string {
+  return `${toolsDomId}-panel-${id}`;
+}
+
+function selectTab(id: ToolsTabId, focus = false): void {
+  activeTab.value = id;
+  if (!focus) return;
+  void nextTick(() => document.getElementById(tabDomId(id))?.focus());
+}
+
+function onTablistKeydown(event: KeyboardEvent): void {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const currentIndex = tabs.value.findIndex((tab) => tab.id === activeTab.value);
+  const nextIndex =
+    event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? tabs.value.length - 1
+        : event.key === 'ArrowLeft'
+          ? (currentIndex - 1 + tabs.value.length) % tabs.value.length
+          : (currentIndex + 1) % tabs.value.length;
+  event.preventDefault();
+  const next = tabs.value[nextIndex];
+  if (next) selectTab(next.id, true);
 }
 
 function sendQuick(command: QuickCommand) {
@@ -353,13 +447,31 @@ function resend(item: SendHistoryEntry) {
   background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-full);
-  cursor: pointer;
+  cursor: default;
   font-size: 11px;
   color: var(--text-secondary);
   transition:
     border-color var(--transition-fast),
     background var(--transition-fast),
     transform var(--transition-fast);
+}
+
+.quick-send {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.quick-send:disabled,
+.history-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .quick-item:hover {

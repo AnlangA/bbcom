@@ -1,5 +1,6 @@
 import { parseFrame, scanResponse, type ModbusTransport } from './modbus-transport';
 import type { ModbusResponse } from './modbus-core';
+import type { IpcError } from '../../generated/ipc-contracts';
 import type { SerialSendResult, SerialWriteOptions } from '../../types/serial';
 
 /**
@@ -10,7 +11,14 @@ import type { SerialSendResult, SerialWriteOptions } from '../../types/serial';
 export const MAX_MODBUS_TRANSACTION_RX_BYTES = 256;
 const MODBUS_RX_PROCESS_CHUNK_BYTES = 4 * 1024;
 
-export type ModbusTransactionStatus = { kind: 'timeout' } | { kind: 'error'; message: string };
+export type ModbusTransactionStatus =
+  | { kind: 'timeout' }
+  | {
+      kind: 'error';
+      message: string;
+      messageKey?: string;
+      ipcCode?: IpcError['code'];
+    };
 
 interface PendingTransaction<TContext> {
   context: TContext;
@@ -91,7 +99,7 @@ export class ModbusTransactionRunner<TContext = unknown> {
         const status: ModbusTransactionStatus =
           error !== undefined
             ? { kind: 'error', message: errorMessage(error) }
-            : { kind: 'error', message: 'send returned false' };
+            : serialSendFailureStatus();
         if (!this.cancelForContext(context, status)) resolve(null);
       };
 
@@ -117,8 +125,9 @@ export class ModbusTransactionRunner<TContext = unknown> {
       }
 
       void sent.then((result) => {
-        if (!result.ok) {
-          failSend(result.error ?? result.reason ?? undefined);
+        if (result.outcome !== 'complete' || result.sentBytes !== result.requestedBytes) {
+          const status = serialSendFailureStatus(result.error);
+          if (!this.cancelForContext(context, status)) resolve(null);
           return;
         }
         // Defensive fallback for a custom transport that ignores the hook.
@@ -169,6 +178,16 @@ export class ModbusTransactionRunner<TContext = unknown> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function serialSendFailureStatus(error?: IpcError): ModbusTransactionStatus {
+  const messageKey = error?.messageKey ?? 'error.serial_send_failed';
+  return {
+    kind: 'error',
+    message: messageKey,
+    messageKey,
+    ...(error ? { ipcCode: error.code } : {}),
+  };
 }
 
 function appendRxChunk(existing: Uint8Array, incoming: Uint8Array): Uint8Array {

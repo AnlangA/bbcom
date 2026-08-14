@@ -88,6 +88,27 @@ test('appendFrameToSession enforces a hard combined live/paused byte limit', () 
   assert.equal(frameBuffersByteLength(session), 3);
 });
 
+test('paused count eviction removes the persisted sequence prefix', () => {
+  const session = createSessionRecord('s1', 'COM1', cfg, {
+    frames: [{ ...frame('live-oldest', 'RX', [1]), timestamp: 100 }],
+    pausedFrames: [{ ...frame('paused-older', 'RX', [2]), timestamp: 1 }],
+    capturePaused: true,
+  });
+  const result = appendFrameToSession(
+    session,
+    { ...frame('paused-newest', 'RX', [3]), timestamp: 0 },
+    1,
+    { trimThreshold: 0, currentBytes: 2, maxBytes: 10 },
+  );
+
+  assert.deepEqual(result, { retainedBytes: 2, droppedBytes: 1, droppedFrames: 1 });
+  assert.deepEqual(session.frames, []);
+  assert.deepEqual(
+    session.pausedFrames.map((item) => item.id),
+    ['paused-older', 'paused-newest'],
+  );
+});
+
 test('flushPausedFramesToLive preserves order and trims the live tail', () => {
   const session = createSessionRecord('s1', 'COM1', cfg, {
     frames: [frame('a', 'RX', [1]), frame('b', 'RX', [2])],
@@ -119,6 +140,13 @@ test('trimSessionsToGlobalByteLimit drops globally oldest frames', () => {
     [
       ['s1', 3],
       ['s2', 3],
+    ],
+  );
+  assert.deepEqual(
+    [...result.droppedFramesBySession],
+    [
+      ['s1', 1],
+      ['s2', 1],
     ],
   );
   assert.deepEqual(first.frames, []);

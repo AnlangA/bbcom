@@ -1,0 +1,79 @@
+(component
+  ;; Text-form Component Model fixture.  The G45 probe compiles these reviewed
+  ;; bytes to the binary passed to the packaged bbcom-plugin-host, and binds
+  ;; both source and binary digests into its evidence.
+  (type $field-kind (enum "text" "number" "toggle" "select" "button"))
+  (type $string-list (list string))
+  (type $panel-field (record
+    (field "id" string)
+    (field "label" string)
+    (field "kind" $field-kind)
+    (field "value" string)
+    (field "options" $string-list)
+    (field "disabled" bool)))
+  (type $panel-fields (list $panel-field))
+  (type $declarative-panel (record
+    (field "title" string)
+    (field "fields" $panel-fields)))
+  (type $panel-result (result $declarative-panel (error string)))
+  (type $panel-event (record
+    (field "field-id" string)
+    (field "value" string)))
+
+  ;; The primary fixture is a valid v1 component used for the complete
+  ;; handshake/initialize path. Ambient imports are isolated in the reviewed
+  ;; g45-ambient-import component so rejection occurs before the handshake.
+  (core module $memory-impl
+    (memory (export "memory") 2)
+    (func (export "realloc")
+      (param i32 i32 i32 i32) (result i32)
+      i32.const 4096))
+  (core instance $memory-instance (instantiate $memory-impl))
+  (alias core export $memory-instance "memory" (core memory $memory))
+  (core func $realloc (alias core export $memory-instance "realloc"))
+  (core module $guest
+    (import "env" "memory" (memory 2))
+
+    (func (export "initialize") (result i32)
+      ;; result::ok(declarative-panel { title: "G45", fields: [] })
+      i32.const 1024
+      i32.const 0
+      i32.store8
+      i32.const 1028
+      i32.const 64
+      i32.store
+      i32.const 1032
+      i32.const 3
+      i32.store
+      i32.const 1036
+      i32.const 0
+      i32.store
+      i32.const 1040
+      i32.const 0
+      i32.store
+      i32.const 1024)
+
+    (func (export "handle-panel-event")
+      (param i32 i32 i32 i32) (result i32)
+      unreachable)
+    (func (export "shutdown"))
+    (data (i32.const 64) "G45"))
+
+  (core instance $guest-instance
+    (instantiate $guest
+      (with "env" (instance
+        (export "memory" (memory $memory))))))
+  (core func $initialize (alias core export $guest-instance "initialize"))
+  (core func $handle-panel-event
+    (alias core export $guest-instance "handle-panel-event"))
+  (core func $shutdown (alias core export $guest-instance "shutdown"))
+
+  (func (export "initialize") (result $panel-result)
+    (canon lift (core func $initialize)
+      string-encoding=utf8 (memory $memory) (realloc $realloc)))
+  (func (export "handle-panel-event")
+    (param "event" $panel-event) (result $panel-result)
+    (canon lift (core func $handle-panel-event)
+      string-encoding=utf8 (memory $memory) (realloc $realloc)))
+  (func (export "shutdown")
+    (canon lift (core func $shutdown))))

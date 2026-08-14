@@ -1,0 +1,11 @@
+[package]
+name = "bbcom-plugin-broker"
+version = "0.1.0"
+description = "Deny-by-default permission and UI broker for bbcom plugins"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+bbcom-plugin-contracts = { path = "../bbcom-plugin-contracts" }
+thiserror = "=2.0.18"

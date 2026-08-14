@@ -14,10 +14,21 @@ import { NConfigProvider, NMessageProvider } from 'naive-ui';
 import { emit } from '@tauri-apps/api/event';
 import { resizeAiWindow } from './lib/ipc';
 import AiPanel from './components/ai/AiPanel.vue';
+import { useAiWindowAuthority } from './features/ai-activity';
 import { useAppStore } from './stores/app';
 import { lightThemeOverrides, themeOverrides } from './styles/naive-theme';
 
 const appStore = useAppStore();
+useAiWindowAuthority({
+  setTheme: appStore.setTheme,
+  setLocale: appStore.setLocale,
+  get aiKeyStatus() {
+    return appStore.aiKeyStatus;
+  },
+  set aiKeyStatus(value) {
+    appStore.aiKeyStatus = value;
+  },
+});
 // Both palettes are fully expressed as local overrides; loading naive-ui's
 // aggregate dark theme would otherwise emit unused component themes.
 const activeOverrides = computed(() =>

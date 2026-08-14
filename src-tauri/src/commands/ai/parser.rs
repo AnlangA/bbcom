@@ -6,8 +6,28 @@
 //! (trim, single-line commands, conservative risk defaulting, dedup).
 
 use crate::commands::ai::service::validate_ai_response_size;
-use crate::commands::ai::{LogAiResponse, TerminalAiResponse};
+use crate::commands::ai::{AiRisk, LogAiResponse, TerminalAiResponse};
 use crate::models::errors::AppError;
+use serde::Deserialize;
+
+/// Provider JSON is an untrusted internal shape. It is converted explicitly
+/// into the closed public `AiRisk` contract after normalization.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderTerminalAiResponse {
+    command: String,
+    explanation: String,
+    risk: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderLogAiResponse {
+    answer: String,
+    evidence: Vec<String>,
+    suggestions: Vec<String>,
+    truncated: bool,
+}
 
 /// Strip a leading `json` or plain Markdown fence and surrounding whitespace.
 pub(crate) fn clean_markdown_fence(content: &str) -> &str {
@@ -49,31 +69,37 @@ pub(crate) fn parse_terminal_ai_response(content: &str) -> Result<TerminalAiResp
     validate_ai_response_size(content)?;
     let cleaned = extract_json_payload(content);
 
-    let mut response: TerminalAiResponse =
+    let response: ProviderTerminalAiResponse =
         serde_json::from_str(&cleaned).map_err(|e| AppError::AiError {
             message: format!("AI 返回格式无效: {e}"),
         })?;
 
-    response.command = response
+    let command = response
         .command
         .trim()
         .lines()
         .next()
         .unwrap_or("")
         .to_string();
-    response.explanation = response.explanation.trim().to_string();
+    let explanation = response.explanation.trim().to_string();
     let risk = response.risk.trim().to_ascii_lowercase();
-    response.risk = match risk.as_str() {
-        "safe" | "caution" | "dangerous" => risk,
+    let risk = match risk.as_str() {
+        "safe" => AiRisk::Safe,
+        "caution" => AiRisk::Caution,
+        "dangerous" => AiRisk::Dangerous,
         _ => {
             // Provider output is untrusted and may contain user/serial context,
             // newlines, or terminal escapes. Never echo it into process logs.
             tracing::warn!("unknown AI risk level; defaulting to 'dangerous'");
-            "dangerous".to_string()
+            AiRisk::Dangerous
         }
     };
 
-    Ok(response)
+    Ok(TerminalAiResponse {
+        command,
+        explanation,
+        risk,
+    })
 }
 
 /// Parse + normalize a log-analysis response: trims the answer, drops empty
@@ -86,7 +112,7 @@ pub(crate) fn parse_log_ai_response(
     validate_ai_response_size(content)?;
     let cleaned = extract_json_payload(content);
 
-    let mut response: LogAiResponse =
+    let mut response: ProviderLogAiResponse =
         serde_json::from_str(&cleaned).map_err(|e| AppError::AiError {
             message: format!("AI 返回格式无效: {e}"),
         })?;
@@ -103,5 +129,10 @@ pub(crate) fn parse_log_ai_response(
     });
     response.truncated = response.truncated || fallback_truncated;
 
-    Ok(response)
+    Ok(LogAiResponse {
+        answer: response.answer,
+        evidence: response.evidence,
+        suggestions: response.suggestions,
+        truncated: response.truncated,
+    })
 }

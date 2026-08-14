@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-plugin-dismiss-authorization"
+description = "Enables the plugin_dismiss_authorization command without any pre-configured scope."
+commands.allow = ["plugin_dismiss_authorization"]
+
+[[permission]]
+identifier = "deny-plugin-dismiss-authorization"
+description = "Denies the plugin_dismiss_authorization command without any pre-configured scope."
+commands.deny = ["plugin_dismiss_authorization"]

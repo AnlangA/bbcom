@@ -5,6 +5,7 @@
     :title="t('create.title')"
     :positive-text="t('create.confirm')"
     :negative-text="t('common.cancel')"
+    :positive-button-props="{ disabled: !sessionStore.userMutationsAllowed }"
     :style="{ width: '460px' }"
     @update:show="emit('update:show', $event)"
     @positive-click="createSession"
@@ -15,6 +16,7 @@
         <span class="form-label">{{ t('create.port') }}</span>
         <AppSelect
           v-model:value="portName"
+          :aria-label="t('create.port')"
           :options="portOptions"
           :placeholder="t('create.portPlaceholder')"
         />
@@ -24,6 +26,7 @@
         <div class="preset-controls">
           <AppSelect
             v-model:value="selectedPresetId"
+            :aria-label="t('create.preset')"
             :options="presetOptions"
             :placeholder="t('create.presetPlaceholder')"
             size="small"
@@ -52,23 +55,43 @@
       </div>
       <div class="form-field">
         <span class="form-label">{{ t('serial.baudRate') }}</span>
-        <AppSelect v-model:value="baudRate" :options="baudRateOptions" />
+        <AppSelect
+          v-model:value="baudRate"
+          :aria-label="t('serial.baudRate')"
+          :options="baudRateOptions"
+        />
       </div>
       <div class="form-field">
         <span class="form-label">{{ t('serial.dataBits') }}</span>
-        <AppSelect v-model:value="dataBits" :options="dataBitsOptions" />
+        <AppSelect
+          v-model:value="dataBits"
+          :aria-label="t('serial.dataBits')"
+          :options="dataBitsOptions"
+        />
       </div>
       <div class="form-field">
         <span class="form-label">{{ t('serial.stopBits') }}</span>
-        <AppSelect v-model:value="stopBits" :options="stopBitsOptions" />
+        <AppSelect
+          v-model:value="stopBits"
+          :aria-label="t('serial.stopBits')"
+          :options="stopBitsOptions"
+        />
       </div>
       <div class="form-field">
         <span class="form-label">{{ t('serial.parity') }}</span>
-        <AppSelect v-model:value="parity" :options="parityOptions" />
+        <AppSelect
+          v-model:value="parity"
+          :aria-label="t('serial.parity')"
+          :options="parityOptions"
+        />
       </div>
       <div class="form-field">
         <span class="form-label">{{ t('serial.flowControl') }}</span>
-        <AppSelect v-model:value="flowControl" :options="flowControlOptions" />
+        <AppSelect
+          v-model:value="flowControl"
+          :aria-label="t('serial.flowControl')"
+          :options="flowControlOptions"
+        />
       </div>
       <div class="form-field">
         <span class="form-label" :title="t('serial.rxFrameGapHint')">{{
@@ -76,6 +99,7 @@
         }}</span>
         <n-input-number
           :value="rxFrameGapMs"
+          :aria-label="t('serial.rxFrameGap')"
           :min="MIN_RX_FRAME_GAP_MS"
           :max="MAX_RX_FRAME_GAP_MS"
           :precision="0"
@@ -127,12 +151,12 @@ import {
   STOP_BITS_OPTIONS,
 } from '../../lib/constants';
 import {
-  addPreset,
-  describeConfig,
-  loadPresets,
-  removePreset,
-  type ConnectionPreset,
-} from '../../lib/connection-presets';
+  addDeviceProfile as addPreset,
+  describeDeviceProfileConfig as describeConfig,
+  loadDeviceProfiles as loadPresets,
+  removeDeviceProfile as removePreset,
+  type DeviceProfile as ConnectionPreset,
+} from '../../features/device-profiles';
 import { t } from '../../lib/i18n';
 import type { PortConfig } from '../../types';
 import {
@@ -224,7 +248,7 @@ watch(
 );
 
 function createSession() {
-  if (!portName.value) return false;
+  if (!portName.value || !sessionStore.userMutationsAllowed) return false;
   const config: PortConfig = {
     baudRate: baudRate.value,
     dataBits: dataBits.value,
@@ -235,8 +259,8 @@ function createSession() {
     dtr: dtr.value,
     rts: rts.value,
   };
-  serialStore.setPortConfig(config);
-  createSessionFromConfig(portName.value, config);
+  const createdSessionId = createSessionFromConfig(portName.value, config);
+  if (!createdSessionId) return false;
   portName.value = '';
   emit('update:show', false);
   return true;
