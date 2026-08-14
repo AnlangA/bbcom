@@ -24,6 +24,29 @@ use zai_rs::model::{
 };
 
 #[test]
+fn ai_window_capability_cannot_execute_or_inspect_ai_requests() {
+    let capability: serde_json::Value =
+        serde_json::from_str(include_str!("../../../capabilities/ai-assistant.json"))
+            .expect("AI assistant capability must be valid JSON");
+    let permissions = capability["permissions"]
+        .as_array()
+        .expect("AI assistant permissions must be an array");
+    for forbidden in [
+        "ai-assistant-commands",
+        "allow-run-ai-request",
+        "allow-cancel-ai-request",
+        "allow-get-ai-key-status",
+    ] {
+        assert!(
+            !permissions
+                .iter()
+                .any(|permission| permission.as_str() == Some(forbidden)),
+            "AI assistant capability must not grant {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn extract_text_from_string_content() {
     let v = json!("hello world");
     assert_eq!(
@@ -56,7 +79,7 @@ fn parses_plain_json_response() {
 
     assert_eq!(response.command, "pwd");
     assert_eq!(response.explanation, "显示当前目录");
-    assert_eq!(response.risk, "safe");
+    assert_eq!(response.risk, crate::commands::ai::AiRisk::Safe);
 }
 
 #[test]
@@ -67,7 +90,7 @@ fn parses_fenced_json_response() {
     .unwrap();
 
     assert_eq!(response.command, "ls -la");
-    assert_eq!(response.risk, "caution");
+    assert_eq!(response.risk, crate::commands::ai::AiRisk::Caution);
 }
 
 #[test]
@@ -90,7 +113,7 @@ fn trims_command_to_one_line_and_defaults_unknown_risk_to_dangerous() {
     assert_eq!(response.command, "pwd");
     assert_eq!(response.explanation, "test");
     // Unknown risk defaults to the most conservative level (no auto-fill).
-    assert_eq!(response.risk, "dangerous");
+    assert_eq!(response.risk, crate::commands::ai::AiRisk::Dangerous);
 }
 
 #[test]
@@ -482,7 +505,7 @@ fn ai_errors_map_to_only_stable_ipc_fields_and_codes() {
             AppError::AiError {
                 message: "remote body".to_string(),
             },
-            AppErrorCode::Timeout,
+            AppErrorCode::AiProviderFailed,
         ),
         (
             AppError::ConfigError {

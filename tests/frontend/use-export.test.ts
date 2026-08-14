@@ -17,6 +17,7 @@ import type { ExportFramePayload } from '../../src/lib/ipc.ts';
 import type { DataFrame, DisplayMode } from '../../src/types.ts';
 import type { ExportFormat } from '../../src/lib/constants.ts';
 import { createExportFrameSnapshot } from '../../src/lib/export-filters.ts';
+import { OperationRegistry } from '../../src/features/application/operation-registry.ts';
 
 function frame(direction: 'RX' | 'TX', data: number[] | Uint8Array, id = 1): DataFrame {
   return {
@@ -25,6 +26,17 @@ function frame(direction: 'RX' | 'TX', data: number[] | Uint8Array, id = 1): Dat
     direction,
     data: data instanceof Uint8Array ? data : new Uint8Array(data),
   };
+}
+
+function deferredTarget(): {
+  promise: Promise<{ token: string; displayName: string }>;
+  resolve(value: { token: string; displayName: string }): void;
+} {
+  let resolve!: (value: { token: string; displayName: string }) => void;
+  const promise = new Promise<{ token: string; displayName: string }>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
 }
 
 interface SessionCalls {
@@ -169,6 +181,41 @@ test('useExport: streams bounded batches then finishes exactly once without abor
   assert.deepEqual(calls.order, ['begin', 'append', 'append', 'finish']);
 });
 
+test('useExport: registers an application-owned cancellable session export before target selection', async () => {
+  const target = deferredTarget();
+  const operations = new OperationRegistry();
+  let aborts = 0;
+  const api = useExport({
+    operations,
+    workspaceId: 'workspace-main',
+    sessionId: 'session-main',
+    operationIdFactory: () => 'operation-main',
+    requestTarget: () => target.promise,
+    sessionClient: {
+      begin: async () => ({ exportId: 'native-export' }),
+      append: async () => ({ totalFrames: 1, totalRawBytes: 1 }),
+      finish: async () => ({ frames: 1, rawBytes: 1, outputBytes: 1, durationMs: 1 }),
+      abort: async () => {
+        aborts += 1;
+      },
+    },
+  });
+
+  const exporting = api.exportData([frame('RX', [1])], 'bin', 'HEX');
+  await nextTick();
+  const operationId = 'session-export:operation-main';
+  assert.equal(operations.get(operationId)?.status, 'running');
+  assert.equal(operations.get(operationId)?.kind, 'session-export');
+  assert.equal(operations.get(operationId)?.workspaceId, 'workspace-main');
+  assert.equal(operations.get(operationId)?.sessionId, 'session-main');
+
+  await operations.cancel(operationId);
+  target.resolve({ token: 'late-grant', displayName: 'late.bin' });
+  assert.deepEqual(await exporting, { ok: false, cancelled: true });
+  assert.equal(operations.get(operationId)?.status, 'cancelled');
+  assert.equal(aborts, 0, 'no native export exists while the save dialog is pending');
+});
+
 test('useExport: append failure aborts the opened session and skips finish', async () => {
   let appendCalls = 0;
   const { api, calls } = sessionDeps({
@@ -269,6 +316,40 @@ test('useExport: only the dialog-filtered frame ids cross the append boundary', 
   );
   assert.equal(calls.begins[0].expectedFrames, 1);
   assert.equal(calls.begins[0].expectedRawBytes, 2);
+});
+
+test('useExport: a raw source is frozen before awaiting the save target', async () => {
+  let resolveTarget!: (target: { token: string; displayName: string }) => void;
+  const target = new Promise<{ token: string; displayName: string }>((resolve) => {
+    resolveTarget = resolve;
+  });
+  const frames = [frame('RX', [1], 1), frame('TX', [2, 3], 2)];
+  const calls: string[][] = [];
+  const api = useExport({
+    requestTarget: async () => target,
+    sessionClient: {
+      begin: async (_format, _grant, expectedFrames, expectedRawBytes) => {
+        assert.equal(expectedFrames, 2);
+        assert.equal(expectedRawBytes, 3);
+        return { exportId: '00000000000000000000000000000001' };
+      },
+      append: async (_exportId, payloads) => {
+        calls.push(payloads.map((payload) => payload.id));
+        return { totalFrames: 2, totalRawBytes: 3 };
+      },
+      finish: async () => ({ frames: 2, rawBytes: 3, outputBytes: 3, durationMs: 1 }),
+      abort: async () => {},
+    },
+  });
+
+  const exporting = api.exportData(frames, 'bin', 'HEX');
+  frames.shift();
+  frames.splice(0, 1);
+  frames.push(frame('RX', [9], 9));
+  resolveTarget({ token: 'grant', displayName: 'capture.bin' });
+
+  assert.deepEqual(await exporting, { ok: true });
+  assert.deepEqual(calls, [['f1', 'f2']]);
 });
 
 // ---- Shared behavior ----
@@ -449,4 +530,215 @@ test('createExportBatches emits an oversized single frame with and without a pre
     ].map((batch) => batch.map((entry) => entry.id)),
     [['f1'], ['f2'], ['f3']],
   );
+});
+
+test('useExport: application-owned success publishes progress and completes the operation', async () => {
+  const operations = new OperationRegistry();
+  const api = useExport({
+    operations,
+    workspaceId: 'workspace-main',
+    sessionId: 'session-main',
+    requestTarget: async () => ({ token: 'grant-success', displayName: 'capture.bin' }),
+    sessionClient: {
+      begin: async () => ({ exportId: 'native-success' }),
+      append: async (_exportId, frames) => ({
+        totalFrames: frames.length,
+        totalRawBytes: frames.reduce((total, item) => total + item.data.length, 0),
+      }),
+      finish: async () => ({ frames: 2, rawBytes: 3, outputBytes: 3, durationMs: 7 }),
+      abort: async () => {},
+    },
+  });
+
+  assert.deepEqual(
+    await api.exportData([frame('RX', [1], 1), frame('TX', [2, 3], 2)], 'bin', 'HEX'),
+    { ok: true },
+  );
+  const [operation] = operations.snapshot();
+  assert.equal(operation.status, 'completed');
+  assert.equal(operation.completedUnits, 2);
+  assert.equal(operation.totalUnits, 2);
+  assert.equal(api.progress.value.phase, 'completed');
+});
+
+test('useExport: cancelExport delegates to the registered operation while selecting a target', async () => {
+  const target = deferredTarget();
+  const operations = new OperationRegistry();
+  const api = useExport({
+    operations,
+    workspaceId: 'workspace-main',
+    sessionId: 'session-main',
+    operationIdFactory: () => 'cancel-via-api',
+    requestTarget: () => target.promise,
+    sessionClient: {
+      begin: async () => ({ exportId: 'must-not-start' }),
+      append: async () => ({ totalFrames: 0, totalRawBytes: 0 }),
+      finish: async () => ({ frames: 0, rawBytes: 0, outputBytes: 0, durationMs: 0 }),
+      abort: async () => {},
+    },
+  });
+
+  const exporting = api.exportData([frame('RX', [1])], 'bin', 'HEX');
+  await nextTick();
+  api.cancelExport();
+  target.resolve({ token: 'late-grant', displayName: 'late.bin' });
+
+  assert.deepEqual(await exporting, { ok: false, cancelled: true });
+  assert.equal(operations.get('session-export:cancel-via-api')?.status, 'cancelled');
+});
+
+test('useExport: dialog cancellation cancels a still-running registered operation', async () => {
+  const operations = new OperationRegistry();
+  const api = useExport({
+    operations,
+    workspaceId: 'workspace-main',
+    sessionId: 'session-main',
+    operationIdFactory: () => 'dialog-cancel',
+    requestTarget: async () => null,
+    sessionClient: {
+      begin: async () => ({ exportId: 'must-not-start' }),
+      append: async () => ({ totalFrames: 0, totalRawBytes: 0 }),
+      finish: async () => ({ frames: 0, rawBytes: 0, outputBytes: 0, durationMs: 0 }),
+      abort: async () => {},
+    },
+  });
+
+  assert.deepEqual(await api.exportData([frame('RX', [1])], 'bin', 'HEX'), {
+    ok: false,
+    cancelled: true,
+  });
+  assert.equal(operations.get('session-export:dialog-cancel')?.status, 'cancelled');
+});
+
+test('useExport: cancellation after the only append aborts before finish', async () => {
+  const calls: string[] = [];
+  const api = useExport({
+    requestTarget: async () => ({ token: 'grant-cancel-after-append', displayName: 'x.bin' }),
+    sessionClient: {
+      begin: async () => ({ exportId: 'cancel-after-append' }),
+      append: async (_exportId, frames) => {
+        calls.push('append');
+        api.cancelExport();
+        return {
+          totalFrames: frames.length,
+          totalRawBytes: frames.reduce((total, item) => total + item.data.length, 0),
+        };
+      },
+      finish: async () => {
+        calls.push('finish');
+        return { frames: 1, rawBytes: 1, outputBytes: 1, durationMs: 1 };
+      },
+      abort: async () => {
+        calls.push('abort');
+      },
+    },
+  });
+
+  assert.deepEqual(await api.exportData([frame('RX', [1])], 'bin', 'HEX'), {
+    ok: false,
+    cancelled: true,
+  });
+  assert.deepEqual(calls, ['append', 'abort']);
+});
+
+test('useExport: registered failures preserve typed IPC errors and normalize primitive failures', async () => {
+  const typedFailure = {
+    code: 'IO_DISK_FULL',
+    messageKey: 'error.io_disk_full',
+    retryable: true,
+    operation: 'session-export',
+  } as const;
+
+  for (const [suffix, failure, expectedCode] of [
+    ['typed', typedFailure, 'IO_DISK_FULL'],
+    ['primitive', 'plain failure', 'EXPORT_REPLACE_FAILED'],
+  ] as const) {
+    const operations = new OperationRegistry();
+    const operationId = `failure-${suffix}`;
+    const api = useExport({
+      operations,
+      workspaceId: 'workspace-main',
+      sessionId: 'session-main',
+      operationIdFactory: () => operationId,
+      requestTarget: async () => ({ token: `grant-${suffix}`, displayName: 'x.bin' }),
+      sessionClient: {
+        begin: async () => Promise.reject(failure),
+        append: async () => ({ totalFrames: 0, totalRawBytes: 0 }),
+        finish: async () => ({ frames: 0, rawBytes: 0, outputBytes: 0, durationMs: 0 }),
+        abort: async () => {},
+      },
+    });
+
+    assert.equal((await api.exportData([frame('RX', [1])], 'bin', 'HEX')).ok, false);
+    const operation = operations.get(`session-export:${operationId}`);
+    assert.equal(operation?.status, 'failed');
+    assert.equal(operation?.error?.code, expectedCode);
+  }
+});
+
+test('useExport: a terminal operation is not downgraded by a late export error', async () => {
+  const operations = new OperationRegistry();
+  const operationId = 'already-completed';
+  const api = useExport({
+    operations,
+    workspaceId: 'workspace-main',
+    sessionId: 'session-main',
+    operationIdFactory: () => operationId,
+    requestTarget: async () => ({ token: 'grant-terminal', displayName: 'x.bin' }),
+    sessionClient: {
+      begin: async () => {
+        operations.complete(`session-export:${operationId}`);
+        throw new Error('late renderer error');
+      },
+      append: async () => ({ totalFrames: 0, totalRawBytes: 0 }),
+      finish: async () => ({ frames: 0, rawBytes: 0, outputBytes: 0, durationMs: 0 }),
+      abort: async () => {},
+    },
+  });
+
+  assert.equal((await api.exportData([frame('RX', [1])], 'bin', 'HEX')).ok, false);
+  assert.equal(operations.get(`session-export:${operationId}`)?.status, 'completed');
+});
+
+test('useExport: operation identity validation fails before target selection', async () => {
+  let targetRequests = 0;
+  const missingWorkspace = useExport({
+    operations: new OperationRegistry(),
+    sessionId: 'session-main',
+    requestTarget: async () => {
+      targetRequests += 1;
+      return { token: 'unused', displayName: 'unused.bin' };
+    },
+  });
+  assert.equal((await missingWorkspace.exportData([frame('RX', [1])], 'bin', 'HEX')).ok, false);
+
+  const invalidOperationId = useExport({
+    operations: new OperationRegistry(),
+    workspaceId: 'workspace-main',
+    sessionId: 'session-main',
+    operationIdFactory: () => '../not-opaque',
+    requestTarget: async () => {
+      targetRequests += 1;
+      return { token: 'unused', displayName: 'unused.bin' };
+    },
+  });
+  assert.equal((await invalidOperationId.exportData([frame('RX', [1])], 'bin', 'HEX')).ok, false);
+  assert.equal(targetRequests, 0);
+});
+
+test('useExport: raw arrays stop before retaining a frame beyond the reference ceiling', async () => {
+  let targetRequests = 0;
+  const api = useExport({
+    requestTarget: async () => {
+      targetRequests += 1;
+      return { token: 'unused', displayName: 'unused.bin' };
+    },
+  });
+  const repeated = frame('RX', []);
+  const overLimit = Array.from({ length: EXPORT_MAX_FRAMES + 1 }, () => repeated);
+
+  const result = await api.exportData(overLimit, 'bin', 'HEX');
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? '' : (result.error ?? ''), /more than/);
+  assert.equal(targetRequests, 0);
 });

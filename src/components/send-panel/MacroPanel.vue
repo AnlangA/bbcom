@@ -9,7 +9,7 @@
         :class="{ running: runningMacroId === macro.id }"
       >
         <div class="macro-head" :title="macroSummary(macro)">
-          <span class="macro-name" @click="runMacro(macro)">{{ macro.name }}</span>
+          <span class="macro-name">{{ macro.name }}</span>
           <span class="macro-meta">{{ t('macro.steps', { count: macro.steps.length }) }}</span>
           <button
             class="macro-run"
@@ -62,6 +62,7 @@
         type="file"
         accept=".json,application/json"
         class="hidden-file-input"
+        :aria-label="t('macro.importTitle')"
         @change="onFilePicked"
       />
     </div>
@@ -73,6 +74,7 @@
           v-model:value="draft.name"
           size="tiny"
           :placeholder="t('macro.namePlaceholder')"
+          :aria-label="t('macro.namePlaceholder')"
           style="width: 140px"
         />
         <n-button size="tiny" quaternary @click="addStep" :title="t('macro.addStep')">
@@ -92,6 +94,7 @@
             v-model:value="step.data"
             size="tiny"
             :placeholder="step.isHex ? 'AA BB CC' : t('macro.textPlaceholder')"
+            :aria-label="`${t('macro.step')} ${i + 1}`"
             style="flex: 1"
           />
           <n-input-number
@@ -102,6 +105,7 @@
             :step="100"
             style="width: 104px"
             :title="t('macro.delayTitle')"
+            :aria-label="`${t('macro.delayTitle')} ${i + 1}`"
           >
             <template #suffix>ms</template>
           </n-input-number>
@@ -137,7 +141,7 @@ import { ref, computed, shallowReactive } from 'vue';
 import { NInput, NButton, NCheckbox, NInputNumber, useMessage } from 'naive-ui';
 import { Download, Pencil, Play, Plus, Square, Upload, X } from '@lucide/vue';
 import { useSessionStore } from '../../stores/sessions';
-import { useMacroRunner, type MacroRunResult } from '../../composables/useMacroRunner';
+import type { MacroRunResult } from '../../composables/useMacroRunner';
 import {
   canSaveMacroDraft,
   createMacroDraft,
@@ -149,11 +153,12 @@ import {
 import { defaultExportFilename, exportMacros, importMacros } from '../../lib/macro-library';
 import { t } from '../../lib/i18n';
 import type { Macro } from '../../types';
+import type { SessionRuntimeMacroController } from '../../features/sessions/runtime/session-runtime-controller';
 
 const props = defineProps<{
   sessionId: string;
-  /** The session's serialized send function (already single-flight). */
-  send: (data: string, isHex: boolean) => Promise<boolean>;
+  /** Application-owned runner; panel activation/unmount never owns its task. */
+  runner: SessionRuntimeMacroController;
   disabled?: boolean;
 }>();
 
@@ -165,10 +170,17 @@ const macros = computed(
 );
 
 // --- runner ---
-const runner = useMacroRunner({ send: props.send });
-const runningMacroId = ref<string | null>(null);
+const runner = props.runner;
+const runningMacroId = ref<string | null>(runner.running.value ? 'background' : null);
 
 async function runMacro(macro: Macro) {
+  if (
+    runner.running.value &&
+    (runningMacroId.value === null || runningMacroId.value === 'background')
+  ) {
+    runner.abort();
+    return;
+  }
   if (runningMacroId.value !== null) {
     if (runningMacroId.value === macro.id) {
       runner.abort(); // same macro -> stop
@@ -353,7 +365,7 @@ async function onFilePicked(e: Event) {
 .macro-name {
   flex: 1;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: default;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;

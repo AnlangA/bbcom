@@ -19,6 +19,14 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      // Vitest forces the `development` condition even when extra resolver
+      // conditions are supplied. The pinned package points that condition at
+      // an unpublished source file; bind its exact public specifier to the
+      // shipped ESM build. This is the same code selected by its default export.
+      'tauri-plugin-serialplugin-api': resolve(
+        import.meta.dirname,
+        './node_modules/tauri-plugin-serialplugin-api/dist-js/index.js',
+      ),
       '@': resolve(import.meta.dirname, './src'),
     },
   },

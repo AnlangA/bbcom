@@ -7,6 +7,7 @@
       class="app-select"
       :value="selectedOptionIndex"
       :disabled="disabled"
+      :aria-label="accessibleLabel"
       @change="updateValue"
     >
       <option v-if="showEmptyOption" value="" :disabled="!clearable">
@@ -65,6 +66,7 @@ const props = withDefaults(
     disabled?: boolean;
     size?: 'tiny' | 'small' | 'medium' | 'large';
     menuProps?: unknown;
+    ariaLabel?: string;
   }>(),
   {
     value: undefined,
@@ -73,6 +75,7 @@ const props = withDefaults(
     disabled: false,
     size: undefined,
     menuProps: undefined,
+    ariaLabel: undefined,
   },
 );
 
@@ -85,6 +88,12 @@ const selectedOptionIndex = computed(() => {
   return index < 0 ? '' : String(index);
 });
 const showEmptyOption = computed(() => props.clearable || Boolean(props.placeholder));
+const accessibleLabel = computed(
+  () =>
+    props.ariaLabel?.trim() ||
+    props.placeholder.trim() ||
+    String(props.options[Number(selectedOptionIndex.value)]?.label ?? 'Select option'),
+);
 
 function updateValue(event: Event): void {
   const value = (event.target as HTMLSelectElement).value;

@@ -1,12 +1,18 @@
 import { computed, onScopeDispose, readonly, ref, shallowRef, watch, type Ref } from 'vue';
-import { useMessage } from 'naive-ui';
 import { useAppStore } from '../../../stores/app';
 import { useSessionStore } from '../../../stores/sessions';
-import { useSerialConnection } from '../../../composables/useSerialConnection';
+import {
+  serialConnectionFailureMessage,
+  type SerialStopResult,
+  useSerialConnection,
+} from '../../../composables/useSerialConnection';
 import { useSessionModbus } from '../../../composables/useSessionModbus';
 import { useTriggers } from '../../../composables/useTriggers';
 import { useAutoLog } from '../../../composables/useAutoLog';
+import { useMacroRunner } from '../../../composables/useMacroRunner';
 import { AsyncSendLoop } from '../../serial/application/async-send-loop';
+import type { PortLeaseClient } from '../../serial/application/port-lease-registry';
+import type { ApplicationNotificationPort } from '../../application/application-notifications';
 import { formatBytes } from '../../../lib/format';
 import { t } from '../../../lib/i18n';
 import { logger } from '../../../lib/logger';
@@ -18,9 +24,31 @@ import type {
   SerialSession,
   SerialWriteOptions,
 } from '../../../types';
+import type { SerialConnectionFailure } from '../../../composables/useSerialConnection';
 import { SessionProtocolRuntime } from './session-protocol-runtime';
 
 let nextRuntimeInstanceId = 0;
+
+function assertSerialStopEvidence(result: SerialStopResult): void {
+  const stoppedWithoutConnection =
+    result.watch === 'not-installed' && result.rxDrainStatus === 'no-active-connection';
+  const drainedActiveConnection =
+    result.watch === 'unwatch-acknowledged' && result.rxDrainStatus === 'idle-gap-observed';
+  const physicalCloseProven =
+    result.pendingOpen !== 'unsettled' &&
+    (result.portClose === 'no-active-port' ||
+      result.portClose === 'close-acknowledged' ||
+      result.portClose === 'force-close-acknowledged');
+  if (
+    result.rxDrainGuarantee !== 'guaranteed' ||
+    (!stoppedWithoutConnection && !drainedActiveConnection) ||
+    !physicalCloseProven
+  ) {
+    throw new Error(
+      `serial stop did not prove shutdown: watch=${result.watch}, status=${result.rxDrainStatus}, guarantee=${result.rxDrainGuarantee}, pendingOpen=${result.pendingOpen}, portClose=${result.portClose}`,
+    );
+  }
+}
 
 export interface SessionRuntimeWaveformSink {
   pushRegisterSample: (channel: number, value: number, timestamp?: number) => void;
@@ -44,7 +72,15 @@ export interface SessionRuntimeProtocolView {
 }
 
 export type SessionRuntimeModbusController = ReturnType<typeof useSessionModbus>;
+export type SessionRuntimeMacroController = ReturnType<typeof useMacroRunner> & {
+  readonly status: Readonly<Ref<'idle' | 'running'>>;
+};
 export type SessionRuntimeViewMode = 'terminal' | 'waveform' | 'parser' | 'modbus';
+
+export interface SessionRuntimeControllerDependencies {
+  readonly notifications: ApplicationNotificationPort;
+  readonly portLeaseClient: PortLeaseClient;
+}
 
 /**
  * Long-lived, headless session runtime shared by whichever UI is currently
@@ -59,12 +95,14 @@ export interface SessionRuntimeController {
   readonly isConnected: Readonly<Ref<boolean>>;
   readonly reconnecting: Readonly<Ref<boolean>>;
   readonly error: Readonly<Ref<string | null>>;
+  readonly connectionFailure: Readonly<Ref<SerialConnectionFailure | null>>;
   readonly totalDroppedBytes: Readonly<Ref<number>>;
   readonly sendingBreak: Readonly<Ref<boolean>>;
   readonly looping: Readonly<Ref<boolean>>;
   readonly viewMode: Ref<SessionRuntimeViewMode>;
   readonly parser: SessionRuntimeProtocolView;
   readonly modbus: SessionRuntimeModbusController;
+  readonly macro: SessionRuntimeMacroController;
   connect: () => Promise<boolean>;
   disconnect: () => Promise<void>;
   send: (data: string, isHex: boolean) => Promise<boolean>;
@@ -75,16 +113,19 @@ export interface SessionRuntimeController {
   stopSendLoop: () => void;
   toggleAutoLog: () => Promise<void>;
   attachView: (binding: SessionRuntimeViewBinding) => () => void;
+  /** Stop active work and persist final runtime output without disposing observers. */
+  prepareShutdown: () => Promise<void>;
   dispose: () => Promise<void>;
 }
 
 export function useSessionRuntimeController(
   session: Readonly<Ref<SerialSession>>,
+  dependencies: SessionRuntimeControllerDependencies,
 ): SessionRuntimeController {
   const instanceId = `${session.value.id}:${++nextRuntimeInstanceId}`;
   const sessionStore = useSessionStore();
   const appStore = useAppStore();
-  const message = useMessage();
+  const notifications = dependencies.notifications;
   const autoLog = useAutoLog();
 
   const triggersRef = computed(() => session.value.triggers);
@@ -93,30 +134,39 @@ export function useSessionRuntimeController(
     send: (data, isHex) => send(data, isHex),
     onFire: (fire) => {
       const trigger = session.value.triggers.find((item) => item.id === fire.triggerId);
-      message.info(t('message.triggerFired', { name: trigger?.name ?? fire.triggerId }));
+      notifications.info(t('message.triggerFired', { name: trigger?.name ?? fire.triggerId }));
     },
   });
 
   const serial = useSerialConnection(
     session.value.id,
-    session.value.portName,
-    session.value.portConfig,
+    () => session.value.portName,
+    () => session.value.portConfig,
     {
       onDisconnect: () => {
-        message.warning(t('serial.error.disconnected'));
+        notifications.warning(t('serial.error.disconnected'));
       },
       onOverflow: (total) => {
-        message.warning(t('serial.error.rxOverflow', { bytes: formatBytes(total) }));
+        notifications.warning(t('serial.error.rxOverflow', { bytes: formatBytes(total) }));
         sessionStore.updateDroppedBytes(session.value.id, total);
       },
       autoReconnect: () => appStore.autoReconnect,
       onReconnecting: () => {
-        message.info(t('serial.error.reconnecting'));
+        notifications.info(t('serial.error.reconnecting'));
       },
       onReconnected: () => {
-        message.success(t('serial.error.reconnected'));
+        notifications.success(t('serial.error.reconnected'));
       },
     },
+    {
+      leaseClient: dependencies.portLeaseClient,
+      sessionName: () => session.value.portName,
+    },
+  );
+  const connectionErrorText = computed(() =>
+    serial.connectionFailure.value
+      ? serialConnectionFailureMessage(serial.connectionFailure.value)
+      : serial.error.value,
   );
 
   // Protocol parsing is deliberately attached to the native raw-byte stream,
@@ -202,7 +252,14 @@ export function useSessionRuntimeController(
     showWaveform: () => {
       viewMode.value = 'waveform';
     },
+    notifications,
   });
+
+  const macroRunner = useMacroRunner({ send: (data, isHex) => send(data, isHex) });
+  const macro: SessionRuntimeMacroController = {
+    ...macroRunner,
+    status: computed(() => (macroRunner.running.value ? 'running' : 'idle')),
+  };
 
   const sendingBreak = ref(false);
   const looping = ref(false);
@@ -214,17 +271,23 @@ export function useSessionRuntimeController(
       if (!ok) throw new Error('serial send failed');
     },
     () => appStore.loopIntervalMs,
-    () => message.error(t('send.error.failed')),
+    () => notifications.error(t('send.error.failed')),
   );
 
   let disposed = false;
+  let preparePromise: Promise<void> | null = null;
   let disposePromise: Promise<void> | null = null;
+  let stopConnectionWatch: (() => void) | null = null;
 
   async function connect(): Promise<boolean> {
     if (disposed) return false;
     const ok = await serial.start();
     if (!ok && serial.error.value) {
-      message.error(t('serial.error.connectFailed', { error: serial.error.value }));
+      notifications.error(
+        serial.connectionFailure.value
+          ? serialConnectionFailureMessage(serial.connectionFailure.value)
+          : t('serial.error.connectFailed', { error: serial.error.value }),
+      );
     }
     return ok;
   }
@@ -237,8 +300,9 @@ export function useSessionRuntimeController(
   async function send(data: string, isHex: boolean): Promise<boolean> {
     if (disposed) return false;
     const result = await serial.send(data, isHex);
-    if (result.ok) sessionStore.addSendHistory(session.value.id, { data, isHex });
-    return result.ok;
+    const completed = result.outcome === 'complete';
+    if (completed) sessionStore.addSendHistory(session.value.id, { data, isHex });
+    return completed;
   }
 
   async function sendBreak(): Promise<boolean> {
@@ -246,8 +310,8 @@ export function useSessionRuntimeController(
     sendingBreak.value = true;
     try {
       const ok = await serial.sendBreak();
-      if (ok) message.success(t('message.breakSent'));
-      else message.warning(t('message.breakFailed'));
+      if (ok) notifications.success(t('message.breakSent'));
+      else notifications.warning(t('message.breakFailed'));
       return ok;
     } finally {
       sendingBreak.value = false;
@@ -272,11 +336,11 @@ export function useSessionRuntimeController(
   async function toggleAutoLog(): Promise<void> {
     if (session.value.autoLogEnabled) {
       await autoLog.disable(session.value.id);
-      message.info(t('message.autoLogStopped'));
+      notifications.info(t('message.autoLogStopped'));
       return;
     }
     const path = await autoLog.enable(session.value.id);
-    if (path) message.success(t('message.autoLogStarted', { path }));
+    if (path) notifications.success(t('message.autoLogStarted', { path }));
   }
 
   function attachView(binding: SessionRuntimeViewBinding): () => void {
@@ -286,30 +350,64 @@ export function useSessionRuntimeController(
     };
   }
 
+  function prepareShutdown(): Promise<void> {
+    if (preparePromise) return preparePromise;
+    preparePromise = (async () => {
+      const failures: unknown[] = [];
+      for (const stop of [() => stopSendLoop(), () => macro.abort(), () => modbus.master.stop()]) {
+        try {
+          stop();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+
+      // Stop the native stream before closing auto-log. This lets the serial
+      // adapter enqueue its final RX bytes before the log footer is committed.
+      try {
+        assertSerialStopEvidence(await serial.stop());
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await autoLog.prepareShutdown(session.value.id);
+      } catch (error) {
+        failures.push(error);
+      }
+
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'session runtime failed to prepare for shutdown');
+      }
+    })().finally(() => {
+      preparePromise = null;
+    });
+    return preparePromise;
+  }
+
   function dispose(): Promise<void> {
     if (disposePromise) return disposePromise;
     disposed = true;
     disposePromise = (async () => {
-      stopSendLoop();
-      viewBinding.value = null;
-      removeParserRawObserver();
-      removeParserFrameClearObserver();
-      stopParserConfigWatch();
-      parserUiPublisher.cancel();
-      if (typeof document !== 'undefined') {
-        document.removeEventListener('visibilitychange', onParserVisibilityChange);
+      try {
+        await prepareShutdown();
+      } finally {
+        viewBinding.value = null;
+        removeParserRawObserver();
+        removeParserFrameClearObserver();
+        stopParserConfigWatch();
+        stopConnectionWatch?.();
+        stopConnectionWatch = null;
+        parserUiPublisher.cancel();
+        if (typeof document !== 'undefined') {
+          document.removeEventListener('visibilitychange', onParserVisibilityChange);
+        }
+        removeTriggerRawObserver();
       }
-      removeTriggerRawObserver();
-      modbus.master.stop();
-      // Always invalidate the per-session generation, even when the save
-      // dialog is still pending and no active grant has reached the store yet.
-      await autoLog.disable(session.value.id);
-      await serial.stop();
     })();
     return disposePromise;
   }
 
-  watch(serial.isConnected, (connected) => {
+  stopConnectionWatch = watch(serial.isConnected, (connected) => {
     if (!connected) stopSendLoop();
   });
 
@@ -323,13 +421,15 @@ export function useSessionRuntimeController(
     isConnecting: readonly(serial.isConnecting),
     isConnected: readonly(serial.isConnected),
     reconnecting: readonly(serial.reconnecting),
-    error: readonly(serial.error),
+    error: readonly(connectionErrorText),
+    connectionFailure: readonly(serial.connectionFailure),
     totalDroppedBytes: readonly(serial.totalDroppedBytes),
     sendingBreak: readonly(sendingBreak),
     looping: readonly(looping),
     viewMode,
     parser,
     modbus,
+    macro,
     connect,
     disconnect,
     send,
@@ -340,6 +440,7 @@ export function useSessionRuntimeController(
     stopSendLoop,
     toggleAutoLog,
     attachView,
+    prepareShutdown,
     dispose,
   };
 }

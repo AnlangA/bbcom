@@ -17,6 +17,20 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+const PARTIAL_WRITE_ERROR = {
+  code: 'SERIAL_PARTIAL_WRITE',
+  messageKey: 'error.serial_partial_write',
+  retryable: false,
+  operation: 'serial_send',
+} as const;
+
+const CANCELLED_ERROR = {
+  code: 'CANCELLED',
+  messageKey: 'error.cancelled',
+  retryable: false,
+  operation: 'serial_send',
+} as const;
+
 test('writes one logical payload in ordered chunks of at most 4096 bytes', async () => {
   const payload = Uint8Array.from({ length: 10_000 }, (_, index) => index & 0xff);
   const written: number[] = [];
@@ -29,12 +43,9 @@ test('writes one logical payload in ordered chunks of at most 4096 bytes', async
   const result = await scheduler.enqueue(payload);
 
   assert.deepEqual(result, {
-    status: 'complete',
-    ok: true,
+    outcome: 'complete',
     requestedBytes: payload.length,
-    confirmedBytes: payload.length,
-    bytesWritten: payload.length,
-    reason: null,
+    sentBytes: payload.length,
   });
   assert.deepEqual(written, Array.from(payload));
   assert.deepEqual(scheduler.stats, {
@@ -56,8 +67,8 @@ test('writes a full 1 MiB payload as exactly 256 driver chunks', async () => {
 
   const result = await scheduler.enqueue(new Uint8Array(1024 * 1024));
 
-  assert.equal(result.ok, true);
-  assert.equal(result.bytesWritten, 1024 * 1024);
+  assert.equal(result.outcome, 'complete');
+  assert.equal(result.sentBytes, 1024 * 1024);
   assert.equal(calls, 256);
 });
 
@@ -75,8 +86,8 @@ test('continues a positive short write from the unwritten suffix', async () => {
 
   const result = await scheduler.enqueue(payload);
 
-  assert.equal(result.ok, true);
-  assert.equal(result.bytesWritten, 5000);
+  assert.equal(result.outcome, 'complete');
+  assert.equal(result.sentBytes, 5000);
   assert.deepEqual(calls, [4096, 3096, 904]);
   assert.deepEqual(accepted, Array.from(payload));
 });
@@ -93,30 +104,32 @@ test('stops on the first driver error without retrying and reports the written p
 
   assert.equal(calls, 3);
   assert.deepEqual(result, {
-    status: 'partial-unknown',
-    ok: false,
+    outcome: 'partial',
     requestedBytes: 10_000,
-    confirmedBytes: 8192,
-    bytesWritten: 8192,
-    reason: 'write-error',
-    code: 'SERIAL_PARTIAL_WRITE',
-    error: 'device write failed',
+    sentBytes: 8192,
+    error: PARTIAL_WRITE_ERROR,
   });
+  assert.doesNotMatch(JSON.stringify(result), /device write failed/);
 });
 
 test('zero or invalid driver progress fails without another call', async () => {
-  let calls = 0;
-  const scheduler = new SerialWriteScheduler(async () => {
-    calls += 1;
-    return 0;
-  });
+  for (const invalidProgress of [0, -1, Number.NaN, 1.5, 9]) {
+    let calls = 0;
+    const scheduler = new SerialWriteScheduler(async () => {
+      calls += 1;
+      return invalidProgress;
+    });
 
-  const result = await scheduler.enqueue(new Uint8Array(8));
+    const result = await scheduler.enqueue(new Uint8Array(8));
 
-  assert.equal(calls, 1);
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'write-stalled');
-  assert.equal(result.bytesWritten, 0);
+    assert.equal(calls, 1);
+    assert.deepEqual(result, {
+      outcome: 'failed',
+      requestedBytes: 8,
+      sentBytes: 0,
+      error: PARTIAL_WRITE_ERROR,
+    });
+  }
 });
 
 test('validates limits and rejects an empty logical send without reaching the driver', async () => {
@@ -132,13 +145,16 @@ test('validates limits and rejects an empty logical send without reaching the dr
     return 1;
   });
   assert.deepEqual(await scheduler.enqueue(new Uint8Array()), {
-    status: 'rejected',
-    ok: false,
+    outcome: 'failed',
     requestedBytes: 0,
-    confirmedBytes: 0,
-    bytesWritten: 0,
-    reason: 'empty',
-    code: 'INVALID_INPUT',
+    sentBytes: 0,
+    error: {
+      code: 'INVALID_INPUT',
+      messageKey: 'error.invalid_input',
+      retryable: false,
+      operation: 'serial_send',
+      field: 'payload',
+    },
   });
   assert.equal(calls, 0);
   assert.deepEqual(await scheduler.shutdown(0), { timedOut: false });
@@ -159,8 +175,8 @@ test('copies a queued payload so caller mutation cannot alter the later driver w
   queuedPayload.fill(0xff);
 
   firstWrite.resolve(1);
-  assert.equal((await first).status, 'complete');
-  assert.equal((await second).status, 'complete');
+  assert.equal((await first).outcome, 'complete');
+  assert.equal((await second).outcome, 'complete');
   assert.deepEqual(received, [[1], [2, 3, 4]]);
 });
 
@@ -179,15 +195,12 @@ test('reports a callback failure without attempting a device write', async () =>
 
   assert.equal(calls, 0);
   assert.deepEqual(result, {
-    status: 'partial-unknown',
-    ok: false,
+    outcome: 'failed',
     requestedBytes: 1,
-    confirmedBytes: 0,
-    bytesWritten: 0,
-    reason: 'write-error',
-    code: 'SERIAL_PARTIAL_WRITE',
-    error: 'start hook failed',
+    sentBytes: 0,
+    error: PARTIAL_WRITE_ERROR,
   });
+  assert.doesNotMatch(JSON.stringify(result), /start hook failed/);
 });
 
 test('shutdown reports no timeout when the active write settles inside the grace period', async () => {
@@ -198,7 +211,12 @@ test('shutdown reports no timeout when the active write settles inside the grace
 
   activeWrite.resolve(1);
   assert.deepEqual(await shutdown, { timedOut: false });
-  assert.equal((await pending).status, 'complete');
+  assert.deepEqual(await pending, {
+    outcome: 'cancelled',
+    requestedBytes: 1,
+    sentBytes: 1,
+    error: CANCELLED_ERROR,
+  });
   assert.deepEqual(scheduler.stats, {
     outstandingOperations: 0,
     outstandingBytes: 0,
@@ -223,12 +241,12 @@ test('enforces the 256-operation bound including the active operation', async ()
   const rejected = await scheduler.enqueue(new Uint8Array([2]));
 
   assert.equal(scheduler.stats.outstandingOperations, SERIAL_WRITE_MAX_OPERATIONS);
-  assert.equal(rejected.ok, false);
-  assert.equal(rejected.reason, 'queue-full');
+  assert.equal(rejected.outcome, 'failed');
+  assert.equal(rejected.error?.code, 'SERIAL_QUEUE_FULL');
   active.resolve(1);
   const results = await Promise.all(accepted);
   assert.equal(
-    results.every((result) => result.ok),
+    results.every((result) => result.outcome === 'complete'),
     true,
   );
 });
@@ -240,11 +258,12 @@ test('allows exactly 4 MiB outstanding and rejects one additional byte', async (
 
   assert.equal(scheduler.stats.outstandingBytes, SERIAL_WRITE_MAX_QUEUED_BYTES);
   const rejected = await scheduler.enqueue(new Uint8Array([1]));
-  assert.equal(rejected.reason, 'queue-full');
+  assert.equal(rejected.outcome, 'failed');
+  assert.equal(rejected.error?.code, 'SERIAL_QUEUE_FULL');
 
   const shutdown = await scheduler.shutdown(0);
   assert.equal(shutdown.timedOut, true);
-  assert.equal((await accepted).reason, 'disconnecting');
+  assert.equal((await accepted).outcome, 'cancelled');
   active.resolve(SERIAL_WRITE_CHUNK_BYTES);
 });
 
@@ -260,15 +279,20 @@ test('shutdown rejects queued operations immediately and force-settles one activ
   const third = scheduler.enqueue(new Uint8Array(16));
 
   const closing = scheduler.shutdown(5);
-  assert.equal((await second).reason, 'disconnecting');
-  assert.equal((await third).reason, 'disconnecting');
+  assert.deepEqual(await second, {
+    outcome: 'cancelled',
+    requestedBytes: 16,
+    sentBytes: 0,
+    error: CANCELLED_ERROR,
+  });
+  assert.equal((await third).outcome, 'cancelled');
   assert.deepEqual(await closing, { timedOut: true });
-  assert.equal((await first).reason, 'disconnecting');
+  assert.equal((await first).outcome, 'cancelled');
   assert.equal(calls, 1, 'shutdown never starts another queued write');
   assert.equal(scheduler.stats.outstandingOperations, 0);
   assert.equal(scheduler.stats.outstandingBytes, 0);
   const afterClose = await scheduler.enqueue(new Uint8Array([1]));
-  assert.equal(afterClose.reason, 'disconnecting');
+  assert.equal(afterClose.outcome, 'cancelled');
   active.resolve(16);
 });
 
@@ -293,4 +317,93 @@ test('onWriteStarted runs only after the operation reaches the writer', async ()
   await first;
   await second;
   assert.deepEqual(starts, ['first', 'second']);
+});
+
+test('shutdown requested by onWriteStarted cancels before the first driver call', async () => {
+  let calls = 0;
+  let shutdown!: Promise<{ timedOut: boolean }>;
+  const scheduler = new SerialWriteScheduler(async (chunk) => {
+    calls += 1;
+    return chunk.length;
+  });
+
+  const pending = scheduler.enqueue(Uint8Array.of(1), {
+    onWriteStarted: () => {
+      shutdown = scheduler.shutdown(50);
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    outcome: 'cancelled',
+    requestedBytes: 1,
+    sentBytes: 0,
+    error: CANCELLED_ERROR,
+  });
+  assert.deepEqual(await shutdown, { timedOut: false });
+  assert.equal(calls, 0);
+});
+
+test('a driver rejection after shutdown is classified as cancellation', async () => {
+  const write = deferred<number>();
+  const scheduler = new SerialWriteScheduler(() => write.promise);
+  const pending = scheduler.enqueue(Uint8Array.of(1));
+  const shutdown = scheduler.shutdown(50);
+
+  write.reject(new Error('late driver rejection'));
+
+  assert.equal((await pending).outcome, 'cancelled');
+  assert.deepEqual(await shutdown, { timedOut: false });
+});
+
+test('invalid driver progress after shutdown is classified as cancellation', async () => {
+  const write = deferred<number>();
+  const scheduler = new SerialWriteScheduler(() => write.promise);
+  const pending = scheduler.enqueue(Uint8Array.of(1));
+  const shutdown = scheduler.shutdown(50);
+
+  write.resolve(0);
+
+  assert.equal((await pending).outcome, 'cancelled');
+  assert.deepEqual(await shutdown, { timedOut: false });
+});
+
+test('defensive settled guards ignore an operation invalidated before its first chunk', async () => {
+  type InternalOperation = {
+    payload: Uint8Array;
+    sentBytes: number;
+    settled: boolean;
+  };
+  type InternalScheduler = {
+    activeOperation: InternalOperation | null;
+    settle(
+      operation: InternalOperation,
+      result: typeof CANCELLED_ERROR extends never ? never : unknown,
+    ): void;
+  };
+
+  let operation: InternalOperation | null = null;
+  const scheduler = new SerialWriteScheduler(async (chunk) => chunk.length);
+  const pending = scheduler.enqueue(Uint8Array.of(1), {
+    onWriteStarted: () => {
+      operation = (scheduler as unknown as InternalScheduler).activeOperation;
+      assert.ok(operation);
+      operation.settled = true;
+    },
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.ok(operation);
+
+  operation.settled = false;
+  const cancelledResult = {
+    outcome: 'cancelled',
+    requestedBytes: 1,
+    sentBytes: 0,
+    error: CANCELLED_ERROR,
+  } as const;
+  const internal = scheduler as unknown as InternalScheduler;
+  internal.settle(operation, cancelledResult);
+  internal.settle(operation, cancelledResult);
+
+  assert.deepEqual(await pending, cancelledResult);
 });

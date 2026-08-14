@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-plugin-center-snapshot"
+description = "Enables the plugin_center_snapshot command without any pre-configured scope."
+commands.allow = ["plugin_center_snapshot"]
+
+[[permission]]
+identifier = "deny-plugin-center-snapshot"
+description = "Denies the plugin_center_snapshot command without any pre-configured scope."
+commands.deny = ["plugin_center_snapshot"]

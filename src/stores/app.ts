@@ -5,7 +5,6 @@ import { loadJson, saveJson } from '../lib/storage';
 import {
   clearAiApiKey as clearAiApiKeyInKeyring,
   getAiKeyStatus,
-  migrateLegacyAiApiKey,
   removeLegacyAiApiKey,
   setAiApiKey as setAiApiKeyInKeyring,
   type AiKeyStatus,
@@ -13,9 +12,19 @@ import {
 import { maxBufferFrames, setMaxBufferFrames } from '../lib/buffer-config';
 import { locale, setLocale } from '../lib/i18n';
 import { SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth } from '../lib/sidebar-layout';
+import type { WorkspaceLayoutV1 } from '../features/workspace/types';
 
-const STORAGE_KEY = 'bbcom-app-settings';
+/** New workspace-era namespace. The 0.7.3 key remains read-only for G24. */
+const STORAGE_KEY = 'bbcom-v1:app-settings';
 const MISSING_AI_KEY_STATUS: AiKeyStatus = { configured: false, durability: 'missing' };
+const DISPLAY_MODES: readonly DisplayMode[] = ['HEX', 'HEXASCII', 'ASCII', 'ANSI', 'UTF8'];
+const SEARCH_MODES: readonly SearchMode[] = ['TEXT', 'HEX'];
+const PACKET_VIEW_MODES: readonly PacketViewMode[] = ['FRAME', 'MERGED'];
+const LINE_ENDINGS: readonly LineEnding[] = ['none', 'CR', 'LF', 'CRLF'];
+
+function isEnumValue<T extends string>(raw: unknown, values: readonly T[]): raw is T {
+  return typeof raw === 'string' && values.includes(raw as T);
+}
 
 export const useAppStore = defineStore('app', () => {
   const displayMode = ref<DisplayMode>('HEX');
@@ -38,6 +47,7 @@ export const useAppStore = defineStore('app', () => {
   const aiApiKeyLoaded = ref(false);
   const sidebarWidth = ref(SIDEBAR_WIDTH_DEFAULT);
   const sidebarCollapsed = ref(false);
+  const workspaceLayoutListeners = new Set<(layout: WorkspaceLayoutV1) => void>();
   let loaded = false;
 
   // Single source of truth for every persisted (non-secret) setting.
@@ -60,7 +70,7 @@ export const useAppStore = defineStore('app', () => {
     {
       key: 'displayMode',
       ref: displayMode,
-      validate: (raw) => Boolean(raw),
+      validate: (raw) => isEnumValue(raw, DISPLAY_MODES),
       apply: (raw) => {
         displayMode.value = raw as DisplayMode;
       },
@@ -84,7 +94,7 @@ export const useAppStore = defineStore('app', () => {
     {
       key: 'searchMode',
       ref: searchMode,
-      validate: (raw) => Boolean(raw),
+      validate: (raw) => isEnumValue(raw, SEARCH_MODES),
       apply: (raw) => {
         searchMode.value = raw as SearchMode;
       },
@@ -92,7 +102,7 @@ export const useAppStore = defineStore('app', () => {
     {
       key: 'packetViewMode',
       ref: packetViewMode,
-      validate: (raw) => Boolean(raw),
+      validate: (raw) => isEnumValue(raw, PACKET_VIEW_MODES),
       apply: (raw) => {
         packetViewMode.value = raw as PacketViewMode;
       },
@@ -100,7 +110,7 @@ export const useAppStore = defineStore('app', () => {
     {
       key: 'lineEnding',
       ref: lineEnding,
-      validate: (raw) => Boolean(raw),
+      validate: (raw) => isEnumValue(raw, LINE_ENDINGS),
       apply: (raw) => {
         lineEnding.value = raw as LineEnding;
       },
@@ -201,14 +211,26 @@ export const useAppStore = defineStore('app', () => {
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
+  function writeSettings(): boolean {
+    const payload: Record<string, unknown> = {};
+    for (const s of persistedSettings) payload[s.key] = s.ref.value;
+    return saveJson(STORAGE_KEY, payload);
+  }
+
   function save() {
     if (!loaded) return;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      const payload: Record<string, unknown> = {};
-      for (const s of persistedSettings) payload[s.key] = s.ref.value;
-      saveJson(STORAGE_KEY, payload);
+      saveTimer = null;
+      writeSettings();
     }, 300);
+  }
+
+  /** Cancel the debounce and synchronously persist the current settings snapshot. */
+  function flushSettings(): boolean {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    return loaded && writeSettings();
   }
 
   watch(
@@ -297,23 +319,57 @@ export const useAppStore = defineStore('app', () => {
   }
 
   function setSidebarWidth(width: number) {
-    sidebarWidth.value = clampSidebarWidth(width);
+    const next = clampSidebarWidth(width);
+    if (sidebarWidth.value === next) return;
+    sidebarWidth.value = next;
+    notifyWorkspaceLayoutChanged();
   }
 
   function toggleSidebarCollapsed() {
     sidebarCollapsed.value = !sidebarCollapsed.value;
+    notifyWorkspaceLayoutChanged();
+  }
+
+  function workspaceLayoutSnapshot(): WorkspaceLayoutV1 {
+    return Object.freeze({
+      version: 1,
+      sidebar: Object.freeze({
+        width: clampSidebarWidth(sidebarWidth.value),
+        collapsed: sidebarCollapsed.value,
+      }),
+    });
+  }
+
+  function applyWorkspaceLayout(layout: WorkspaceLayoutV1): void {
+    sidebarWidth.value = clampSidebarWidth(layout.sidebar.width);
+    sidebarCollapsed.value = layout.sidebar.collapsed;
+  }
+
+  function subscribeWorkspaceLayout(listener: (layout: WorkspaceLayoutV1) => void): () => void {
+    workspaceLayoutListeners.add(listener);
+    return () => workspaceLayoutListeners.delete(listener);
+  }
+
+  function notifyWorkspaceLayoutChanged(): void {
+    const layout = workspaceLayoutSnapshot();
+    for (const listener of workspaceLayoutListeners) {
+      try {
+        listener(layout);
+      } catch {
+        // A layout observer cannot interfere with the app settings store.
+      }
+    }
   }
 
   async function refreshAiKeyStatus(): Promise<void> {
     aiApiKeyLoaded.value = false;
     try {
-      aiKeyStatus.value = await migrateLegacyAiApiKey();
+      // G24 keeps every 0.7.3 source byte read-only until the one-time reset
+      // gate has completed. In particular, startup must not migrate and delete
+      // the legacy plaintext key before the backup snapshot is taken.
+      aiKeyStatus.value = await getAiKeyStatus();
     } catch {
-      try {
-        aiKeyStatus.value = await getAiKeyStatus();
-      } catch {
-        aiKeyStatus.value = MISSING_AI_KEY_STATUS;
-      }
+      aiKeyStatus.value = MISSING_AI_KEY_STATUS;
     } finally {
       aiApiKeyLoaded.value = true;
     }
@@ -364,5 +420,9 @@ export const useAppStore = defineStore('app', () => {
     consumePendingAiCommand,
     setSidebarWidth,
     toggleSidebarCollapsed,
+    workspaceLayoutSnapshot,
+    applyWorkspaceLayout,
+    subscribeWorkspaceLayout,
+    flushSettings,
   };
 });

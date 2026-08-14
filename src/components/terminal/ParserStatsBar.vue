@@ -34,6 +34,7 @@
         :value="searchTerm"
         size="tiny"
         :placeholder="t('parser.search')"
+        :aria-label="t('parser.search')"
         clearable
         style="width: 180px"
         @update:value="(v) => $emit('update:searchTerm', v ?? '')"

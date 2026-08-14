@@ -8,7 +8,12 @@
 <template>
   <div class="mb-add">
     <span class="col col-name">
-      <n-input v-model:value="draft.name" size="tiny" :placeholder="t('modbus.namePlaceholder')" />
+      <n-input
+        v-model:value="draft.name"
+        size="tiny"
+        :placeholder="t('modbus.namePlaceholder')"
+        :aria-label="t('modbus.col.name')"
+      />
     </span>
     <span class="col col-slave">
       <n-input-number
@@ -17,11 +22,13 @@
         :min="0"
         :max="247"
         :show-button="false"
+        :aria-label="t('modbus.col.slave')"
       />
     </span>
     <span class="col col-fc">
       <AppSelect
         :value="draft.functionCode"
+        :aria-label="t('modbus.col.fc')"
         :options="fcOptions"
         size="tiny"
         @update:value="setDraftFunctionCode"
@@ -34,6 +41,7 @@
         :min="0"
         :max="65535"
         :show-button="false"
+        :aria-label="t('modbus.col.addr')"
       />
     </span>
     <span class="col col-qty">
@@ -44,11 +52,13 @@
         :max="draftQuantityMax"
         :disabled="!isDataCountEditable(draft.functionCode)"
         :show-button="false"
+        :aria-label="t('modbus.col.quantity')"
       />
     </span>
     <span class="col col-type">
       <AppSelect
         :value="draft.type"
+        :aria-label="t('modbus.col.type')"
         :options="typeOptionsFor(draft.functionCode)"
         size="tiny"
         :disabled="isBitFc(draft.functionCode)"
@@ -56,12 +66,22 @@
       />
     </span>
     <span class="col col-ch">
-      <AppSelect v-model:value="draft.waveformChannel" :options="channelOptions" size="tiny" />
+      <AppSelect
+        v-model:value="draft.waveformChannel"
+        :aria-label="t('waveform.channel')"
+        :options="channelOptions"
+        size="tiny"
+      />
     </span>
     <span class="col col-rw"></span>
     <span class="col col-value"></span>
     <span class="col col-unit">
-      <n-input v-model:value="draft.unit" size="tiny" placeholder="°C" />
+      <n-input
+        v-model:value="draft.unit"
+        size="tiny"
+        placeholder="°C"
+        :aria-label="t('modbus.col.unit')"
+      />
     </span>
     <span class="col col-actions">
       <n-button size="tiny" type="primary" :disabled="!canAdd" @click="commit">

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-request-project-target-grant"
+description = "Enables the request_project_target_grant command without any pre-configured scope."
+commands.allow = ["request_project_target_grant"]
+
+[[permission]]
+identifier = "deny-request-project-target-grant"
+description = "Denies the request_project_target_grant command without any pre-configured scope."
+commands.deny = ["request_project_target_grant"]

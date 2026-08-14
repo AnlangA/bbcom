@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+description = "Repository maintenance commands for bbcom"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+bbcom-contracts = { path = "../bbcom-contracts" }

@@ -30,6 +30,24 @@ export const AUTO_LOG_FAILURE_EVENT = 'bbcom:auto-log-failure';
 export type AutoLogFailureReason =
   'begin-failure' | 'overflow' | 'append-failure' | 'drain-timeout';
 
+export type AutoLogShutdownFailureStage = 'append' | 'drain' | 'terminal';
+
+/**
+ * A durable auto-log could not be closed cleanly during the application exit
+ * handshake. The stage is intentionally renderer-owned: the native `finish`
+ * command writes the footer, flushes the writer and calls `sync_all` as one
+ * operation, so any rejection there is a terminal failure.
+ */
+export class AutoLogShutdownError extends Error {
+  readonly stage: AutoLogShutdownFailureStage;
+
+  constructor(stage: AutoLogShutdownFailureStage, cause: unknown) {
+    super(`auto-log shutdown ${stage} failed`, { cause });
+    this.name = 'AutoLogShutdownError';
+    this.stage = stage;
+  }
+}
+
 interface AutoLogQueueEntry {
   frame: DataFrame;
   rawBytes: number;
@@ -68,6 +86,7 @@ interface SessionAutoLogState {
   debounceTimer: ReturnType<typeof setTimeout> | null;
   terminalPromise: Promise<void> | null;
   cancelAppendWait: (() => void) | null;
+  shutdownFailure: AutoLogShutdownError | null;
 }
 
 const DEFAULT_SESSION_CLIENT: AutoLogSessionClient = {
@@ -209,6 +228,14 @@ function markAborted(
   }
 }
 
+function recordShutdownFailure(
+  state: SessionAutoLogState,
+  stage: AutoLogShutdownFailureStage,
+  cause: unknown,
+): void {
+  state.shutdownFailure ??= new AutoLogShutdownError(stage, cause);
+}
+
 function notifyAutoLogFailure(sessionId: string, reason: AutoLogFailureReason): void {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(
@@ -241,12 +268,14 @@ function takeNextBatch(state: SessionAutoLogState): AutoLogQueueEntry[] {
 
 async function terminalOnce(state: SessionAutoLogState): Promise<void> {
   if (!state.terminalPromise) {
-    const operation =
+    const operation = Promise.resolve().then(() =>
       state.shutdownMode === 'abort'
         ? state.client.abort(state.logId)
-        : state.client.finish(state.logId);
+        : state.client.finish(state.logId),
+    );
     state.terminalPromise = settleWithin(operation, state.terminalTimeoutMs)
-      .catch(() => {
+      .catch((error: unknown) => {
+        recordShutdownFailure(state, 'terminal', error);
         logger.warn('auto-log backend session cleanup failed for', state.sessionId);
       })
       .finally(() => {
@@ -274,8 +303,9 @@ async function drainState(state: SessionAutoLogState): Promise<void> {
             ),
           ),
         );
-      } catch {
+      } catch (error) {
         failed = true;
+        recordShutdownFailure(state, 'append', error);
         markAborted(state, 'append-failure');
       } finally {
         state.outstandingBytes -= batchRawBytes;
@@ -309,6 +339,7 @@ function armDebounce(state: SessionAutoLogState): void {
 async function shutdownState(
   state: SessionAutoLogState,
   mode: Exclude<ShutdownMode, 'none'>,
+  strict = false,
 ): Promise<void> {
   state.accepting = false;
   cancelDebounce(state);
@@ -323,7 +354,8 @@ async function shutdownState(
   const drain = ensureWorker(state);
   try {
     await settleWithin(drain, state.drainTimeoutMs);
-  } catch {
+  } catch (error) {
+    recordShutdownFailure(state, 'drain', error);
     state.cancelAppendWait?.();
     markAborted(state, 'drain-timeout');
     if (sessionStates.get(state.sessionId) === state) sessionStates.delete(state.sessionId);
@@ -331,6 +363,8 @@ async function shutdownState(
     // extending the public two-second shutdown deadline.
     void terminalOnce(state);
   }
+
+  if (strict && state.shutdownFailure) throw state.shutdownFailure;
 }
 
 function createState(
@@ -367,6 +401,7 @@ function createState(
     debounceTimer: null,
     terminalPromise: null,
     cancelAppendWait: null,
+    shutdownFailure: null,
   };
 }
 
@@ -447,6 +482,22 @@ export function useAutoLog(deps: UseAutoLogDeps = {}) {
     }
   }
 
+  /**
+   * Strict exit-handshake variant of `disable`. Unlike the toolbar path, it
+   * rejects when queued frames, the drain deadline, or native finish
+   * (footer/flush/sync) fails, so the shutdown coordinator cannot report a
+   * false `completed` participant.
+   */
+  async function prepareShutdown(sessionId: string): Promise<void> {
+    nextGeneration(sessionId);
+    const state = sessionStates.get(sessionId);
+    if (state) {
+      await shutdownState(state, 'graceful', true);
+    } else if (hasSession(sessionStore, sessionId)) {
+      sessionStore.setAutoLogTarget(sessionId, null);
+    }
+  }
+
   function appendFrame(sessionId: string, frame: DataFrame): void {
     const state = sessionStates.get(sessionId);
     if (!state?.accepting) return;
@@ -481,5 +532,5 @@ export function useAutoLog(deps: UseAutoLogDeps = {}) {
     }
   }
 
-  return { enable, disable, appendFrame };
+  return { enable, disable, prepareShutdown, appendFrame };
 }

@@ -73,21 +73,20 @@ function createHarness(
         return Promise.resolve(handler(payload, (bytes) => rx?.(bytes), index)).then((ok) =>
           ok
             ? {
-                status: 'complete' as const,
-                ok: true as const,
+                outcome: 'complete' as const,
                 requestedBytes: payload.length,
-                confirmedBytes: payload.length,
-                bytesWritten: payload.length,
-                reason: null,
+                sentBytes: payload.length,
               }
             : {
-                status: 'partial-unknown' as const,
-                ok: false as const,
+                outcome: 'failed' as const,
                 requestedBytes: payload.length,
-                confirmedBytes: 0,
-                bytesWritten: 0,
-                reason: 'write-error' as const,
-                code: 'SERIAL_PARTIAL_WRITE' as const,
+                sentBytes: 0,
+                error: {
+                  code: 'SERIAL_PARTIAL_WRITE' as const,
+                  messageKey: 'error.serial_partial_write',
+                  retryable: false,
+                  operation: 'serial_send',
+                },
               },
         );
       },

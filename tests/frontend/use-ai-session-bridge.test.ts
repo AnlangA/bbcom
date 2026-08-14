@@ -2,8 +2,11 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   applyAiSessionUpdate,
+  canPersistAiResponse,
+  isAiResponseBindingTransitionAllowed,
   toAiChatSnapshot,
   toAiSessionSummary,
+  workspaceAiMessageLimitError,
 } from '../../src/composables/useAiSessionBridge.ts';
 import type { SerialSession } from '../../src/types.ts';
 
@@ -91,6 +94,94 @@ test('AI chat snapshot is bounded to 100 messages and 1 MiB', () => {
   assert.ok(new TextEncoder().encode(JSON.stringify(snapshot)).byteLength <= 1024 * 1024);
 });
 
+test('AI response persistence requires its original workspace, session and revision', () => {
+  const binding = { workspaceId: 'workspace-a', sessionId: SID, revision: 4 };
+  assert.equal(canPersistAiResponse(binding, binding, 'workspace-a', true, true), true);
+  assert.equal(
+    canPersistAiResponse(
+      binding,
+      { ...binding, workspaceId: 'workspace-b' },
+      'workspace-a',
+      true,
+      true,
+    ),
+    false,
+  );
+  assert.equal(canPersistAiResponse(binding, binding, 'workspace-b', true, true), false);
+  assert.equal(canPersistAiResponse(binding, binding, 'workspace-a', false, true), false);
+});
+
+test('AI log response binding is one-way and rejects replay transitions', () => {
+  assert.equal(isAiResponseBindingTransitionAllowed(null, 'context-issued'), true);
+  assert.equal(isAiResponseBindingTransitionAllowed('context-issued', 'user-committed'), true);
+  assert.equal(isAiResponseBindingTransitionAllowed('user-committed', 'running'), true);
+  assert.equal(isAiResponseBindingTransitionAllowed('context-issued', 'rejected'), true);
+  assert.equal(isAiResponseBindingTransitionAllowed('user-committed', 'user-committed'), false);
+  assert.equal(isAiResponseBindingTransitionAllowed('running', 'running'), false);
+  assert.equal(isAiResponseBindingTransitionAllowed('running', 'context-issued'), false);
+  assert.equal(isAiResponseBindingTransitionAllowed('rejected', 'running'), false);
+});
+
+test('AI message preflight rejects a single oversized message, the 10001st message, and total bytes over 32 MiB', () => {
+  const oversized = workspaceAiMessageLimitError(
+    [{ logAiMessages: [] }],
+    'x'.repeat(256 * 1024 + 1),
+    'request-oversized',
+  );
+  assert.equal(oversized?.code, 'LIMIT_EXCEEDED');
+  assert.equal(oversized?.field, 'aiMessage.content');
+
+  const atCountLimit = workspaceAiMessageLimitError(
+    [
+      {
+        logAiMessages: Array.from({ length: 10_000 }, (_, index) => ({
+          id: String(index),
+          role: 'user' as const,
+          content: '',
+          timestamp: index,
+        })),
+      },
+    ],
+    'next',
+    'request-count',
+  );
+  assert.equal(atCountLimit?.field, 'aiMessages');
+
+  const block = 'x'.repeat(256 * 1024);
+  const atByteLimit = workspaceAiMessageLimitError(
+    [
+      {
+        logAiMessages: Array.from({ length: 128 }, (_, index) => ({
+          id: String(index),
+          role: 'assistant' as const,
+          content: block,
+          timestamp: index,
+        })),
+      },
+    ],
+    'next',
+    'request-bytes',
+  );
+  assert.equal(atByteLimit?.field, 'aiBytes');
+
+  const reservedAssistant = workspaceAiMessageLimitError(
+    [
+      {
+        logAiMessages: Array.from({ length: 9_999 }, (_, index) => ({
+          id: String(index),
+          role: 'user' as const,
+          content: '',
+          timestamp: index,
+        })),
+      },
+    ],
+    'new user',
+    'request-reserved',
+    { reservedMessages: 1, reservedBytes: 256 * 1024 },
+  );
+  assert.equal(reservedAssistant?.field, 'aiMessages');
+});
+
 test('applyAiSessionUpdate: routes setTerminalAiModel to the model setter', () => {
   const store = recordingStore();
   applyAiSessionUpdate(
@@ -112,6 +203,23 @@ test('applyAiSessionUpdate: routes addLogAiMessage with the message payload', ()
   const msg = { role: 'user', content: 'summarize' };
   applyAiSessionUpdate({ sessionId: SID, action: 'addLogAiMessage', value: msg }, store, SID);
   assert.deepEqual(store.calls, [{ method: 'addLogAiMessage', id: SID, value: msg }]);
+});
+
+test('applyAiSessionUpdate: rejects assistant messages from the AI webview', () => {
+  const store = recordingStore();
+  assert.equal(
+    applyAiSessionUpdate(
+      {
+        sessionId: SID,
+        action: 'addLogAiMessage',
+        value: { role: 'assistant', content: 'forged response' },
+      },
+      store,
+      SID,
+    ),
+    false,
+  );
+  assert.deepEqual(store.calls, []);
 });
 
 test('applyAiSessionUpdate: routes clearLogAiMessages', () => {

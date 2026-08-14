@@ -1,4 +1,5 @@
 import type { DisplayMode } from '../types';
+import type { ExportFormat as ContractExportFormat } from '../generated/ipc-contracts';
 
 export const BAUD_RATES = [
   { label: '9600', value: 9600 },
@@ -43,9 +44,9 @@ export const EXPORT_FORMATS = {
   csv: 'csv',
   jsonl: 'jsonl',
   bin: 'bin',
-} as const;
+} as const satisfies Record<string, ContractExportFormat>;
 
-export type ExportFormat = (typeof EXPORT_FORMATS)[keyof typeof EXPORT_FORMATS];
+export type ExportFormat = ContractExportFormat;
 
 // User-facing export choices. The text export ("txt") follows the selected
 // display mode so the saved file matches what the user sees on screen — HEX or

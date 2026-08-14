@@ -1,5 +1,4 @@
 import { computed, ref, type Ref } from 'vue';
-import { useMessage } from 'naive-ui';
 import { useSessionStore } from '../stores/sessions';
 import { useModbusMaster } from './useModbusMaster';
 import { parseStream, type ModbusStreamRecord } from '../lib/modbus';
@@ -12,6 +11,14 @@ import {
 } from '../lib/session-modbus-view';
 import { t } from '../lib/i18n';
 import type { ModbusRegister, SerialSendResult, SerialSession, SerialWriteOptions } from '../types';
+import type { ApplicationNotificationPort } from '../features/application/application-notifications';
+
+const NOOP_NOTIFICATIONS: ApplicationNotificationPort = Object.freeze({
+  info: () => undefined,
+  success: () => undefined,
+  warning: () => undefined,
+  error: () => undefined,
+});
 
 /**
  * Bridges the Modbus master to a serial session and exposes the imperative
@@ -40,6 +47,8 @@ export interface UseSessionModbusOptions {
   } | null>;
   /** Jump the view to the waveform (used by plot-in-waveform). */
   showWaveform: () => void;
+  /** Explicit application notification boundary; headless runtimes never call useMessage(). */
+  notifications?: ApplicationNotificationPort;
 }
 
 export function useSessionModbus({
@@ -49,9 +58,9 @@ export function useSessionModbus({
   isConnected,
   waveformRef,
   showWaveform,
+  notifications = NOOP_NOTIFICATIONS,
 }: UseSessionModbusOptions) {
   const sessionStore = useSessionStore();
-  const message = useMessage();
 
   const configRef = computed(() => session.value.modbusConfig);
   const registersRef = computed(() => session.value.modbusRegisters);
@@ -120,7 +129,7 @@ export function useSessionModbus({
     try {
       const res = await master.sendAll();
       if (res.sent > 0) {
-        message.success(t('modbus.sendAll') + ` (${res.ok}/${res.sent})`);
+        notifications.success(t('modbus.sendAll') + ` (${res.ok}/${res.sent})`);
       }
     } finally {
       modbusBusy.value = false;
@@ -154,7 +163,7 @@ export function useSessionModbus({
   function loadWriteSource(records: ModbusStreamRecord[], name: string) {
     master.loadWriteSource(records, name);
     writeSourceName.value = name;
-    message.success(t('modbus.writeSourceLoaded', { count: records.length, name }));
+    notifications.success(t('modbus.writeSourceLoaded', { count: records.length, name }));
   }
   function clearWriteSource() {
     master.clearWriteSource();
@@ -169,7 +178,7 @@ export function useSessionModbus({
       const text = String(reader.result ?? '');
       const records = parseStream(text);
       if (records.length === 0) {
-        message.warning(t('modbus.empty'));
+        notifications.warning(t('modbus.empty'));
         return;
       }
       loadWriteSource(records, file.name);

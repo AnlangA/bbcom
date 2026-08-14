@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "bundle": {
+    "externalBin": ["binaries/bbcom-plugin-host"],
+    "linux": {
+      "deb": {
+        "depends": ["bubblewrap (>= 0.6.1)"]
+      }
+    }
+  }
+}

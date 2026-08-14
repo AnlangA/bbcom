@@ -1,3 +1,2 @@
-/** Checksum algorithm identifier (mirrors the Rust `ChecksumType` enum's
- *  SCREAMING_SNAKE_CASE serde tags and src/lib/checksum-constants.ts values). */
-export type ChecksumType = 'CHECKSUM' | 'CRC8' | 'CRC16' | 'CRC16_MODBUS' | 'CRC32';
+/** Checksum algorithm identifier generated from the Rust IPC enum. */
+export type { ChecksumType } from '../generated/ipc-contracts';

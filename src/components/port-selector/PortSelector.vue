@@ -1,14 +1,26 @@
 <template>
   <div class="port-selector">
     <div class="section">
-      <button class="section-title" type="button" @click="toggleSection('port')">
+      <button
+        class="section-title"
+        type="button"
+        :aria-expanded="!collapsed.port"
+        :aria-controls="sectionId('port')"
+        @click="toggleSection('port')"
+      >
         <span class="section-heading">
           <Cable class="icon-sm" />
           {{ t('serial.portSelect') }}
         </span>
         <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.port }" />
       </button>
-      <div class="section-body" :class="{ collapsed: collapsed.port }">
+      <div
+        :id="sectionId('port')"
+        class="section-body"
+        :class="{ collapsed: collapsed.port }"
+        :aria-hidden="collapsed.port"
+        :inert="collapsed.port ? true : undefined"
+      >
         <div class="port-row">
           <AppSelect
             v-model:value="selectedPort"
@@ -23,18 +35,32 @@
             :loading="isRefreshing"
             quaternary
             :title="t('serial.refreshPorts')"
+            :aria-label="t('serial.refreshPorts')"
           >
             <template #icon>
               <RefreshCw class="icon-sm" />
             </template>
           </n-button>
         </div>
-        <div v-if="ports.length === 0" class="empty-hint">{{ t('serial.noPorts') }}</div>
-        <div v-if="missingActivePorts.length > 0" class="empty-hint warning">
+        <div v-if="ports.length === 0" class="empty-hint" role="status" aria-live="polite">
+          {{ t('serial.noPorts') }}
+        </div>
+        <div
+          v-if="missingActivePorts.length > 0"
+          class="empty-hint warning"
+          role="status"
+          aria-live="polite"
+        >
           {{ t('serial.disconnectedPorts', { ports: missingActivePorts.join(', ') }) }}
         </div>
         <div class="port-action">
-          <n-button size="small" block @click="newSession" :disabled="!selectedPort" type="primary">
+          <n-button
+            size="small"
+            block
+            @click="newSession"
+            :disabled="!selectedPort || !sessionStore.userMutationsAllowed"
+            type="primary"
+          >
             <template #icon>
               <Plus class="icon-sm" />
             </template>
@@ -45,35 +71,68 @@
     </div>
 
     <div class="section">
-      <button class="section-title" type="button" @click="toggleSection('config')">
+      <button
+        class="section-title"
+        type="button"
+        :aria-expanded="!collapsed.config"
+        :aria-controls="sectionId('config')"
+        @click="toggleSection('config')"
+      >
         <span class="section-heading">
           <Settings2 class="icon-sm" />
           {{ t('serial.params') }}
         </span>
         <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.config }" />
       </button>
-      <div class="section-body" :class="{ collapsed: collapsed.config }">
+      <div
+        :id="sectionId('config')"
+        class="section-body"
+        :class="{ collapsed: collapsed.config }"
+        :aria-hidden="collapsed.config"
+        :inert="collapsed.config ? true : undefined"
+      >
         <div class="config-grid">
           <div class="config-item">
             <label>{{ t('serial.baudRate') }}</label>
-            <AppSelect v-model:value="config.baudRate" :options="baudRateOptions" size="small" />
+            <AppSelect
+              v-model:value="config.baudRate"
+              :aria-label="t('serial.baudRate')"
+              :options="baudRateOptions"
+              size="small"
+            />
           </div>
           <div class="config-item">
             <label>{{ t('serial.dataBits') }}</label>
-            <AppSelect v-model:value="config.dataBits" :options="dataBitsOptions" size="small" />
+            <AppSelect
+              v-model:value="config.dataBits"
+              :aria-label="t('serial.dataBits')"
+              :options="dataBitsOptions"
+              size="small"
+            />
           </div>
           <div class="config-item">
             <label>{{ t('serial.stopBits') }}</label>
-            <AppSelect v-model:value="config.stopBits" :options="stopBitsOptions" size="small" />
+            <AppSelect
+              v-model:value="config.stopBits"
+              :aria-label="t('serial.stopBits')"
+              :options="stopBitsOptions"
+              size="small"
+            />
           </div>
           <div class="config-item">
             <label>{{ t('serial.parity') }}</label>
-            <AppSelect v-model:value="config.parity" :options="parityOptions" size="small" />
+            <AppSelect
+              v-model:value="config.parity"
+              :aria-label="t('serial.parity')"
+              :options="parityOptions"
+              size="small"
+            />
           </div>
           <div class="config-item">
             <label>{{ t('serial.flowControl') }}</label>
             <AppSelect
               v-model:value="config.flowControl"
+              :aria-label="t('serial.flowControl')"
               :options="flowControlOptions"
               size="small"
             />
@@ -85,7 +144,9 @@
               :min="MIN_RX_FRAME_GAP_MS"
               :max="MAX_RX_FRAME_GAP_MS"
               :precision="0"
+              :show-button="false"
               size="small"
+              :aria-label="t('serial.rxFrameGap')"
               @update:value="updateRxFrameGap"
             >
               <template #suffix>ms</template>
@@ -125,18 +186,31 @@
     </div>
 
     <div class="section">
-      <button class="section-title" type="button" @click="toggleSection('checksum')">
+      <button
+        class="section-title"
+        type="button"
+        :aria-expanded="!collapsed.checksum"
+        :aria-controls="sectionId('checksum')"
+        @click="toggleSection('checksum')"
+      >
         <span class="section-heading">
           <Hash class="icon-sm" />
           {{ t('checksum.title') }}
         </span>
         <ChevronRight class="toggle-icon" :class="{ expanded: !collapsed.checksum }" />
       </button>
-      <div class="section-body" :class="{ collapsed: collapsed.checksum }">
+      <div
+        :id="sectionId('checksum')"
+        class="section-body"
+        :class="{ collapsed: collapsed.checksum }"
+        :aria-hidden="collapsed.checksum"
+        :inert="collapsed.checksum ? true : undefined"
+      >
         <div class="checksum-grid">
           <n-input
             v-model:value="checksumInput"
             :placeholder="t('checksum.placeholder')"
+            :aria-label="t('checksum.placeholder')"
             size="small"
             :status="checksumState.status"
             @blur="normalizeChecksumInput"
@@ -148,11 +222,17 @@
             }}</span>
           </div>
           <div class="checksum-actions">
-            <AppSelect v-model:value="checksumAlgo" :options="checksumAlgoOptions" size="small" />
+            <AppSelect
+              v-model:value="checksumAlgo"
+              :aria-label="t('checksum.title')"
+              :options="checksumAlgoOptions"
+              size="small"
+            />
           </div>
-          <div
+          <button
             v-if="checksumResult"
             class="checksum-result"
+            type="button"
             @click="copyChecksum"
             :title="t('checksum.copyTitle')"
           >
@@ -161,7 +241,7 @@
               <span class="checksum-algo">{{ checksumAlgoLabel }}</span>
             </div>
             <span class="checksum-value">{{ checksumResult }}</span>
-          </div>
+          </button>
         </div>
       </div>
     </div>
@@ -169,7 +249,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, reactive, watch } from 'vue';
+import { computed, ref, reactive, useId, watch } from 'vue';
 import { NButton, NInput, NInputNumber } from 'naive-ui';
 import type { SelectOption } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
@@ -225,6 +305,11 @@ const collapsed = reactive({
   config: false,
   checksum: true,
 });
+const portSelectorId = `port-selector-${useId().replace(/:/g, '')}`;
+
+function sectionId(key: keyof typeof collapsed): string {
+  return `${portSelectorId}-${key}`;
+}
 
 function toggleSection(key: keyof typeof collapsed) {
   collapsed[key] = !collapsed[key];
@@ -272,7 +357,7 @@ async function refreshPorts() {
 }
 
 function newSession() {
-  if (!selectedPort.value) return;
+  if (!selectedPort.value || !sessionStore.userMutationsAllowed) return;
   createSession(selectedPort.value, { ...serialStore.portConfig });
 }
 
@@ -523,7 +608,7 @@ async function copyChecksum() {
 }
 
 .summary-label {
-  color: var(--text-dim);
+  color: var(--text-secondary);
   font-family: var(--font-sans);
   font-weight: 600;
 }

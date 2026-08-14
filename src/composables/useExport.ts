@@ -1,6 +1,10 @@
-import { ref } from 'vue';
+import { getCurrentInstance, inject, ref } from 'vue';
 import type { DataFrame, DisplayMode } from '../types';
-import { iterateExportFrames, type ExportFrameSnapshot } from '../lib/export-filters';
+import {
+  EXPORT_FRAME_REFERENCE_LIMIT,
+  iterateExportFrames,
+  type ExportFrameSnapshot,
+} from '../lib/export-filters';
 import {
   getCommandErrorMessage,
   invokeAbortExport,
@@ -16,6 +20,10 @@ import {
 } from '../lib/ipc';
 import { resolveExportFormat, type ExportChoice, type ExportFormat } from '../lib/constants';
 import { t } from '../lib/i18n';
+import type { IpcError } from '../generated/ipc-contracts';
+import type { OperationRegistry } from '../features/application/operation-registry';
+import { SESSION_APPLICATION_SERVICES_KEY } from '../features/sessions/runtime/session-application-services';
+import { WORKSPACE_APPLICATION_KEY } from '../features/workspace/application';
 
 const EXT_MAP: Record<ExportChoice, string> = {
   txt: 'txt',
@@ -30,7 +38,7 @@ export type ExportResult = { ok: true } | { ok: false; error?: string; cancelled
 export const EXPORT_BATCH_MAX_FRAMES = 256;
 export const EXPORT_BATCH_MAX_BYTES = 512 * 1024;
 export const EXPORT_FRAME_MAX_BYTES = 2 * 1024 * 1024;
-export const EXPORT_MAX_FRAMES = 100_000;
+export const EXPORT_MAX_FRAMES = EXPORT_FRAME_REFERENCE_LIMIT;
 export const EXPORT_MAX_BYTES = 128 * 1024 * 1024;
 
 export type ExportPhase =
@@ -58,7 +66,7 @@ export interface ExportSessionClient {
   abort(exportId: string): Promise<void>;
 }
 
-/** A re-iterable, fixed-prefix export selection that does not copy frame refs. */
+/** A re-iterable, fixed reference selection that does not copy frame payloads. */
 export type ExportFrameInput = readonly DataFrame[] | ExportFrameSnapshot;
 
 interface ResolvedExportFrameSource {
@@ -76,6 +84,12 @@ export interface UseExportDeps {
   /** Injectable bounded-export client for unit tests. */
   sessionClient?: ExportSessionClient;
   revokeTarget?: (token: string) => Promise<void>;
+  /** Application-owned lifecycle registry; omitted by isolated unit callers. */
+  operations?: OperationRegistry;
+  /** Stable ownership captured before the first async boundary. */
+  workspaceId?: string;
+  sessionId?: string;
+  operationIdFactory?: () => string;
 }
 
 const DEFAULT_SESSION_CLIENT: ExportSessionClient = {
@@ -86,12 +100,25 @@ const DEFAULT_SESSION_CLIENT: ExportSessionClient = {
 };
 
 export function useExport(deps: UseExportDeps = {}) {
+  const applicationServices = getCurrentInstance()
+    ? inject(SESSION_APPLICATION_SERVICES_KEY, null)
+    : null;
+  const workspace = getCurrentInstance() ? inject(WORKSPACE_APPLICATION_KEY, null) : null;
+  const operations = deps.operations ?? applicationServices?.operationRegistry;
   const isExporting = ref(false);
   const progress = ref<ExportProgress>(emptyProgress());
   let cancelRequested = false;
+  let activeOperationId: string | null = null;
+  let abortNative: (() => Promise<void>) | null = null;
 
   function cancelExport(): void {
-    if (isExporting.value) cancelRequested = true;
+    if (!isExporting.value) return;
+    cancelRequested = true;
+    if (activeOperationId && operations) {
+      void operations.cancel(activeOperationId);
+    } else {
+      void abortNative?.();
+    }
   }
 
   function resetExportProgress(): void {
@@ -107,8 +134,33 @@ export function useExport(deps: UseExportDeps = {}) {
     cancelRequested = false;
     progress.value = emptyProgress();
     try {
+      const operationBinding = operations
+        ? {
+            workspaceId: requireOperationIdentity(
+              'workspaceId',
+              deps.workspaceId ?? workspace?.application.snapshot().currentWorkspace?.workspaceId,
+            ),
+            sessionId: requireOperationIdentity('sessionId', deps.sessionId),
+          }
+        : null;
       const source = resolveExportFrameSource(sourceInput);
       const totals = summarizeExportFrames(source.iterate());
+      if (operations && operationBinding) {
+        const operationId = createSessionExportOperationId(deps.operationIdFactory);
+        activeOperationId = operationId;
+        operations.create({
+          operationId,
+          kind: 'session-export',
+          workspaceId: operationBinding.workspaceId,
+          sessionId: operationBinding.sessionId,
+          progress: { completedUnits: 0, totalUnits: totals.frames },
+          cancel: async () => {
+            cancelRequested = true;
+            await abortNative?.();
+          },
+        });
+        operations.start(operationId);
+      }
       progress.value = {
         ...emptyProgress(),
         phase: 'selecting-target',
@@ -123,11 +175,13 @@ export function useExport(deps: UseExportDeps = {}) {
       );
       if (!targetGrant) {
         progress.value.phase = 'cancelled';
+        await cancelRegisteredOperation(operations, activeOperationId);
         return { ok: false, cancelled: true };
       }
       if (cancelRequested) {
         await (deps.revokeTarget ?? revokeFileGrant)(targetGrant).catch(() => undefined);
         progress.value.phase = 'cancelled';
+        await cancelRegisteredOperation(operations, activeOperationId);
         return { ok: false, cancelled: true };
       }
 
@@ -142,9 +196,19 @@ export function useExport(deps: UseExportDeps = {}) {
           progress.value.phase = 'streaming';
           progress.value.completedFrames = appendStats.totalFrames;
           progress.value.completedRawBytes = appendStats.totalRawBytes;
+          const operationId = activeOperationId;
+          const record = operationId ? operations?.get(operationId) : undefined;
+          if (operationId && record?.status === 'running') {
+            operations?.updateProgress(operationId, {
+              completedUnits: appendStats.totalFrames,
+            });
+          }
         },
         () => {
           progress.value.phase = 'finishing';
+        },
+        (_exportId, abort) => {
+          abortNative = abort;
         },
       );
       progress.value = {
@@ -155,18 +219,33 @@ export function useExport(deps: UseExportDeps = {}) {
         outputBytes: stats.outputBytes,
         durationMs: stats.durationMs,
       };
+      completeRegisteredOperation(operations, activeOperationId);
       return { ok: true };
     } catch (e) {
       if (e instanceof ExportCancelledError) {
         progress.value.phase = 'cancelled';
+        await cancelRegisteredOperation(operations, activeOperationId);
+        return { ok: false, cancelled: true };
+      }
+      const operation = activeOperationId ? operations?.get(activeOperationId) : undefined;
+      if (
+        cancelRequested ||
+        operation?.status === 'cancelling' ||
+        operation?.status === 'cancelled' ||
+        operation?.status === 'interrupted'
+      ) {
+        progress.value.phase = 'cancelled';
         return { ok: false, cancelled: true };
       }
       progress.value.phase = 'error';
+      failRegisteredOperation(operations, activeOperationId, e);
       // Surface the typed Rust error (path validation, IO, too-many-frames) instead
       // of a generic toast. The serialized AppError is { type, details: { message } }.
       return { ok: false, error: getCommandErrorMessage(e, t('message.exportFallbackFailed')) };
     } finally {
       isExporting.value = false;
+      activeOperationId = null;
+      abortNative = null;
     }
   }
 
@@ -300,8 +379,15 @@ async function exportWithSession(
   isCancelled: () => boolean,
   onProgress: (stats: ExportAppendStats) => void,
   onFinishing: () => void,
+  onStarted: (exportId: string, abort: () => Promise<void>) => void = () => undefined,
 ): Promise<ExportFinishStats> {
   const { exportId } = await client.begin(format, targetGrant, expected.frames, expected.rawBytes);
+  let abortTask: Promise<void> | null = null;
+  const abort = (): Promise<void> => {
+    abortTask ??= Promise.resolve().then(() => client.abort(exportId));
+    return abortTask;
+  };
+  onStarted(exportId, abort);
   let finished = false;
   try {
     for (const batch of createExportBatches(frames)) {
@@ -316,16 +402,102 @@ async function exportWithSession(
   } finally {
     if (!finished) {
       // Preserve the original batching/IPC error if cleanup itself fails.
-      await client.abort(exportId).catch(() => undefined);
+      await abort().catch(() => undefined);
     }
   }
+}
+
+let fallbackOperationSequence = 0;
+
+function createSessionExportOperationId(factory: (() => string) | undefined): string {
+  const generated = factory
+    ? factory()
+    : typeof globalThis.crypto?.randomUUID === 'function'
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${++fallbackOperationSequence}`;
+  const normalized = generated.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,223}$/.test(normalized)) {
+    throw new Error('session export operationId must be a path-free opaque identifier');
+  }
+  return `session-export:${normalized}`;
+}
+
+function requireOperationIdentity(field: string, value: string | undefined): string {
+  if (!value || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value)) {
+    throw new Error(`${field} is required when registering an export operation`);
+  }
+  return value;
+}
+
+function completeRegisteredOperation(
+  operations: OperationRegistry | undefined,
+  operationId: string | null,
+): void {
+  if (!operations || !operationId) return;
+  const record = operations.get(operationId);
+  if (record?.status === 'running') operations.complete(operationId);
+}
+
+async function cancelRegisteredOperation(
+  operations: OperationRegistry | undefined,
+  operationId: string | null,
+): Promise<void> {
+  if (!operations || !operationId) return;
+  const record = operations.get(operationId);
+  if (record?.status === 'queued' || record?.status === 'running') {
+    await operations.cancel(operationId);
+  }
+}
+
+function failRegisteredOperation(
+  operations: OperationRegistry | undefined,
+  operationId: string | null,
+  error: unknown,
+): void {
+  if (!operations || !operationId) return;
+  const record = operations.get(operationId);
+  if (record?.status !== 'running' && record?.status !== 'queued') return;
+  operations.fail(operationId, exportFailure(error, operationId));
+}
+
+function exportFailure(error: unknown, operationId: string): IpcError {
+  if (isIpcError(error)) return error;
+  return Object.freeze({
+    code: 'EXPORT_REPLACE_FAILED',
+    messageKey: 'message.exportFallbackFailed',
+    retryable: false,
+    operation: 'session-export',
+    requestId: operationId,
+  });
+}
+
+function isIpcError(value: unknown): value is IpcError {
+  if (!value || typeof value !== 'object') return false;
+  const error = value as Partial<IpcError>;
+  return (
+    typeof error.code === 'string' &&
+    typeof error.messageKey === 'string' &&
+    typeof error.retryable === 'boolean' &&
+    typeof error.operation === 'string'
+  );
 }
 
 function resolveExportFrameSource(input: ExportFrameInput): ResolvedExportFrameSource {
   if (isExportFrameSnapshot(input)) {
     return { iterate: () => iterateExportFrames(input) };
   }
-  return { iterate: () => input };
+  // Public callers may still provide a raw array. Freeze its references before
+  // awaiting the save dialog so capture trimming/appending cannot change the
+  // totals between begin and finish. Copying stops before a 100,001st ref is
+  // retained, while each DataFrame/Uint8Array remains zero-copy.
+  const frames: DataFrame[] = [];
+  for (const frame of input) {
+    if (frames.length >= EXPORT_MAX_FRAMES) {
+      throw new Error(`Export contains more than ${EXPORT_MAX_FRAMES} frames`);
+    }
+    frames.push(frame);
+  }
+  return { iterate: () => frames };
 }
 
 function isExportFrameSnapshot(input: ExportFrameInput): input is ExportFrameSnapshot {

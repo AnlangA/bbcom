@@ -53,7 +53,12 @@
       </div>
       <p v-if="validationMessage" class="validation-message">{{ validationMessage }}</p>
 
-      <div v-if="isExporting || progress.phase === 'completed'" class="export-progress">
+      <div
+        v-if="isExporting || progress.phase === 'completed'"
+        class="export-progress"
+        role="status"
+        aria-live="polite"
+      >
         <n-progress
           type="line"
           :percentage="progressPercentage"

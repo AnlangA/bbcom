@@ -1,8 +1,5 @@
-import type {
-  SerialSendFailureReason,
-  SerialSendResult,
-  SerialWriteOptions,
-} from '../types/serial';
+import type { IpcError } from '../generated/ipc-contracts';
+import type { SerialSendResult, SerialWriteOptions } from '../types/serial';
 
 export const SERIAL_WRITE_MAX_OPERATIONS = 256;
 export const SERIAL_WRITE_MAX_QUEUED_BYTES = 4 * 1024 * 1024;
@@ -36,7 +33,7 @@ export interface SerialWriteShutdownResult {
 interface WriteOperation {
   payload: Uint8Array;
   options: SerialWriteOptions;
-  bytesWritten: number;
+  sentBytes: number;
   settled: boolean;
   promise: Promise<SerialSendResult>;
   resolve: (result: SerialSendResult) => void;
@@ -44,30 +41,47 @@ interface WriteOperation {
 
 type WriteChunk = (chunk: Uint8Array) => Promise<number>;
 
-function failure(
-  reason: SerialSendFailureReason,
-  requestedBytes: number,
-  bytesWritten = 0,
-  error?: unknown,
-): SerialSendResult {
+const SERIAL_SEND_OPERATION = 'serial_send';
+
+function serialError(
+  code: IpcError['code'],
+  messageKey: string,
+  retryable: boolean,
+  details: Partial<Pick<IpcError, 'field' | 'limit' | 'actual'>> = {},
+): IpcError {
   return {
-    status: reason === 'write-error' || reason === 'write-stalled' ? 'partial-unknown' : 'rejected',
-    ok: false,
+    code,
+    messageKey,
+    retryable,
+    operation: SERIAL_SEND_OPERATION,
+    ...details,
+  };
+}
+
+function failed(requestedBytes: number, error: IpcError): SerialSendResult {
+  return {
+    outcome: 'failed',
     requestedBytes,
-    confirmedBytes: bytesWritten,
-    bytesWritten,
-    reason,
-    code:
-      reason === 'queue-full'
-        ? 'SERIAL_QUEUE_FULL'
-        : reason === 'disconnecting'
-          ? 'SERIAL_DISCONNECTED'
-          : reason === 'write-error' || reason === 'write-stalled'
-            ? 'SERIAL_PARTIAL_WRITE'
-            : 'INVALID_INPUT',
-    ...(error === undefined
-      ? {}
-      : { error: error instanceof Error ? error.message : String(error) }),
+    sentBytes: 0,
+    error,
+  };
+}
+
+function writeFailure(requestedBytes: number, sentBytes: number): SerialSendResult {
+  return {
+    outcome: sentBytes > 0 ? 'partial' : 'failed',
+    requestedBytes,
+    sentBytes,
+    error: serialError('SERIAL_PARTIAL_WRITE', 'error.serial_partial_write', false),
+  };
+}
+
+function cancelled(requestedBytes: number, sentBytes = 0): SerialSendResult {
+  return {
+    outcome: 'cancelled',
+    requestedBytes,
+    sentBytes,
+    error: serialError('CANCELLED', 'error.cancelled', false),
   };
 }
 
@@ -114,15 +128,21 @@ export class SerialWriteScheduler {
   }
 
   enqueue(payload: Uint8Array, options: SerialWriteOptions = {}): Promise<SerialSendResult> {
-    if (payload.length === 0) return Promise.resolve(failure('empty', 0));
+    if (payload.length === 0) {
+      return Promise.resolve(
+        failed(0, serialError('INVALID_INPUT', 'error.invalid_input', false, { field: 'payload' })),
+      );
+    }
     if (!this.accepting) {
-      return Promise.resolve(failure('disconnecting', payload.length));
+      return Promise.resolve(cancelled(payload.length));
     }
     if (
       this.outstandingOperations >= this.limits.maxOperations ||
       this.outstandingBytes + payload.length > this.limits.maxQueuedBytes
     ) {
-      return Promise.resolve(failure('queue-full', payload.length));
+      return Promise.resolve(
+        failed(payload.length, serialError('SERIAL_QUEUE_FULL', 'error.serial_queue_full', true)),
+      );
     }
 
     let resolve!: (result: SerialSendResult) => void;
@@ -133,7 +153,7 @@ export class SerialWriteScheduler {
       // The caller may reuse or mutate its buffer while this operation waits.
       payload: payload.slice(),
       options,
-      bytesWritten: 0,
+      sentBytes: 0,
       settled: false,
       promise,
       resolve,
@@ -153,7 +173,7 @@ export class SerialWriteScheduler {
     this.accepting = false;
     while (this.queue.length > 0) {
       const queued = this.queue.shift();
-      if (queued) this.settle(queued, failure('disconnecting', queued.payload.length));
+      if (queued) this.settle(queued, cancelled(queued.payload.length));
     }
 
     const active = this.activeOperation;
@@ -167,7 +187,7 @@ export class SerialWriteScheduler {
     const timedOut = await Promise.race([completed, timeout]);
     if (timer) clearTimeout(timer);
     if (timedOut && !active.settled) {
-      this.settle(active, failure('disconnecting', active.payload.length, active.bytesWritten));
+      this.settle(active, cancelled(active.payload.length, active.sentBytes));
     }
     return { timedOut };
   }
@@ -192,62 +212,64 @@ export class SerialWriteScheduler {
   private async writeOperation(operation: WriteOperation): Promise<SerialSendResult> {
     try {
       operation.options.onWriteStarted?.();
-    } catch (error) {
-      return failure('write-error', operation.payload.length, 0, error);
+    } catch {
+      return writeFailure(operation.payload.length, 0);
     }
 
-    while (operation.bytesWritten < operation.payload.length) {
+    while (operation.sentBytes < operation.payload.length) {
+      if (!this.accepting) return cancelled(operation.payload.length, operation.sentBytes);
       // Keep the logical 4 KiB boundary stable across short writes. A short
       // result continues only the suffix of this chunk before advancing.
       const logicalChunkEnd = Math.min(
-        operation.bytesWritten + this.limits.chunkBytes,
+        operation.sentBytes + this.limits.chunkBytes,
         operation.payload.length,
       );
-      while (operation.bytesWritten < logicalChunkEnd) {
+      while (operation.sentBytes < logicalChunkEnd) {
         if (operation.settled) {
-          return failure('disconnecting', operation.payload.length, operation.bytesWritten);
+          return cancelled(operation.payload.length, operation.sentBytes);
         }
 
-        const chunk = operation.payload.subarray(operation.bytesWritten, logicalChunkEnd);
+        if (!this.accepting) return cancelled(operation.payload.length, operation.sentBytes);
+        const chunk = operation.payload.subarray(operation.sentBytes, logicalChunkEnd);
         let written: number;
         try {
           written = await this.writeChunk(chunk);
-        } catch (error) {
-          return failure('write-error', operation.payload.length, operation.bytesWritten, error);
+        } catch {
+          return this.accepting
+            ? writeFailure(operation.payload.length, operation.sentBytes)
+            : cancelled(operation.payload.length, operation.sentBytes);
         }
 
         // A shutdown may have settled the logical operation while the native
         // promise was still pending. Ignore that stale completion entirely.
         if (operation.settled) {
-          return failure('disconnecting', operation.payload.length, operation.bytesWritten);
+          return cancelled(operation.payload.length, operation.sentBytes);
         }
         if (!Number.isInteger(written) || written <= 0 || written > chunk.length) {
-          return failure(
-            'write-stalled',
-            operation.payload.length,
-            operation.bytesWritten,
-            `driver reported ${written} bytes for a ${chunk.length}-byte write`,
-          );
+          return this.accepting
+            ? writeFailure(operation.payload.length, operation.sentBytes)
+            : cancelled(operation.payload.length, operation.sentBytes);
         }
-        operation.bytesWritten += written;
+        operation.sentBytes += written;
         this.outstandingBytes -= written;
+        if (!this.accepting) return cancelled(operation.payload.length, operation.sentBytes);
       }
     }
 
+    if (operation.sentBytes !== operation.payload.length) {
+      return writeFailure(operation.payload.length, operation.sentBytes);
+    }
     return {
-      status: 'complete',
-      ok: true,
+      outcome: 'complete',
       requestedBytes: operation.payload.length,
-      confirmedBytes: operation.payload.length,
-      bytesWritten: operation.payload.length,
-      reason: null,
+      sentBytes: operation.payload.length,
     };
   }
 
   private settle(operation: WriteOperation, result: SerialSendResult): void {
     if (operation.settled) return;
     operation.settled = true;
-    const remaining = operation.payload.length - operation.bytesWritten;
+    const remaining = operation.payload.length - operation.sentBytes;
     this.outstandingBytes = Math.max(0, this.outstandingBytes - remaining);
     this.outstandingOperations = Math.max(0, this.outstandingOperations - 1);
     operation.resolve(result);

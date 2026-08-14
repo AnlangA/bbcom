@@ -1,12 +1,5 @@
 <template>
   <div class="session-runtime-host">
-    <SessionRuntime
-      v-for="session in residentSessions"
-      :key="session.id"
-      :session="session"
-      @ready="registerRuntime"
-      @dispose="unregisterRuntime"
-    />
     <SessionView
       v-if="activeBinding"
       :key="activeBinding.runtime.instanceId"
@@ -18,49 +11,89 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, shallowReactive, watch } from 'vue';
+import { computed, onBeforeUnmount, shallowRef, watch } from 'vue';
+import { useMessage } from 'naive-ui';
 import SessionView from '../../../components/session/SessionView.vue';
+import { logger } from '../../../lib/logger';
+import { useSessionStore } from '../../../stores/sessions';
 import type { SerialSession } from '../../../types';
-import SessionRuntime from './SessionRuntime.vue';
-import type { SessionRuntimeController } from '../runtime/session-runtime-controller';
-import { SessionRuntimeManager } from '../runtime/session-runtime-manager';
+import type { ApplicationRuntimeEntry } from '../../application/application-runtime-registry';
+import { useSessionApplicationServices } from '../runtime/session-application-services';
+import type { ApplicationSessionRuntime } from '../runtime/session-runtime-factory';
 
 const props = defineProps<{
   sessions: readonly SerialSession[];
   activeSessionId: string | null;
 }>();
 
-const residentSessionIds = ref<string[]>([]);
-const runtimes = shallowReactive(new Map<string, SessionRuntimeController>());
-const runtimeManager = new SessionRuntimeManager<SerialSession, SessionRuntimeController>(runtimes);
+const services = useSessionApplicationServices();
+const sessionStore = useSessionStore();
+const message = useMessage();
+const runtimeEntries = shallowRef<
+  readonly ApplicationRuntimeEntry<SerialSession, ApplicationSessionRuntime>[]
+>(services.runtimeRegistry.list());
+let attached = true;
+let catalogRevision = 0;
+let reconcileTail = Promise.resolve();
 
-watch(
-  () => [props.sessions, props.activeSessionId] as const,
-  ([sessions, activeSessionId]) => {
-    residentSessionIds.value = [...runtimeManager.reconcile(sessions, activeSessionId)];
+const detachNotifications = services.notifications.attach({
+  info: (text) => {
+    message.info(text);
+  },
+  success: (text) => {
+    message.success(text);
+  },
+  warning: (text) => {
+    message.warning(text);
+  },
+  error: (text) => {
+    message.error(text);
+  },
+});
+const detachRegistry = services.runtimeRegistry.subscribe((entries) => {
+  runtimeEntries.value = entries;
+});
+
+const stopCatalogWatch = watch(
+  () => ({ sessions: [...props.sessions], activeSessionId: props.activeSessionId }),
+  ({ sessions, activeSessionId }) => {
+    const catalog = [...sessions];
+    const revision = ++catalogRevision;
+    for (const session of catalog) {
+      sessionStore.registerCleanup(session.id, () =>
+        services.runtimeRegistry.disposeSession(session.id),
+      );
+    }
+    reconcileTail = reconcileTail
+      .then(async () => {
+        await services.runtimeRegistry.reconcile(catalog);
+        if (!attached || revision !== catalogRevision || !activeSessionId) return;
+        const activeSession = catalog.find((session) => session.id === activeSessionId);
+        if (activeSession) await services.runtimeRegistry.ensure(activeSession);
+      })
+      .catch((runtimeError: unknown) => {
+        logger.warn('session runtime catalog reconciliation failed', runtimeError);
+      });
   },
   { immediate: true },
 );
 
-const residentSessions = computed(() => {
-  const sessionsById = new Map(props.sessions.map((session) => [session.id, session]));
-  return residentSessionIds.value.flatMap((sessionId) => {
-    const session = sessionsById.get(sessionId);
-    return session ? [session] : [];
-  });
+const activeBinding = computed(() => {
+  if (!props.activeSessionId) return null;
+  const session = props.sessions.find((candidate) => candidate.id === props.activeSessionId);
+  const runtime = runtimeEntries.value.find(
+    (candidate) => candidate.sessionId === props.activeSessionId,
+  )?.runtime;
+  return session && runtime ? { session, runtime } : null;
 });
 
-const activeBinding = computed(() =>
-  runtimeManager.resolveActive(props.sessions, props.activeSessionId),
-);
-
-function registerRuntime(runtime: SessionRuntimeController) {
-  runtimeManager.register(runtime);
-}
-
-function unregisterRuntime(runtime: SessionRuntimeController) {
-  runtimeManager.unregister(runtime);
-}
+onBeforeUnmount(() => {
+  attached = false;
+  catalogRevision += 1;
+  stopCatalogWatch();
+  detachRegistry();
+  detachNotifications();
+});
 </script>
 
 <style scoped>

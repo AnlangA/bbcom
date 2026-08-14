@@ -7,6 +7,7 @@
           <n-checkbox
             :checked="trigger.enabled"
             size="small"
+            :aria-label="trigger.name"
             @update:checked="(v: boolean) => toggleEnabled(trigger.id, v)"
           />
         </label>
@@ -45,6 +46,7 @@
         v-model:value="draft.name"
         size="tiny"
         :placeholder="t('trigger.namePlaceholder')"
+        :aria-label="t('trigger.namePlaceholder')"
         style="width: 100%"
       />
       <div class="form-row">
@@ -52,11 +54,13 @@
         <n-button-group size="tiny">
           <n-button
             :type="draft.matchMode === 'text' ? 'primary' : 'default'"
+            :aria-pressed="draft.matchMode === 'text'"
             @click="draft.matchMode = 'text'"
             >TXT</n-button
           >
           <n-button
             :type="draft.matchMode === 'hex' ? 'primary' : 'default'"
+            :aria-pressed="draft.matchMode === 'hex'"
             @click="draft.matchMode = 'hex'"
             >HEX</n-button
           >
@@ -65,16 +69,23 @@
           v-model:value="draft.pattern"
           size="tiny"
           :placeholder="draft.matchMode === 'hex' ? 'AA BB' : 'login:'"
+          :aria-label="t('trigger.match')"
           style="flex: 1"
         />
       </div>
       <div class="form-row">
         <span class="field-label">{{ t('trigger.response') }}</span>
-        <n-checkbox v-model:checked="draft.responseIsHex" size="small">HEX</n-checkbox>
+        <n-checkbox
+          v-model:checked="draft.responseIsHex"
+          size="small"
+          :aria-label="t('trigger.response')"
+          >HEX</n-checkbox
+        >
         <n-input
           v-model:value="draft.response"
           size="tiny"
           :placeholder="draft.responseIsHex ? 'CC DD' : 'root\\r\\n'"
+          :aria-label="t('trigger.response')"
           style="flex: 1"
         />
       </div>
@@ -86,6 +97,7 @@
           :min="0"
           :max="60000"
           :step="100"
+          :aria-label="t('trigger.cooldown')"
           style="width: 130px"
         >
           <template #suffix>ms</template>

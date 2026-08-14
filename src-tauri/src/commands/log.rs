@@ -5,7 +5,10 @@ use crate::models::ipc_error::{IpcError, from_app_error};
 use crate::utils::hex::visit_hex_dump_lines;
 use crate::utils::log_text::visit_readable_log_lines;
 use crate::utils::timestamp::format_timestamp;
-use serde::{Deserialize, Serialize};
+use bbcom_contracts::{
+    MAX_AUTO_LOG_BATCH_BYTES as MAX_AUTO_LOG_BATCH_RAW_BYTES, MAX_AUTO_LOG_BATCH_FRAMES,
+    MAX_AUTO_LOG_FRAME_ID_BYTES,
+};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -17,62 +20,15 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
-const MAX_AUTO_LOG_BATCH_FRAMES: usize = 256;
-const MAX_AUTO_LOG_BATCH_RAW_BYTES: usize = 256 * 1024;
-const MAX_AUTO_LOG_FRAME_ID_BYTES: usize = 256;
 const MAX_ACTIVE_AUTO_LOG_SESSIONS: usize = 32;
 const AUTO_LOG_SESSION_TTL: Duration = Duration::from_secs(4 * 60 * 60);
 
 type SharedAutoLogSession = Arc<Mutex<AutoLogSession>>;
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum AutoLogFormat {
-    Hex,
-    Text,
-}
-
-impl AutoLogFormat {
-    fn label(self) -> &'static str {
-        match self {
-            AutoLogFormat::Hex => "hex",
-            AutoLogFormat::Text => "text",
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BeginAutoLogRequest {
-    pub token: String,
-    pub format: AutoLogFormat,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BeginAutoLogResponse {
-    pub log_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppendAutoLogBatchRequest {
-    pub log_id: String,
-    pub frames: Vec<DataFrame>,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AutoLogAppendStats {
-    pub frames: usize,
-    pub raw_bytes: usize,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AutoLogSessionRequest {
-    pub log_id: String,
-}
+pub use bbcom_contracts::{
+    AppendAutoLogBatchRequest, AutoLogAppendStats, AutoLogFormat, AutoLogSessionRequest,
+    BeginAutoLogRequest, BeginAutoLogResponse,
+};
 
 pub struct AutoLogSessionManager {
     sessions: Mutex<HashMap<String, SharedAutoLogSession>>,

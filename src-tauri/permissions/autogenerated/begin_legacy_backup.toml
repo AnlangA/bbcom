@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-begin-legacy-backup"
+description = "Enables the begin_legacy_backup command without any pre-configured scope."
+commands.allow = ["begin_legacy_backup"]
+
+[[permission]]
+identifier = "deny-begin-legacy-backup"
+description = "Denies the begin_legacy_backup command without any pre-configured scope."
+commands.deny = ["begin_legacy_backup"]

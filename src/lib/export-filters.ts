@@ -32,15 +32,17 @@ export interface ExportPreview {
   maxFrameBytes: number;
 }
 
+export const EXPORT_FRAME_REFERENCE_LIMIT = 100_000;
+
 /**
- * A stable, zero-copy export selection. `endIndex` freezes the capture at the
- * confirmation point without duplicating its frame references; new RX/TX
- * frames can continue arriving while the selected prefix streams to Rust.
+ * A stable export selection. The array of already-filtered frame references is
+ * copied at confirmation time, but each DataFrame and its Uint8Array payload
+ * remain shared. Capture trimming/appending can therefore mutate the source
+ * array without changing this selection or allocating the payload again.
  */
 export interface ExportFrameSnapshot {
   frames: readonly DataFrame[];
-  endIndex: number;
-  filter: TimeRangeFilter;
+  preview: ExportPreview;
 }
 
 export function isValidCustomTimeRange(startMs: number | null, endMs: number | null): boolean {
@@ -87,40 +89,53 @@ export function createExportPreview(
   frames: readonly DataFrame[],
   selection: ExportFilterSelection,
 ): ExportPreview {
+  const filter = resolveExportFilter(frames, selection);
   let frameCount = 0;
   let rawBytes = 0;
   let maxFrameBytes = 0;
-  for (const frame of iterateExportFrames(createExportFrameSnapshot(frames, selection))) {
-    const bytes = frame.data.byteLength;
+  for (const frame of frames) {
+    if (!matchesExportFilter(frame, filter)) continue;
     frameCount += 1;
+    const bytes = frame.data.byteLength;
     rawBytes += bytes;
     maxFrameBytes = Math.max(maxFrameBytes, bytes);
   }
-  return {
-    frameCount,
-    rawBytes,
-    maxFrameBytes,
-  };
+  return { frameCount, rawBytes, maxFrameBytes };
 }
 
 export function createExportFrameSnapshot(
   frames: readonly DataFrame[],
   selection: ExportFilterSelection,
 ): ExportFrameSnapshot {
+  const filter = resolveExportFilter(frames, selection);
+  const selected: DataFrame[] = [];
+  let rawBytes = 0;
+  let maxFrameBytes = 0;
+  for (const frame of frames) {
+    if (!matchesExportFilter(frame, filter)) continue;
+    if (selected.length >= EXPORT_FRAME_REFERENCE_LIMIT) {
+      throw new RangeError(
+        `Export contains more than ${EXPORT_FRAME_REFERENCE_LIMIT} frame references`,
+      );
+    }
+    selected.push(frame);
+    const bytes = frame.data.byteLength;
+    rawBytes += bytes;
+    maxFrameBytes = Math.max(maxFrameBytes, bytes);
+  }
   return {
-    frames,
-    endIndex: frames.length,
-    filter: resolveExportFilter(frames, selection),
+    frames: Object.freeze(selected),
+    preview: {
+      frameCount: selected.length,
+      rawBytes,
+      maxFrameBytes,
+    },
   };
 }
 
-/** Stream the selected capture prefix without allocating a filtered frame array. */
+/** Iterate the immutable reference selection without copying frame payloads. */
 export function* iterateExportFrames(snapshot: ExportFrameSnapshot): Generator<DataFrame> {
-  const upperBound = Math.min(snapshot.endIndex, snapshot.frames.length);
-  for (let index = 0; index < upperBound; index += 1) {
-    const frame = snapshot.frames[index];
-    if (matchesExportFilter(frame, snapshot.filter)) yield frame;
-  }
+  yield* snapshot.frames;
 }
 
 export function matchesExportFilter(frame: DataFrame, filter: TimeRangeFilter): boolean {
@@ -140,5 +155,5 @@ export function filterFramesByTimeRange(
   frames: readonly DataFrame[],
   filter: TimeRangeFilter,
 ): DataFrame[] {
-  return Array.from(iterateExportFrames({ frames, endIndex: frames.length, filter }));
+  return frames.filter((frame) => matchesExportFilter(frame, filter));
 }

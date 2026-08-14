@@ -214,7 +214,7 @@ test('createExportPreview returns exact filtered frame and raw-byte totals', () 
   assert.equal(preview.maxFrameBytes, 7);
 });
 
-test('export snapshot preserves a zero-copy confirmed prefix while capture keeps appending', () => {
+test('export snapshot copies the confirmed references while capture keeps appending', () => {
   const frames = [frame('RX', 1, 'first'), frame('TX', 2, 'second')];
   const snapshot = createExportFrameSnapshot(frames, {
     direction: 'all',
@@ -222,7 +222,9 @@ test('export snapshot preserves a zero-copy confirmed prefix while capture keeps
     customStartMs: null,
     customEndMs: null,
   });
-  assert.equal(snapshot.frames, frames, 'selection stores references, not a filtered frame copy');
+  assert.notEqual(snapshot.frames, frames, 'selection owns a stable reference array');
+  assert.equal(snapshot.frames[0], frames[0], 'frame objects are not copied');
+  assert.equal(snapshot.frames[0].data, frames[0].data, 'payloads are not copied');
   frames.push(frame('RX', 3, 'later'));
   assert.deepEqual(
     Array.from(iterateExportFrames(snapshot), (item) => item.id),

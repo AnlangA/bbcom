@@ -29,7 +29,27 @@ import AiWindow from '../../src/AiWindow.vue';
 import { useAppStore } from '../../src/stores/app.ts';
 import { useSessionStore } from '../../src/stores/sessions.ts';
 import { setLocale, t } from '../../src/lib/i18n.ts';
-import type { PortConfig, SerialSession } from '../../src/types/index.ts';
+import type {
+  PortConfig,
+  SerialSession,
+  SessionWaveformFrameCursor,
+  SessionWaveformSampleInput,
+} from '../../src/types/index.ts';
+import { computed, ref } from 'vue';
+import type { SessionRuntimeMacroController } from '../../src/features/sessions/runtime/session-runtime-controller.ts';
+
+function fakeMacroRunner(): SessionRuntimeMacroController {
+  return {
+    running: ref(false),
+    status: computed(() => 'idle' as const),
+    run: vi.fn(async (macro) => ({
+      completed: macro.steps.length,
+      failedAt: macro.steps.length,
+      aborted: false,
+    })),
+    abort: vi.fn(),
+  };
+}
 
 const sessionActions = vi.hoisted(() => ({
   requestCloseSession: vi.fn(),
@@ -40,6 +60,7 @@ const nativeMocks = vi.hoisted(() => ({
   checksum: vi.fn(),
   resizeAiWindow: vi.fn(),
   tauriEmit: vi.fn(),
+  tauriListen: vi.fn(),
   message: {
     error: vi.fn(),
     warning: vi.fn(),
@@ -135,7 +156,10 @@ vi.mock('../../src/lib/ipc', async (importOriginal) => {
   };
 });
 
-vi.mock('@tauri-apps/api/event', () => ({ emit: nativeMocks.tauriEmit }));
+vi.mock('@tauri-apps/api/event', () => ({
+  emit: nativeMocks.tauriEmit,
+  listen: nativeMocks.tauriListen,
+}));
 
 vi.mock('../../src/composables/useAiSessionBridge', () => ({
   useAiSessionBridge: vi.fn(),
@@ -189,10 +213,11 @@ function setupSessions() {
 
 beforeEach(() => {
   sessionActions.requestCloseSession.mockReset();
-  sessionActions.createSession.mockReset();
+  sessionActions.createSession.mockReset().mockReturnValue('created-session');
   nativeMocks.checksum.mockReset();
   nativeMocks.resizeAiWindow.mockReset();
   nativeMocks.tauriEmit.mockReset();
+  nativeMocks.tauriListen.mockReset().mockResolvedValue(vi.fn());
   nativeMocks.message.error.mockReset();
   nativeMocks.message.warning.mockReset();
   nativeMocks.message.success.mockReset();
@@ -302,6 +327,7 @@ test('SendPanel sends text with the selected line ending, normalizes valid hexad
       onSend: sent,
       onStartLoop: startLoop,
       onStopLoop: stopLoop,
+      macroRunner: fakeMacroRunner(),
       looping: false,
       modelValue: 'AT',
       history: [],
@@ -349,6 +375,7 @@ test('SendPanel appends a checksum when the native calculation succeeds and repo
       onSend: sent,
       onStartLoop: vi.fn(() => true),
       onStopLoop: vi.fn(),
+      macroRunner: fakeMacroRunner(),
       looping: false,
       modelValue: 'AA',
       history: [],
@@ -385,6 +412,7 @@ test('ToolsTabs saves, sends, removes, and replays quick commands without runnin
       history: [{ data: 'AT+OLD', isHex: false, timestamp: 1 }],
       quickCommands: [{ id: 'quick-1', name: 'Ping', data: 'AT+PING', isHex: false }],
       onSend,
+      macroRunner: fakeMacroRunner(),
     },
     global: {
       stubs: {
@@ -1086,9 +1114,42 @@ test('WaveformPanel ingests frames, handles legend controls, register samples, c
           },
         ],
         framesVersion: 1,
+        canAppend: true,
+        canEdit: true,
+        waveform: {
+          channels: [],
+          samples: [],
+          frameCursor: { consumed: 0, lastFrameId: null },
+        },
       },
     });
     await wrapper.vm.$nextTick();
+    const ingestEvents =
+      wrapper.emitted('commitFrameIngest') ?? wrapper.emitted('commit-frame-ingest');
+    const initialIngest = ingestEvents?.[0]?.[0] as
+      | {
+          mode: 'append' | 'replace';
+          samples: readonly SessionWaveformSampleInput[];
+          cursor: SessionWaveformFrameCursor;
+        }
+      | undefined;
+    expect(initialIngest?.mode).toBe('append');
+    expect(initialIngest?.samples).toHaveLength(2);
+    await wrapper.setProps({
+      waveform: {
+        channels: [
+          { channelIndex: 0, config: { visible: true } },
+          { channelIndex: 1, config: { visible: true } },
+        ],
+        samples: initialIngest!.samples.map((sample) => ({
+          channelIndex: sample.channelIndex,
+          seq: sample.group,
+          timestampMs: sample.timestampMs,
+          value: sample.value,
+        })),
+        frameCursor: initialIngest!.cursor,
+      },
+    });
     const legend = wrapper.findComponent(WaveformLegend);
     expect(legend.findAll('.legend-toggle')).toHaveLength(2);
     await legend.findAll('.legend-toggle')[0].trigger('click');

@@ -9,6 +9,7 @@ import {
   AUTO_LOG_MAX_BATCH_BYTES,
   AUTO_LOG_MAX_BATCH_FRAMES,
   AUTO_LOG_MAX_QUEUED_ENTRIES,
+  AutoLogShutdownError,
   autoLogFormatForDisplayMode,
   useAutoLog,
   type AutoLogSessionClient,
@@ -303,6 +304,69 @@ test('useAutoLog: graceful disable stops new frames, drains, then finishes', asy
     await disabling;
     assert.equal(calls.appends.length, 1);
     assert.deepEqual(calls.finishes, [`log-${sessionId}`]);
+  });
+});
+
+test('useAutoLog: strict shutdown propagates native footer, flush, or sync failure', async () => {
+  await withLocalStorageMock(async () => {
+    const { sessionId, calls, auto } = setup({
+      client: {
+        finish: async () => {
+          throw new Error('native sync failed');
+        },
+      },
+    });
+    await auto.enable(sessionId);
+
+    await assert.rejects(auto.prepareShutdown(sessionId), (error: unknown) => {
+      assert.ok(error instanceof AutoLogShutdownError);
+      assert.equal(error.stage, 'terminal');
+      assert.match(String(error.cause), /native sync failed/);
+      return true;
+    });
+    assert.deepEqual(calls.finishes, [`log-${sessionId}`]);
+  });
+});
+
+test('useAutoLog: strict shutdown propagates a terminal timeout', async () => {
+  await withLocalStorageMock(async () => {
+    const never = new Promise<never>(() => undefined);
+    const { sessionId, auto } = setup({
+      drainTimeoutMs: 50,
+      terminalTimeoutMs: 10,
+      client: { finish: async () => never },
+    });
+    await auto.enable(sessionId);
+
+    await assert.rejects(auto.prepareShutdown(sessionId), (error: unknown) => {
+      assert.ok(error instanceof AutoLogShutdownError);
+      assert.equal(error.stage, 'terminal');
+      assert.match(String(error.cause), /operation timed out/);
+      return true;
+    });
+  });
+});
+
+test('useAutoLog: strict shutdown propagates queued append failure', async () => {
+  await withLocalStorageMock(async () => {
+    const { sessionId, calls, auto } = setup({
+      debounceMs: 1_000,
+      client: {
+        append: async () => {
+          throw new Error('append failed');
+        },
+      },
+    });
+    await auto.enable(sessionId);
+    auto.appendFrame(sessionId, frame('RX', 1));
+
+    await assert.rejects(auto.prepareShutdown(sessionId), (error: unknown) => {
+      assert.ok(error instanceof AutoLogShutdownError);
+      assert.equal(error.stage, 'append');
+      assert.match(String(error.cause), /append failed/);
+      return true;
+    });
+    assert.deepEqual(calls.aborts, [`log-${sessionId}`]);
   });
 });
 

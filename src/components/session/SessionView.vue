@@ -1,5 +1,10 @@
 <template>
-  <div class="session-view">
+  <div
+    :id="`session-panel-${props.session.id}`"
+    class="session-view"
+    role="tabpanel"
+    :aria-labelledby="`session-tab-${props.session.id}`"
+  >
     <!--
       Toolbar extracted from SessionView: connection controls + display/view/format
       toggles live in SessionToolbar. This component is the layout orchestrator
@@ -13,6 +18,8 @@
       :is-connecting="runtime.isConnecting.value"
       :reconnecting="runtime.reconnecting.value"
       :error="runtime.error.value"
+      :connection-conflict="runtime.connectionFailure.value?.conflict"
+      :needs-rebind="Boolean(rebindMetadata)"
       :total-dropped-bytes="runtime.totalDroppedBytes.value"
       :sending-break="runtime.sendingBreak.value"
       :is-exporting="isExporting"
@@ -27,6 +34,15 @@
       @toggle-timestamp="toggleTimestamp"
       @toggle-auto-log="toggleAutoLog"
       @export="openExportDialog"
+      @show-conflicting-session="showConflictingSession"
+      @rebind="rebindDialogVisible = true"
+    />
+    <SessionRebindDialog
+      :show="rebindDialogVisible"
+      :session-id="props.session.id"
+      :port-config="props.session.portConfig"
+      @update:show="rebindDialogVisible = $event"
+      @rebound="rebindDialogVisible = false"
     />
     <KeepAlive>
       <ExportDialog
@@ -54,7 +70,16 @@
           direction="RX"
           :mode="props.session.waveformSourceMode"
           :channel-labels="waveformChannelLabels"
+          :waveform="waveformState"
+          :can-edit="sessionStore.userMutationsAllowed"
+          :can-append="sessionStore.runtimeCaptureAllowed"
           @toggle-mode="toggleWaveformSourceMode"
+          @append-samples="appendWaveformSamples"
+          @replace-samples="replaceWaveformSamples"
+          @set-channel-visibility="setWaveformChannelVisibility"
+          @update-frame-cursor="updateWaveformFrameCursor"
+          @commit-frame-ingest="commitWaveformFrameIngest"
+          @clear="clearWaveform"
         />
         <ModbusPanel
           v-else-if="viewMode === 'modbus'"
@@ -100,6 +125,7 @@
     <div class="send-area">
       <SendPanel
         :on-send="handleSend"
+        :macro-runner="runtime.macro"
         :on-start-loop="runtime.startSendLoop"
         :on-stop-loop="runtime.stopSendLoop"
         :looping="runtime.looping.value"
@@ -129,6 +155,7 @@ import { computed, defineAsyncComponent, onUnmounted, ref } from 'vue';
 import DataPacketList from '../terminal/DataPacketList.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
 import SessionToolbar from './SessionToolbar.vue';
+import SessionRebindDialog from './SessionRebindDialog.vue';
 import { useSessionStore } from '../../stores/sessions';
 import { useAppStore } from '../../stores/app';
 import { useExport } from '../../composables/useExport';
@@ -138,7 +165,12 @@ import { useMessage } from 'naive-ui';
 import type { ExportChoice } from '../../lib/constants';
 import type { ExportFrameSnapshot } from '../../lib/export-filters';
 import { t } from '../../lib/i18n';
-import type { SerialSession } from '../../types';
+import type {
+  SerialSession,
+  SessionWaveformFrameCursor,
+  SessionWaveformSampleInput,
+  SessionWaveformState,
+} from '../../types';
 import type {
   SessionRuntimeController,
   SessionRuntimeWaveformSink,
@@ -159,9 +191,15 @@ const runtime = props.runtime;
 const visibleFramesVersion = computed(() => sessionStore.getSessionFramesVersion(props.session.id));
 const appStore = useAppStore();
 const { requestClearFrames } = useSessionActions();
-const { isExporting, progress, cancelExport, resetExportProgress, exportData } = useExport();
+const { isExporting, progress, cancelExport, resetExportProgress, exportData } = useExport({
+  sessionId: props.session.id,
+});
 const message = useMessage();
 const exportDialogVisible = ref(false);
+const rebindDialogVisible = ref(false);
+const rebindMetadata = computed(
+  () => sessionStore.workspaceRebindBySessionId[props.session.id] ?? null,
+);
 
 async function connect() {
   await runtime.connect();
@@ -198,6 +236,53 @@ const viewMode = runtime.viewMode;
 // The runtime owns the Modbus master and its periodic loops. This active-only
 // view attaches the optional waveform sink and consumes the controller API.
 const waveformRef = ref<SessionRuntimeWaveformSink | null>(null);
+const EMPTY_WAVEFORM_STATE = Object.freeze<SessionWaveformState>({
+  channels: Object.freeze([]),
+  samples: Object.freeze([]),
+  frameCursor: Object.freeze({ consumed: 0, lastFrameId: null }),
+});
+const waveformState = computed(
+  () => sessionStore.workspaceWaveformBySessionId[props.session.id] ?? EMPTY_WAVEFORM_STATE,
+);
+
+function appendWaveformSamples(samples: readonly SessionWaveformSampleInput[]): void {
+  sessionStore.appendSessionWaveformSamples(props.session.id, samples);
+}
+
+function replaceWaveformSamples(samples: readonly SessionWaveformSampleInput[]): void {
+  sessionStore.replaceSessionWaveformSamples(props.session.id, samples);
+}
+
+function setWaveformChannelVisibility(channelIndex: number, visible: boolean): void {
+  sessionStore.setSessionWaveformChannelVisible(props.session.id, channelIndex, visible);
+}
+
+function updateWaveformFrameCursor(cursor: SessionWaveformFrameCursor): void {
+  sessionStore.setSessionWaveformFrameCursor(props.session.id, cursor);
+}
+
+function commitWaveformFrameIngest(ingest: {
+  readonly mode: 'append' | 'replace';
+  readonly samples: readonly SessionWaveformSampleInput[];
+  readonly cursor: SessionWaveformFrameCursor;
+}): void {
+  sessionStore.commitSessionWaveformFrameIngest(
+    props.session.id,
+    ingest.mode,
+    ingest.samples,
+    ingest.cursor,
+  );
+}
+
+function clearWaveform(cursor: SessionWaveformFrameCursor): void {
+  sessionStore.resetSessionWaveform(props.session.id, cursor);
+}
+
+function showConflictingSession(sessionId: string): void {
+  if (sessionStore.sessions.some((session) => session.id === sessionId)) {
+    sessionStore.setActiveSession(sessionId);
+  }
+}
 
 const {
   modbusBusy,

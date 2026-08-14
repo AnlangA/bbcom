@@ -2,15 +2,18 @@
 
 import { afterEach, beforeEach, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
-import { computed, effectScope, nextTick, ref } from 'vue';
+import { computed, effectScope, nextTick, ref, toRaw } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import type { SerialSession } from '../../src/types/session.ts';
 import type { PortConfig, SerialSendResult } from '../../src/types/serial.ts';
+import type { SerialStopResult } from '../../src/composables/useSerialConnection.ts';
+import { PortLeaseRegistry } from '../../src/features/serial/application/port-lease-registry.ts';
 
 const mocked = vi.hoisted(() => ({
   autoLog: {
     enable: vi.fn(),
     disable: vi.fn(),
+    prepareShutdown: vi.fn(),
   },
   message: {
     error: vi.fn(),
@@ -47,6 +50,7 @@ vi.mock('../../src/composables/useSerialConnection.ts', () => ({
     mocked.serialArgs = args;
     return mocked.serial;
   },
+  serialConnectionFailureMessage: () => 'error.port_in_use',
 }));
 
 import {
@@ -68,6 +72,7 @@ const config: PortConfig = {
 
 interface FakeSerial {
   error: ReturnType<typeof ref<string | null>>;
+  connectionFailure: ReturnType<typeof ref<unknown>>;
   isConnected: ReturnType<typeof ref<boolean>>;
   isConnecting: ReturnType<typeof ref<boolean>>;
   reconnecting: ReturnType<typeof ref<boolean>>;
@@ -92,24 +97,60 @@ interface ModbusRuntimeOptions {
 
 function complete(bytes: number): SerialSendResult {
   return {
-    status: 'complete',
-    ok: true,
+    outcome: 'complete',
     requestedBytes: bytes,
-    confirmedBytes: bytes,
-    bytesWritten: bytes,
-    reason: null,
+    sentBytes: bytes,
   };
 }
 
 function rejected(bytes: number): SerialSendResult {
   return {
-    status: 'rejected',
-    ok: false,
+    outcome: 'failed',
     requestedBytes: bytes,
-    confirmedBytes: 0,
-    bytesWritten: 0,
-    reason: 'not-connected',
-    code: 'SERIAL_DISCONNECTED',
+    sentBytes: 0,
+    error: {
+      code: 'SERIAL_DISCONNECTED',
+      messageKey: 'error.serial_disconnected',
+      retryable: true,
+      operation: 'serial_send',
+    },
+  };
+}
+
+function incomplete(outcome: 'partial' | 'cancelled', bytes: number): SerialSendResult {
+  const cancelled = outcome === 'cancelled';
+  return {
+    outcome,
+    requestedBytes: bytes,
+    sentBytes: 1,
+    error: {
+      code: cancelled ? 'CANCELLED' : 'SERIAL_PARTIAL_WRITE',
+      messageKey: cancelled ? 'error.cancelled' : 'error.serial_partial_write',
+      retryable: false,
+      operation: 'serial_send',
+    },
+  };
+}
+
+function stoppedWithNoConnection(): SerialStopResult {
+  return {
+    watch: 'not-installed',
+    rxDrainGuarantee: 'guaranteed',
+    rxDrainStatus: 'no-active-connection',
+    nativeDrainedBytes: 0,
+    pendingOpen: 'none',
+    portClose: 'no-active-port',
+  };
+}
+
+function stoppedAfterNativeDrain(): SerialStopResult {
+  return {
+    watch: 'unwatch-acknowledged',
+    rxDrainGuarantee: 'guaranteed',
+    rxDrainStatus: 'idle-gap-observed',
+    nativeDrainedBytes: 0,
+    pendingOpen: 'none',
+    portClose: 'close-acknowledged',
   };
 }
 
@@ -118,6 +159,7 @@ function makeSerial(): FakeSerial {
   const isConnected = ref(false);
   const serial: FakeSerial = {
     error: ref<string | null>(null),
+    connectionFailure: ref(null),
     isConnected,
     isConnecting: ref(false),
     reconnecting: ref(false),
@@ -127,7 +169,9 @@ function makeSerial(): FakeSerial {
       return true;
     }),
     stop: vi.fn(async () => {
+      const result = isConnected.value ? stoppedAfterNativeDrain() : stoppedWithNoConnection();
       isConnected.value = false;
+      return result;
     }),
     send: vi.fn(async (data: string) => complete(new TextEncoder().encode(data).length)),
     sendBytes: vi.fn(async (payload: Uint8Array) => complete(payload.length)),
@@ -161,7 +205,13 @@ function setup() {
   mocked.serial = serial;
   const scope = effectScope();
   const runtime = scope.run(() =>
-    useSessionRuntimeController(computed(() => sessionById(store.sessions, id))),
+    useSessionRuntimeController(
+      computed(() => sessionById(store.sessions, id)),
+      {
+        notifications: mocked.message,
+        portLeaseClient: new PortLeaseRegistry({ platform: 'windows' }),
+      },
+    ),
   );
   assert.ok(runtime);
   return { id, runtime, scope, serial, store };
@@ -171,8 +221,10 @@ beforeEach(() => {
   vi.useFakeTimers();
   mocked.autoLog.enable.mockReset();
   mocked.autoLog.disable.mockReset();
+  mocked.autoLog.prepareShutdown.mockReset();
   mocked.autoLog.enable.mockResolvedValue('capture.log');
   mocked.autoLog.disable.mockResolvedValue(undefined);
+  mocked.autoLog.prepareShutdown.mockResolvedValue(undefined);
   mocked.message.error.mockReset();
   mocked.message.info.mockReset();
   mocked.message.success.mockReset();
@@ -277,8 +329,15 @@ test('controller delegates lifecycle commands and releases every resident resour
   assert.equal(await runtime.send('AT', false), true);
   serial.send.mockResolvedValueOnce(rejected(2));
   assert.equal(await runtime.send('NO', false), false);
+  serial.send.mockResolvedValueOnce(incomplete('partial', 2));
+  assert.equal(await runtime.send('PA', false), false);
+  serial.send.mockResolvedValueOnce(incomplete('cancelled', 2));
+  assert.equal(await runtime.send('CA', false), false);
   assert.deepEqual(session.sendHistory, [{ data: 'AT', isHex: false }]);
-  assert.equal(await runtime.sendBytes(new Uint8Array([1, 2])).then((result) => result.ok), true);
+  assert.equal(
+    await runtime.sendBytes(new Uint8Array([1, 2])).then((result) => result.outcome === 'complete'),
+    true,
+  );
 
   assert.equal(await runtime.sendBreak(), true);
   serial.sendBreak.mockResolvedValueOnce(false);
@@ -320,12 +379,80 @@ test('controller delegates lifecycle commands and releases every resident resour
   await firstDispose;
   assert.ok(serial.stop.mock.calls.length >= 1);
   assert.equal(mocked.modbus.master.stop.mock.calls.length, 1);
-  assert.equal(mocked.autoLog.disable.mock.calls.length, 2, 'dispose invalidates auto-log');
+  assert.equal(
+    mocked.autoLog.prepareShutdown.mock.calls.length,
+    1,
+    'dispose strictly finalizes auto-log',
+  );
 
   assert.equal(await runtime.connect(), false);
   assert.equal(await runtime.send('ignored', false), false);
   assert.equal(await runtime.sendBreak(), false);
   assert.equal(runtime.startSendLoop('ignored', false), false);
+  scope.stop();
+});
+
+test('prepareShutdown preserves runtime reuse and orders serial drain before auto-log footer', async () => {
+  const { runtime, scope, serial } = setup();
+  const order: string[] = [];
+  serial.stop.mockImplementation(async () => {
+    order.push('serial');
+    serial.isConnected.value = false;
+    return stoppedAfterNativeDrain();
+  });
+  mocked.autoLog.prepareShutdown.mockImplementation(async () => {
+    order.push('footer');
+  });
+
+  assert.equal(await runtime.connect(), true);
+  await runtime.prepareShutdown();
+  assert.deepEqual(order, ['serial', 'footer']);
+  assert.equal(mocked.modbus.master.stop.mock.calls.length, 1);
+
+  assert.equal(await runtime.connect(), true, 'preparation does not dispose or seal the runtime');
+  await runtime.prepareShutdown();
+  assert.deepEqual(order, ['serial', 'footer', 'serial', 'footer']);
+
+  await runtime.dispose();
+  scope.stop();
+});
+
+test('prepareShutdown rejects false-ready serial evidence but still attempts the log footer', async () => {
+  const { runtime, scope, serial } = setup();
+  serial.stop.mockResolvedValue({
+    watch: 'unwatch-acknowledged',
+    rxDrainGuarantee: 'not-guaranteed',
+    rxDrainStatus: 'renderer-overflow',
+    nativeDrainedBytes: 4,
+    pendingOpen: 'none',
+    portClose: 'close-acknowledged',
+  });
+
+  await assert.rejects(runtime.prepareShutdown(), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.match(String(error.errors[0]), /serial stop did not prove shutdown/);
+    return true;
+  });
+  assert.equal(mocked.autoLog.prepareShutdown.mock.calls.length, 1);
+
+  serial.stop.mockResolvedValue(stoppedWithNoConnection());
+  await runtime.dispose();
+  scope.stop();
+});
+
+test('prepareShutdown propagates strict auto-log footer or sync failures', async () => {
+  const { runtime, scope, serial } = setup();
+  serial.stop.mockResolvedValue(stoppedWithNoConnection());
+  mocked.autoLog.prepareShutdown.mockRejectedValueOnce(new Error('native sync failed'));
+
+  await assert.rejects(runtime.prepareShutdown(), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.match(String(error.errors[0]), /native sync failed/);
+    return true;
+  });
+
+  mocked.autoLog.prepareShutdown.mockResolvedValue(undefined);
+  await runtime.dispose();
   scope.stop();
 });
 
@@ -371,4 +498,78 @@ test('headless controller does not require a document to allocate or dispose run
     if (descriptor) Object.defineProperty(globalThis, 'document', descriptor);
     else Reflect.deleteProperty(globalThis, 'document');
   }
+});
+
+test('controller exposes lazy status/error branches and joins concurrent shutdown preparation', async () => {
+  const { id, runtime, scope, serial, store } = setup();
+
+  assert.equal(runtime.error.value, null);
+  serial.connectionFailure.value = {
+    error: {
+      code: 'PORT_IN_USE',
+      messageKey: 'error.port_in_use',
+      retryable: false,
+      operation: 'serial_open',
+    },
+    category: 'port-in-use',
+  };
+  assert.equal(typeof runtime.error.value, 'string');
+  serial.error.value = 'port is already open';
+  serial.start.mockResolvedValueOnce(false);
+  assert.equal(await runtime.connect(), false);
+
+  assert.equal(runtime.macro.status.value, 'idle');
+  const sending = new Promise<SerialSendResult>(() => undefined);
+  serial.send.mockReturnValueOnce(sending);
+  const running = runtime.macro.run({
+    id: 'coverage-macro',
+    name: 'coverage',
+    steps: [{ data: 'AT', isHex: false, delayMs: 0 }],
+  });
+  await Promise.resolve();
+  assert.equal(runtime.macro.status.value, 'running');
+  runtime.macro.abort();
+
+  serial.stop.mockResolvedValueOnce({
+    ...stoppedAfterNativeDrain(),
+    portClose: 'force-close-acknowledged',
+  });
+  const footer = new Promise<void>(() => undefined);
+  mocked.autoLog.prepareShutdown.mockReturnValueOnce(footer);
+  const first = runtime.prepareShutdown();
+  const joined = runtime.prepareShutdown();
+  assert.equal(joined, first);
+
+  // Leave intentionally pending operations scoped to this coverage case.
+  assert.equal(sessionById(store.sessions, id).id, id);
+  scope.stop();
+  void running;
+});
+
+test('loop payload is cleared when an already-running scheduler rejects a second start', async () => {
+  const { runtime, scope, serial } = setup();
+  serial.isConnected.value = true;
+
+  let settleFirstSend!: (result: SerialSendResult) => void;
+  const firstSend = new Promise<SerialSendResult>((resolve) => {
+    settleFirstSend = resolve;
+  });
+  serial.send.mockReturnValueOnce(firstSend);
+
+  assert.equal(runtime.startSendLoop('FIRST', false), true);
+  await Promise.resolve();
+
+  // Exercise the defensive mismatch branch: the scheduler is still running,
+  // while a stale UI flag has already been reset by a concurrent boundary.
+  toRaw(runtime.looping).value = false;
+  assert.equal(runtime.startSendLoop('SECOND', false), false);
+
+  settleFirstSend(complete(5));
+  await Promise.resolve();
+  await Promise.resolve();
+  await vi.runOnlyPendingTimersAsync();
+  runtime.stopSendLoop();
+
+  await runtime.dispose();
+  scope.stop();
 });

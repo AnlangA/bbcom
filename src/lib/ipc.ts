@@ -1,50 +1,48 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ExportFormat } from './constants';
-import type { AiModel, AppError, ChecksumType, DataFrame } from '../types';
+import type {
+  AiRequestResult,
+  AiRisk,
+  AiWindowState,
+  AppError,
+  AutoLogAppendStats,
+  AutoLogFormat,
+  BeginAutoLogResponse,
+  BeginExportResponse,
+  ChecksumType,
+  ExportAppendStats,
+  ExportFinishStats,
+  ExportFormat,
+  ExportFramePayload,
+  LogAiResponse,
+  RunAiRequest,
+  SaveTargetGrant,
+  SaveTargetPurpose,
+  TerminalAiResponse,
+} from '../generated/ipc-contracts';
 import { t } from './i18n';
 
-export type AiRisk = 'safe' | 'caution' | 'dangerous';
+export type {
+  AiRequestResult,
+  AiRisk,
+  AiWindowState,
+  AppError,
+  AutoLogAppendStats,
+  AutoLogFormat,
+  BeginAutoLogResponse,
+  BeginExportResponse,
+  ChecksumType,
+  ExportAppendStats,
+  ExportFinishStats,
+  ExportFormat,
+  ExportFramePayload,
+  LogAiResponse,
+  SaveTargetGrant,
+  SaveTargetPurpose,
+  TerminalAiResponse,
+};
 
-export interface TerminalAiRequest {
-  requestId: string;
-  kind: 'terminal';
-  prompt: string;
-  model: AiModel;
-  shell: string;
-  context?: string;
-}
-
-export interface TerminalAiResponse {
-  command: string;
-  explanation: string;
-  risk: AiRisk;
-}
-
-export interface AiWindowState {
-  visible: boolean;
-}
-
-export interface LogAiRequest {
-  requestId: string;
-  kind: 'log';
-  prompt: string;
-  model: AiModel;
-  context: string;
-  contextMode?: string;
-  sessionMeta?: string;
-}
-
-export type AiRequest = TerminalAiRequest | LogAiRequest;
-
-export type AiRequestResult =
-  ({ kind: 'terminal' } & TerminalAiResponse) | ({ kind: 'log' } & LogAiResponse);
-
-export interface LogAiResponse {
-  answer: string;
-  evidence: string[];
-  suggestions: string[];
-  truncated: boolean;
-}
+/** Canonical credential-free AI request generated from the Rust command DTO. */
+export type AiRequest = RunAiRequest;
 
 export interface AppCommandErrorDetails {
   message?: string;
@@ -72,32 +70,6 @@ export async function calculateChecksum(data: ArrayLike<number>, algorithm: Chec
   return invoke<{ result: string }>('calculate_checksum', {
     request: { data: Array.from(data), algorithm },
   });
-}
-
-export type ExportFramePayload = Omit<DataFrame, 'data'> & { data: number[] };
-
-export interface BeginExportResponse {
-  exportId: string;
-}
-
-export interface ExportAppendStats {
-  totalFrames: number;
-  totalRawBytes: number;
-}
-
-export interface ExportFinishStats {
-  frames: number;
-  rawBytes: number;
-  outputBytes: number;
-  durationMs: number;
-}
-
-export type SaveTargetPurpose =
-  'export-txt-hex' | 'export-txt-ascii' | 'export-csv' | 'export-jsonl' | 'export-bin' | 'auto-log';
-
-export interface SaveTargetGrant {
-  token: string;
-  displayName: string;
 }
 
 export async function requestSaveTarget(
@@ -137,17 +109,6 @@ export async function invokeFinishExport(exportId: string): Promise<ExportFinish
 
 export async function invokeAbortExport(exportId: string): Promise<void> {
   return invoke<void>('abort_export', { request: { exportId } });
-}
-
-export type AutoLogFormat = 'hex' | 'text';
-
-export interface BeginAutoLogResponse {
-  logId: string;
-}
-
-export interface AutoLogAppendStats {
-  frames: number;
-  rawBytes: number;
 }
 
 export async function invokeBeginAutoLog(

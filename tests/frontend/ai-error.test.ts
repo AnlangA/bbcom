@@ -4,25 +4,24 @@ import { getAiErrorMessage } from '../../src/lib/ai-error.ts';
 
 const FALLBACK = 'something went wrong';
 
-test('passes a plain string error through unchanged', () => {
-  assert.equal(getAiErrorMessage('rate limited', FALLBACK), 'rate limited');
+test('does not expose an unstructured provider string', () => {
+  assert.equal(getAiErrorMessage('rate limited', FALLBACK), FALLBACK);
 });
 
-test('extracts the nested details.message from a Tauri AppError shape', () => {
+test('does not expose legacy nested provider prose', () => {
   const error = {
     type: 'AiError',
     details: { message: '请求过于频繁，请等待 3 秒后重试' },
   };
-  assert.equal(getAiErrorMessage(error, FALLBACK), '请求过于频繁，请等待 3 秒后重试');
+  assert.equal(getAiErrorMessage(error, FALLBACK), FALLBACK);
 });
 
-test('falls back to the top-level message when details is absent', () => {
-  assert.equal(getAiErrorMessage({ message: 'network error' }, FALLBACK), 'network error');
+test('does not expose legacy top-level provider prose', () => {
+  assert.equal(getAiErrorMessage({ message: 'network error' }, FALLBACK), FALLBACK);
 });
 
-test('ignores an empty details.message and keeps looking', () => {
-  // details.message is "" (falsy) → should not return it; top-level message wins
-  assert.equal(getAiErrorMessage({ details: { message: '' }, message: 'top' }, FALLBACK), 'top');
+test('ignores empty or non-contract legacy messages', () => {
+  assert.equal(getAiErrorMessage({ details: { message: '' }, message: 'top' }, FALLBACK), FALLBACK);
 });
 
 test('returns the fallback for null, undefined, and message-less objects', () => {
@@ -33,19 +32,33 @@ test('returns the fallback for null, undefined, and message-less objects', () =>
 });
 
 test('does not crash when details is a non-object value', () => {
-  assert.equal(getAiErrorMessage({ details: 'oops', message: 'top' }, FALLBACK), 'top');
+  assert.equal(getAiErrorMessage({ details: 'oops', message: 'top' }, FALLBACK), FALLBACK);
   assert.equal(getAiErrorMessage({ details: null }, FALLBACK), FALLBACK);
 });
 
 test('maps every stable AI cancellation and security code before considering backend prose', () => {
   assert.equal(
     getAiErrorMessage({ code: 'BUSY', message: 'must not expose provider prose' }, FALLBACK),
-    'AI 请求正在处理中，请稍后重试',
+    '请求的资源正忙，请稍后重试。',
   );
-  assert.equal(getAiErrorMessage({ code: 'CANCELLED' }, FALLBACK), 'AI 请求已取消');
-  assert.equal(getAiErrorMessage({ code: 'TIMEOUT' }, FALLBACK), 'AI 请求超时，请稍后重试');
+  assert.equal(getAiErrorMessage({ code: 'CANCELLED' }, FALLBACK), '操作已取消。');
+  assert.equal(getAiErrorMessage({ code: 'TIMEOUT' }, FALLBACK), '操作超时。');
+  assert.equal(
+    getAiErrorMessage({ code: 'AI_PROVIDER_FAILED' }, FALLBACK),
+    'AI 服务商未能完成请求，请重试。',
+  );
   assert.equal(
     getAiErrorMessage({ code: 'SECURITY_DENIED' }, FALLBACK),
-    'AI 密钥未配置或当前窗口无权执行该操作',
+    '当前窗口无权执行该操作。',
+  );
+});
+
+test('uses only a stable localized messageKey', () => {
+  assert.equal(
+    getAiErrorMessage(
+      { messageKey: 'error.ai_request_failed', message: 'provider secret detail' },
+      FALLBACK,
+    ),
+    'AI 服务商未能完成请求，请重试。',
   );
 });

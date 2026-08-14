@@ -1,0 +1,17 @@
+[package]
+name = "bbcom-plugin-manager"
+version = "0.1.0"
+description = "Application-level lifecycle state machine for bbcom plugins"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+bbcom-contracts = { path = "../bbcom-contracts" }
+bbcom-plugin-broker = { path = "../bbcom-plugin-broker" }
+bbcom-plugin-contracts = { path = "../bbcom-plugin-contracts" }
+semver = "=1.0.27"
+thiserror = "=2.0.18"
+
+[lints.rust]
+unsafe_code = "forbid"

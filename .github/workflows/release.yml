@@ -13,8 +13,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  quality:
+    name: Quality gates for tagged commit
+    uses: ./.github/workflows/quality.yml
+
   validate:
     name: Validate release source
+    needs: quality
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -89,7 +94,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.name }} installer
-    needs: validate
+    needs: [quality, validate]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -105,7 +110,7 @@ jobs:
             artifact: windows-x64
             executable: target/x86_64-pc-windows-msvc/release/bbcom.exe
           - name: macOS arm64
-            os: macos-14
+            os: macos-15
             target: aarch64-apple-darwin
             artifact: macos-arm64
             executable: target/aarch64-apple-darwin/release/bbcom
@@ -168,8 +173,7 @@ jobs:
           if (-not $cert.Thumbprint) { throw 'Windows signing certificate import failed' }
           "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
 
-      - name: Verify Apple signing and notarization secrets
-        if: runner.os == 'macOS' && env.APPLE_SIGNING_AVAILABLE == 'true'
+      - name: Require stable platform signing and notarization secrets
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -179,39 +183,39 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
-            APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            test -n "${!name}" || { echo "$name is required" >&2; exit 1; }
-          done
-
-      - name: Report unsigned platform fallback
-        if: >-
-          (runner.os == 'Windows' && env.WINDOWS_SIGNING_AVAILABLE != 'true') ||
-          (runner.os == 'macOS' && env.APPLE_SIGNING_AVAILABLE != 'true')
-        shell: bash
-        run: echo "::warning::Platform signing secrets are not configured; this installer will be explicitly marked unsigned."
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            test "$WINDOWS_SIGNING_AVAILABLE" = true || {
+              echo 'Stable Windows releases require Authenticode signing.' >&2
+              exit 1
+            }
+          elif [[ "$RUNNER_OS" == macOS ]]; then
+            test "$APPLE_SIGNING_AVAILABLE" = true || {
+              echo 'Stable macOS releases require Developer ID signing and notarization.' >&2
+              exit 1
+            }
+            for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+              APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              test -n "${!name}" || { echo "$name is required" >&2; exit 1; }
+            done
+          fi
 
       - name: Build Windows NSIS installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          if ($env:WINDOWS_SIGNING_AVAILABLE -eq 'true') {
-            $config = @{
-              bundle = @{
-                windows = @{
-                  certificateThumbprint = $env:WINDOWS_CERTIFICATE_THUMBPRINT
-                  digestAlgorithm = 'sha256'
-                  timestampUrl = 'http://timestamp.digicert.com'
-                }
+          $config = @{
+            bundle = @{
+              windows = @{
+                certificateThumbprint = $env:WINDOWS_CERTIFICATE_THUMBPRINT
+                digestAlgorithm = 'sha256'
+                timestampUrl = 'http://timestamp.digicert.com'
               }
-            } | ConvertTo-Json -Compress -Depth 5
-            pnpm tauri:build --target ${{ matrix.target }} --bundles nsis --config $config
-          } else {
-            pnpm tauri:build --target ${{ matrix.target }} --bundles nsis
-          }
+            }
+          } | ConvertTo-Json -Compress -Depth 5
+          pnpm tauri:build --target ${{ matrix.target }} --bundles nsis --config $config
 
       - name: Build signed and notarized macOS DMG
-        if: runner.os == 'macOS' && env.APPLE_SIGNING_AVAILABLE == 'true'
+        if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -219,10 +223,6 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm tauri:build --target ${{ matrix.target }} --bundles dmg
-
-      - name: Build unsigned macOS DMG
-        if: runner.os == 'macOS' && env.APPLE_SIGNING_AVAILABLE != 'true'
         run: pnpm tauri:build --target ${{ matrix.target }} --bundles dmg
 
       - name: Build Linux AppImage and deb installers
@@ -248,20 +248,23 @@ jobs:
           New-Item -ItemType Directory -Force release-assets | Out-Null
           $installers = Get-ChildItem 'target/${{ matrix.target }}/release/bundle/nsis/*.exe'
           if ($installers.Count -ne 1) { throw "expected one NSIS installer, found $($installers.Count)" }
-          if ($env:WINDOWS_SIGNING_AVAILABLE -eq 'true') {
-            $signature = Get-AuthenticodeSignature $installers[0].FullName
-            if ($signature.Status -ne 'Valid') { throw "invalid Authenticode signature: $($signature.Status)" }
-            '- Windows NSIS: Authenticode signed and verified.' |
-              Set-Content release-assets/windows-signing-status.txt
-          } else {
-            '- Windows NSIS: unsigned (signing secrets were not configured).' |
-              Set-Content release-assets/windows-signing-status.txt
-          }
+          $signature = Get-AuthenticodeSignature $installers[0].FullName
+          if ($signature.Status -ne 'Valid') { throw "invalid Authenticode signature: $($signature.Status)" }
+          '- Windows NSIS: Authenticode signed and verified.' |
+            Set-Content release-assets/windows-signing-status.txt
 
           $installRoot = Join-Path $env:RUNNER_TEMP 'bbcom-smoke'
-          Start-Process -FilePath $installers[0].FullName -ArgumentList '/S', "/D=$installRoot" -Wait
+          $installer = Start-Process -FilePath $installers[0].FullName `
+            -ArgumentList '/S', "/D=$installRoot" -PassThru -Wait
+          if ($installer.ExitCode -ne 0) {
+            throw "NSIS installer exited with $($installer.ExitCode)"
+          }
           $application = Get-ChildItem -Path $installRoot -Filter 'bbcom.exe' -Recurse | Select-Object -First 1
           if ($null -eq $application) { throw 'NSIS installation did not contain bbcom.exe' }
+          $sidecars = @(Get-ChildItem -Path $installRoot -Filter 'bbcom-plugin-host*.exe' -File -Recurse)
+          if ($sidecars.Count -ne 1) {
+            throw "NSIS installation must contain exactly one bbcom-plugin-host sidecar; found $($sidecars.Count)"
+          }
 
           $process = Start-Process -FilePath $application.FullName -PassThru
           Start-Sleep -Seconds 8
@@ -274,7 +277,11 @@ jobs:
 
           $uninstaller = Get-ChildItem -Path $installRoot -Filter '*uninstall*.exe' -Recurse | Select-Object -First 1
           if ($null -eq $uninstaller) { throw 'NSIS installation did not contain an uninstaller' }
-          Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -Wait
+          $uninstall = Start-Process -FilePath $uninstaller.FullName `
+            -ArgumentList '/S' -PassThru -Wait
+          if ($uninstall.ExitCode -ne 0) {
+            throw "NSIS uninstaller exited with $($uninstall.ExitCode)"
+          }
           if (Test-Path $installRoot) { throw 'NSIS uninstall left the installation directory behind' }
           Copy-Item $installers[0].FullName release-assets/
 
@@ -286,9 +293,7 @@ jobs:
           dmg=(target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
           test "${#dmg[@]}" -eq 1
           mkdir -p release-assets
-          if [[ "$APPLE_SIGNING_AVAILABLE" == 'true' ]]; then
-            xcrun stapler validate "${dmg[0]}"
-          fi
+          xcrun stapler validate "${dmg[0]}"
 
           mount_dir="$RUNNER_TEMP/bbcom-dmg"
           install_dir="$RUNNER_TEMP/bbcom-smoke-applications"
@@ -310,16 +315,14 @@ jobs:
           hdiutil attach "${dmg[0]}" -nobrowse -readonly -mountpoint "$mount_dir"
           mounted_app=("$mount_dir"/*.app)
           test "${#mounted_app[@]}" -eq 1
-          if [[ "$APPLE_SIGNING_AVAILABLE" == 'true' ]]; then
-            codesign --verify --deep --strict --verbose=2 "${mounted_app[0]}"
-            echo '- macOS DMG: Developer ID signed and notarized.' \
-              > release-assets/macos-signing-status.txt
-          else
-            echo '- macOS DMG: unsigned and not notarized (signing secrets were not configured).' \
-              > release-assets/macos-signing-status.txt
-          fi
+          codesign --verify --deep --strict --verbose=2 "${mounted_app[0]}"
+          echo '- macOS DMG: Developer ID signed and notarized.' \
+            > release-assets/macos-signing-status.txt
           cp -R "${mounted_app[0]}" "$installed_app"
           test -x "$installed_app/Contents/MacOS/bbcom"
+          sidecars=("$installed_app/Contents/MacOS"/bbcom-plugin-host*)
+          test "${#sidecars[@]}" -eq 1
+          test -x "${sidecars[0]}"
 
           "$installed_app/Contents/MacOS/bbcom" > "$RUNNER_TEMP/bbcom-macos-smoke.log" 2>&1 &
           app_pid="$!"
@@ -371,13 +374,26 @@ jobs:
           }
 
           chmod +x "${appimage[0]}"
+          extract_dir="$RUNNER_TEMP/bbcom-appimage-extract"
+          mkdir -p "$extract_dir"
+          (
+            cd "$extract_dir"
+            "${GITHUB_WORKSPACE}/${appimage[0]}" --appimage-extract >/dev/null
+          )
+          mapfile -t appimage_sidecars < <(
+            find "$extract_dir/squashfs-root" -type f -name 'bbcom-plugin-host*' -perm -111
+          )
+          test "${#appimage_sidecars[@]}" -eq 1
           run_gui_smoke appimage env APPIMAGE_EXTRACT_AND_RUN=1 "${GITHUB_WORKSPACE}/${appimage[0]}"
           dpkg-deb --info "${deb[0]}" >/dev/null
           package="$(dpkg-deb -f "${deb[0]}" Package)"
           sudo apt-get install -y "${GITHUB_WORKSPACE}/${deb[0]}"
           binary="$(dpkg -L "$package" | awk '/^\/usr\/bin\// { print; exit }')"
+          sidecar="$(dpkg -L "$package" | awk '/bbcom-plugin-host/ { print; exit }')"
           test -n "$binary"
           test -x "$binary"
+          test -n "$sidecar"
+          test -x "$sidecar"
           run_gui_smoke deb "$binary"
           sudo apt-get remove -y "$package"
           test "$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)" != installed
@@ -396,7 +412,7 @@ jobs:
 
   release:
     name: Create draft GitHub release
-    needs: [validate, build]
+    needs: [quality, validate, build]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:

@@ -94,7 +94,7 @@ export class SessionPersistenceScheduler {
     const operation = this.flushNow();
     operation.catch(this.onError);
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let settled = false;
       const timeout = this.timers.schedule(() => {
         if (settled) return;
@@ -109,11 +109,11 @@ export class SessionPersistenceScheduler {
           this.timers.cancel(timeout);
           resolve('completed');
         },
-        () => {
+        (error: unknown) => {
           if (settled) return;
           settled = true;
           this.timers.cancel(timeout);
-          resolve('completed');
+          reject(error);
         },
       );
     });

@@ -1,21 +1,28 @@
 <template>
   <div class="ai-settings" :class="{ compact }">
-    <button class="settings-toggle" type="button" @click="expanded = !expanded">
+    <button
+      class="settings-toggle"
+      type="button"
+      :aria-expanded="expanded"
+      :aria-controls="settingsBodyId"
+      @click="expanded = !expanded"
+    >
       <span class="settings-title">
         <Settings2 class="icon-sm" />
         {{ t('ai.settings') }}
       </span>
-      <span class="settings-state">{{
+      <span class="settings-state" role="status" aria-live="polite" aria-atomic="true">{{
         appStore.aiKeyConfigured ? t('ai.configured') : t('ai.notConfigured')
       }}</span>
     </button>
-    <div v-if="expanded" class="settings-body">
+    <div v-if="expanded" :id="settingsBodyId" class="settings-body" :aria-busy="saving">
       <n-input
         v-model:value="apiKeyDraft"
         type="password"
         size="small"
         show-password-on="click"
         placeholder="Z.ai / ZHIPU API Key"
+        aria-label="Z.ai / ZHIPU API Key"
       />
       <div class="settings-actions">
         <n-button size="tiny" type="primary" :loading="saving" @click="saveApiKey">
@@ -30,7 +37,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, useId } from 'vue';
 import { NButton, NInput, useMessage } from 'naive-ui';
 import { KeyRound, Settings2 } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
@@ -43,6 +50,7 @@ defineProps<{
 const appStore = useAppStore();
 const message = useMessage();
 const expanded = ref(!appStore.aiKeyConfigured);
+const settingsBodyId = `ai-settings-${useId().replace(/:/g, '')}`;
 // The input is intentionally the only renderer location that can contain a
 // newly typed secret. Saved credentials are never read back into JavaScript.
 const apiKeyDraft = ref('');

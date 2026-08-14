@@ -1,5 +1,8 @@
 <template>
   <div class="status-bar">
+    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+      {{ connectionAnnouncement }}
+    </span>
     <template v-if="session">
       <div class="traffic-stats" :aria-label="t('session.stats.aria')">
         <span class="mini-stat tx" :title="`TX ${session.txFrames} ${t('status.frames')}`">
@@ -170,6 +173,11 @@ const droppedDisplay = computed(() => {
   if (!props.session || props.session.droppedBytes === 0) return '';
   return formatBytes(props.session.droppedBytes);
 });
+
+const connectionAnnouncement = computed(() => {
+  if (!props.session) return t('session.noActiveSession');
+  return props.session.isConnected ? t('session.connected') : t('session.disconnected');
+});
 </script>
 
 <style scoped>
@@ -272,7 +280,7 @@ const droppedDisplay = computed(() => {
 }
 
 .no-session {
-  color: var(--text-dim);
+  color: var(--text-secondary);
   font-style: italic;
   font-family: var(--font-sans);
 }

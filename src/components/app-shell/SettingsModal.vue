@@ -4,23 +4,33 @@
     preset="card"
     :title="t('settings.title')"
     :bordered="false"
+    :auto-focus="true"
+    :trap-focus="true"
     :style="{ width: '520px', maxWidth: '92vw' }"
     :mask-closable="true"
     @update:show="onUpdateShow"
+    @after-enter="focusInitialControl"
+    @after-leave="restoreTriggerFocus"
   >
-    <div class="settings-body">
+    <div ref="settingsBodyRef" class="settings-body">
       <section class="settings-section">
         <div class="section-head">
           <span class="section-title">{{ t('settings.appearance') }}</span>
           <span class="section-desc">{{ t('settings.appearance.desc') }}</span>
         </div>
         <div class="section-row">
-          <n-switch :value="appStore.theme === 'light'" size="small" @update:value="setTheme" />
+          <n-switch
+            :value="appStore.theme === 'light'"
+            size="small"
+            :aria-label="t('settings.lightMode')"
+            @update:value="setTheme"
+          />
           <span class="row-label">{{ t('settings.lightMode') }}</span>
         </div>
         <div class="section-row">
           <AppSelect
             :value="appStore.locale"
+            :aria-label="t('settings.language')"
             :options="localeOptions"
             size="small"
             style="width: 160px"
@@ -42,6 +52,7 @@
             :max="100000"
             :step="1000"
             size="small"
+            :aria-label="t('settings.captureBuffer')"
             style="width: 160px"
             @update:value="onBufferChange"
           >
@@ -59,7 +70,12 @@
           <span class="section-desc">{{ t('settings.connection.desc') }}</span>
         </div>
         <div class="section-row">
-          <n-switch v-model:checked="appStore.autoReconnect" size="small" />
+          <n-switch
+            :checked="appStore.autoReconnect"
+            size="small"
+            :aria-label="t('settings.autoReconnect')"
+            @update:checked="setAutoReconnect"
+          />
           <span class="row-label">{{ t('settings.autoReconnect') }}</span>
         </div>
       </section>
@@ -95,10 +111,21 @@
           </div>
         </dl>
       </section>
+
+      <!-- The panel renders nothing unless application bootstrap provides a
+           fully constructed PluginCenterService after its platform gate. -->
+      <PluginCenterPanel />
     </div>
     <template #footer>
       <div class="settings-footer">
-        <span class="footer-hint">{{ t('settings.savedHint') }}</span>
+        <span
+          :key="saveAnnouncementRevision"
+          class="footer-hint"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          >{{ t('settings.savedHint') }}</span
+        >
         <n-button size="small" type="primary" @click="close">{{ t('settings.done') }}</n-button>
       </div>
     </template>
@@ -106,20 +133,50 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { NModal, NInputNumber, NButton, NSwitch } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
+import { PluginCenterPanel } from '../plugins';
 import { useAppStore } from '../../stores/app';
 import { APP_VERSION } from '../../lib/version';
 import { supportedLocales, t, type Locale } from '../../lib/i18n';
 import { MAX_FRAMES } from '../../types';
 
-defineProps<{ show: boolean }>();
+const props = defineProps<{ show: boolean }>();
 
 const emit = defineEmits<{ (e: 'update:show', value: boolean): void }>();
 
 const appStore = useAppStore();
 const localeOptions = computed(() => supportedLocales());
+const settingsBodyRef = ref<HTMLElement | null>(null);
+const saveAnnouncementRevision = ref(0);
+let previouslyFocused: HTMLElement | null = null;
+
+watch(
+  () => props.show,
+  (show) => {
+    if (show && document.activeElement instanceof HTMLElement) {
+      previouslyFocused = document.activeElement;
+    }
+  },
+);
+
+function announceSaved(): void {
+  saveAnnouncementRevision.value += 1;
+}
+
+function focusInitialControl(): void {
+  const firstControl = settingsBodyRef.value?.querySelector<HTMLElement>(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  );
+  firstControl?.focus();
+}
+
+function restoreTriggerFocus(): void {
+  const target = previouslyFocused;
+  previouslyFocused = null;
+  if (target?.isConnected) void nextTick(() => target.focus());
+}
 
 function onUpdateShow(value: boolean) {
   emit('update:show', value);
@@ -127,18 +184,27 @@ function onUpdateShow(value: boolean) {
 
 function onBufferChange(value: number | null) {
   appStore.setMaxBufferFrames(typeof value === 'number' ? value : MAX_FRAMES);
+  announceSaved();
 }
 
 function resetBuffer() {
   appStore.setMaxBufferFrames(MAX_FRAMES);
+  announceSaved();
 }
 
 function setTheme(light: boolean) {
   appStore.setTheme(light ? 'light' : 'dark');
+  announceSaved();
 }
 
 function setAppLocale(value: Locale) {
   appStore.setLocale(value);
+  announceSaved();
+}
+
+function setAutoReconnect(value: boolean): void {
+  appStore.autoReconnect = value;
+  announceSaved();
 }
 
 function close() {

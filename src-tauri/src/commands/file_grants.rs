@@ -8,7 +8,9 @@
 use crate::export::ExportFormat;
 use crate::models::errors::AppError;
 use crate::models::ipc_error::{IpcError, from_app_error};
-use serde::{Deserialize, Serialize};
+pub use bbcom_contracts::{
+    RequestSaveTargetRequest, RevokeFileGrantRequest, SaveTargetGrantResponse, SaveTargetPurpose,
+};
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -24,68 +26,6 @@ const MAX_SUGGESTED_NAME_BYTES: usize = 128;
 const EXPORT_GRANT_TTL: Duration = Duration::from_secs(10 * 60);
 const AUTO_LOG_GRANT_TTL: Duration = Duration::from_secs(4 * 60 * 60);
 const LOG_WRITE_SHARDS: usize = 16;
-
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum SaveTargetPurpose {
-    ExportTxtHex,
-    ExportTxtAscii,
-    ExportCsv,
-    ExportJsonl,
-    ExportBin,
-    AutoLog,
-}
-
-impl SaveTargetPurpose {
-    fn extension(self) -> &'static str {
-        match self {
-            Self::ExportTxtHex | Self::ExportTxtAscii | Self::AutoLog => "txt",
-            Self::ExportCsv => "csv",
-            Self::ExportJsonl => "jsonl",
-            Self::ExportBin => "bin",
-        }
-    }
-
-    fn filter_name(self) -> &'static str {
-        match self {
-            Self::ExportTxtHex | Self::ExportTxtAscii | Self::AutoLog => "Text",
-            Self::ExportCsv => "CSV",
-            Self::ExportJsonl => "JSON Lines",
-            Self::ExportBin => "Binary",
-        }
-    }
-
-    fn export_format(self) -> Option<ExportFormat> {
-        match self {
-            Self::ExportTxtHex => Some(ExportFormat::TxtHex),
-            Self::ExportTxtAscii => Some(ExportFormat::TxtAscii),
-            Self::ExportCsv => Some(ExportFormat::Csv),
-            Self::ExportJsonl => Some(ExportFormat::Jsonl),
-            Self::ExportBin => Some(ExportFormat::Bin),
-            Self::AutoLog => None,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RequestSaveTargetRequest {
-    purpose: SaveTargetPurpose,
-    suggested_name: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveTargetGrantResponse {
-    token: String,
-    display_name: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RevokeFileGrantRequest {
-    token: String,
-}
 
 pub struct FileGrantManager {
     grants: Mutex<HashMap<String, FileGrant>>,

@@ -1,12 +1,12 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
-  addPreset,
-  configsEqual,
-  describeConfig,
-  loadPresets,
-  removePreset,
-} from '../../src/lib/connection-presets.ts';
+  addDeviceProfile as addPreset,
+  describeDeviceProfileConfig as describeConfig,
+  deviceProfileConfigsEqual as configsEqual,
+  loadDeviceProfiles as loadPresets,
+  removeDeviceProfile as removePreset,
+} from '../../src/features/device-profiles/index.ts';
 import type { PortConfig } from '../../src/types.ts';
 
 interface LocalStorageLike {
@@ -103,8 +103,8 @@ test('removePreset drops by id and persists', () => {
 test('loadPresets tolerates a malformed blob and returns []', () => {
   withLocalStorageMock(() => {
     (globalThis as { localStorage: LocalStorageLike }).localStorage.setItem(
-      'bbcom-connection-presets',
-      JSON.stringify({ presets: 'not-an-array' }),
+      'bbcom-v1:device-profiles',
+      JSON.stringify({ version: 1, profiles: 'not-an-array' }),
     );
     assert.deepEqual(loadPresets(), []);
   });
@@ -113,9 +113,10 @@ test('loadPresets tolerates a malformed blob and returns []', () => {
 test('loadPresets filters out entries missing required fields', () => {
   withLocalStorageMock(() => {
     (globalThis as { localStorage: LocalStorageLike }).localStorage.setItem(
-      'bbcom-connection-presets',
+      'bbcom-v1:device-profiles',
       JSON.stringify({
-        presets: [
+        version: 1,
+        profiles: [
           { id: '1', name: 'ok', config: CFG_9600 },
           { id: '2', name: 'no config' }, // malformed -> dropped
           { id: '3', name: 'bad baud', config: { ...CFG_9600, baudRate: 'x' } }, // dropped

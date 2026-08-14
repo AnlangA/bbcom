@@ -15,6 +15,7 @@
       </span>
       <AppSelect
         :value="config.transport"
+        :aria-label="t('modbus.transport')"
         :options="transportOptions"
         size="tiny"
         style="width: 168px"
@@ -27,8 +28,21 @@
       >
         {{ t('modbus.master.enable') }}
       </n-checkbox>
-      <span class="mb-status" :class="statusClass">{{ statusText }}</span>
-      <button class="mb-close" type="button" :title="t('common.close')" @click="$emit('close')">
+      <span
+        class="mb-status"
+        :class="statusClass"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        >{{ statusText }}</span
+      >
+      <button
+        class="mb-close"
+        type="button"
+        :title="t('common.close')"
+        :aria-label="t('common.close')"
+        @click="$emit('close')"
+      >
         <X class="icon-sm" />
       </button>
     </div>
@@ -43,6 +57,7 @@
         :max="10000"
         :step="100"
         :show-button="false"
+        :aria-label="t('modbus.pollInterval')"
         style="width: 124px"
         @update:value="(v) => $emit('patch', { pollIntervalMs: v ?? 1000 })"
       >
@@ -56,6 +71,7 @@
         :max="10000"
         :step="100"
         :show-button="false"
+        :aria-label="t('modbus.writeInterval')"
         style="width: 124px"
         @update:value="(v) => $emit('patch', { writeIntervalMs: v ?? 1000 })"
       >
@@ -69,6 +85,7 @@
         :max="5000"
         :step="50"
         :show-button="false"
+        :aria-label="t('modbus.timeout')"
         style="width: 120px"
         @update:value="(v) => $emit('patch', { timeoutMs: v ?? 500 })"
       >

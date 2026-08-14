@@ -4,12 +4,13 @@ use std::{
     sync::{Arc, Mutex as SyncMutex},
 };
 
+pub use bbcom_contracts::{
+    AiKeyDurability, AiKeyStatus, MigrateAiApiKeyRequest, SetAiApiKeyRequest,
+};
 use keyring::v1::{Entry, Error as KeyringError};
-use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 use zeroize::Zeroizing;
 
-use crate::commands::ai::AI_WINDOW_LABEL;
 use crate::models::ipc_error::{AppErrorCode, IpcError};
 
 // The credential identity is part of the v0.5 on-device security contract.
@@ -141,63 +142,6 @@ fn migrate_if_missing_from<S: CredentialStore>(
 fn clear_from<S: CredentialStore>(store: &S, key: &str) -> Result<(), SecureSettingsError> {
     ensure_allowed_key(key)?;
     store.clear(key)
-}
-
-/// Durability of the currently configured AI key. `session` deliberately
-/// means the OS keyring was unavailable and the key will disappear when the
-/// process exits; it never means a plaintext fallback was written anywhere.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AiKeyDurability {
-    Os,
-    Session,
-    Missing,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AiKeyStatus {
-    pub configured: bool,
-    pub durability: AiKeyDurability,
-}
-
-impl AiKeyStatus {
-    const fn missing() -> Self {
-        Self {
-            configured: false,
-            durability: AiKeyDurability::Missing,
-        }
-    }
-
-    const fn os() -> Self {
-        Self {
-            configured: true,
-            durability: AiKeyDurability::Os,
-        }
-    }
-
-    const fn session() -> Self {
-        Self {
-            configured: true,
-            durability: AiKeyDurability::Session,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetAiApiKeyRequest {
-    value: String,
-}
-
-/// A one-way migration payload. The renderer may supply a legacy plaintext
-/// value it already owns (such as localStorage) but this command never echoes
-/// it, logs it, or writes it to a file.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MigrateAiApiKeyRequest {
-    #[serde(default)]
-    value: Option<String>,
 }
 
 fn legacy_store_path_from_dir(app_data_dir: Option<PathBuf>) -> Option<PathBuf> {
@@ -434,19 +378,11 @@ fn migrate_ai_key_from_store<S: CredentialStore>(
     Ok(status)
 }
 
-fn ensure_main_window_label(label: &str, operation: &'static str) -> Result<(), IpcError> {
-    if label == "main" {
-        Ok(())
-    } else {
-        Err(IpcError::security_denied(operation))
-    }
-}
-
-pub(crate) fn ensure_ai_request_window_label(
+pub(crate) fn ensure_main_window_label(
     label: &str,
     operation: &'static str,
 ) -> Result<(), IpcError> {
-    if label == "main" || label == AI_WINDOW_LABEL {
+    if label == "main" {
         Ok(())
     } else {
         Err(IpcError::security_denied(operation))
@@ -462,7 +398,7 @@ where
     S: CredentialStore + Send + 'static,
 {
     const OPERATION: &str = "get_ai_key_status";
-    ensure_ai_request_window_label(label, OPERATION)?;
+    ensure_main_window_label(label, OPERATION)?;
     run_store_operation(state, store, OPERATION, status_from_store).await
 }
 
@@ -590,6 +526,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::commands::ai::AI_WINDOW_LABEL;
 
     #[derive(Default)]
     struct MemoryCredentialStore {
@@ -1074,10 +1011,15 @@ mod tests {
         assert!(ensure_main_window_label("main", "set_ai_api_key").is_ok());
         let denied = ensure_main_window_label(AI_WINDOW_LABEL, "set_ai_api_key").unwrap_err();
         assert_eq!(denied.code, AppErrorCode::SecurityDenied);
-        assert!(ensure_ai_request_window_label("main", "run_ai_request").is_ok());
-        assert!(ensure_ai_request_window_label(AI_WINDOW_LABEL, "run_ai_request").is_ok());
+        assert!(ensure_main_window_label("main", "run_ai_request").is_ok());
         assert_eq!(
-            ensure_ai_request_window_label("untrusted", "run_ai_request")
+            ensure_main_window_label(AI_WINDOW_LABEL, "run_ai_request")
+                .unwrap_err()
+                .code,
+            AppErrorCode::SecurityDenied
+        );
+        assert_eq!(
+            ensure_main_window_label("untrusted", "run_ai_request")
                 .unwrap_err()
                 .code,
             AppErrorCode::SecurityDenied
@@ -1132,9 +1074,18 @@ mod tests {
         .unwrap_err();
         assert_eq!(denied.code, AppErrorCode::SecurityDenied);
 
+        let denied = get_ai_key_status_from_label(
+            AI_WINDOW_LABEL,
+            SecureSettingsState::default(),
+            MemoryCredentialStore::default(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(denied.code, AppErrorCode::SecurityDenied);
+
         assert_eq!(
             get_ai_key_status_from_label(
-                AI_WINDOW_LABEL,
+                "main",
                 SecureSettingsState::default(),
                 MemoryCredentialStore::default(),
             )

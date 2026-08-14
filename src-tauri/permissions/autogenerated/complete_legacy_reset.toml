@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-complete-legacy-reset"
+description = "Enables the complete_legacy_reset command without any pre-configured scope."
+commands.allow = ["complete_legacy_reset"]
+
+[[permission]]
+identifier = "deny-complete-legacy-reset"
+description = "Denies the complete_legacy_reset command without any pre-configured scope."
+commands.deny = ["complete_legacy_reset"]

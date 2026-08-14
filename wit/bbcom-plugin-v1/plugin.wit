@@ -1,0 +1,101 @@
+package bbcom:plugin@1.0.0;
+
+/// Stable, host-rendered declarative UI. Plugins never receive a WebView,
+/// script execution surface, DOM handle, or Tauri capability.
+interface types {
+  record session-metadata {
+    session-id: string,
+    name: string,
+    kind: string,
+    connected: bool,
+    rx-bytes: u64,
+    tx-bytes: u64,
+  }
+
+  record capture-frame {
+    sequence: u64,
+    timestamp-ms: u64,
+    direction: frame-direction,
+    payload: list<u8>,
+  }
+
+  enum frame-direction { rx, tx }
+
+  record capture-page {
+    frames: list<capture-frame>,
+    next-sequence: option<u64>,
+  }
+
+  enum field-kind { text, number, toggle, select, button }
+
+  record panel-field {
+    id: string,
+    label: string,
+    kind: field-kind,
+    value: string,
+    options: list<string>,
+    disabled: bool,
+  }
+
+  record declarative-panel {
+    title: string,
+    fields: list<panel-field>,
+  }
+
+  record panel-event {
+    field-id: string,
+    value: string,
+  }
+
+  record serial-send-proposal {
+    session-id: string,
+    payload: list<u8>,
+    display-label: string,
+  }
+
+  enum proposal-status { pending-user-confirmation, accepted, rejected, cancelled }
+
+  record proposal-result {
+    proposal-id: string,
+    status: proposal-status,
+  }
+
+  enum contract-error {
+    invalid-input,
+    limit-exceeded,
+    permission-denied,
+    unavailable,
+  }
+}
+
+interface host {
+  use types.{session-metadata, capture-page, declarative-panel, serial-send-proposal, proposal-result, contract-error};
+
+  /// Bounded plugin-private storage. No filesystem path or handle is exposed.
+  storage-get: func(key: string) -> result<option<list<u8>>, contract-error>;
+  storage-set: func(key: string, value: list<u8>) -> result<_, contract-error>;
+
+  /// Metadata and capture reads require the corresponding explicit permission.
+  session-list: func() -> result<list<session-metadata>, contract-error>;
+  capture-read: func(session-id: string, from-sequence: u64, max-frames: u32, max-bytes: u32) -> result<capture-page, contract-error>;
+
+  /// Persistent project state, bounded by the host. No runtime token is stored.
+  project-state-get: func() -> result<option<list<u8>>, contract-error>;
+  project-state-set: func(value: list<u8>) -> result<_, contract-error>;
+
+  /// A proposal never writes to serial directly and always requires a new
+  /// user confirmation. The host returns only a proposal identifier/status.
+  propose-serial-send: func(proposal: serial-send-proposal) -> result<proposal-result, contract-error>;
+
+  /// Declarative panels are rendered entirely by the trusted host.
+  publish-panel: func(panel: declarative-panel) -> result<_, contract-error>;
+}
+
+world plugin {
+  import host;
+  use types.{panel-event, declarative-panel};
+
+  export initialize: func() -> result<declarative-panel, string>;
+  export handle-panel-event: func(event: panel-event) -> result<declarative-panel, string>;
+  export shutdown: func();
+}

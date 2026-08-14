@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hydrate-workspace-ai-messages"
+description = "Enables the hydrate_workspace_ai_messages command without any pre-configured scope."
+commands.allow = ["hydrate_workspace_ai_messages"]
+
+[[permission]]
+identifier = "deny-hydrate-workspace-ai-messages"
+description = "Denies the hydrate_workspace_ai_messages command without any pre-configured scope."
+commands.deny = ["hydrate_workspace_ai_messages"]

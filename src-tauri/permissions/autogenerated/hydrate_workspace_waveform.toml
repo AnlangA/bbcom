@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hydrate-workspace-waveform"
+description = "Enables the hydrate_workspace_waveform command without any pre-configured scope."
+commands.allow = ["hydrate_workspace_waveform"]
+
+[[permission]]
+identifier = "deny-hydrate-workspace-waveform"
+description = "Denies the hydrate_workspace_waveform command without any pre-configured scope."
+commands.deny = ["hydrate_workspace_waveform"]

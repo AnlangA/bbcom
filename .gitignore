@@ -7,8 +7,10 @@ package-lock.json
 
 # Rust
 /target
+**/target/
 src-tauri/target
 src-tauri/gen
+src-tauri/binaries/bbcom-plugin-host-*
 
 # IDE
 .idea

@@ -352,7 +352,7 @@ test('persistence scheduler remains safe across late callbacks and failed final 
   await Promise.resolve();
   assert.deepEqual(flushes, [true]);
 
-  assert.equal(await scheduler.flushFinal(), 'completed');
+  await assert.rejects(scheduler.flushFinal(), /disk unavailable/);
   await Promise.resolve();
   assert.equal(errors.length, 1);
 });
@@ -430,6 +430,7 @@ test('buffer helpers cover empty, frame-count, and global-empty eviction paths',
   assert.deepEqual(trimSessionsToGlobalByteLimit([], 5, 1), {
     retainedBytes: 0,
     droppedBytesBySession: new Map(),
+    droppedFramesBySession: new Map(),
   });
 });
 

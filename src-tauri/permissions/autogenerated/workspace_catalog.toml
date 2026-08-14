@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-workspace-catalog"
+description = "Enables the workspace_catalog command without any pre-configured scope."
+commands.allow = ["workspace_catalog"]
+
+[[permission]]
+identifier = "deny-workspace-catalog"
+description = "Denies the workspace_catalog command without any pre-configured scope."
+commands.deny = ["workspace_catalog"]

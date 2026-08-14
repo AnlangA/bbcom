@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-plugin-submit-authorization"
+description = "Enables the plugin_submit_authorization command without any pre-configured scope."
+commands.allow = ["plugin_submit_authorization"]
+
+[[permission]]
+identifier = "deny-plugin-submit-authorization"
+description = "Denies the plugin_submit_authorization command without any pre-configured scope."
+commands.deny = ["plugin_submit_authorization"]

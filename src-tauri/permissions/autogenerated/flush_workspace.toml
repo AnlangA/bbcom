@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-flush-workspace"
+description = "Enables the flush_workspace command without any pre-configured scope."
+commands.allow = ["flush_workspace"]
+
+[[permission]]
+identifier = "deny-flush-workspace"
+description = "Denies the flush_workspace command without any pre-configured scope."
+commands.deny = ["flush_workspace"]

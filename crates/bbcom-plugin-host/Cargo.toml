@@ -1,0 +1,23 @@
+[package]
+name = "bbcom-plugin-host"
+version = "0.1.0"
+description = "Isolated native sidecar host for bbcom Wasm Component plugins"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+bbcom-plugin-contracts = { path = "../bbcom-plugin-contracts" }
+prost = "=0.14.4"
+sha2 = "=0.10.9"
+thiserror = "=2.0.18"
+wasmtime = { version = "=47.0.2", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
+wasmtime-wasi = { version = "=47.0.2", default-features = false }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+wat = "=1.252.0"
+
+[[bin]]
+name = "bbcom-plugin-host"
+path = "src/main.rs"

@@ -16,16 +16,13 @@ use zai_rs::model::{
 };
 
 use crate::models::errors::AppError;
+pub(crate) use bbcom_contracts::{
+    MAX_AI_CONTEXT_BYTES, MAX_AI_CONTEXT_MODE_BYTES, MAX_AI_MODEL_BYTES, MAX_AI_PROMPT_BYTES,
+    MAX_AI_RESPONSE_BYTES, MAX_AI_SESSION_META_BYTES, MAX_AI_SHELL_BYTES,
+    MAX_CONCURRENT_AI_REQUESTS,
+};
 
 pub(crate) const AI_REQUEST_TIMEOUT_SECS: u64 = 60;
-pub(crate) const MAX_AI_CONTEXT_BYTES: usize = 512_000;
-pub(crate) const MAX_AI_PROMPT_BYTES: usize = 16 * 1024;
-pub(crate) const MAX_AI_MODEL_BYTES: usize = 64;
-pub(crate) const MAX_AI_SHELL_BYTES: usize = 256;
-pub(crate) const MAX_AI_SESSION_META_BYTES: usize = 4 * 1024;
-pub(crate) const MAX_AI_CONTEXT_MODE_BYTES: usize = 64;
-pub(crate) const MAX_AI_RESPONSE_BYTES: usize = 256 * 1024;
-pub(crate) const MAX_CONCURRENT_AI_REQUESTS: usize = 2;
 
 static AI_REQUEST_SLOTS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_AI_REQUESTS);
 

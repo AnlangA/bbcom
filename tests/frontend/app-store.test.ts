@@ -132,7 +132,7 @@ test('a freshly-loaded store re-reads the persisted blob', async () => {
   await withLocalStorageMock(async () => {
     // Seed the blob first, then instantiate — load() must honor every field.
     (globalThis as { localStorage: LocalStorageLike }).localStorage.setItem(
-      'bbcom-app-settings',
+      'bbcom-v1:app-settings',
       JSON.stringify({
         displayMode: 'ANSI',
         sendAsHex: true,
@@ -167,7 +167,7 @@ test('garbage persisted values are ignored, not thrown', async () => {
   await withLocalStorageMock(async () => {
     // Seed a blob with wrong-typed values for several keys.
     (globalThis as { localStorage: LocalStorageLike }).localStorage.setItem(
-      'bbcom-app-settings',
+      'bbcom-v1:app-settings',
       JSON.stringify({
         autoScroll: 'yes', // not a boolean
         sidebarWidth: 'wide', // not a number
@@ -183,5 +183,33 @@ test('garbage persisted values are ignored, not thrown', async () => {
     assert.equal(app.sidebarWidth, 292);
     assert.equal(app.loopIntervalMs, 1000);
     assert.equal(app.theme, 'dark', 'unknown theme literal is ignored');
+  });
+});
+
+test('workspace layout applies without echo and user changes publish one versioned snapshot', () => {
+  withLocalStorageMock(() => {
+    setActivePinia(createPinia());
+    const app = useAppStore();
+    const published: unknown[] = [];
+    const unsubscribe = app.subscribeWorkspaceLayout((layout) => published.push(layout));
+
+    app.applyWorkspaceLayout({
+      version: 1,
+      sidebar: { width: 312, collapsed: true },
+    });
+    assert.equal(app.sidebarWidth, 312);
+    assert.equal(app.sidebarCollapsed, true);
+    assert.deepEqual(published, [], 'hydration must not enqueue a workspace mutation');
+
+    app.setSidebarWidth(320);
+    app.toggleSidebarCollapsed();
+    assert.deepEqual(published, [
+      { version: 1, sidebar: { width: 320, collapsed: true } },
+      { version: 1, sidebar: { width: 320, collapsed: false } },
+    ]);
+
+    unsubscribe();
+    app.setSidebarWidth(300);
+    assert.equal(published.length, 2);
   });
 });

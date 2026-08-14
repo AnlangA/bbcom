@@ -30,19 +30,27 @@ afterEach(() => {
   window.history.replaceState({}, '', '/');
 });
 
-test('AI window reads only key status and never reads or removes a legacy plaintext key', async () => {
+test('AI window key-status request is denied without reading or removing a legacy plaintext key', async () => {
   enableTauriRuntime();
   window.history.replaceState({}, '', '/?window=ai');
   localStorage.setItem(AI_KEY_LEGACY_STORAGE_KEY, 'legacy-secret');
-  invoke.mockResolvedValue({ configured: true, durability: 'os' });
+  invoke.mockRejectedValue({ code: 'SECURITY_DENIED' });
 
-  const status = await migrateLegacyAiApiKey();
+  await assert.rejects(migrateLegacyAiApiKey());
 
-  assert.deepEqual(status, { configured: true, durability: 'os' });
   assert.deepEqual(invoke.mock.calls, [['get_ai_key_status']]);
   assert.equal(localStorage.getItem(AI_KEY_LEGACY_STORAGE_KEY), 'legacy-secret');
   removeLegacyAiApiKey();
   assert.equal(localStorage.getItem(AI_KEY_LEGACY_STORAGE_KEY), 'legacy-secret');
+});
+
+test('AI window key-status invoke is denied by the native label boundary', async () => {
+  enableTauriRuntime();
+  window.history.replaceState({}, '', '/?window=ai');
+  invoke.mockRejectedValue({ code: 'SECURITY_DENIED' });
+
+  await assert.rejects(getAiKeyStatus());
+  assert.deepEqual(invoke.mock.calls, [['get_ai_key_status']]);
 });
 
 test('main window supplies the legacy value only to the one-way migration command', async () => {

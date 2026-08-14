@@ -150,6 +150,7 @@ test('worker persistence restores future/current data, merges mutations made whi
   assert.equal(future.persistenceReadOnly, true);
   assert.equal(ScenarioWorker.latest?.terminated, true);
   future.createSession('COM-readonly', config);
+  assert.equal(future.sessions.length, 0);
   await future.flushPersistedSessions();
 
   installBrowserState();

@@ -34,7 +34,9 @@
         <AiLogAssistant :session="session" :bridge="bridge" />
       </n-tab-pane>
     </n-tabs>
-    <div v-else class="empty-state">{{ t('ai.needSession') }}</div>
+    <div v-else class="empty-state" role="status" aria-live="polite">
+      {{ t('ai.needSession') }}
+    </div>
   </div>
 </template>
 

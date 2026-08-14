@@ -6,6 +6,7 @@
           <n-checkbox
             :checked="rule.enabled"
             size="small"
+            :aria-label="rule.name"
             @update:checked="(value: boolean) => toggleEnabled(rule.id, value)"
           />
         </label>
@@ -43,6 +44,7 @@
         v-model:value="draft.name"
         size="tiny"
         :placeholder="t('highlight.namePlaceholder')"
+        :aria-label="t('highlight.namePlaceholder')"
         style="width: 100%"
       />
       <div class="form-row">
@@ -50,11 +52,13 @@
         <n-button-group size="tiny">
           <n-button
             :type="draft.matchMode === 'text' ? 'primary' : 'default'"
+            :aria-pressed="draft.matchMode === 'text'"
             @click="draft.matchMode = 'text'"
             >TXT</n-button
           >
           <n-button
             :type="draft.matchMode === 'hex' ? 'primary' : 'default'"
+            :aria-pressed="draft.matchMode === 'hex'"
             @click="draft.matchMode = 'hex'"
             >HEX</n-button
           >
@@ -67,6 +71,7 @@
               ? t('highlight.patternPlaceholder.hex')
               : t('highlight.patternPlaceholder.text')
           "
+          :aria-label="t('highlight.match')"
           style="flex: 1"
         />
       </div>
@@ -74,6 +79,7 @@
         <span class="field-label">{{ t('highlight.direction') }}</span>
         <AppSelect
           v-model:value="draft.direction"
+          :aria-label="t('highlight.direction')"
           :options="directionOptions"
           size="tiny"
           style="width: 86px"
@@ -81,6 +87,7 @@
         <span class="field-label">{{ t('highlight.color') }}</span>
         <AppSelect
           v-model:value="draft.color"
+          :aria-label="t('highlight.color')"
           :options="colorOptions"
           size="tiny"
           style="width: 112px"

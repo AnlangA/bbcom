@@ -4,8 +4,8 @@
   "version": "0.7.3",
   "identifier": "com.bbcom.app",
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "pnpm run tauri:before-dev",
+    "beforeBuildCommand": "pnpm run tauri:prepare",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
   },

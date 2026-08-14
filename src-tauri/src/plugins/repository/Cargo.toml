@@ -1,0 +1,18 @@
+[package]
+name = "bbcom-native-repository-fetch-check"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[workspace]
+
+[lib]
+path = "mod.rs"
+
+[dependencies]
+bbcom-plugin-trust = { path = "../../../../crates/bbcom-plugin-trust" }
+reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls"] }
+
+[lints.rust]
+unsafe_code = "forbid"
