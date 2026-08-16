@@ -10,7 +10,10 @@ import type {
   WorkspaceQueueOutcome,
   WorkspaceRuntimePersistenceDrain,
 } from '../../src/features/workspace/application/index.ts';
-import type { WorkspaceSessionChangeEvent, useSessionStore } from '../../src/stores/sessions.ts';
+import type {
+  WorkspaceSessionChangeEvent,
+  useSessionCoreStore,
+} from '../../src/stores/session-core.ts';
 import type { PortConfig, SerialSession, SessionWaveformState } from '../../src/types/index.ts';
 
 const portConfig: PortConfig = {
@@ -118,7 +121,7 @@ function createAdapterHarness(initialSessions: readonly SerialSession[]) {
     },
     replaceWorkspaceSessions,
     markWorkspacePersisted,
-  } as unknown as ReturnType<typeof useSessionStore>;
+  } as unknown as ReturnType<typeof useSessionCoreStore>;
 
   const application = {
     subscribe(listener: (snapshot: WorkspaceApplicationViewModel) => void) {

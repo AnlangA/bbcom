@@ -274,7 +274,7 @@ onBeforeUnmount(detach);
 
 .shutdown-actions .danger {
   border-color: var(--color-error);
-  color: #fff;
+  color: var(--text-on-bright-accent);
   background: var(--color-error);
 }
 </style>

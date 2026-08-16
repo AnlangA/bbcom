@@ -26,11 +26,16 @@ import {
   runAiRequest,
   showAiWindow,
   startAiWindowDrag,
-} from '../../src/lib/ipc.ts';
+} from '../../src/features/native/index.ts';
 
 test('IPC: every export, automatic-log, and AI wrapper sends the exact bounded DTO', async () => {
   invoke.mockResolvedValue({ ok: true });
-  const frames = [{ id: 'f1', direction: 'RX' as const, timestamp: 7, data: [1, 2] }];
+  const frames = [
+    { id: 'f1', direction: 'RX' as const, timestamp: 7, data: new Uint8Array([1, 2]) },
+  ];
+  const encodedFrames = [
+    { id: 'f1', direction: 'RX' as const, timestamp: 7, data: [], dataB64: 'AQI=' },
+  ];
 
   await calculateChecksum(new Uint8Array([0xaa]), 'CRC16');
   await requestSaveTarget('export-csv', 'capture.csv');
@@ -40,7 +45,9 @@ test('IPC: every export, automatic-log, and AI wrapper sends the exact bounded D
   await invokeFinishExport('export');
   await invokeAbortExport('export');
   await invokeBeginAutoLog('grant', 'hex');
-  await invokeAppendAutoLogBatch('log', frames);
+  await invokeAppendAutoLogBatch('log', [
+    { id: 'f1', direction: 'RX', timestamp: 7, data: [1, 2] },
+  ]);
   await invokeFinishAutoLog('log');
   await invokeAbortAutoLog('log');
   await runAiRequest({
@@ -59,18 +66,26 @@ test('IPC: every export, automatic-log, and AI wrapper sends the exact bounded D
   await startAiWindowDrag();
 
   assert.deepEqual(invoke.mock.calls, [
-    ['calculate_checksum', { request: { data: [0xaa], algorithm: 'CRC16' } }],
+    ['calculate_checksum', { request: { data: [], dataB64: 'qg==', algorithm: 'CRC16' } }],
     ['request_save_target', { request: { purpose: 'export-csv', suggestedName: 'capture.csv' } }],
     ['revoke_file_grant', { request: { token: 'grant' } }],
     [
       'begin_export',
       { request: { format: 'csv', token: 'grant', expectedFrames: 1, expectedRawBytes: 2 } },
     ],
-    ['append_export_batch', { request: { exportId: 'export', frames } }],
+    ['append_export_batch', { request: { exportId: 'export', frames: encodedFrames } }],
     ['finish_export', { request: { exportId: 'export' } }],
     ['abort_export', { request: { exportId: 'export' } }],
     ['begin_auto_log', { request: { token: 'grant', format: 'hex' } }],
-    ['append_auto_log_batch', { request: { logId: 'log', frames } }],
+    [
+      'append_auto_log_batch',
+      {
+        request: {
+          logId: 'log',
+          frames: [{ id: 'f1', direction: 'RX', timestamp: 7, data: [1, 2] }],
+        },
+      },
+    ],
     ['finish_auto_log', { request: { logId: 'log' } }],
     ['abort_auto_log', { request: { logId: 'log' } }],
     [
@@ -109,6 +124,39 @@ test('IPC: AppError narrowing requires each security-contract field', () => {
     operation: 'run_ai_request',
   } as const;
   assert.equal(asAppError(valid), valid);
+});
+
+test('IPC: checksum accepts generic array-likes and export begin includes an explicit source', async () => {
+  invoke.mockClear();
+  invoke.mockResolvedValue({ ok: true });
+  await calculateChecksum([0xaa, 0xbb], 'CRC16');
+  await invokeBeginExport('jsonl', 'grant-source', 3, 4, {
+    kind: 'workspace-frames',
+    workspaceId: 'workspace-a',
+    sessionId: 'session-a',
+    toSeqExclusive: 5,
+  });
+
+  assert.deepEqual(invoke.mock.calls, [
+    ['calculate_checksum', { request: { data: [], dataB64: 'qrs=', algorithm: 'CRC16' } }],
+    [
+      'begin_export',
+      {
+        request: {
+          format: 'jsonl',
+          token: 'grant-source',
+          expectedFrames: 3,
+          expectedRawBytes: 4,
+          source: {
+            kind: 'workspace-frames',
+            workspaceId: 'workspace-a',
+            sessionId: 'session-a',
+            toSeqExclusive: 5,
+          },
+        },
+      },
+    ],
+  ]);
 });
 
 test('IPC: command error display chooses code, details, message, then fallback without leaking shape', () => {

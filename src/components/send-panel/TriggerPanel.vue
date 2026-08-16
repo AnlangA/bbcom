@@ -2,42 +2,36 @@
   <div class="trigger-panel">
     <!-- Saved triggers -->
     <div v-if="triggers.length > 0" class="trigger-list">
-      <div v-for="trigger in triggers" :key="trigger.id" class="trigger-item">
-        <label class="trigger-enable">
+      <ActionListItem
+        v-for="trigger in triggers"
+        :key="trigger.id"
+        :title="trigger.name"
+        :description="summary(trigger)"
+      >
+        <template #actions>
           <n-checkbox
             :checked="trigger.enabled"
             size="small"
             :aria-label="trigger.name"
             @update:checked="(v: boolean) => toggleEnabled(trigger.id, v)"
           />
-        </label>
-        <div class="trigger-info" :title="summary(trigger)">
-          <span class="trigger-name">{{ trigger.name }}</span>
-          <span class="trigger-detail">
-            <span class="tag">{{ trigger.matchMode === 'hex' ? 'HEX' : 'TXT' }}</span>
-            <code class="pat">{{ trigger.pattern || '—' }}</code>
-            <ArrowRight class="arrow" />
-            <span class="tag">{{ trigger.responseIsHex ? 'HEX' : 'TXT' }}</span>
-            <code class="pat">{{ trigger.response || '—' }}</code>
-          </span>
-        </div>
-        <button
-          class="trigger-edit"
-          type="button"
-          :title="t('common.edit')"
-          @click="startEdit(trigger)"
-        >
-          <Pencil class="icon-sm" />
-        </button>
-        <button
-          class="trigger-remove"
-          type="button"
-          :title="t('common.delete')"
-          @click="remove(trigger.id)"
-        >
-          <X class="icon-sm" />
-        </button>
-      </div>
+          <IconActionButton
+            class="trigger-edit"
+            :label="t('common.edit')"
+            @click="startEdit(trigger)"
+          >
+            <Pencil class="icon-sm" />
+          </IconActionButton>
+          <IconActionButton
+            class="trigger-remove"
+            :label="t('common.delete')"
+            tone="danger"
+            @click="remove(trigger.id)"
+          >
+            <X class="icon-sm" />
+          </IconActionButton>
+        </template>
+      </ActionListItem>
     </div>
 
     <!-- New / edit form -->
@@ -105,10 +99,12 @@
         <span class="field-hint">{{ t('trigger.cooldownHint') }}</span>
       </div>
       <div class="form-actions">
-        <n-button size="tiny" @click="cancelEdit">{{ t('common.cancel') }}</n-button>
-        <n-button size="tiny" type="primary" :disabled="!canSave" @click="save">
-          {{ editingId ? t('common.update') : t('common.save') }}
-        </n-button>
+        <InlineEditorActions
+          :can-save="canSave"
+          :save-text="editingId ? t('common.update') : t('common.save')"
+          @save="save"
+          @cancel="cancelEdit"
+        />
       </div>
     </div>
     <button v-else class="trigger-add" type="button" @click="startCreate">
@@ -121,8 +117,11 @@
 <script setup lang="ts">
 import { computed, ref, shallowReactive } from 'vue';
 import { NInput, NButton, NButtonGroup, NCheckbox, NInputNumber } from 'naive-ui';
-import { ArrowRight, Pencil, Plus, X } from '@lucide/vue';
-import { useSessionStore } from '../../stores/sessions';
+import { Pencil, Plus, X } from '@lucide/vue';
+import ActionListItem from '../ui/ActionListItem.vue';
+import InlineEditorActions from '../ui/InlineEditorActions.vue';
+import IconActionButton from '../ui/IconActionButton.vue';
+import { useSessionDocument } from '../../features/sessions';
 import { t } from '../../lib/i18n';
 import {
   canSaveTriggerDraft,
@@ -137,11 +136,9 @@ const props = defineProps<{
   sessionId: string;
 }>();
 
-const sessionStore = useSessionStore();
+const document = useSessionDocument(props.sessionId);
 
-const triggers = computed(
-  () => sessionStore.sessions.find((s) => s.id === props.sessionId)?.triggers ?? [],
-);
+const triggers = computed(() => document.session.value?.triggers ?? []);
 
 const editing = ref(false);
 const editingId = ref<string | null>(null);
@@ -170,20 +167,20 @@ function save() {
   const payload = triggerSavePayload(draft);
   if (!payload) return;
   if (editingId.value) {
-    sessionStore.updateTrigger(props.sessionId, editingId.value, payload);
+    document.updateTrigger(props.sessionId, editingId.value, payload);
   } else {
-    sessionStore.addTrigger(props.sessionId, payload);
+    document.addTrigger(props.sessionId, payload);
   }
   editing.value = false;
   editingId.value = null;
 }
 
 function toggleEnabled(id: string, enabled: boolean) {
-  sessionStore.updateTrigger(props.sessionId, id, { enabled });
+  document.updateTrigger(props.sessionId, id, { enabled });
 }
 
 function remove(id: string) {
-  sessionStore.removeTrigger(props.sessionId, id);
+  document.removeTrigger(props.sessionId, id);
 }
 
 function summary(trigger: Trigger): string {
@@ -227,7 +224,7 @@ function summary(trigger: Trigger): string {
 }
 
 .trigger-name {
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--text-secondary);
   overflow: hidden;
@@ -239,13 +236,13 @@ function summary(trigger: Trigger): string {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   color: var(--text-dim);
   overflow: hidden;
 }
 
 .tag {
-  font-size: 8px;
+  font-size: var(--font-size-sm);
   font-weight: 700;
   color: var(--text-muted);
   background: var(--bg-inset);
@@ -314,7 +311,7 @@ function summary(trigger: Trigger): string {
 }
 
 .field-label {
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
   width: 32px;
   flex-shrink: 0;
@@ -323,7 +320,7 @@ function summary(trigger: Trigger): string {
 }
 
 .field-hint {
-  font-size: 9px;
+  font-size: var(--font-size-sm);
   color: var(--text-dim);
 }
 
@@ -341,7 +338,7 @@ function summary(trigger: Trigger): string {
   border: 1px dashed var(--border-color);
   border-radius: var(--radius-md);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   cursor: pointer;
   padding: 5px 10px;
   width: 100%;

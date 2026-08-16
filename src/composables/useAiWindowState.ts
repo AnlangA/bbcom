@@ -1,6 +1,11 @@
 import { getCurrentInstance, ref, onMounted, onUnmounted } from 'vue';
-import { listen } from '@tauri-apps/api/event';
-import { getAiWindowState, hideAiWindow, showAiWindow, type AiWindowState } from '../lib/ipc';
+import {
+  getAiWindowState,
+  hideAiWindow,
+  listenNativeEvent,
+  showAiWindow,
+  type AiWindowState,
+} from '../features/native';
 import { logger } from '../lib/logger';
 
 /** Injectable AI-window control surface so the toggle/refresh logic is
@@ -48,7 +53,7 @@ export function useAiWindowState(deps: UseAiWindowStateDeps = {}) {
   if (getCurrentInstance()) {
     onMounted(() => {
       void refresh();
-      void listen<AiWindowState>('ai-window-state', (event) => {
+      void listenNativeEvent<AiWindowState>('ai-window-state', (event) => {
         visible.value = event.payload.visible;
       })
         .then((cleanup) => {

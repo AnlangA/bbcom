@@ -73,7 +73,7 @@ defineEmits<{
   justify-content: center;
   gap: 10px;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   text-align: center;
 }
 
@@ -90,7 +90,7 @@ defineEmits<{
   padding-bottom: 6px;
   margin-bottom: 4px;
   border-bottom: 1px solid var(--border-subtle);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -104,7 +104,7 @@ defineEmits<{
 .detail-meta {
   flex: 1;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   color: var(--text-dim);
   text-transform: none;
   letter-spacing: 0;
@@ -133,7 +133,7 @@ defineEmits<{
   grid-template-columns: 52px 1fr auto;
   gap: 8px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   line-height: 18px;
   align-items: baseline;
 }

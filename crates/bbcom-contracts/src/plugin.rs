@@ -1,7 +1,11 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+/// Capability a plugin may request. Single source of truth for both the IPC
+/// surface and the plugin contract crates (re-exported there as `Permission`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 pub enum PluginPermission {
     #[serde(rename = "ui.panel")]
     UiPanel,
@@ -31,10 +35,76 @@ pub enum PluginPermission {
     Notification,
 }
 
+impl PluginPermission {
+    pub const ALL: [Self; 13] = [
+        Self::UiPanel,
+        Self::PluginStorage,
+        Self::SessionMetadataRead,
+        Self::SessionCaptureRead,
+        Self::ProjectSettingsReadWrite,
+        Self::SerialPortsRead,
+        Self::SerialControl,
+        Self::SerialWriteProposal,
+        Self::AiConversationRead,
+        Self::AiRequest,
+        Self::FileOpenSave,
+        Self::Clipboard,
+        Self::Notification,
+    ];
+
+    #[must_use]
+    pub const fn is_implicit(self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn is_per_request_only(self) -> bool {
+        matches!(self, Self::SerialWriteProposal)
+    }
+
+    /// Capabilities wired end-to-end in the first unsigned-plugin release.
+    #[must_use]
+    pub const fn is_implemented(self) -> bool {
+        matches!(
+            self,
+            Self::UiPanel
+                | Self::PluginStorage
+                | Self::ProjectSettingsReadWrite
+                | Self::SessionMetadataRead
+                | Self::SessionCaptureRead
+                | Self::SerialWriteProposal
+        )
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UiPanel => "ui.panel",
+            Self::PluginStorage => "plugin.storage",
+            Self::SessionMetadataRead => "session.metadata.read",
+            Self::SessionCaptureRead => "session.capture.read",
+            Self::ProjectSettingsReadWrite => "project.settings.read-write",
+            Self::SerialPortsRead => "serial.ports.read",
+            Self::SerialControl => "serial.control",
+            Self::SerialWriteProposal => "serial.write-proposal",
+            Self::AiConversationRead => "ai.conversation.read",
+            Self::AiRequest => "ai.request",
+            Self::FileOpenSave => "file.open-save",
+            Self::Clipboard => "clipboard",
+            Self::Notification => "notification",
+        }
+    }
+}
+
+impl fmt::Display for PluginPermission {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginLifecycleStatus {
-    ApprovalRequired,
     Disabled,
     Stopped,
     Starting,
@@ -47,26 +117,12 @@ pub enum PluginLifecycleStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginStatusReason {
-    InitialInstall,
-    WorkspaceChanged,
-    PermissionExpansion,
-    ArtifactChanged,
     User,
     CrashLoopRolledBack,
     CrashLoopNoRollback,
     RollbackFailed,
     RollbackBlockedRevoked,
     ArtifactRevoked,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[serde(rename_all = "kebab-case")]
-pub enum PluginRiskCombination {
-    CaptureWithNetwork,
-    ConversationWithNetwork,
-    CaptureWithExternalSink,
-    ConversationWithExternalSink,
-    SerialControlAndWriteProposal,
 }
 
 /// Closed capability set. `Network` remains explicitly unavailable in v1.
@@ -111,8 +167,42 @@ pub struct PluginCatalogItem {
     pub description: String,
     pub version: String,
     pub publisher_name: String,
-    pub publisher_verified: bool,
     pub installed_version: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum PluginSourceKind {
+    Https,
+    LocalPackage,
+    DevDirectory,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum PluginSourceHealth {
+    Idle,
+    Healthy,
+    Error,
+    Disconnected,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginSourceView {
+    pub source_id: String,
+    pub kind: PluginSourceKind,
+    pub display_name: String,
+    pub url: Option<String>,
+    pub enabled: bool,
+    pub watch_enabled: bool,
+    pub health: PluginSourceHealth,
+    #[ts(type = "number | null")]
+    pub last_attempt_ms: Option<u64>,
+    #[ts(type = "number | null")]
+    pub last_success_ms: Option<u64>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -125,39 +215,27 @@ pub struct InstalledPluginView {
     pub status_reason: Option<PluginStatusReason>,
     pub enabled: bool,
     pub pending_version: Option<String>,
-    pub requested_permissions: Vec<PluginPermission>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PluginAuthorizationReview {
-    pub review_id: String,
-    pub plugin_id: String,
-    pub display_name: String,
-    pub version: String,
-    pub persistent_permissions: Vec<PluginPermission>,
-    pub per_request_permissions: Vec<PluginPermission>,
+    pub declared_capabilities: Vec<PluginPermission>,
+    pub effective_capabilities: Vec<PluginPermission>,
     pub unavailable_capabilities: Vec<PluginUnavailableCapability>,
-    pub extra_confirmation_reasons: Vec<PluginRiskCombination>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
-pub enum PluginPermissionDecisionState {
-    Granted,
-    Denied,
+    pub runtime: Option<RuntimeInstanceKey>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PluginPermissionDecision {
-    pub permission: PluginPermission,
-    pub state: PluginPermissionDecisionState,
+pub struct RuntimeInstanceKey {
+    pub workspace_id: String,
+    pub plugin_id: String,
+    #[ts(type = "number")]
+    pub instance_id: u64,
+    #[ts(type = "number")]
+    pub generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginSerialProposal {
+    pub runtime: RuntimeInstanceKey,
     pub proposal_id: String,
     pub plugin_id: String,
     pub plugin_name: String,
@@ -193,7 +271,7 @@ pub struct PluginPanelField {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginDeclarativePanel {
-    pub plugin_id: String,
+    pub runtime: RuntimeInstanceKey,
     pub title: String,
     pub fields: Vec<PluginPanelField>,
 }
@@ -201,7 +279,7 @@ pub struct PluginDeclarativePanel {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginPanelEvent {
-    pub plugin_id: String,
+    pub runtime: RuntimeInstanceKey,
     pub field_id: String,
     pub value: String,
 }
@@ -213,9 +291,9 @@ pub struct PluginCenterData {
     pub revision: u64,
     pub catalog: Vec<PluginCatalogItem>,
     pub installed: Vec<InstalledPluginView>,
-    pub authorization_review: Option<PluginAuthorizationReview>,
     pub serial_proposals: Vec<PluginSerialProposal>,
     pub panels: Vec<PluginDeclarativePanel>,
+    pub sources: Vec<PluginSourceView>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -224,9 +302,9 @@ pub enum PluginFailureCode {
     Unavailable,
     InvalidResponse,
     InvalidPanel,
+    InvalidInput,
     OperationConflict,
     InstallationFailed,
-    AuthorizationFailed,
     HostFailed,
     ProposalExpired,
     ProposalContextChanged,
@@ -329,18 +407,50 @@ macro_rules! plugin_request {
 
 plugin_request!(PluginSnapshotRequest {});
 plugin_request!(InstallPluginRequest { catalog_id: String });
+plugin_request!(InstallLocalPluginRequest { grant_id: String });
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum PluginLocalSourceKind {
+    LocalPackage,
+    DevDirectory,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequestPluginLocalSourceGrantRequest {
+    pub request_id: String,
+    pub source_kind: PluginLocalSourceKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginLocalSourceGrantResponse {
+    pub request_id: String,
+    pub grant_id: String,
+    pub display_name: String,
+    pub source_kind: PluginLocalSourceKind,
+}
+plugin_request!(UninstallPluginRequest { plugin_id: String });
 plugin_request!(SetPluginEnabledRequest {
     plugin_id: String,
     enabled: bool,
 });
-plugin_request!(SubmitPluginAuthorizationRequest {
-    review_id: String,
-    decisions: Vec<PluginPermissionDecision>,
-    per_request_capabilities_acknowledged: Vec<PluginPermission>,
-    extra_confirmation_acknowledged: bool,
+plugin_request!(AddPluginSourceRequest {
+    source_id: String,
+    url: String,
+    enabled: bool,
 });
-plugin_request!(DismissPluginAuthorizationRequest { review_id: String });
-
+plugin_request!(UpdatePluginSourceRequest {
+    source_id: String,
+    url: String,
+    enabled: bool,
+});
+plugin_request!(RemovePluginSourceRequest { source_id: String });
+plugin_request!(RefreshPluginSourceRequest { source_id: String });
+plugin_request!(SetPluginWatchEnabledRequest {
+    source_id: String,
+    enabled: bool,
+});
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginSerialProposalDecision {
@@ -350,8 +460,30 @@ pub enum PluginSerialProposalDecision {
 
 plugin_request!(ResolvePluginSerialProposalRequest {
     proposal_id: String,
+    runtime: RuntimeInstanceKey,
     decision: PluginSerialProposalDecision,
 });
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginSerialAction {
+    pub correlation_id: String,
+    pub proposal_id: String,
+    pub operation_id: String,
+    pub session_id: String,
+    pub runtime: RuntimeInstanceKey,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginSerialActionResultRequest {
+    pub correlation_id: String,
+    pub runtime: RuntimeInstanceKey,
+    pub outcome: crate::SerialSendOutcome,
+    pub requested_bytes: usize,
+    pub sent_bytes: usize,
+}
 plugin_request!(EmitPluginPanelEventRequest {
     event: PluginPanelEvent,
 });
@@ -364,25 +496,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn authorization_and_result_wire_shapes_match_the_frontend_domain() {
-        let input: SubmitPluginAuthorizationRequest = serde_json::from_value(serde_json::json!({
+    fn result_wire_shape_matches_the_frontend_domain() {
+        let input: PluginSnapshotRequest = serde_json::from_value(serde_json::json!({
             "requestId": "request-1",
             "revision": 7,
-            "operationId": "operation-1",
-            "reviewId": "review-1",
-            "decisions": [{ "permission": "ui.panel", "state": "granted" }],
-            "perRequestCapabilitiesAcknowledged": ["serial.write-proposal"],
-            "extraConfirmationAcknowledged": true
+            "operationId": "operation-1"
         }))
-        .expect("authorization request shape");
-        assert_eq!(input.decisions[0].permission, PluginPermission::UiPanel);
+        .expect("snapshot request shape");
 
         let response = PluginCommandResponse::Failed {
             request_id: input.request_id,
             operation_id: input.operation_id,
             revision: 8,
             failure: PluginFailure {
-                code: PluginFailureCode::AuthorizationFailed,
+                code: PluginFailureCode::OperationConflict,
             },
             data: None,
         };
@@ -393,7 +520,7 @@ mod tests {
                 "requestId": "request-1",
                 "operationId": "operation-1",
                 "revision": 8,
-                "failure": { "code": "authorization-failed" }
+                "failure": { "code": "operation-conflict" }
             })
         );
     }

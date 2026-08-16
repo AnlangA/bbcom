@@ -8,6 +8,8 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::sync::Mutex;
 use std::{future::Future, time::Duration};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use zai_rs::client::ZaiClient;
@@ -208,13 +210,35 @@ where
 /// Build the provider client that owns credentials, endpoints, and transport.
 /// Provider configuration errors are collapsed so credentials or endpoint
 /// details can never cross the local IPC boundary.
+///
+/// The SDK's builder cannot accept an external HTTP client, but cloning a
+/// built `ZaiClient` shares its single connection pool. The client is
+/// therefore cached under a SHA-256 of the API key: requests with the same
+/// key reuse one warm pool (identical per-request config), while a changed
+/// key transparently rebuilds it. Only the digest is retained for lookup so
+/// the raw key exists solely inside the SDK's secret wrapper.
 pub(crate) fn build_zai_client(api_key: &str) -> Result<ZaiClient, AppError> {
-    ZaiClient::builder(api_key.to_string())
+    let key_digest: [u8; 32] = Sha256::digest(api_key.as_bytes()).into();
+    if let Ok(cache) = SHARED_ZAI_CLIENT.lock()
+        && let Some((cached_digest, cached)) = cache.as_ref()
+        && *cached_digest == key_digest
+    {
+        return Ok(cached.clone());
+    }
+    let client = ZaiClient::builder(api_key.to_string())
         .build()
         .map_err(|_| AppError::AiError {
             message: "AI provider client configuration failed".to_string(),
-        })
+        })?;
+    if let Ok(mut cache) = SHARED_ZAI_CLIENT.lock() {
+        *cache = Some((key_digest, client.clone()));
+    }
+    Ok(client)
 }
+
+/// Shared transport cache for [`build_zai_client`]: the built client plus the
+/// digest of the API key it was configured with.
+static SHARED_ZAI_CLIENT: Mutex<Option<([u8; 32], ZaiClient)>> = Mutex::new(None);
 
 /// Build the deterministic portion of an outbound chat request before any
 /// network I/O. Keeping it separate gives every supported model the same

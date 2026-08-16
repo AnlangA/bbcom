@@ -1,31 +1,44 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type {
+  AddPluginSourceRequest,
   CancelPluginOperationRequest,
-  DismissPluginAuthorizationRequest,
   EmitPluginPanelEventRequest,
+  InstallLocalPluginRequest,
   InstallPluginRequest,
   PluginCenterData as GeneratedPluginCenterData,
   PluginCommandResponse,
   PluginFailureCode,
   PluginSerialProposalDecision,
   PluginSnapshotRequest,
+  PluginLocalSourceGrantResponse,
+  RequestPluginLocalSourceGrantRequest,
+  RefreshPluginSourceRequest,
+  RemovePluginSourceRequest,
   ResolvePluginSerialProposalRequest,
   SetPluginEnabledRequest,
-  SubmitPluginAuthorizationRequest,
+  SetPluginWatchEnabledRequest,
+  UninstallPluginRequest,
+  UpdatePluginSourceRequest,
 } from '../../generated/ipc-contracts';
 import type {
   PluginCenterData,
   PluginCenterPort,
   PluginPanelEvent,
   PluginPortOutcome,
-  SubmitPluginAuthorization,
+  PluginSerialProposal,
 } from './types';
 
 export const PLUGIN_CENTER_SNAPSHOT_COMMAND = 'plugin_center_snapshot';
+export const PLUGIN_REQUEST_LOCAL_SOURCE_GRANT_COMMAND = 'plugin_request_local_source_grant';
 export const PLUGIN_INSTALL_COMMAND = 'plugin_install';
+export const PLUGIN_INSTALL_LOCAL_COMMAND = 'plugin_install_local';
+export const PLUGIN_UNINSTALL_COMMAND = 'plugin_uninstall';
 export const PLUGIN_SET_ENABLED_COMMAND = 'plugin_set_enabled';
-export const PLUGIN_SUBMIT_AUTHORIZATION_COMMAND = 'plugin_submit_authorization';
-export const PLUGIN_DISMISS_AUTHORIZATION_COMMAND = 'plugin_dismiss_authorization';
+export const PLUGIN_SOURCE_ADD_COMMAND = 'plugin_source_add';
+export const PLUGIN_SOURCE_UPDATE_COMMAND = 'plugin_source_update';
+export const PLUGIN_SOURCE_REMOVE_COMMAND = 'plugin_source_remove';
+export const PLUGIN_SOURCE_REFRESH_COMMAND = 'plugin_source_refresh';
+export const PLUGIN_SET_WATCH_ENABLED_COMMAND = 'plugin_set_watch_enabled';
 export const PLUGIN_RESOLVE_SERIAL_PROPOSAL_COMMAND = 'plugin_resolve_serial_proposal';
 export const PLUGIN_EMIT_PANEL_EVENT_COMMAND = 'plugin_emit_panel_event';
 export const PLUGIN_CANCEL_OPERATION_COMMAND = 'plugin_cancel_operation';
@@ -34,9 +47,9 @@ const FAILURE_CODES = new Set<PluginFailureCode>([
   'unavailable',
   'invalid-response',
   'invalid-panel',
+  'invalid-input',
   'operation-conflict',
   'installation-failed',
-  'authorization-failed',
   'host-failed',
   'proposal-expired',
   'proposal-context-changed',
@@ -68,6 +81,34 @@ export class TauriPluginCenterPort implements PluginCenterPort {
   private revision = 0;
   private data: PluginCenterData | undefined;
 
+  async requestLocalSourceGrant(
+    sourceKind: 'local-package' | 'dev-directory',
+    signal: AbortSignal,
+  ): Promise<string | null> {
+    if (signal.aborted || !isTauri()) return null;
+    const request: RequestPluginLocalSourceGrantRequest = {
+      requestId: createCorrelationId('plugin-grant-request'),
+      sourceKind,
+    };
+    try {
+      const response = await invoke<PluginLocalSourceGrantResponse>(
+        PLUGIN_REQUEST_LOCAL_SOURCE_GRANT_COMMAND,
+        { request },
+      );
+      if (
+        signal.aborted ||
+        response.requestId !== request.requestId ||
+        response.sourceKind !== sourceKind ||
+        !validIdentity(response.grantId)
+      ) {
+        return null;
+      }
+      return response.grantId;
+    } catch {
+      return null;
+    }
+  }
+
   snapshot(signal: AbortSignal): Promise<PluginPortOutcome> {
     const request: PluginSnapshotRequest = this.correlation();
     return this.execute(PLUGIN_CENTER_SNAPSHOT_COMMAND, request, signal);
@@ -78,38 +119,83 @@ export class TauriPluginCenterPort implements PluginCenterPort {
     return this.execute(PLUGIN_INSTALL_COMMAND, request, signal);
   }
 
+  installLocal(grantId: string, signal: AbortSignal): Promise<PluginPortOutcome> {
+    const request: InstallLocalPluginRequest = { ...this.correlation(), grantId };
+    return this.execute(PLUGIN_INSTALL_LOCAL_COMMAND, request, signal);
+  }
+
+  uninstall(pluginId: string, signal: AbortSignal): Promise<PluginPortOutcome> {
+    const request: UninstallPluginRequest = { ...this.correlation(), pluginId };
+    return this.execute(PLUGIN_UNINSTALL_COMMAND, request, signal);
+  }
+
   setEnabled(pluginId: string, enabled: boolean, signal: AbortSignal): Promise<PluginPortOutcome> {
     const request: SetPluginEnabledRequest = { ...this.correlation(), pluginId, enabled };
     return this.execute(PLUGIN_SET_ENABLED_COMMAND, request, signal);
   }
 
-  submitAuthorization(
-    input: SubmitPluginAuthorization,
+  addSource(
+    sourceId: string,
+    url: string,
+    enabled: boolean,
     signal: AbortSignal,
   ): Promise<PluginPortOutcome> {
-    const request: SubmitPluginAuthorizationRequest = {
+    const request: AddPluginSourceRequest = {
       ...this.correlation(),
-      reviewId: input.reviewId,
-      decisions: input.decisions.map((decision) => ({ ...decision })),
-      perRequestCapabilitiesAcknowledged: [...input.perRequestCapabilitiesAcknowledged],
-      extraConfirmationAcknowledged: input.extraConfirmationAcknowledged,
+      sourceId,
+      url,
+      enabled,
     };
-    return this.execute(PLUGIN_SUBMIT_AUTHORIZATION_COMMAND, request, signal);
+    return this.execute(PLUGIN_SOURCE_ADD_COMMAND, request, signal);
   }
 
-  dismissAuthorization(reviewId: string, signal: AbortSignal): Promise<PluginPortOutcome> {
-    const request: DismissPluginAuthorizationRequest = { ...this.correlation(), reviewId };
-    return this.execute(PLUGIN_DISMISS_AUTHORIZATION_COMMAND, request, signal);
+  updateSource(
+    sourceId: string,
+    url: string,
+    enabled: boolean,
+    signal: AbortSignal,
+  ): Promise<PluginPortOutcome> {
+    const request: UpdatePluginSourceRequest = {
+      ...this.correlation(),
+      sourceId,
+      url,
+      enabled,
+    };
+    return this.execute(PLUGIN_SOURCE_UPDATE_COMMAND, request, signal);
+  }
+
+  removeSource(sourceId: string, signal: AbortSignal): Promise<PluginPortOutcome> {
+    const request: RemovePluginSourceRequest = { ...this.correlation(), sourceId };
+    return this.execute(PLUGIN_SOURCE_REMOVE_COMMAND, request, signal);
+  }
+
+  refreshSource(sourceId: string, signal: AbortSignal): Promise<PluginPortOutcome> {
+    const request: RefreshPluginSourceRequest = { ...this.correlation(), sourceId };
+    return this.execute(PLUGIN_SOURCE_REFRESH_COMMAND, request, signal);
+  }
+
+  setWatchEnabled(
+    sourceId: string,
+    enabled: boolean,
+    signal: AbortSignal,
+  ): Promise<PluginPortOutcome> {
+    const request: SetPluginWatchEnabledRequest = {
+      ...this.correlation(),
+      sourceId,
+      enabled,
+    };
+    return this.execute(PLUGIN_SET_WATCH_ENABLED_COMMAND, request, signal);
   }
 
   resolveSerialProposal(
-    proposalId: string,
+    proposal: PluginSerialProposal,
     decision: PluginSerialProposalDecision,
     signal: AbortSignal,
   ): Promise<PluginPortOutcome> {
     const request: ResolvePluginSerialProposalRequest = {
       ...this.correlation(),
-      proposalId,
+      proposalId: proposal.proposalId,
+      runtime: { ...proposal.runtime },
       decision,
     };
     return this.execute(PLUGIN_RESOLVE_SERIAL_PROPOSAL_COMMAND, request, signal);
@@ -169,8 +255,9 @@ export class TauriPluginCenterPort implements PluginCenterPort {
         if (this.data && this.data.revision < this.revision) this.data = undefined;
       }
       return toPortOutcome(validated.response);
-    } catch {
-      return failedOutcome(signal.aborted ? 'cancel-failed' : 'unavailable');
+    } catch (error) {
+      if (signal.aborted) return failedOutcome('cancel-failed');
+      return failedOutcome(invokeFailureCode(error));
     } finally {
       signal.removeEventListener('abort', requestCancellation);
     }
@@ -253,6 +340,29 @@ function toPortOutcome(response: PluginCommandResponse): PluginPortOutcome {
   }
 }
 
+/**
+ * Maps a Tauri invoke rejection to a PluginFailureCode the panel can render.
+ * The backend's IpcError carries an AppErrorCode string; unknown shapes
+ * fall back to 'unavailable'.
+ */
+function invokeFailureCode(error: unknown): PluginFailureCode {
+  if (!isRecord(error)) return 'unavailable';
+  const code = error.code;
+  if (typeof code !== 'string') return 'unavailable';
+  switch (code) {
+    case 'INVALID_INPUT':
+      return 'invalid-input';
+    case 'SECURITY_DENIED':
+      return 'unavailable';
+    case 'REVISION_CONFLICT':
+      return 'operation-conflict';
+    case 'BUSY':
+      return 'operation-conflict';
+    default:
+      return 'unavailable';
+  }
+}
+
 function failedOutcome(code: PluginFailureCode): PluginPortOutcome {
   return { outcome: 'failed', failure: { code } };
 }
@@ -264,9 +374,9 @@ function validCenterData(value: unknown, revision: number): PluginCenterData | n
     !validRevision(value.revision) ||
     !Array.isArray(value.catalog) ||
     !Array.isArray(value.installed) ||
-    !(value.authorizationReview === null || isRecord(value.authorizationReview)) ||
     !Array.isArray(value.serialProposals) ||
-    !Array.isArray(value.panels)
+    !Array.isArray(value.panels) ||
+    !Array.isArray(value.sources)
   )
     return null;
   return value as unknown as GeneratedPluginCenterData;
@@ -286,6 +396,10 @@ function validRevision(value: unknown): value is number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validIdentity(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
 }
 
 let fallbackCorrelationSequence = 0;

@@ -1,25 +1,14 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-
-use bbcom_plugin_contracts::{Permission, permission_plan};
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::model::valid_workspace_id;
-use crate::ports::{
-    ArtifactRevocationStore, Clock, HostLauncher, InstallationPort, PluginAuthorizationStore,
-};
+use crate::ports::{Clock, HostLauncher, InstallationPort};
 use crate::project_state::validate_project_states;
 use crate::{
-    ApprovalReason, ArtifactSlot, AuthorizationTarget, CRASH_THRESHOLD, CRASH_WINDOW_MS,
-    DisableReason, HostHandle, HostLaunchMode, HostLaunchRequest, HostReport, ManagerError,
-    ManagerErrorCode, ManualPackageRequest, OpaqueProjectPluginState, PluginArtifact,
-    PluginSnapshot, PluginStatus, PreparationKind, PreparedInstallation, Result,
+    ArtifactSlot, CRASH_THRESHOLD, CRASH_WINDOW_MS, DisableReason, HostHandle, HostLaunchMode,
+    HostLaunchRequest, HostReport, ManagerError, ManagerErrorCode, ManualPackageRequest,
+    OpaqueProjectPluginState, PluginArtifact, PluginSnapshot, PluginStatus, PreparationKind,
+    PreparedInstallation, Result, WorkspacePluginBinding,
 };
-
-#[derive(Clone, Debug)]
-struct ApprovedAuthorization {
-    workspace_id: String,
-    reviewed_permissions: BTreeSet<Permission>,
-    revision: u64,
-}
 
 #[derive(Clone, Debug)]
 struct PendingUpgrade {
@@ -31,8 +20,9 @@ struct PendingUpgrade {
 #[derive(Clone, Debug)]
 struct PluginRecord {
     artifact: PluginArtifact,
+    expected_enabled: bool,
+    generation: u64,
     status: PluginStatus,
-    authorization: Option<ApprovedAuthorization>,
     pending: Option<PendingUpgrade>,
     crash_times: VecDeque<u64>,
     last_error: Option<ManagerErrorCode>,
@@ -49,11 +39,9 @@ struct RunningHost {
 /// The service is intentionally synchronous and requires `&mut self` for every
 /// mutation. The application must place it behind its existing operation
 /// registry/actor boundary rather than invoking it concurrently.
-pub struct PluginManager<I, H, A, R, C> {
+pub struct PluginManager<I, H, C> {
     installer: I,
     hosts: H,
-    authorizations: A,
-    revocations: R,
     clock: C,
     workspace_id: Option<String>,
     records: BTreeMap<String, PluginRecord>,
@@ -61,21 +49,17 @@ pub struct PluginManager<I, H, A, R, C> {
     project_states: Vec<OpaqueProjectPluginState>,
 }
 
-impl<I, H, A, R, C> PluginManager<I, H, A, R, C>
+impl<I, H, C> PluginManager<I, H, C>
 where
     I: InstallationPort,
     H: HostLauncher,
-    A: PluginAuthorizationStore,
-    R: ArtifactRevocationStore,
     C: Clock,
 {
     #[must_use]
-    pub fn new(installer: I, hosts: H, authorizations: A, revocations: R, clock: C) -> Self {
+    pub fn new(installer: I, hosts: H, clock: C) -> Self {
         Self {
             installer,
             hosts,
-            authorizations,
-            revocations,
             clock,
             workspace_id: None,
             records: BTreeMap::new(),
@@ -89,8 +73,7 @@ where
         self.workspace_id.as_deref()
     }
 
-    /// Registers an installation discovered during application bootstrap. It
-    /// never starts the plugin and does not infer an authorization receipt.
+    /// Registers an installation discovered during application bootstrap.
     pub fn observe_installed(&mut self, artifact: PluginArtifact) -> Result<PluginSnapshot> {
         artifact.validate()?;
         if let Some(existing) = self.records.get(&artifact.plugin_id) {
@@ -99,18 +82,15 @@ where
             }
             return Err(ManagerErrorCode::PluginAlreadyInstalled.into());
         }
-        let status = if self.workspace_id.is_some() {
-            PluginStatus::ApprovalRequired(ApprovalReason::WorkspaceChanged)
-        } else {
-            PluginStatus::Stopped
-        };
+        let status = PluginStatus::Stopped;
         let plugin_id = artifact.plugin_id.clone();
         self.records.insert(
             plugin_id.clone(),
             PluginRecord {
                 artifact,
+                expected_enabled: false,
+                generation: 0,
                 status,
-                authorization: None,
                 pending: None,
                 crash_times: VecDeque::new(),
                 last_error: None,
@@ -119,10 +99,77 @@ where
         self.snapshot(&plugin_id)
     }
 
+    /// Development-mode install from a user-selected local package directory.
+    /// Mirrors `install_manual` exactly (validation, revocation check, exact
+    /// commit) except the package source is a local path instead of the
+    /// repository trust boundary.
+    pub fn install_local(&mut self, package_root: &std::path::Path) -> Result<PluginSnapshot> {
+        if self
+            .records
+            .contains_key(&Self::local_probe_plugin_id(package_root).unwrap_or_default())
+        {
+            return Err(ManagerErrorCode::PluginAlreadyInstalled.into());
+        }
+        let prepared = self
+            .installer
+            .prepare_local(package_root, None)
+            .map_err(|_| ManagerErrorCode::InstallationPrepareFailed)?;
+        if self.validate_initial_prepared_local(&prepared).is_err() {
+            let _ = self.installer.discard(&prepared);
+            return Err(ManagerErrorCode::UpdateTargetInvalid.into());
+        }
+        let committed = self.commit_exact(&prepared)?;
+        let plugin_id = committed.plugin_id.clone();
+        self.records.insert(
+            plugin_id.clone(),
+            PluginRecord {
+                artifact: committed,
+                expected_enabled: false,
+                generation: 0,
+                status: PluginStatus::Stopped,
+                pending: None,
+                crash_times: VecDeque::new(),
+                last_error: None,
+            },
+        );
+        self.snapshot(&plugin_id)
+    }
+
+    /// Removes an installed plugin at runtime: stops its host, discards any
+    /// pending upgrade, and deletes the durable installation. The returned
+    /// snapshot is the final pre-removal state for UI feedback.
+    pub fn uninstall(&mut self, plugin_id: &str) -> Result<PluginSnapshot> {
+        let record = self.record(plugin_id)?;
+        if record.pending.is_some() {
+            return Err(ManagerErrorCode::InvalidStateTransition.into());
+        }
+        let artifact = record.artifact.clone();
+        let final_snapshot = self.snapshot(plugin_id)?;
+        let stop_result = self.stop_running(plugin_id);
+        self.records.remove(plugin_id);
+        self.installer
+            .remove_installed(&artifact)
+            .map_err(|_| ManagerErrorCode::InstallationPrepareFailed)?;
+        stop_result?;
+        Ok(final_snapshot)
+    }
+
+    /// Best-effort plugin-id probe for a local package directory, used only
+    /// to reject duplicate installs before staging work.
+    fn local_probe_plugin_id(_package_root: &std::path::Path) -> Option<String> {
+        None
+    }
+
+    fn validate_initial_prepared_local(&self, prepared: &PreparedInstallation) -> Result<()> {
+        if prepared.kind != PreparationKind::InitialInstall {
+            return Err(ManagerErrorCode::UpdateTargetInvalid.into());
+        }
+        prepared.artifact.validate()
+    }
+
     /// Performs a user-requested repository installation. There is no timer or
     /// background path to this method.
     pub fn install_manual(&mut self, request: &ManualPackageRequest) -> Result<PluginSnapshot> {
-        self.require_workspace()?;
         if self.records.contains_key(&request.plugin_id) {
             return Err(ManagerErrorCode::PluginAlreadyInstalled.into());
         }
@@ -134,25 +181,15 @@ where
             let _ = self.installer.discard(&prepared);
             return Err(ManagerErrorCode::UpdateTargetInvalid.into());
         }
-        match self.is_revoked(&prepared.artifact) {
-            Ok(false) => {}
-            Ok(true) => {
-                self.discard_or_error(&prepared)?;
-                return Err(ManagerErrorCode::ArtifactRevoked.into());
-            }
-            Err(error) => {
-                self.discard_or_error(&prepared)?;
-                return Err(error);
-            }
-        }
         let artifact = self.commit_exact(&prepared)?;
         let plugin_id = artifact.plugin_id.clone();
         self.records.insert(
             plugin_id.clone(),
             PluginRecord {
                 artifact,
-                status: PluginStatus::ApprovalRequired(ApprovalReason::InitialInstall),
-                authorization: None,
+                expected_enabled: false,
+                generation: 0,
+                status: PluginStatus::Stopped,
                 pending: None,
                 crash_times: VecDeque::new(),
                 last_error: None,
@@ -166,6 +203,7 @@ where
     /// idempotent and never creates a second host.
     pub fn enable(&mut self, plugin_id: &str) -> Result<PluginSnapshot> {
         self.require_workspace()?;
+        self.record_mut(plugin_id)?.expected_enabled = true;
         if self.running.contains_key(plugin_id) {
             return self.snapshot(plugin_id);
         }
@@ -174,20 +212,10 @@ where
             return Err(ManagerErrorCode::InvalidStateTransition.into());
         }
         let artifact = record.artifact.clone();
-        if self.is_revoked(&artifact)? {
-            self.set_disabled(
-                plugin_id,
-                DisableReason::ArtifactRevoked,
-                ManagerErrorCode::ArtifactRevoked,
-            )?;
-            return Err(ManagerErrorCode::ArtifactRevoked.into());
-        }
-        let authorization = self.load_authorization(&artifact)?;
         self.record_mut(plugin_id)?.status = PluginStatus::Starting;
-        match self.start_active(&artifact, &authorization) {
+        match self.start_active(&artifact) {
             Ok(()) => {
                 let record = self.record_mut(plugin_id)?;
-                record.authorization = Some(authorization);
                 record.status = PluginStatus::Running;
                 record.last_error = None;
                 self.snapshot(plugin_id)
@@ -201,6 +229,7 @@ where
 
     pub fn disable(&mut self, plugin_id: &str) -> Result<PluginSnapshot> {
         self.record(plugin_id)?;
+        self.record_mut(plugin_id)?.expected_enabled = false;
         let stop_result = self.stop_running(plugin_id);
         let record = self.record_mut(plugin_id)?;
         record.status = PluginStatus::Disabled(DisableReason::User);
@@ -212,11 +241,7 @@ where
         self.snapshot(plugin_id)
     }
 
-    /// Stages a user-selected newer version. Every version change stops the
-    /// current host and leaves the staged update disabled until
-    /// `approve_pending_upgrade` observes a fresh exact-version receipt for
-    /// the prepared target. An in-memory authorization for the active artifact
-    /// is never reused to authorize a different artifact.
+    /// Stages and atomically activates a user-selected newer version.
     pub fn begin_manual_upgrade(
         &mut self,
         request: &ManualPackageRequest,
@@ -237,22 +262,7 @@ where
             let _ = self.installer.discard(&prepared);
             return Err(ManagerErrorCode::UpdateTargetInvalid.into());
         }
-        match self.is_revoked(&prepared.artifact) {
-            Ok(false) => {}
-            Ok(true) => {
-                self.discard_or_error(&prepared)?;
-                return Err(ManagerErrorCode::ArtifactRevoked.into());
-            }
-            Err(error) => {
-                self.discard_or_error(&prepared)?;
-                return Err(error);
-            }
-        }
 
-        let permission_expansion = !prepared
-            .artifact
-            .requested_permissions
-            .is_subset(&current.requested_permissions);
         let restart_after_activation = self.running.contains_key(&request.plugin_id);
         let resume_status = self.record(&request.plugin_id)?.status;
         if let Err(error) = self.stop_running(&request.plugin_id) {
@@ -267,27 +277,14 @@ where
                 restart_after_activation,
                 resume_status,
             });
-            record.status = PluginStatus::ApprovalRequired(if permission_expansion {
-                ApprovalReason::PermissionExpansion
-            } else {
-                ApprovalReason::ArtifactChanged
-            });
+            record.status = PluginStatus::Updating;
             record.last_error = None;
         }
-        self.snapshot(&request.plugin_id)
+        self.finish_pending_upgrade(&request.plugin_id)
     }
 
-    pub fn approve_pending_upgrade(&mut self, plugin_id: &str) -> Result<PluginSnapshot> {
-        let target = self
-            .record(plugin_id)?
-            .pending
-            .as_ref()
-            .ok_or(ManagerErrorCode::InvalidStateTransition)?
-            .prepared
-            .artifact
-            .clone();
-        let authorization = self.load_authorization(&target)?;
-        self.finish_pending_upgrade(plugin_id, authorization)
+    pub fn complete_pending_upgrade(&mut self, plugin_id: &str) -> Result<PluginSnapshot> {
+        self.finish_pending_upgrade(plugin_id)
     }
 
     pub fn cancel_pending_upgrade(&mut self, plugin_id: &str) -> Result<PluginSnapshot> {
@@ -354,20 +351,7 @@ where
                 }
 
                 let artifact = self.record(plugin_id)?.artifact.clone();
-                if self.is_revoked(&artifact)? {
-                    self.set_disabled(
-                        plugin_id,
-                        DisableReason::ArtifactRevoked,
-                        ManagerErrorCode::ArtifactRevoked,
-                    )?;
-                    return self.snapshot(plugin_id);
-                }
-                let authorization = self
-                    .record(plugin_id)?
-                    .authorization
-                    .clone()
-                    .ok_or(ManagerErrorCode::AuthorizationRequired)?;
-                match self.start_active(&artifact, &authorization) {
+                match self.start_active(&artifact) {
                     Ok(()) => {
                         let record = self.record_mut(plugin_id)?;
                         record.status = PluginStatus::Running;
@@ -391,19 +375,53 @@ where
         workspace_id: impl Into<String>,
         states: Vec<OpaqueProjectPluginState>,
     ) -> Result<Vec<PluginSnapshot>> {
+        self.open_workspace(workspace_id, Vec::new(), states)
+    }
+
+    /// Activates a workspace context without rebuilding the global manager.
+    /// Bindings for uninstalled plugins are retained by the workspace store;
+    /// only currently installed records are projected into runtime intent.
+    pub fn open_workspace(
+        &mut self,
+        workspace_id: impl Into<String>,
+        bindings: Vec<WorkspacePluginBinding>,
+        states: Vec<OpaqueProjectPluginState>,
+    ) -> Result<Vec<PluginSnapshot>> {
         let workspace_id = workspace_id.into();
         if !valid_workspace_id(&workspace_id) {
             return Err(ManagerErrorCode::ProjectStateInvalid.into());
         }
         validate_project_states(&states)?;
+        let mut expected = BTreeMap::new();
+        for binding in bindings {
+            if expected
+                .insert(binding.plugin_id, binding.expected_enabled)
+                .is_some()
+            {
+                return Err(ManagerErrorCode::ProjectStateInvalid.into());
+            }
+        }
         self.stop_all_for_project_transition();
         self.discard_all_pending();
         self.workspace_id = Some(workspace_id);
         self.project_states = states;
         for record in self.records.values_mut() {
-            record.authorization = None;
             record.crash_times.clear();
-            record.status = PluginStatus::ApprovalRequired(ApprovalReason::WorkspaceChanged);
+            record.status = PluginStatus::Stopped;
+            record.expected_enabled = expected
+                .get(&record.artifact.plugin_id)
+                .copied()
+                .unwrap_or(false);
+        }
+        let to_start = self
+            .records
+            .iter()
+            .filter_map(|(plugin_id, record)| record.expected_enabled.then_some(plugin_id.clone()))
+            .collect::<Vec<_>>();
+        for plugin_id in to_start {
+            // Preserve expected=true and surface a failed lifecycle snapshot;
+            // one broken plugin must not prevent the workspace from opening.
+            let _ = self.enable(&plugin_id);
         }
         Ok(self.snapshots())
     }
@@ -414,9 +432,9 @@ where
         self.workspace_id = None;
         self.project_states.clear();
         for record in self.records.values_mut() {
-            record.authorization = None;
             record.crash_times.clear();
             record.status = PluginStatus::Stopped;
+            record.expected_enabled = false;
         }
     }
 
@@ -448,6 +466,7 @@ where
         let record = self.record(plugin_id)?;
         Ok(PluginSnapshot {
             artifact: record.artifact.clone(),
+            expected_enabled: record.expected_enabled,
             status: record.status,
             pending_version: record
                 .pending
@@ -457,46 +476,10 @@ where
                 .running
                 .get(plugin_id)
                 .map(|running| running.handle.instance_id),
+            generation: record.generation,
             crashes_in_window: record.crash_times.len(),
             last_error: record.last_error,
         })
-    }
-
-    /// Returns the exact artifact and staging identity awaiting review.
-    pub fn authorization_target(&self, plugin_id: &str) -> Result<AuthorizationTarget> {
-        let record = self.record(plugin_id)?;
-        Ok(record.pending.as_ref().map_or_else(
-            || AuthorizationTarget {
-                artifact: record.artifact.clone(),
-                preparation_token: None,
-            },
-            |pending| AuthorizationTarget {
-                artifact: pending.prepared.artifact.clone(),
-                preparation_token: Some(pending.prepared.token.clone()),
-            },
-        ))
-    }
-
-    /// Completes only the exact target previously reviewed. Replacing a
-    /// prepared package while UI is open makes that review stale.
-    pub fn complete_authorization(
-        &mut self,
-        expected: &AuthorizationTarget,
-        approved: bool,
-    ) -> Result<PluginSnapshot> {
-        let plugin_id = expected.artifact.plugin_id.clone();
-        if self.authorization_target(&plugin_id)? != *expected {
-            return Err(ManagerErrorCode::InvalidStateTransition.into());
-        }
-        if self.record(&plugin_id)?.pending.is_some() {
-            if approved {
-                self.approve_pending_upgrade(&plugin_id)
-            } else {
-                self.cancel_pending_upgrade(&plugin_id)
-            }
-        } else {
-            self.snapshot(&plugin_id)
-        }
     }
 
     #[must_use]
@@ -507,53 +490,54 @@ where
             .collect()
     }
 
-    fn finish_pending_upgrade(
+    pub fn take_published_panels(&mut self) -> Result<Vec<crate::HostPublishedPanel>> {
+        let handles = self
+            .running
+            .values()
+            .map(|running| running.handle.clone())
+            .collect::<Vec<_>>();
+        let mut panels = Vec::new();
+        for handle in handles {
+            if let Some(panel) = self
+                .hosts
+                .take_published_panel(&handle)
+                .map_err(|_| ManagerErrorCode::HostInitializationFailed)?
+            {
+                panels.push(crate::HostPublishedPanel {
+                    plugin_id: handle.plugin_id,
+                    instance_id: handle.instance_id,
+                    panel,
+                });
+            }
+        }
+        Ok(panels)
+    }
+
+    pub fn invoke_panel_event(
         &mut self,
         plugin_id: &str,
-        authorization: ApprovedAuthorization,
-    ) -> Result<PluginSnapshot> {
+        field_id: &str,
+        value: &str,
+    ) -> Result<Option<crate::HostPanel>> {
+        let handle = self
+            .running
+            .get(plugin_id)
+            .map(|running| running.handle.clone())
+            .ok_or(ManagerErrorCode::InvalidStateTransition)?;
+        self.hosts
+            .invoke_panel_event(&handle, field_id, value)
+            .map_err(|_| ManagerErrorCode::HostInitializationFailed.into())
+    }
+
+    fn finish_pending_upgrade(&mut self, plugin_id: &str) -> Result<PluginSnapshot> {
         let pending = self
             .record(plugin_id)?
             .pending
             .clone()
             .ok_or(ManagerErrorCode::InvalidStateTransition)?;
-        if !pending
-            .prepared
-            .artifact
-            .requested_permissions
-            .is_subset(&authorization.reviewed_permissions)
-        {
-            return Err(ManagerErrorCode::AuthorizationRequired.into());
-        }
         self.record_mut(plugin_id)?.status = PluginStatus::Updating;
-        match self.is_revoked(&pending.prepared.artifact) {
-            Ok(false) => {}
-            Ok(true) => {
-                return self.abort_pending_upgrade(
-                    plugin_id,
-                    &pending,
-                    ManagerErrorCode::ArtifactRevoked,
-                );
-            }
-            Err(error) => {
-                return self.abort_pending_upgrade(plugin_id, &pending, error.code());
-            }
-        }
-        if let Err(error) = self.preflight(&pending.prepared, &authorization) {
+        if let Err(error) = self.preflight(&pending.prepared) {
             return self.abort_pending_upgrade(plugin_id, &pending, error.code());
-        }
-        match self.is_revoked(&pending.prepared.artifact) {
-            Ok(false) => {}
-            Ok(true) => {
-                return self.abort_pending_upgrade(
-                    plugin_id,
-                    &pending,
-                    ManagerErrorCode::ArtifactRevoked,
-                );
-            }
-            Err(error) => {
-                return self.abort_pending_upgrade(plugin_id, &pending, error.code());
-            }
         }
         let activated = match self.commit_exact(&pending.prepared) {
             Ok(activated) => activated,
@@ -564,7 +548,6 @@ where
         {
             let record = self.record_mut(plugin_id)?;
             record.artifact = activated.clone();
-            record.authorization = Some(authorization.clone());
             record.pending = None;
             record.crash_times.clear();
             record.last_error = None;
@@ -572,7 +555,7 @@ where
         }
         if pending.restart_after_activation {
             self.record_mut(plugin_id)?.status = PluginStatus::Starting;
-            if let Err(error) = self.start_active(&activated, &authorization) {
+            if let Err(error) = self.start_active(&activated) {
                 self.fail_record(plugin_id, error.code())?;
                 return Err(error);
             }
@@ -588,12 +571,7 @@ where
             return Ok(());
         }
         let artifact = self.record(plugin_id)?.artifact.clone();
-        let authorization = self
-            .record(plugin_id)?
-            .authorization
-            .clone()
-            .ok_or(ManagerErrorCode::AuthorizationRequired)?;
-        match self.start_active(&artifact, &authorization) {
+        match self.start_active(&artifact) {
             Ok(()) => {
                 self.record_mut(plugin_id)?.status = PluginStatus::Running;
                 Ok(())
@@ -655,27 +633,6 @@ where
             )?;
             return Ok(());
         }
-        match self.revocations.is_revoked(&prepared.artifact) {
-            Ok(true) => {
-                let _ = self.installer.discard(&prepared);
-                self.set_disabled(
-                    plugin_id,
-                    DisableReason::RollbackBlockedRevoked,
-                    ManagerErrorCode::ArtifactRevoked,
-                )?;
-                return Ok(());
-            }
-            Ok(false) => {}
-            Err(_) => {
-                let _ = self.installer.discard(&prepared);
-                self.set_disabled(
-                    plugin_id,
-                    DisableReason::RollbackFailed,
-                    ManagerErrorCode::RevocationUnavailable,
-                )?;
-                return Ok(());
-            }
-        }
         let activated = match self.commit_exact(&prepared) {
             Ok(activated) => activated,
             Err(_) => {
@@ -690,7 +647,6 @@ where
         };
         let record = self.record_mut(plugin_id)?;
         record.artifact = activated;
-        record.authorization = None;
         record.pending = None;
         record.crash_times.clear();
         record.status = PluginStatus::Disabled(DisableReason::CrashLoopRolledBack);
@@ -698,20 +654,16 @@ where
         Ok(())
     }
 
-    fn start_active(
-        &mut self,
-        artifact: &PluginArtifact,
-        authorization: &ApprovedAuthorization,
-    ) -> Result<()> {
+    fn start_active(&mut self, artifact: &PluginArtifact) -> Result<()> {
         if self.running.contains_key(&artifact.plugin_id) {
             return Err(ManagerErrorCode::InvalidStateTransition.into());
         }
-        let request = self.host_request(
-            artifact,
-            authorization,
-            ArtifactSlot::Active,
-            HostLaunchMode::Active,
-        )?;
+        let record = self.record_mut(&artifact.plugin_id)?;
+        record.generation = record
+            .generation
+            .checked_add(1)
+            .ok_or(ManagerErrorCode::InvalidStateTransition)?;
+        let request = self.host_request(artifact, ArtifactSlot::Active, HostLaunchMode::Active)?;
         let handle = self.launch_initialized(&request)?;
         self.running.insert(
             artifact.plugin_id.clone(),
@@ -723,17 +675,12 @@ where
         Ok(())
     }
 
-    fn preflight(
-        &mut self,
-        prepared: &PreparedInstallation,
-        authorization: &ApprovedAuthorization,
-    ) -> Result<()> {
+    fn preflight(&mut self, prepared: &PreparedInstallation) -> Result<()> {
         if self.running.contains_key(&prepared.artifact.plugin_id) {
             return Err(ManagerErrorCode::InvalidStateTransition.into());
         }
         let request = self.host_request(
             &prepared.artifact,
-            authorization,
             ArtifactSlot::Prepared(prepared.token.clone()),
             HostLaunchMode::UpdatePreflight,
         )?;
@@ -767,21 +714,11 @@ where
     fn host_request(
         &self,
         artifact: &PluginArtifact,
-        authorization: &ApprovedAuthorization,
         artifact_slot: ArtifactSlot,
         mode: HostLaunchMode,
     ) -> Result<HostLaunchRequest> {
         let workspace_id = self.require_workspace()?.to_owned();
-        if authorization.workspace_id != workspace_id || authorization.revision == 0 {
-            return Err(ManagerErrorCode::AuthorizationInvalid.into());
-        }
-        let mut granted_permissions = permission_plan(&[]).implicit;
-        granted_permissions.extend(
-            artifact
-                .requested_permissions
-                .intersection(&authorization.reviewed_permissions)
-                .copied(),
-        );
+        let granted_permissions = artifact.effective_capabilities.clone();
         Ok(HostLaunchRequest {
             artifact: artifact.clone(),
             artifact_slot,
@@ -793,30 +730,6 @@ where
                 .find(|state| state.plugin_id == artifact.plugin_id)
                 .map(|state| state.bytes.clone()),
             mode,
-        })
-    }
-
-    fn load_authorization(&self, artifact: &PluginArtifact) -> Result<ApprovedAuthorization> {
-        let workspace_id = self.require_workspace()?.to_owned();
-        let key = artifact.authorization_key(&workspace_id)?;
-        let grant = self
-            .authorizations
-            .current_grant(&key, &artifact.version)
-            .map_err(|_| ManagerErrorCode::AuthorizationUnavailable)?
-            .ok_or(ManagerErrorCode::AuthorizationRequired)?;
-        if grant.key != key
-            || grant.artifact_version != artifact.version
-            || grant.revision == 0
-            || !artifact
-                .requested_permissions
-                .is_subset(&grant.reviewed_permissions)
-        {
-            return Err(ManagerErrorCode::AuthorizationRequired.into());
-        }
-        Ok(ApprovedAuthorization {
-            workspace_id,
-            reviewed_permissions: grant.reviewed_permissions,
-            revision: grant.revision,
         })
     }
 
@@ -874,18 +787,6 @@ where
         Ok(artifact)
     }
 
-    fn discard_or_error(&mut self, prepared: &PreparedInstallation) -> Result<()> {
-        self.installer
-            .discard(prepared)
-            .map_err(|_| ManagerErrorCode::InstallationDiscardFailed.into())
-    }
-
-    fn is_revoked(&self, artifact: &PluginArtifact) -> Result<bool> {
-        self.revocations
-            .is_revoked(artifact)
-            .map_err(|_| ManagerErrorCode::RevocationUnavailable.into())
-    }
-
     fn validate_initial_prepared(
         &self,
         request: &ManualPackageRequest,
@@ -912,7 +813,6 @@ where
             || prepared.artifact.plugin_id != request.plugin_id
             || prepared.artifact.version != request.version
             || prepared.artifact.plugin_id != current.plugin_id
-            || prepared.artifact.publisher_identity != current.publisher_identity
             || prepared.artifact.version()? <= current.version()?
         {
             return Err(ManagerErrorCode::UpdateTargetInvalid.into());
@@ -928,7 +828,6 @@ where
         prepared.artifact.validate()?;
         if prepared.kind != PreparationKind::Rollback
             || prepared.artifact.plugin_id != current.plugin_id
-            || prepared.artifact.publisher_identity != current.publisher_identity
             || prepared.artifact.version()? >= current.version()?
         {
             return Err(ManagerErrorCode::RollbackFailed.into());

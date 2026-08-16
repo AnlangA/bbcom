@@ -474,16 +474,19 @@ fn v050_request_validation_checks_each_bounded_field_and_log_context() {
 
 #[test]
 fn ai_errors_map_to_only_stable_ipc_fields_and_codes() {
+    // Since T3.5 the AI commands share the canonical `from_app_error` mapper;
+    // this test pins the AI-visible projection of that mapping (including the
+    // request-id correlation added by the command itself).
     let operation = "run_ai_request";
     let request_id = "request-7";
-    let validation = super::app_error_to_ipc(
-        AppError::ValidationError {
-            message: "secret detail".to_string(),
-            field: "unknown".to_string(),
-        },
-        operation,
-        request_id,
-    );
+    let map = |error: AppError| {
+        crate::models::ipc_error::from_app_error(&error, operation).with_request_id(request_id)
+    };
+
+    let validation = map(AppError::ValidationError {
+        message: "secret detail".to_string(),
+        field: "unknown".to_string(),
+    });
     assert_eq!(validation.code, AppErrorCode::InvalidInput);
     assert_eq!(validation.field, Some("request"));
     assert_eq!(validation.request_id.as_deref(), Some(request_id));
@@ -511,45 +514,53 @@ fn ai_errors_map_to_only_stable_ipc_fields_and_codes() {
             AppError::ConfigError {
                 message: "configuration".to_string(),
             },
-            AppErrorCode::InvalidInput,
+            AppErrorCode::SecurityDenied,
         ),
     ];
     for (error, code) in cases {
-        let mapped = super::app_error_to_ipc(error, operation, request_id);
+        let mapped = map(error);
         assert_eq!(mapped.code, code);
         assert_eq!(mapped.request_id.as_deref(), Some(request_id));
     }
 
-    let limited = super::app_error_to_ipc(
-        AppError::LimitError {
-            message: "limit".to_string(),
-            field: "context".to_string(),
-            limit: 5,
-            actual: 6,
-        },
-        operation,
-        request_id,
-    );
+    let limited = map(AppError::LimitError {
+        message: "limit".to_string(),
+        field: "context".to_string(),
+        limit: 5,
+        actual: 6,
+    });
     assert_eq!(limited.code, AppErrorCode::LimitExceeded);
-    assert_eq!(limited.field, Some("context"));
+    // The canonical mapper only forwards its own stable field vocabulary, so
+    // AI-specific field names collapse to the generic "request" field.
+    assert_eq!(limited.field, Some("request"));
     assert_eq!(limited.limit, Some(5));
     assert_eq!(limited.actual, Some(6));
 
-    for error in [
-        AppError::IoError {
-            message: "io".to_string(),
-            kind: std::io::ErrorKind::Other,
-        },
-        AppError::ExportError {
-            message: "export".to_string(),
-            format: "csv".to_string(),
-            path: "/private/path".to_string(),
-            kind: std::io::ErrorKind::Other,
-        },
+    for (error, code) in [
+        (
+            AppError::IoError {
+                message: "io".to_string(),
+                kind: std::io::ErrorKind::Other,
+            },
+            AppErrorCode::ExportReplaceFailed,
+        ),
+        (
+            AppError::ExportError {
+                message: "export".to_string(),
+                format: "csv".to_string(),
+                path: "/private/path".to_string(),
+                kind: std::io::ErrorKind::Other,
+            },
+            AppErrorCode::ExportReplaceFailed,
+        ),
     ] {
-        assert_eq!(
-            super::app_error_to_ipc(error, operation, request_id).code,
-            AppErrorCode::InvalidInput
+        let mapped = map(error);
+        assert_eq!(mapped.code, code);
+        assert!(
+            serde_json::to_value(&mapped)
+                .unwrap()
+                .get("message")
+                .is_none()
         );
     }
 }

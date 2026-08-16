@@ -11,38 +11,32 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use bbcom_contracts::RuntimeInstanceKey;
 use bbcom_plugin_broker::{
-    AuditEvent, AuditSink, AuthorizationBroker, AuthorizationReview, AuthorizationState,
-    BrokerAction, BrokerError, DeclarativePanel, HostedPanel, PanelEvent, PanelEventAction,
-    ProposalContext, ProposalDecision, ProposalResolution, SerialProposalRequest,
+    BrokerAction, PanelEvent, PanelEventAction, ProposalContext, ProposalDecision,
     SerialProposalView,
 };
-use bbcom_plugin_contracts::{AuthorizationKey, Permission, permission_plan};
 use bbcom_plugin_manager::{
     ManualPackageRequest, OpaqueProjectPluginState, PluginArtifact, PluginManager, PluginSnapshot,
-    SystemClock,
+    SystemClock, WorkspacePluginBinding,
 };
 use bbcom_plugin_repository::{DownloadedPackage, PluginInstaller};
 
 use crate::commands::plugin::PluginCommandService as IpcPluginCommandService;
 
-use super::command_adapter::{
-    CatalogPluginRecord, CatalogViewFailure, CatalogViewPort, NativePluginCommandAdapter,
-    PluginDisplayRecord,
-};
+use super::command_adapter::{CatalogViewPort, NativePluginCommandAdapter};
 use super::command_service::{
-    AuthorizationBrokerPort, AuthorizationSubject, PanelBrokerPort, PluginCommandError,
-    PluginCommandService, PluginCommandSnapshot, PluginCommandUpstreamPort,
-    PluginOperationSnapshot, PluginUpstreamFailure, ProposalBrokerPort,
-    ReviewedAuthorizationReceipt,
+    PanelBrokerPort, PluginCommandError, PluginCommandService, PluginCommandSnapshot,
+    PluginCommandUpstreamPort, PluginLifecyclePort, PluginOperationSnapshot, PluginUpstreamFailure,
+    ProposalBrokerPort,
 };
 use super::host_launcher::{HostLauncherBuildError, PrivateArtifactRoot, SidecarHostLauncher};
 use super::installation::{
     NativeRepositoryStagingBackend, RepositoryArtifactPathResolver, RepositoryInstallationPort,
     VerifiedPackageProvider,
 };
+use super::runtime_actor::{PluginRuntimeActorHandle, PluginWorkspaceBindingPort};
 use super::sandbox::PlatformSandboxDriver;
-use super::security::NativePluginSecurityStore;
 use super::service::{PluginService, PluginServiceError};
 use super::state::NativePluginStatePersistencePort;
 
@@ -52,7 +46,8 @@ use super::state::NativePluginStatePersistencePort;
 /// builder never derives an artifact or publisher identity from renderer data.
 #[derive(Clone, Debug)]
 pub struct CurrentPluginWorkspace {
-    workspace_id: String,
+    workspace_id: Option<String>,
+    bindings: Vec<WorkspacePluginBinding>,
     project_states: Vec<OpaqueProjectPluginState>,
     installed_artifacts: Vec<PluginArtifact>,
 }
@@ -65,8 +60,25 @@ impl CurrentPluginWorkspace {
         installed_artifacts: Vec<PluginArtifact>,
     ) -> Self {
         Self {
-            workspace_id,
+            workspace_id: Some(workspace_id),
+            bindings: Vec::new(),
             project_states,
+            installed_artifacts,
+        }
+    }
+
+    #[must_use]
+    pub fn with_bindings(mut self, bindings: Vec<WorkspacePluginBinding>) -> Self {
+        self.bindings = bindings;
+        self
+    }
+
+    #[must_use]
+    pub fn detached(installed_artifacts: Vec<PluginArtifact>) -> Self {
+        Self {
+            workspace_id: None,
+            bindings: Vec::new(),
+            project_states: Vec::new(),
             installed_artifacts,
         }
     }
@@ -77,11 +89,6 @@ impl CurrentPluginWorkspace {
 /// Keeping serial execution out of this port makes it impossible to construct
 /// the production runtime without a separately reviewed serial scheduler.
 pub trait PluginHostUpstreamPort: Send + 'static {
-    fn authorization_subject(
-        &mut self,
-        plugin_id: &str,
-    ) -> Result<AuthorizationSubject, PluginUpstreamFailure>;
-
     fn current_proposal_context(
         &mut self,
         proposal: &SerialProposalView,
@@ -95,12 +102,22 @@ pub trait PluginHostUpstreamPort: Send + 'static {
 
 /// The only production boundary allowed to execute an approved serial action.
 pub trait PluginSerialSchedulerPort: Send + 'static {
-    fn execute(&mut self, action: BrokerAction) -> Result<(), PluginUpstreamFailure>;
+    fn execute(
+        &mut self,
+        runtime: RuntimeInstanceKey,
+        action: BrokerAction,
+    ) -> Result<(), PluginUpstreamFailure>;
 }
 
 /// Process-lifetime lifecycle hooks retained by native application runtime.
 pub trait PluginRuntimeLifecycle: Send + Sync + 'static {
     fn poll_host_exits(&self) -> Vec<Result<PluginSnapshot, PluginServiceError>>;
+    fn open_workspace(
+        &self,
+        workspace_id: String,
+        bindings: Vec<WorkspacePluginBinding>,
+        states: Vec<OpaqueProjectPluginState>,
+    ) -> Result<(), PluginServiceError>;
     fn close_project(&self) -> Result<(), PluginServiceError>;
 }
 
@@ -131,11 +148,9 @@ pub enum PluginBootstrapError {
     MissingTrustedRepositoryProvider,
     MissingCatalog,
     MissingWorkspace,
-    MissingSecurityStore,
     MissingStatePersistence,
     MissingSerialScheduler,
     MissingHostUpstream,
-    MissingAuthorizationAudit,
     MissingProposalBroker,
     MissingPanelBroker,
     MissingSandbox,
@@ -155,11 +170,9 @@ impl PluginBootstrapError {
             Self::MissingTrustedRepositoryProvider => "PLUGIN_BOOTSTRAP_TRUSTED_REPOSITORY_MISSING",
             Self::MissingCatalog => "PLUGIN_BOOTSTRAP_CATALOG_MISSING",
             Self::MissingWorkspace => "PLUGIN_BOOTSTRAP_WORKSPACE_MISSING",
-            Self::MissingSecurityStore => "PLUGIN_BOOTSTRAP_SECURITY_STORE_MISSING",
             Self::MissingStatePersistence => "PLUGIN_BOOTSTRAP_STATE_STORE_MISSING",
             Self::MissingSerialScheduler => "PLUGIN_BOOTSTRAP_SERIAL_SCHEDULER_MISSING",
             Self::MissingHostUpstream => "PLUGIN_BOOTSTRAP_HOST_UPSTREAM_MISSING",
-            Self::MissingAuthorizationAudit => "PLUGIN_BOOTSTRAP_AUTH_AUDIT_MISSING",
             Self::MissingProposalBroker => "PLUGIN_BOOTSTRAP_PROPOSAL_BROKER_MISSING",
             Self::MissingPanelBroker => "PLUGIN_BOOTSTRAP_PANEL_BROKER_MISSING",
             Self::MissingSandbox => "PLUGIN_BOOTSTRAP_SANDBOX_MISSING",
@@ -186,18 +199,17 @@ impl std::error::Error for PluginBootstrapError {}
 pub struct ProductionPluginRuntimeBuilder {
     installer: Option<Arc<PluginInstaller>>,
     repository: Option<DynVerifiedPackageProvider>,
-    catalog: Option<DynCatalog>,
+    catalog: Option<Box<dyn CatalogViewPort>>,
     workspace: Option<CurrentPluginWorkspace>,
-    security: Option<NativePluginSecurityStore>,
     state: Option<NativePluginStatePersistencePort>,
     serial: Option<DynSerialScheduler>,
     host_upstream: Option<DynHostUpstream>,
-    audit: Option<Arc<dyn AuditSink>>,
-    proposals: Option<DynProposalBroker>,
-    panels: Option<DynPanelBroker>,
+    proposals: Option<Box<dyn ProposalBrokerPort + Send>>,
+    panels: Option<Box<dyn PanelBrokerPort + Send>>,
     sandbox: Option<PlatformSandboxDriver>,
     sidecar_executable: Option<PathBuf>,
     private_artifact_root: Option<PrivateArtifactRoot>,
+    workspace_bindings: Option<Arc<dyn PluginWorkspaceBindingPort>>,
 }
 
 impl ProductionPluginRuntimeBuilder {
@@ -228,19 +240,13 @@ impl ProductionPluginRuntimeBuilder {
     where
         V: CatalogViewPort,
     {
-        self.catalog = Some(DynCatalog(Box::new(catalog)));
+        self.catalog = Some(Box::new(catalog));
         self
     }
 
     #[must_use]
     pub fn workspace(mut self, workspace: CurrentPluginWorkspace) -> Self {
         self.workspace = Some(workspace);
-        self
-    }
-
-    #[must_use]
-    pub fn security_store(mut self, security: NativePluginSecurityStore) -> Self {
-        self.security = Some(security);
         self
     }
 
@@ -269,20 +275,11 @@ impl ProductionPluginRuntimeBuilder {
     }
 
     #[must_use]
-    pub fn authorization_audit<A>(mut self, audit: Arc<A>) -> Self
-    where
-        A: AuditSink + 'static,
-    {
-        self.audit = Some(audit);
-        self
-    }
-
-    #[must_use]
     pub fn proposal_broker<P>(mut self, proposals: P) -> Self
     where
         P: ProposalBrokerPort + Send + 'static,
     {
-        self.proposals = Some(DynProposalBroker(Box::new(proposals)));
+        self.proposals = Some(Box::new(proposals));
         self
     }
 
@@ -291,7 +288,7 @@ impl ProductionPluginRuntimeBuilder {
     where
         P: PanelBrokerPort + Send + 'static,
     {
-        self.panels = Some(DynPanelBroker(Box::new(panels)));
+        self.panels = Some(Box::new(panels));
         self
     }
 
@@ -313,6 +310,15 @@ impl ProductionPluginRuntimeBuilder {
         self
     }
 
+    #[must_use]
+    pub fn workspace_bindings<P>(mut self, port: P) -> Self
+    where
+        P: PluginWorkspaceBindingPort,
+    {
+        self.workspace_bindings = Some(Arc::new(port));
+        self
+    }
+
     pub fn build(self) -> Result<ProductionPluginRuntime, PluginBootstrapError> {
         // Keep this extraction order stable: it is the deterministic missing
         // dependency precedence used by native setup and diagnostics.
@@ -326,9 +332,6 @@ impl ProductionPluginRuntimeBuilder {
         let workspace = self
             .workspace
             .ok_or(PluginBootstrapError::MissingWorkspace)?;
-        let security = self
-            .security
-            .ok_or(PluginBootstrapError::MissingSecurityStore)?;
         let state = self
             .state
             .ok_or(PluginBootstrapError::MissingStatePersistence)?;
@@ -338,9 +341,6 @@ impl ProductionPluginRuntimeBuilder {
         let host_upstream = self
             .host_upstream
             .ok_or(PluginBootstrapError::MissingHostUpstream)?;
-        let audit = self
-            .audit
-            .ok_or(PluginBootstrapError::MissingAuthorizationAudit)?;
         let proposals = self
             .proposals
             .ok_or(PluginBootstrapError::MissingProposalBroker)?;
@@ -354,6 +354,9 @@ impl ProductionPluginRuntimeBuilder {
         let private_artifact_root = self
             .private_artifact_root
             .ok_or(PluginBootstrapError::MissingPrivateArtifactRoot)?;
+        let workspace_bindings = self
+            .workspace_bindings
+            .ok_or(PluginBootstrapError::MissingWorkspace)?;
 
         let resolver = RepositoryArtifactPathResolver::new(Arc::clone(&installer));
         let (hosts, exits) = SidecarHostLauncher::new(
@@ -367,13 +370,7 @@ impl ProductionPluginRuntimeBuilder {
 
         let backend = NativeRepositoryStagingBackend::new(installer, repository);
         let installation = RepositoryInstallationPort::new(backend);
-        let manager = PluginManager::new(
-            installation,
-            hosts,
-            security.clone(),
-            security.clone(),
-            SystemClock,
-        );
+        let manager = PluginManager::new(installation, hosts, SystemClock);
         let lifecycle = Arc::new(PluginService::new(manager, exits));
 
         for artifact in workspace.installed_artifacts {
@@ -381,31 +378,26 @@ impl ProductionPluginRuntimeBuilder {
                 .observe_installed(artifact)
                 .map_err(|_| PluginBootstrapError::InstalledArtifactRejected)?;
         }
-        lifecycle
-            .open_project(workspace.workspace_id, workspace.project_states)
-            .map_err(|_| PluginBootstrapError::WorkspaceRejected)?;
+        if let Some(workspace_id) = workspace.workspace_id {
+            lifecycle
+                .open_workspace(workspace_id, workspace.bindings, workspace.project_states)
+                .map_err(|_| PluginBootstrapError::WorkspaceRejected)?;
+        }
 
         let upstream = SplitPluginUpstream {
             host: host_upstream,
             serial,
         };
-        let authorization = NativeAuthorizationBroker {
-            store: security,
-            audit: DynAuditSink(audit),
-            lifecycle: Arc::clone(&lifecycle),
-        };
-        let core = PluginCommandService::new(
-            Arc::clone(&lifecycle),
-            upstream,
-            authorization,
-            proposals,
-            panels,
-        )
-        .map_err(|_| PluginBootstrapError::CommandServiceUnavailable)?;
+        let lifecycle_port: Arc<dyn PluginLifecyclePort + Send + Sync> = lifecycle.clone();
+        let core = PluginCommandService::new(lifecycle_port, Box::new(upstream), proposals, panels)
+            .map_err(|_| PluginBootstrapError::CommandServiceUnavailable)?;
         let core = RefreshingCommandCore::new(core);
-        let command_service: Arc<dyn IpcPluginCommandService> =
-            Arc::new(NativePluginCommandAdapter::new(core, catalog, SystemClock));
+        let adapter = NativePluginCommandAdapter::new(Box::new(core), catalog, SystemClock);
         let lifecycle: Arc<dyn PluginRuntimeLifecycle> = lifecycle;
+        let actor = PluginRuntimeActorHandle::spawn(adapter, lifecycle, workspace_bindings)
+            .map_err(|_| PluginBootstrapError::CommandServiceUnavailable)?;
+        let command_service: Arc<dyn IpcPluginCommandService> = Arc::new(actor.clone());
+        let lifecycle: Arc<dyn PluginRuntimeLifecycle> = Arc::new(actor);
         Ok(ProductionPluginRuntime {
             command_service,
             lifecycle,
@@ -424,20 +416,7 @@ type ProductionHost = SidecarHostLauncher<
     PlatformSandboxDriver,
     NativePluginStatePersistencePort,
 >;
-type ProductionLifecycle = PluginService<
-    ProductionInstallation,
-    ProductionHost,
-    NativePluginSecurityStore,
-    NativePluginSecurityStore,
-    SystemClock,
->;
-type ProductionCommandCore = PluginCommandService<
-    Arc<ProductionLifecycle>,
-    SplitPluginUpstream,
-    NativeAuthorizationBroker,
-    DynProposalBroker,
-    DynPanelBroker,
->;
+type ProductionLifecycle = PluginService<ProductionInstallation, ProductionHost, SystemClock>;
 
 impl PluginRuntimeLifecycle for ProductionLifecycle {
     fn poll_host_exits(&self) -> Vec<Result<PluginSnapshot, PluginServiceError>> {
@@ -447,23 +426,32 @@ impl PluginRuntimeLifecycle for ProductionLifecycle {
     fn close_project(&self) -> Result<(), PluginServiceError> {
         PluginService::close_project(self)
     }
+
+    fn open_workspace(
+        &self,
+        workspace_id: String,
+        bindings: Vec<WorkspacePluginBinding>,
+        states: Vec<OpaqueProjectPluginState>,
+    ) -> Result<(), PluginServiceError> {
+        PluginService::open_workspace(self, workspace_id, bindings, states).map(|_| ())
+    }
 }
 
 /// Synchronizes manager changes caused by native host-exit polling before the
 /// next renderer-visible snapshot. Mutating command paths already update their
 /// cached snapshots as part of the same serialized command operation.
 struct RefreshingCommandCore {
-    inner: Mutex<ProductionCommandCore>,
+    inner: Mutex<PluginCommandService>,
 }
 
 impl RefreshingCommandCore {
-    fn new(inner: ProductionCommandCore) -> Self {
+    fn new(inner: PluginCommandService) -> Self {
         Self {
             inner: Mutex::new(inner),
         }
     }
 
-    fn mutable(&mut self) -> &mut ProductionCommandCore {
+    fn mutable(&mut self) -> &mut PluginCommandService {
         self.inner
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -498,35 +486,6 @@ impl super::command_adapter::PluginCommandCorePort for RefreshingCommandCore {
     ) -> Result<PluginOperationSnapshot, PluginCommandError> {
         self.mutable()
             .queue_set_enabled(revision, request_id, plugin_id, enabled)
-    }
-
-    fn queue_authorization_decisions(
-        &mut self,
-        revision: u64,
-        request_id: String,
-        review_id: String,
-        decisions: Vec<(Permission, AuthorizationState)>,
-        per_request_acknowledged: std::collections::BTreeSet<Permission>,
-        extra_confirmation_acknowledged: bool,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-        self.mutable().queue_authorization_decisions(
-            revision,
-            request_id,
-            review_id,
-            decisions,
-            per_request_acknowledged,
-            extra_confirmation_acknowledged,
-        )
-    }
-
-    fn queue_dismiss_authorization(
-        &mut self,
-        revision: u64,
-        request_id: String,
-        review_id: String,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-        self.mutable()
-            .queue_dismiss_authorization(revision, request_id, review_id)
     }
 
     fn queue_proposal_decision(
@@ -566,6 +525,26 @@ impl super::command_adapter::PluginCommandCorePort for RefreshingCommandCore {
     ) -> Result<PluginOperationSnapshot, PluginCommandError> {
         self.mutable().cancel(revision, operation_id)
     }
+
+    fn queue_install_local(
+        &mut self,
+        revision: u64,
+        request_id: String,
+        package_root: std::path::PathBuf,
+    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
+        self.mutable()
+            .queue_install_local(revision, request_id, package_root)
+    }
+
+    fn queue_uninstall(
+        &mut self,
+        revision: u64,
+        request_id: String,
+        plugin_id: String,
+    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
+        self.mutable()
+            .queue_uninstall(revision, request_id, plugin_id)
+    }
 }
 
 trait ErasedVerifiedPackageProvider: Send {
@@ -602,25 +581,6 @@ impl VerifiedPackageProvider for DynVerifiedPackageProvider {
     }
 }
 
-struct DynCatalog(Box<dyn CatalogViewPort>);
-
-impl CatalogViewPort for DynCatalog {
-    fn catalog(&mut self) -> Result<Vec<CatalogPluginRecord>, CatalogViewFailure> {
-        self.0.catalog()
-    }
-
-    fn plugin_display(
-        &mut self,
-        plugin_id: &str,
-    ) -> Result<PluginDisplayRecord, CatalogViewFailure> {
-        self.0.plugin_display(plugin_id)
-    }
-
-    fn session_label(&mut self, session_id: &str) -> Result<String, CatalogViewFailure> {
-        self.0.session_label(session_id)
-    }
-}
-
 struct DynHostUpstream(Box<dyn PluginHostUpstreamPort>);
 struct DynSerialScheduler(Box<dyn PluginSerialSchedulerPort>);
 
@@ -630,13 +590,6 @@ struct SplitPluginUpstream {
 }
 
 impl PluginCommandUpstreamPort for SplitPluginUpstream {
-    fn authorization_subject(
-        &mut self,
-        plugin_id: &str,
-    ) -> Result<AuthorizationSubject, PluginUpstreamFailure> {
-        self.host.0.authorization_subject(plugin_id)
-    }
-
     fn current_proposal_context(
         &mut self,
         proposal: &SerialProposalView,
@@ -644,8 +597,12 @@ impl PluginCommandUpstreamPort for SplitPluginUpstream {
         self.host.0.current_proposal_context(proposal)
     }
 
-    fn execute_serial_action(&mut self, action: BrokerAction) -> Result<(), PluginUpstreamFailure> {
-        self.serial.0.execute(action)
+    fn execute_serial_action(
+        &mut self,
+        runtime: RuntimeInstanceKey,
+        action: BrokerAction,
+    ) -> Result<(), PluginUpstreamFailure> {
+        self.serial.0.execute(runtime, action)
     }
 
     fn deliver_panel_event(
@@ -653,167 +610,5 @@ impl PluginCommandUpstreamPort for SplitPluginUpstream {
         action: PanelEventAction,
     ) -> Result<(), PluginUpstreamFailure> {
         self.host.0.deliver_panel_event(action)
-    }
-}
-
-struct DynAuditSink(Arc<dyn AuditSink>);
-
-impl AuditSink for DynAuditSink {
-    fn record(&self, event: AuditEvent) {
-        self.0.record(event);
-    }
-}
-
-struct NativeAuthorizationBroker {
-    store: NativePluginSecurityStore,
-    audit: DynAuditSink,
-    lifecycle: Arc<ProductionLifecycle>,
-}
-
-impl AuthorizationBrokerPort for NativeAuthorizationBroker {
-    fn review(
-        &self,
-        key: AuthorizationKey,
-        requested: &[Permission],
-        network_requested: bool,
-    ) -> Result<AuthorizationReview, BrokerError> {
-        AuthorizationBroker::new(&self.store, &self.audit).review(key, requested, network_requested)
-    }
-
-    fn record_decisions(
-        &self,
-        review: &AuthorizationReview,
-        decisions: &[(Permission, AuthorizationState)],
-        extra_confirmation_acknowledged: bool,
-        expected_target: &bbcom_plugin_manager::AuthorizationTarget,
-        reviewed_permissions: std::collections::BTreeSet<Permission>,
-        revision: u64,
-    ) -> Result<ReviewedAuthorizationReceipt, BrokerError> {
-        // Resolve and validate the exact authorization target before changing
-        // any durable decision state. In particular, an upgrade can replace
-        // the pending artifact while its review dialog is open; a review for
-        // that stale target must not mutate the new target's authorization.
-        let target = self
-            .lifecycle
-            .authorization_target(&review.key().plugin_id)
-            .map_err(|_| BrokerError::AuthorizationStoreUnavailable)?;
-        if target != *expected_target {
-            return Err(BrokerError::AuthorizationStoreUnavailable);
-        }
-        let artifact = &target.artifact;
-        let expected_key = artifact
-            .authorization_key(&review.key().workspace_id)
-            .map_err(|_| BrokerError::AuthorizationStoreUnavailable)?;
-        let expected_plan = permission_plan(
-            &artifact
-                .requested_permissions
-                .iter()
-                .copied()
-                .collect::<Vec<_>>(),
-        );
-        let expected_per_request = expected_plan
-            .requires_approval
-            .iter()
-            .copied()
-            .filter(|permission| permission.is_per_request_only())
-            .collect::<std::collections::BTreeSet<_>>();
-        let expected_persistent = expected_plan
-            .requires_approval
-            .iter()
-            .copied()
-            .filter(|permission| !permission.is_per_request_only())
-            .collect::<std::collections::BTreeSet<_>>();
-        let allowed_receipt = artifact
-            .requested_permissions
-            .iter()
-            .chain(review.implicit())
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-        if expected_key != *review.key()
-            || artifact.version != expected_target.artifact.version
-            || *review.implicit() != expected_plan.implicit
-            || *review.requires_persistent_approval() != expected_persistent
-            || *review.requires_per_request_approval() != expected_per_request
-            || !reviewed_permissions.is_subset(&allowed_receipt)
-        {
-            return Err(BrokerError::AuthorizationStoreUnavailable);
-        }
-
-        let decision_generation = AuthorizationBroker::new(&self.store, &self.audit)
-            .record_decisions(review, decisions, extra_confirmation_acknowledged)?;
-        let receipt = ReviewedAuthorizationReceipt {
-            artifact_version: artifact.version.clone(),
-            reviewed_permissions,
-            revision,
-            decision_generation,
-        };
-
-        if !review.unavailable().is_empty()
-            || !artifact
-                .requested_permissions
-                .is_subset(&receipt.reviewed_permissions)
-        {
-            // A denied capability never becomes a manager grant. Remove an
-            // older exact-version receipt so a changed decision cannot reuse
-            // a previously approved artifact.
-            self.store
-                .clear_reviewed_grant(review.key(), &artifact.version)
-                .map_err(|_| BrokerError::AuthorizationStoreUnavailable)?;
-            return Ok(receipt);
-        }
-        self.store
-            .record_reviewed_grant(
-                review.key(),
-                &artifact.version,
-                receipt.reviewed_permissions.clone(),
-                receipt.revision,
-                receipt.decision_generation,
-            )
-            .map_err(|_| BrokerError::AuthorizationStoreUnavailable)?;
-        Ok(receipt)
-    }
-}
-
-struct DynProposalBroker(Box<dyn ProposalBrokerPort + Send>);
-
-impl ProposalBrokerPort for DynProposalBroker {
-    fn create(
-        &mut self,
-        key: &AuthorizationKey,
-        declared: &std::collections::BTreeSet<Permission>,
-        request: SerialProposalRequest,
-        now_ms: u64,
-    ) -> Result<SerialProposalView, BrokerError> {
-        self.0.create(key, declared, request, now_ms)
-    }
-
-    fn resolve(
-        &mut self,
-        proposal_id: &str,
-        decision: ProposalDecision,
-        current: &ProposalContext,
-        now_ms: u64,
-    ) -> ProposalResolution {
-        self.0.resolve(proposal_id, decision, current, now_ms)
-    }
-}
-
-struct DynPanelBroker(Box<dyn PanelBrokerPort + Send>);
-
-impl PanelBrokerPort for DynPanelBroker {
-    fn publish(
-        &self,
-        key: &AuthorizationKey,
-        panel: DeclarativePanel,
-    ) -> Result<HostedPanel, BrokerError> {
-        self.0.publish(key, panel)
-    }
-
-    fn event(
-        &self,
-        hosted: &HostedPanel,
-        event: PanelEvent,
-    ) -> Result<PanelEventAction, BrokerError> {
-        self.0.event(hosted, event)
     }
 }

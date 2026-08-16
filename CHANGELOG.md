@@ -5,6 +5,155 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+### Runtime plugin install, uninstall, and auto-load
+
+- Added `plugin_install_local`: install a plugin at runtime from a local
+  package directory (development mode — no HTTPS, TUF, or publisher-signature
+  boundary; the manifest's component digest is the only integrity check).
+  Publisher identity derives from the component hash.
+- Added `plugin_uninstall`: stops the plugin's host, removes its record, and
+  deletes the durable installation (packages, history, staged data).
+  Reinstalling after uninstall works.
+- Installed plugins now survive restarts: composition observes every durable
+  active installation, and a `plugins-autostart.json` registry re-enables
+  exactly the plugins that were running at last exit. Disabling or
+  uninstalling removes the plugin from the registry.
+- The plugin center panel gained an "Install from local…" form and per-plugin
+  uninstall buttons with confirmation dialogs.
+
+### Sample plugin and completed panel-event plumbing
+
+- Added `plugins/counter-plugin`, a real `no_std` guest for the plugin world:
+  a persistent counter panel using the `plugin.storage` and `session-list`
+  host imports plus `publish-panel`, packaged as a digest-pinned artifact
+  under `tests/fixtures/plugins/counter`.
+- Completed the panel-event surface in the host: `PluginRuntime` now exposes
+  `handle_panel_event` and `take_published_panel`, and the sidecar protocol
+  accepts a `panel-event` invoke whose response body carries the updated
+  panel as JSON.
+- Added end-to-end tests: an in-process contract test (lifecycle, storage
+  persistence across runtimes, capability denial) and a test that drives the
+  real sidecar binary through handshake, seeded state upload, a panel event,
+  shutdown, and state read-back.
+
+### Runtime performance
+
+- Cut the waveform ingest hot path from a full sample rebuild per UI tick to
+  an incremental append (cursor-only ticks no longer re-hydrate the panel);
+  the ingest loop benchmark improves 12.7x with no regression on any other
+  tracked case.
+- Routed waveform cursor persistence through the 300 ms config debounce and
+  replaced per-command JSON size estimation with field arithmetic, removing
+  per-tick IPC commits and transient string allocations while streaming.
+- Cached the workspace save-gate decision and throttled save notifications
+  while frames stream; frame/byte accounting now has a single owner.
+- Made all workspace, plugin, export, and legacy-backup Tauri commands async
+  with blocking work on the blocking pool: SQLite batches, WAL checkpoints,
+  save dialogs, and age encryption no longer run on the UI thread or the
+  async runtime.
+- Optimized the workspace SQLite batch path (prepared-statement reuse,
+  `synchronous=NORMAL` WAL pairing, bounded committed-batch ledger): the
+  256-frame append benchmark improves 17%.
+- Cached local-date timestamp formatting in export/auto-log loops: 74%
+  faster.
+- Switched export batches, frame hydration, and checksum inputs to a dual
+  base64/number-array IPC channel (measured 4-8x faster round-trips); legacy
+  number-array senders stay wire-compatible.
+- Shared one Zai HTTP client per API key instead of rebuilding per request.
+
+### Startup, export, and streaming performance
+
+- Raised workspace hydration frame pages from 256 frames/512 KiB to
+  2048 frames/4 MiB: opening a 100k-frame session needs 49 IPC round trips
+  instead of 391.
+- Amortized waveform sample appends: retention overflow is now tracked in
+  O(1) per append (group-count bound identical to the trim semantics), so
+  Modbus polling no longer copies and re-sorts the whole sample window per
+  tick.
+- Switched auto-log appends to the base64 IPC channel and fixed the backend
+  resolve step that would have silently decoded base64 payloads as empty
+  frames.
+- Cached MERGED-view row heights: rope tail cache grew to 8 runs and display
+  line counts memoize per (run, content version), removing per-pulse 64 KiB
+  tail materialization during measure passes.
+- Added a database-sourced export mode: whole-session exports with no filters
+  now read frames directly from the workspace SQLite (flush-first, divergence
+  surfaced in the UI), eliminating the renderer-to-backend frame streaming
+  pass. Renderer-memory export remains for filtered exports.
+
+### Architecture and plugin wiring
+
+- Wired the real plugin runtime through a native composition root
+  (`plugins/runtime_wiring.rs`): fail-closed unavailable by default, real
+  host/sandbox/broker/lifecycle once every port resolves, empty repository
+  and catalog adapters until reviewed repository metadata ships (ADR-0004
+  unchanged), lifecycle closed on workspace switch and shutdown.
+- Split the workspace application service (capture accounting, save queues,
+  activation machine), `useSerialConnection` (port lease, stop evidence,
+  error taxonomy), and `WaveformPanel` (ingest, viewport, export) into
+  focused modules with unchanged public APIs.
+- Removed the disabled legacy IndexedDB/localStorage write path (~1,500
+  lines plus its scheduler/worker); the 0.7.3 repository stays read-only for
+  migration and downgrade compatibility.
+- Deduplicated plugin permission/repository contracts across the two contract
+  crates (single canonical types, 13-arm converters deleted, TS bindings
+  byte-identical) and unified the divergent AppError→IpcError mappers.
+- Unified the export and auto-log streaming session managers behind one
+  shared core (session ids, admission, TTL sweep, error helpers) and
+  consolidated main-window guards and window-label constants.
+
+### Fixed
+
+- Fixed runtime local plugin install reporting "another plugin operation is
+  already running" although the install had succeeded: the production
+  catalog view was fully fail-closed, so once any plugin was installed
+  every snapshot/install/uninstall response failed while resolving display
+  metadata, and the request-id integrity check masked the real catalog
+  error as an operation conflict. The catalog view now resolves display
+  metadata for durable local installations from their packaged manifests
+  (unknown plugin ids and session labels stay fail-closed), and native
+  `INVALID_INPUT` rejections map to a dedicated `invalid-input` failure
+  code instead of `invalid-response`.
+- Fixed the G45 fixture components failing validation on every platform: the
+  hand-written fixtures exported bare root functions whose record/enum types
+  never entered the exported type set. Types are now exported through a
+  `bbcom:plugin/types@1.0.0` instance and referenced through aliases, the
+  ambient WASI fixture imports a typed instance that can never link, and the
+  two contract tests serialize on the process-wide host-store guard.
+- Fixed `pnpm test:rust` running only the `bbcom` package: it now passes
+  `--workspace`, matching the coverage CI enforces.
+- Fixed a latent flake in the serial-scheduler test (the ack listener could
+  read a timed-out action's stale correlation id).
+
+### Plugin runtime lifecycle
+
+- Plugin composition now retries automatically: a first launch without an
+  active workspace composes as soon as one is created or opened, and every
+  successful workspace switch rebinds the runtime to the new workspace
+  (fail-closed: a failed recomposition degrades to the unavailable service).
+  The host-exit poll loop is generation-stopped across recompositions.
+
+- Fixed prepared plugin-state slots failing to persist on every platform:
+  the slot identity embedded a NUL byte that the record validator rejects.
+- Fixed the waveform-sample channel existence check in workspace batches
+  (`SELECT EXISTS` always returned a row, so the check was always true).
+- Fixed the timestamp date cache never hitting for evening captures east of
+  UTC; the cache is now keyed by local day.
+- Added the missing `happy-dom` environment directive to the plugin dialog
+  safety tests (they failed headless at runtime before).
+
+### Tooling
+
+- Split the local commit gate: `pnpm precommit` is a fast lint/format/
+  architecture/build check; the full coverage/E2E/benchmark gate moved to
+  `.githooks/pre-push` (`pnpm precommit:full`).
+- Added Rust build caching and prebuilt quality tools (`cargo-audit`,
+  `cargo-llvm-cov`, `cargo-license`) to CI workflows; enabled parallel
+  Vitest file execution.
+- Replaced the session-close `createDiscreteApi` dialog with the app's
+  mounted dialog provider, cutting ~7 KiB gzip from the startup graph and
+  restoring bundle headroom.
+
 ## [0.7.3] - 2026-07-11
 
 ### DMG verification compatibility
@@ -546,6 +695,18 @@ landed the one outstanding Performance change the audit surfaced.
 
 ### Architecture
 
+- Split the remaining oversized modules: the workspace session adapter
+  (1,481 lines → 643 + validation/waveform/collections modules), the AI
+  session bridge (1,011 → 587 + pure projection and binding-registry
+  modules), the workspace coordinator (1,004 → 704 + a write-epoch engine),
+  the Rust workspace commands (2,032 → a directory module with operations,
+  grants, and hydration submodules), and secure settings (1,146 → three
+  modules).
+- Collapsed the five-generic plugin command service onto dyn ports (its
+  single production construction) and deduplicated the frontend test helper
+  factories.
+- Loaded the non-default locale catalog lazily (−7.5 KiB gzip startup graph,
+  −8 KiB AI window) and aligned the CI Rust cache keys across workflows.
 - Split the 558-line `commands/ai.rs` into a focused module directory
   (`commands/ai/{mod,cooldown,prompts,service,parser,tests}.rs`): `mod.rs` is a
   thin command dispatcher, with the rate-limit guard, system prompts, Z.ai

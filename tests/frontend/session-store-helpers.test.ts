@@ -14,7 +14,8 @@ import {
   upsertSendHistory,
 } from '../../src/lib/session-store-helpers.ts';
 import { createSessionRecord } from '../../src/lib/session-persistence.ts';
-import type { DataFrame, PortConfig } from '../../src/types/index.ts';
+import type { PortConfig } from '../../src/types/index.ts';
+import { frame } from './helpers/frames.ts';
 
 const cfg: PortConfig = {
   baudRate: 9600,
@@ -26,15 +27,6 @@ const cfg: PortConfig = {
   dtr: false,
   rts: false,
 };
-
-function frame(id: string, direction: DataFrame['direction'], bytes: number[]): DataFrame {
-  return {
-    id,
-    direction,
-    timestamp: 0,
-    data: new Uint8Array(bytes),
-  };
-}
 
 test('trimFrameBuffer trims only after max plus threshold is exceeded', () => {
   const frames = [1, 2, 3, 4, 5];

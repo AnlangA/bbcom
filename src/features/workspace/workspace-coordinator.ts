@@ -1,10 +1,7 @@
 import type {
-  ApplyWorkspaceBatchRequest,
   CreateWorkspaceCommandResponse,
-  FlushWorkspaceResponse,
   OpenWorkspaceResponse,
   ProjectEncryptionOptions,
-  WorkspaceMutation,
   WorkspaceSaveHealth,
 } from '../../generated/ipc-contracts';
 import { createProjectLibraryViewModel } from './project-library-view-model';
@@ -24,15 +21,11 @@ import type {
 } from './types';
 import {
   InvalidWorkspaceResponseError,
-  createSequencedMutation,
-  isWorkspaceReadOnlyError,
   requireMatchingRequestId,
   safeFailure,
   sanitizeCatalog,
   sanitizeHeader,
   sanitizeWorkspaceSummary,
-  sanitizeWorkspaceLayout,
-  validateCommittedRevision,
   validateProjectFileDisplayName,
   validateProjectName,
   validateRequestId,
@@ -41,16 +34,14 @@ import {
   validateWorkspaceId,
   workspaceGrantId,
 } from './validation';
-
-interface MutableActiveWorkspace {
-  workspaceId: string;
-  name: string;
-  revision: number;
-  activeSessionId: string | null;
-  sessionIds: readonly string[];
-  saveHealth: WorkspaceSaveHealth;
-  layout: import('./types').WorkspaceLayoutV1;
-}
+import {
+  WorkspaceWriteEpochEngine,
+  type MutableActiveWorkspace,
+  completed,
+  failed,
+  freezeActive,
+} from './workspace-write-epoch';
+import { ValidatedWorkspaceGateway } from './validated-workspace-gateway';
 
 interface PendingCall {
   readonly generation: number;
@@ -68,23 +59,6 @@ interface NativeOperationSettlement {
   resolve(): void;
 }
 
-interface WriteEpoch {
-  readonly number: number;
-  readonly workspaceId: string;
-  readonly controller: AbortController;
-  tail: Promise<void>;
-  pending: number;
-  inFlight: boolean;
-  sequence: number;
-}
-
-interface MutationTicket {
-  readonly workspaceId: string;
-  readonly epoch: WriteEpoch;
-  readonly mutations: readonly WorkspaceMutation[];
-  readonly clientBatchId: string;
-}
-
 type ActivationResponse = OpenWorkspaceResponse | CreateWorkspaceCommandResponse;
 
 interface ActivationEnvelope {
@@ -99,11 +73,13 @@ let fallbackIdSequence = 0;
 /**
  * The main renderer's sole logical workspace writer.
  *
- * Every write is serialized through the current WriteEpoch. No caller receives
- * the physical persistence port, and switching workspaces invalidates all old
- * responses before they can alter the active document.
+ * Every write is serialized through the current write epoch (owned by
+ * `WorkspaceWriteEpochEngine`). No caller receives the physical persistence
+ * port, and switching workspaces invalidates all old responses before they
+ * can alter the active document.
  */
 export class WorkspaceCoordinator {
+  private readonly port: WorkspaceCoordinatorPort;
   private readonly listeners = new Set<WorkspaceCoordinatorListener>();
   private readonly idFactory: NonNullable<WorkspaceCoordinatorOptions['idFactory']>;
   private operations: WorkspaceCoordinatorOptions['operations'];
@@ -116,18 +92,26 @@ export class WorkspaceCoordinator {
   private catalogGeneration = 0;
   private activationGeneration = 0;
   private exportGeneration = 0;
-  private writeEpochNumber = 0;
   private catalogCall: PendingCall | null = null;
   private activationCall: PendingCall | null = null;
   private exportCall: PendingCall | null = null;
-  private writeEpoch: WriteEpoch | null = null;
+  private readonly writeEngine: WorkspaceWriteEpochEngine;
 
-  constructor(
-    private readonly port: WorkspaceCoordinatorPort,
-    options: WorkspaceCoordinatorOptions = {},
-  ) {
+  constructor(port: WorkspaceCoordinatorPort, options: WorkspaceCoordinatorOptions = {}) {
+    this.port =
+      port instanceof ValidatedWorkspaceGateway ? port : new ValidatedWorkspaceGateway(port);
     this.idFactory = options.idFactory ?? defaultIdFactory;
     this.operations = options.operations;
+    this.writeEngine = new WorkspaceWriteEpochEngine(port, {
+      activeDocument: () => this.active,
+      replaceActiveDocument: (document) => {
+        this.active = document;
+      },
+      setSaveHealth: (health) => this.setSaveHealth(health),
+      mergeActiveIntoProjects: () => this.mergeActiveIntoProjects(),
+      notify: () => this.notify(),
+      nextBatchId: () => this.nextId('batch'),
+    });
   }
 
   get activeWorkspaceId(): string | null {
@@ -446,6 +430,22 @@ export class WorkspaceCoordinator {
     return call.nativeOutcome ?? 'failed';
   }
 
+  commit(
+    command: Readonly<WorkspaceMutationCommand>,
+  ): Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>> {
+    return this.writeEngine.commitBatch([command]);
+  }
+
+  commitBatch(
+    commands: readonly Readonly<WorkspaceMutationCommand>[],
+  ): Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>> {
+    return this.writeEngine.commitBatch(commands);
+  }
+
+  flush(): Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>> {
+    return this.writeEngine.flush();
+  }
+
   private beginOperation(
     call: PendingCall,
     operationId: string,
@@ -487,80 +487,6 @@ export class WorkspaceCoordinator {
         return response.cancellationRequested;
       });
     return call.nativeCancellation;
-  }
-
-  commit(
-    command: Readonly<WorkspaceMutationCommand>,
-  ): Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>> {
-    return this.commitBatch([command]);
-  }
-
-  commitBatch(
-    commands: readonly Readonly<WorkspaceMutationCommand>[],
-  ): Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>> {
-    const active = this.active;
-    const epoch = this.writeEpoch;
-    if (!active || !epoch) return Promise.resolve(failed('workspace.no_active_project'));
-    if (active.saveHealth === 'readOnly') {
-      return Promise.resolve(failed('error.workspace_read_only', 'WORKSPACE_READ_ONLY'));
-    }
-
-    if (!Array.isArray(commands) || commands.length === 0) {
-      return Promise.resolve(failed('workspace.mutation.invalid'));
-    }
-
-    let mutations: readonly WorkspaceMutation[];
-    try {
-      mutations = Object.freeze(
-        commands.map((command, index) => createSequencedMutation(command, epoch.sequence + index)),
-      );
-    } catch {
-      return Promise.resolve(failed('workspace.mutation.invalid'));
-    }
-    let clientBatchId: string;
-    try {
-      clientBatchId = this.nextId('batch');
-    } catch {
-      return Promise.resolve(failed('workspace.mutation.invalid'));
-    }
-    epoch.sequence += mutations.length;
-    const ticket: MutationTicket = {
-      workspaceId: active.workspaceId,
-      epoch,
-      mutations,
-      clientBatchId,
-    };
-    epoch.pending += 1;
-    if (!epoch.inFlight) this.setSaveHealth('pending');
-    this.notify();
-
-    const result = epoch.tail.then(
-      () => this.executeBatch(ticket),
-      () => this.executeBatch(ticket),
-    );
-    epoch.tail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
-
-  flush(): Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>> {
-    const active = this.active;
-    const epoch = this.writeEpoch;
-    if (!active || !epoch) return Promise.resolve(failed('workspace.no_active_project'));
-    if (active.saveHealth === 'readOnly') {
-      return Promise.resolve(failed('error.workspace_read_only', 'WORKSPACE_READ_ONLY'));
-    }
-    const result = epoch.tail.then(
-      () => this.executeFlush(epoch),
-      () => this.executeFlush(epoch),
-    );
-    epoch.tail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
   }
 
   private async activate(
@@ -612,7 +538,7 @@ export class WorkspaceCoordinator {
     if (this.active?.workspaceId === header.workspaceId && header.revision < this.active.revision) {
       throw new InvalidWorkspaceResponseError('revision');
     }
-    this.writeEpoch?.controller.abort();
+    this.writeEngine.beginEpoch(header.workspaceId);
     this.active = {
       workspaceId: header.workspaceId,
       name: header.name,
@@ -623,182 +549,11 @@ export class WorkspaceCoordinator {
       layout: header.layout,
     };
     this.catalogActiveWorkspaceId = header.workspaceId;
-    this.writeEpoch = {
-      number: ++this.writeEpochNumber,
-      workspaceId: header.workspaceId,
-      controller: new AbortController(),
-      tail: Promise.resolve(),
-      pending: 0,
-      inFlight: false,
-      sequence: 0,
-    };
     this.mergeActiveIntoProjects();
-  }
-
-  private async executeBatch(
-    ticket: MutationTicket,
-  ): Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>> {
-    if (!this.isCurrentEpoch(ticket.epoch, ticket.workspaceId)) {
-      this.finishWrite(ticket.epoch);
-      return stale();
-    }
-    if (this.active?.saveHealth === 'readOnly') {
-      this.finishWrite(ticket.epoch, 'readOnly');
-      return failed('error.workspace_read_only', 'WORKSPACE_READ_ONLY');
-    }
-    ticket.epoch.inFlight = true;
-    this.setSaveHealth('saving');
-    this.notify();
-    const baseRevision = this.active!.revision;
-    const request: ApplyWorkspaceBatchRequest = {
-      workspaceId: ticket.workspaceId,
-      clientBatchId: ticket.clientBatchId,
-      baseRevision,
-      mutations: [...ticket.mutations],
-    };
-    try {
-      const response = await this.port.applyWorkspaceBatch(request, {
-        signal: ticket.epoch.controller.signal,
-      });
-      if (!this.isCurrentEpoch(ticket.epoch, ticket.workspaceId)) {
-        this.finishWrite(ticket.epoch);
-        return stale();
-      }
-      const committedRevision = validateCommittedRevision(response.committedRevision);
-      if (
-        response.clientBatchId !== ticket.clientBatchId ||
-        committedRevision !== baseRevision + 1 ||
-        committedRevision <= this.active!.revision
-      ) {
-        throw new InvalidWorkspaceResponseError('committedRevision');
-      }
-      const committedDocument = cloneMutableActive(this.active!);
-      for (const mutation of ticket.mutations) {
-        this.applyCommittedDocumentMutation(committedDocument, mutation);
-      }
-      committedDocument.revision = committedRevision;
-      this.active = committedDocument;
-      this.finishWrite(ticket.epoch, 'clean');
-      this.mergeActiveIntoProjects();
-      this.notify();
-      return completed(freezeActive(this.active!));
-    } catch (error) {
-      if (!this.isCurrentEpoch(ticket.epoch, ticket.workspaceId)) {
-        this.finishWrite(ticket.epoch);
-        return stale();
-      }
-      const readOnly = isWorkspaceReadOnlyError(error);
-      this.finishWrite(ticket.epoch, readOnly ? 'readOnly' : 'degraded');
-      this.mergeActiveIntoProjects();
-      this.notify();
-      return safeFailure(error, readOnly ? 'error.workspace_read_only' : 'workspace.save.failed');
-    }
-  }
-
-  private async executeFlush(
-    epoch: WriteEpoch,
-  ): Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>> {
-    if (!this.isCurrentEpoch(epoch, epoch.workspaceId)) return stale();
-    if (this.active?.saveHealth === 'readOnly') {
-      return failed('error.workspace_read_only', 'WORKSPACE_READ_ONLY');
-    }
-    epoch.inFlight = true;
-    this.setSaveHealth('saving');
-    this.notify();
-    const targetRevision = this.active!.revision;
-    try {
-      const response = await this.port.flushWorkspace(
-        { workspaceId: epoch.workspaceId, targetRevision },
-        { signal: epoch.controller.signal },
-      );
-      if (!this.isCurrentEpoch(epoch, epoch.workspaceId)) return stale();
-      this.applyFlushResponse(response, targetRevision, epoch.pending);
-      epoch.inFlight = false;
-      this.mergeActiveIntoProjects();
-      this.notify();
-      return completed(freezeActive(this.active!));
-    } catch (error) {
-      if (!this.isCurrentEpoch(epoch, epoch.workspaceId)) return stale();
-      const readOnly = isWorkspaceReadOnlyError(error);
-      epoch.inFlight = false;
-      this.setSaveHealth(readOnly ? 'readOnly' : 'degraded');
-      this.mergeActiveIntoProjects();
-      this.notify();
-      return safeFailure(error, readOnly ? 'error.workspace_read_only' : 'workspace.flush.failed');
-    }
-  }
-
-  private applyFlushResponse(
-    response: FlushWorkspaceResponse,
-    targetRevision: number,
-    queuedMutations: number,
-  ): void {
-    const committedRevision = validateCommittedRevision(response.committedRevision);
-    if (committedRevision < targetRevision || committedRevision < this.active!.revision) {
-      throw new InvalidWorkspaceResponseError('committedRevision');
-    }
-    if (!isSaveHealth(response.saveHealth)) {
-      throw new InvalidWorkspaceResponseError('saveHealth');
-    }
-    this.active!.revision = committedRevision;
-    this.setSaveHealth(
-      response.saveHealth === 'clean' && queuedMutations > 0 ? 'pending' : response.saveHealth,
-    );
-  }
-
-  private finishWrite(epoch: WriteEpoch, terminalHealth?: WorkspaceSaveHealth): void {
-    epoch.pending = Math.max(0, epoch.pending - 1);
-    epoch.inFlight = false;
-    if (this.writeEpoch !== epoch || !this.active) return;
-    if (terminalHealth === 'readOnly' || terminalHealth === 'degraded') {
-      this.setSaveHealth(terminalHealth);
-      return;
-    }
-    this.setSaveHealth(epoch.pending > 0 ? 'pending' : (terminalHealth ?? 'clean'));
   }
 
   private setSaveHealth(health: WorkspaceSaveHealth): void {
     if (this.active) this.active.saveHealth = health;
-  }
-
-  private applyCommittedDocumentMutation(
-    active: MutableActiveWorkspace,
-    mutation: WorkspaceMutation,
-  ): void {
-    switch (mutation.kind) {
-      case 'set-metadata':
-        if (mutation.payload.name !== undefined) active.name = mutation.payload.name;
-        if (mutation.payload.layout !== undefined) {
-          active.layout = sanitizeWorkspaceLayout(mutation.payload.layout);
-        }
-        return;
-      case 'set-active-session':
-        active.activeSessionId = mutation.sessionId;
-        return;
-      case 'upsert-session':
-        if (!active.sessionIds.includes(mutation.sessionId)) {
-          active.sessionIds = Object.freeze([...active.sessionIds, mutation.sessionId]);
-        }
-        return;
-      case 'remove-session':
-        active.sessionIds = Object.freeze(
-          active.sessionIds.filter((sessionId) => sessionId !== mutation.sessionId),
-        );
-        if (active.activeSessionId === mutation.sessionId) active.activeSessionId = null;
-        return;
-      case 'append-frames':
-      case 'replace-capture':
-      case 'trim-capture':
-      case 'upsert-feature-state':
-      case 'replace-session-collections':
-      case 'append-ai-messages':
-      case 'clear-ai-messages':
-      case 'replace-waveform-channels':
-      case 'append-waveform-samples':
-        return;
-      default:
-        mutation satisfies never;
-    }
   }
 
   private mergeActiveIntoProjects(): void {
@@ -855,14 +610,6 @@ export class WorkspaceCoordinator {
 
   private isCurrentExport(call: PendingCall): boolean {
     return this.exportCall === call && call.generation === this.exportGeneration;
-  }
-
-  private isCurrentEpoch(epoch: WriteEpoch, workspaceId: string): boolean {
-    return (
-      this.writeEpoch === epoch &&
-      this.active?.workspaceId === workspaceId &&
-      !epoch.controller.signal.aborted
-    );
   }
 
   private notify(): void {
@@ -922,56 +669,10 @@ function contextFor(call: PendingCall): WorkspacePortCallContext {
   return Object.freeze({ signal: call.controller.signal });
 }
 
-function freezeActive(active: MutableActiveWorkspace): ActiveWorkspaceViewModel {
-  return Object.freeze({
-    workspaceId: active.workspaceId,
-    name: active.name,
-    revision: active.revision,
-    activeSessionId: active.activeSessionId,
-    sessionIds: Object.freeze([...active.sessionIds]),
-    saveHealth: active.saveHealth,
-    layout: active.layout,
-  });
-}
-
-function cloneMutableActive(active: MutableActiveWorkspace): MutableActiveWorkspace {
-  return {
-    workspaceId: active.workspaceId,
-    name: active.name,
-    revision: active.revision,
-    activeSessionId: active.activeSessionId,
-    sessionIds: Object.freeze([...active.sessionIds]),
-    saveHealth: active.saveHealth,
-    layout: active.layout,
-  };
-}
-
-function completed<T>(value: T): WorkspaceActionOutcome<T> {
-  return Object.freeze({ outcome: 'completed', value });
-}
-
-function stale(): WorkspaceActionOutcome<never> {
-  return Object.freeze({ outcome: 'stale' });
-}
-
 function staleOutcome(call: PendingCall): WorkspaceActionOutcome<never> {
   return call.cancelledByUser && (call.nativeOutcome === null || call.nativeOutcome === 'cancelled')
     ? Object.freeze({ outcome: 'cancelled' })
     : Object.freeze({ outcome: 'stale' });
-}
-
-function failed(messageKey: string, code?: string): WorkspaceActionOutcome<never> {
-  return Object.freeze({ outcome: 'failed', messageKey, ...(code ? { code } : {}) });
-}
-
-function isSaveHealth(value: string): value is WorkspaceSaveHealth {
-  return (
-    value === 'clean' ||
-    value === 'pending' ||
-    value === 'saving' ||
-    value === 'degraded' ||
-    value === 'readOnly'
-  );
 }
 
 function defaultIdFactory(scope: string): string {

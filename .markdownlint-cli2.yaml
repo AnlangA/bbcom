@@ -7,3 +7,6 @@ config:
   MD036: false # existing bilingual docs use emphasized section labels
   MD041: false # README begins with a centered GitHub presentation block
   MD056: false # legacy plan tables include literal pipe-delimited examples
+# Local agent session artifacts are machine-generated, not project docs.
+ignores:
+  - .zcode/

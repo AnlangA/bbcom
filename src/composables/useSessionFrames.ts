@@ -1,22 +1,22 @@
-import { useSessionStore } from '../stores/sessions';
+import { useSessionCapture } from '../features/sessions/session-ports';
 import type { DataFrame } from '../types';
 
 export function useSessionFrames(sessionId: string) {
-  const sessionStore = useSessionStore();
+  const capture = useSessionCapture(sessionId);
 
   function addFrame(
     frame: Omit<DataFrame, 'id' | 'timestamp'>,
     options?: { publish?: boolean },
   ): DataFrame | undefined {
-    return sessionStore.addFrame(sessionId, frame, options);
+    return capture.add(frame, options);
   }
 
   function publishFrames() {
-    sessionStore.publishSessionFrames(sessionId);
+    capture.publish();
   }
 
   function clearFrames() {
-    sessionStore.clearFrames(sessionId);
+    capture.clear();
   }
 
   return {

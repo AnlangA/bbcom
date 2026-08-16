@@ -3,15 +3,7 @@ import assert from 'node:assert/strict';
 import { buildLogAiContext } from '../../src/lib/ai-log-context.ts';
 import { encodeUtf8 } from '../../src/lib/format.ts';
 import type { DataFrame, SerialSession } from '../../src/types/index.ts';
-
-function frame(
-  id: string,
-  direction: DataFrame['direction'],
-  data: Uint8Array,
-  timestamp = 0,
-): DataFrame {
-  return { id, direction, timestamp, data };
-}
+import { frame } from './helpers/frames.ts';
 
 function arrayIndex(property: string | symbol): number | null {
   if (typeof property !== 'string' || !/^(0|[1-9]\d*)$/.test(property)) return null;

@@ -304,6 +304,7 @@ test('settings dialog focuses its contents, exposes saved status, and restores i
     attachTo: document.body,
     global: {
       stubs: {
+        Teleport: true,
         NModal: ModalStub,
         Modal: ModalStub,
         NSwitch: SwitchStub,

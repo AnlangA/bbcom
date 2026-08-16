@@ -1,10 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use bbcom_plugin_contracts::{AuthorizationKey, MAX_FRAME_BYTES, MAX_QUEUE_BYTES, Permission};
+use bbcom_plugin_contracts::{MAX_FRAME_BYTES, MAX_QUEUE_BYTES, Permission};
 
-use crate::{
-    AuditEvent, AuditOperation, AuditSink, BrokerError, Result, validate_authorization_key,
-};
+use crate::{AuditEvent, AuditOperation, AuditSink, BrokerError, Result};
 
 pub const SERIAL_PROPOSAL_TTL_MS: u64 = 60_000;
 const MAX_CONTEXT_ID_BYTES: usize = 128;
@@ -93,15 +91,17 @@ impl<'a, A: AuditSink> SerialProposalBroker<'a, A> {
 
     pub fn create(
         &mut self,
-        key: &AuthorizationKey,
+        plugin_id: &str,
         declared: &BTreeSet<Permission>,
         request: SerialProposalRequest,
         now_ms: u64,
     ) -> Result<SerialProposalView> {
-        validate_authorization_key(key)?;
+        if !valid_context_id(plugin_id) || !plugin_id.contains('.') {
+            return Err(BrokerError::PluginContextInvalid);
+        }
         if !declared.contains(&Permission::SerialWriteProposal) {
             return self.fail_create(
-                key,
+                plugin_id,
                 BrokerError::CapabilityUndeclared,
                 request.payload.len(),
             );
@@ -114,20 +114,28 @@ impl<'a, A: AuditSink> SerialProposalBroker<'a, A> {
             || request.display_label.len() > MAX_DISPLAY_LABEL_BYTES
             || unsafe_text(&request.display_label)
         {
-            return self.fail_create(key, BrokerError::ProposalInvalid, request.payload.len());
+            return self.fail_create(
+                plugin_id,
+                BrokerError::ProposalInvalid,
+                request.payload.len(),
+            );
         }
         let next_queue = self
             .queued_bytes
             .checked_add(request.payload.len())
             .ok_or(BrokerError::ProposalQueueLimit)?;
         if next_queue > MAX_QUEUE_BYTES {
-            return self.fail_create(key, BrokerError::ProposalQueueLimit, request.payload.len());
+            return self.fail_create(
+                plugin_id,
+                BrokerError::ProposalQueueLimit,
+                request.payload.len(),
+            );
         }
         let proposal_id = format!("proposal-{now_ms:016x}-{:016x}", self.next_id);
         self.next_id = self.next_id.saturating_add(1);
         let view = SerialProposalView {
             proposal_id: proposal_id.clone(),
-            plugin_id: key.plugin_id.clone(),
+            plugin_id: plugin_id.to_owned(),
             operation_id: request.operation_id,
             session_id: request.session_id,
             display_label: request.display_label,
@@ -144,7 +152,7 @@ impl<'a, A: AuditSink> SerialProposalBroker<'a, A> {
         );
         self.queued_bytes = next_queue;
         self.audit.record(AuditEvent {
-            plugin_id: key.plugin_id.clone(),
+            plugin_id: plugin_id.to_owned(),
             operation: AuditOperation::SerialProposalCreate,
             error_code: None,
             byte_count: view.byte_count as u64,
@@ -199,14 +207,9 @@ impl<'a, A: AuditSink> SerialProposalBroker<'a, A> {
         self.queued_bytes
     }
 
-    fn fail_create<T>(
-        &self,
-        key: &AuthorizationKey,
-        error: BrokerError,
-        byte_count: usize,
-    ) -> Result<T> {
+    fn fail_create<T>(&self, plugin_id: &str, error: BrokerError, byte_count: usize) -> Result<T> {
         self.audit.record(AuditEvent {
-            plugin_id: key.plugin_id.clone(),
+            plugin_id: plugin_id.to_owned(),
             operation: AuditOperation::SerialProposalCreate,
             error_code: Some(error.code()),
             byte_count: byte_count as u64,

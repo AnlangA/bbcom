@@ -10,6 +10,7 @@ import {
   serializeSessionSnapshots,
 } from '../../src/lib/session-persistence.ts';
 import type { DataFrame, PortConfig } from '../../src/types/index.ts';
+import { frame } from './helpers/frames.ts';
 
 const cfg: PortConfig = {
   baudRate: 9600,
@@ -21,15 +22,6 @@ const cfg: PortConfig = {
   dtr: false,
   rts: false,
 };
-
-function frame(id: string, timestamp: number, direction: 'TX' | 'RX', data: number[]): DataFrame {
-  return {
-    id,
-    timestamp,
-    direction,
-    data: new Uint8Array(data),
-  };
-}
 
 test('createSessionRecord centralizes session defaults', () => {
   const session = createSessionRecord('s1', 'COM1', cfg);

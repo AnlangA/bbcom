@@ -10,8 +10,7 @@ const MAX_VALUE_BYTES = 4 * 1024;
 const MAX_OPTION_BYTES = 256;
 
 export function validateDeclarativePanel(panel: PluginDeclarativePanel): boolean {
-  if (!validIdentity(panel.pluginId) || !safeText(panel.title, MAX_TITLE_BYTES, false))
-    return false;
+  if (!validRuntime(panel.runtime) || !safeText(panel.title, MAX_TITLE_BYTES, false)) return false;
   if (panel.fields.length === 0 || panel.fields.length > MAX_PANEL_NODES) return false;
 
   const ids = new Set<string>();
@@ -26,6 +25,19 @@ export function validateDeclarativePanel(panel: PluginDeclarativePanel): boolean
     if (textBytes > MAX_PANEL_TEXT_BYTES) return false;
   }
   return true;
+}
+
+function validRuntime(runtime: PluginDeclarativePanel['runtime'] | null | undefined): boolean {
+  return (
+    runtime !== null &&
+    runtime !== undefined &&
+    validIdentity(runtime.workspaceId) &&
+    validIdentity(runtime.pluginId) &&
+    Number.isSafeInteger(runtime.instanceId) &&
+    runtime.instanceId > 0 &&
+    Number.isSafeInteger(runtime.generation) &&
+    runtime.generation > 0
+  );
 }
 
 export function validPanelEventValue(field: PluginPanelField, value: string): boolean {

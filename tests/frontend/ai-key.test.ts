@@ -13,7 +13,7 @@ import {
   migrateLegacyAiApiKey,
   removeLegacyAiApiKey,
   setAiApiKey,
-} from '../../src/lib/ai-key.ts';
+} from '../../src/features/settings/tauri-ai-key.ts';
 
 function enableTauriRuntime(): void {
   Object.defineProperty(window, '__TAURI_INTERNALS__', {

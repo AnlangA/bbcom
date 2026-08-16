@@ -1,5 +1,5 @@
 import type { AiModel, LogAiContextMode } from '../../types';
-import type { AiRisk } from '../../lib/ipc';
+import type { AiRisk } from '../../features/native';
 import { getAiModelOptions } from '../../lib/ai-models';
 import { t } from '../../lib/i18n';
 
@@ -12,11 +12,6 @@ export function getLogContextModeOptions(): { label: string; value: LogAiContext
     { label: t('ai.context.fullCapped'), value: 'full-capped' },
   ];
 }
-
-export const aiModelMenuProps = {
-  class: 'ai-model-menu',
-  style: 'max-height: 72px;',
-};
 
 /** Display label for each AI command risk level. */
 export function aiRiskLabel(risk: AiRisk): string {

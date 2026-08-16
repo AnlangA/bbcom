@@ -1,11 +1,10 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
-use std::str::FromStr;
 
 use semver::{Version, VersionReq};
 use serde::Deserialize;
 
-use crate::{ContractError, Permission, Result, Sha256Digest};
+use crate::{ContractError, Permission, Result, Sha256Digest, parse_permission};
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,7 +30,9 @@ pub struct ComponentManifest {
 #[serde(deny_unknown_fields)]
 pub struct PublisherManifest {
     pub name: String,
-    pub identity: String,
+    /// Legacy self-asserted identity. Parsed for compatibility and ignored.
+    #[serde(default)]
+    pub identity: Option<String>,
     pub website: String,
 }
 
@@ -55,13 +56,12 @@ impl PluginManifest {
         validate_component_path(&self.component.path)?;
         validate_sha256(&self.component.sha256, "component.sha256")?;
         validate_display_text(&self.publisher.name, "publisher.name", 128)?;
-        validate_publisher_identity(&self.publisher.identity)?;
         validate_https_url(&self.publisher.website, "publisher.website")?;
 
         let mut unique = BTreeSet::new();
         for value in &self.requested_capabilities {
-            let permission = Permission::from_str(value)?;
-            if permission.is_implicit() || !unique.insert(permission) {
+            let permission = parse_permission(value)?;
+            if !unique.insert(permission) {
                 return Err(ContractError::InvalidField {
                     field: "requestedCapabilities",
                 });
@@ -73,7 +73,7 @@ impl PluginManifest {
     pub fn permissions(&self) -> Result<Vec<Permission>> {
         self.requested_capabilities
             .iter()
-            .map(|value| Permission::from_str(value))
+            .map(|value| parse_permission(value))
             .collect()
     }
 
@@ -129,20 +129,6 @@ fn validate_component_path(value: &str) -> Result<()> {
     {
         return Err(ContractError::InvalidField {
             field: "component.path",
-        });
-    }
-    Ok(())
-}
-
-fn validate_publisher_identity(value: &str) -> Result<()> {
-    let Some(identity) = value.strip_prefix("publisher:") else {
-        return Err(ContractError::InvalidField {
-            field: "publisher.identity",
-        });
-    };
-    if identity.len() < 3 || identity.len() > 128 || !valid_slug(identity) {
-        return Err(ContractError::InvalidField {
-            field: "publisher.identity",
         });
     }
     Ok(())

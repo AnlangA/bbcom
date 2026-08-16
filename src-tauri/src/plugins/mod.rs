@@ -10,9 +10,11 @@ mod g45_probe;
 mod host_launcher;
 mod installation;
 mod repository;
+mod runtime_actor;
+mod runtime_wiring;
 mod sandbox;
-mod security;
 mod service;
+mod source_registry;
 mod state;
 
 pub use host_launcher::{
@@ -28,8 +30,10 @@ pub use installation::{
 };
 pub use repository::{NativeRepositoryFetchError, NativeRepositoryFetchPort};
 pub use sandbox::PlatformSandboxDriver;
-pub use security::{NativePluginSecurityError, NativePluginSecurityStore};
 pub use service::{PluginService, PluginServiceError};
+pub use source_registry::{
+    NativePluginSourceRegistry, SourceRegistryError, spawn_automatic_source_checks,
+};
 pub use state::NativePluginStatePersistencePort;
 
 pub use bootstrap::{
@@ -39,16 +43,21 @@ pub use bootstrap::{
 
 pub use command_adapter::{
     CatalogPluginRecord, CatalogViewFailure, CatalogViewPort, NativePluginCommandAdapter,
-    PluginCommandCorePort, PluginDisplayRecord, PublisherVerification,
+    PluginCommandCorePort, PluginDisplayRecord,
 };
 
 #[cfg(test)]
 mod tests;
 pub use command_service::{
-    AuthorizationBrokerPort, AuthorizationReviewSnapshot, AuthorizationSubject, PanelBrokerPort,
-    PluginCommandError, PluginCommandErrorCode, PluginCommandService, PluginCommandSnapshot,
-    PluginCommandUpstreamPort, PluginLifecyclePort, PluginOperationFailure, PluginOperationKind,
-    PluginOperationSnapshot, PluginOperationStatus, PluginUpstreamFailure, ProposalBrokerPort,
-    ReviewedAuthorizationReceipt,
+    PanelBrokerPort, PluginCommandError, PluginCommandErrorCode, PluginCommandService,
+    PluginCommandSnapshot, PluginCommandUpstreamPort, PluginLifecyclePort, PluginOperationFailure,
+    PluginOperationKind, PluginOperationSnapshot, PluginOperationStatus, PluginUpstreamFailure,
+    ProposalBrokerPort,
 };
 pub use g45_probe::{PluginG45ProbeError, run_plugin_g45_probe_from_environment};
+pub use runtime_actor::PluginRuntimeActorHandle;
+pub use runtime_wiring::{
+    PluginLifecycleHandle, SerialActionResultRegistry, activate_plugin_workspace,
+    close_plugin_project, compose, ensure_plugin_runtime, install_managed_defaults,
+    spawn_dev_directory_watchers, spawn_host_exit_poll,
+};

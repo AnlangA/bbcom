@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { config as testUtilsConfig, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import SessionTabs from '../../src/components/session-tabs/SessionTabs.vue';
 import StatusBar from '../../src/components/status-bar/StatusBar.vue';
@@ -15,7 +15,7 @@ import ModbusAddRegisterForm from '../../src/components/terminal/ModbusAddRegist
 import ModbusRegisterRow from '../../src/components/terminal/ModbusRegisterRow.vue';
 import ParserConfigBar from '../../src/components/terminal/ParserConfigBar.vue';
 import ParserFrameDetail from '../../src/components/terminal/ParserFrameDetail.vue';
-import PortSelector from '../../src/components/port-selector/PortSelector.vue';
+import ChecksumPanel from '../../src/components/send-panel/ChecksumPanel.vue';
 import AppShell from '../../src/components/app-shell/AppShell.vue';
 import WaveformLegend from '../../src/components/terminal/WaveformLegend.vue';
 import WaveformPanel from '../../src/components/terminal/WaveformPanel.vue';
@@ -27,8 +27,8 @@ import SettingsModal from '../../src/components/app-shell/SettingsModal.vue';
 import App from '../../src/App.vue';
 import AiWindow from '../../src/AiWindow.vue';
 import { useAppStore } from '../../src/stores/app.ts';
-import { useSessionStore } from '../../src/stores/sessions.ts';
-import { setLocale, t } from '../../src/lib/i18n.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
+import { ensureLocaleLoaded, setLocale, t } from '../../src/lib/i18n.ts';
 import type {
   PortConfig,
   SerialSession,
@@ -37,6 +37,11 @@ import type {
 } from '../../src/types/index.ts';
 import { computed, ref } from 'vue';
 import type { SessionRuntimeMacroController } from '../../src/features/sessions/runtime/session-runtime-controller.ts';
+import {
+  SESSION_APPLICATION_SERVICES_KEY,
+  SessionRuntimeStatusRegistry,
+} from '../../src/features/sessions';
+import { useWorkspaceUiStore } from '../../src/features/workspace';
 
 function fakeMacroRunner(): SessionRuntimeMacroController {
   return {
@@ -113,7 +118,8 @@ vi.mock('../../src/composables/useAppShortcuts', () => ({
   },
 }));
 
-vi.mock('../../src/features/sessions', () => ({
+vi.mock('../../src/features/sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/features/sessions')>()),
   SessionRuntimeHost: { name: 'SessionRuntimeHost', template: '<div />' },
 }));
 
@@ -147,8 +153,8 @@ vi.mock('@tanstack/vue-virtual', async () => {
   };
 });
 
-vi.mock('../../src/lib/ipc', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/lib/ipc')>();
+vi.mock('../../src/features/native/tauri-ipc', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/features/native/tauri-ipc')>();
   return {
     ...actual,
     calculateChecksum: nativeMocks.checksum,
@@ -207,11 +213,16 @@ const config: PortConfig = {
 
 function setupSessions() {
   localStorage.clear();
-  setActivePinia(createPinia());
-  return useSessionStore();
+  const pinia = createPinia();
+  setActivePinia(pinia);
+  testUtilsConfig.global.plugins = [pinia];
+  return useSessionCoreStore();
 }
 
 beforeEach(() => {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+  testUtilsConfig.global.plugins = [pinia];
   sessionActions.requestCloseSession.mockReset();
   sessionActions.createSession.mockReset().mockReturnValue('created-session');
   nativeMocks.checksum.mockReset();
@@ -284,9 +295,16 @@ test('StatusBar renders idle and connected telemetry, including reset-safe rates
     frames: [{ id: 'f1', direction: 'RX', timestamp: now, data: new Uint8Array([1]) }],
     droppedBytes: 2048,
   } as unknown as SerialSession;
+  const runtimeStatuses = new SessionRuntimeStatusRegistry();
+  runtimeStatuses.publish(session.id, { phase: 'connected', droppedBytes: 2048, failure: null });
 
   const wrapper = mount(StatusBar, {
     props: { session, framesVersion: 0 },
+    global: {
+      provide: {
+        [SESSION_APPLICATION_SERVICES_KEY as symbol]: { runtimeStatusRegistry: runtimeStatuses },
+      },
+    },
   });
   expect(wrapper.text()).not.toContain('COM9');
   expect(wrapper.text()).toContain('2.0 KB');
@@ -552,7 +570,7 @@ test('SessionToolbar reflects connection state and emits every terminal control 
   };
   const wrapper = mount(SessionToolbar, { props });
   expect(wrapper.text()).toContain('connection failed');
-  expect(wrapper.text()).toContain('2.0 KB');
+  expect(wrapper.text()).not.toContain('2.0 KB');
   const connectButton = wrapper
     .findAll('button')
     .find((button) => button.text().includes(t('session.connect')));
@@ -866,62 +884,19 @@ test('ModbusRegisterRow updates read and write register state while preserving t
   expect(writeRow.emitted('updateValueDraft')).toContainEqual(['7 8 9']);
 });
 
-test('PortSelector manages discovery, configuration, and debounced checksums without native serial side effects', async () => {
+test('ChecksumPanel normalizes input and calculates through the native boundary', async () => {
   vi.useFakeTimers();
-  const sessions = setupSessions();
-  const missingId = sessions.createSession('COM-missing', config);
-  sessions.setConnected(missingId, true);
-  const serialStore = (await import('../../src/stores/serial.ts')).useSerialStore();
-  portWatcher.refresh.mockResolvedValue(undefined);
   nativeMocks.checksum.mockResolvedValue({ result: 'BEEF' });
 
-  const wrapper = mount(PortSelector);
-  expect(serialStore.selectedPort).toBe('COM-A');
-  expect(wrapper.find('.empty-hint.warning').text()).toContain('COM-missing');
-
-  const sectionTitles = wrapper.findAll('.section-title');
-  await sectionTitles[0].trigger('click');
-  await sectionTitles[1].trigger('click');
-  await sectionTitles[2].trigger('click');
-  expect(wrapper.findAll('.section-body')[0].classes()).toContain('collapsed');
-  expect(wrapper.findAll('.section-body')[1].classes()).toContain('collapsed');
-  expect(wrapper.findAll('.section-body')[2].classes()).not.toContain('collapsed');
-  await sectionTitles[0].trigger('click');
-  await sectionTitles[1].trigger('click');
-
-  const portSelect = wrapper.findAll('select')[0];
-  await portSelect.setValue('1');
-  expect(serialStore.selectedPort).toBe('COM-B');
-  const refreshButton = wrapper
-    .findAll('button')
-    .find((button) => button.attributes('title') === t('serial.refreshPorts'));
-  expect(refreshButton).toBeDefined();
-  await refreshButton!.trigger('click');
-  expect(portWatcher.refresh).toHaveBeenCalledTimes(1);
-  const newSessionButton = wrapper
-    .findAll('button')
-    .find((button) => button.text().includes(t('common.newSession')));
-  expect(newSessionButton).toBeDefined();
-  await newSessionButton!.trigger('click');
-  expect(sessionActions.createSession).toHaveBeenCalledWith(
-    'COM-B',
-    expect.objectContaining(config),
-  );
-
-  const configSelects = wrapper.findAll('select');
-  await configSelects[1].setValue('2');
-  await configSelects[4].setValue('2');
-  expect(serialStore.portConfig.baudRate).toBe(38400);
-  expect(serialStore.portConfig.parity).toBe('even');
-
-  const checksumInput = wrapper.findAll('input').at(-1)!;
+  const wrapper = mount(ChecksumPanel);
+  const checksumInput = wrapper.get('input');
   await checksumInput.setValue('aa bb');
   await checksumInput.trigger('blur');
   expect((checksumInput.element as HTMLInputElement).value).toBe('AA BB');
   await vi.advanceTimersByTimeAsync(150);
   await wrapper.vm.$nextTick();
   expect(nativeMocks.checksum).toHaveBeenCalledWith(new Uint8Array([0xaa, 0xbb]), 'CHECKSUM');
-  expect(wrapper.find('.checksum-result').text()).toContain('BEEF');
+  expect(wrapper.find('.checksum-panel__result').text()).toContain('BEEF');
 
   await checksumInput.setValue('A');
   await vi.advanceTimersByTimeAsync(200);
@@ -930,11 +905,10 @@ test('PortSelector manages discovery, configuration, and debounced checksums wit
 
 test('AppShell handles layout controls, failure notifications, resize cleanup, and shortcuts around an empty workspace', async () => {
   const sessions = setupSessions();
-  const app = useAppStore();
+  const workspaceUi = useWorkspaceUiStore();
   const wrapper = mount(AppShell, {
     global: {
       stubs: {
-        PortSelector: true,
         SessionTabs: {
           template: '<button class="session-tabs-stub" @click="$emit(\'create\')">tabs</button>',
         },
@@ -954,30 +928,28 @@ test('AppShell handles layout controls, failure notifications, resize cleanup, a
   expect(resizeHandle.attributes('aria-valuemin')).toBe('252');
   expect(resizeHandle.attributes('aria-valuemax')).toBe('340');
   await resizeHandle.trigger('keydown', { key: 'ArrowRight' });
-  expect(app.sidebarWidth).toBe(304);
+  expect(workspaceUi.sidebarWidth).toBe(304);
   await resizeHandle.trigger('keydown', { key: 'ArrowRight', shiftKey: true });
-  expect(app.sidebarWidth).toBe(328);
+  expect(workspaceUi.sidebarWidth).toBe(328);
   await resizeHandle.trigger('keydown', { key: 'Home' });
-  expect(app.sidebarWidth).toBe(252);
+  expect(workspaceUi.sidebarWidth).toBe(252);
   await resizeHandle.trigger('keydown', { key: 'End' });
-  expect(app.sidebarWidth).toBe(340);
-  app.setSidebarWidth(292);
+  expect(workspaceUi.sidebarWidth).toBe(340);
+  workspaceUi.setSidebarWidth(292);
 
   await wrapper.find('.collapse-btn').trigger('click');
-  expect(app.sidebarCollapsed).toBe(true);
+  expect(workspaceUi.sidebarCollapsed).toBe(true);
   await wrapper.find('.collapse-btn').trigger('click');
-  expect(app.sidebarCollapsed).toBe(false);
+  expect(workspaceUi.sidebarCollapsed).toBe(false);
 
   await wrapper.find('.ai-toggle').trigger('click');
   expect(appShellMocks.toggleAiWindow).toHaveBeenCalledTimes(1);
-  await wrapper.find('.theme-toggle').trigger('click');
-  expect(app.theme).toBe('light');
-  await wrapper.find('.locale-toggle').trigger('click');
-  expect(app.locale).toBe('en');
+  expect(wrapper.find('.theme-toggle').exists()).toBe(false);
+  expect(wrapper.find('.locale-toggle').exists()).toBe(false);
 
   await resizeHandle.trigger('mousedown', { clientX: 100 });
   document.dispatchEvent(new MouseEvent('mousemove', { clientX: 132 }));
-  expect(app.sidebarWidth).toBe(324);
+  expect(workspaceUi.sidebarWidth).toBe(324);
   document.dispatchEvent(new MouseEvent('mouseup'));
   expect(document.body.style.cursor).toBe('');
   expect(document.body.style.userSelect).toBe('');
@@ -1312,6 +1284,7 @@ test('DataPacketList filters, selects, context-copies, keyboard-copies, and reje
 });
 
 test('ParserPanel edits resident parser settings, filters/selects parsed frames, and copies hex/ascii details', async () => {
+  await ensureLocaleLoaded('en');
   setLocale('en');
   const sessions = setupSessions();
   const sessionId = sessions.createSession('COM-parser', config);
@@ -1494,7 +1467,10 @@ test('ModbusPanel bridges header, virtual row, add form, write feedback, source 
 test('SettingsModal updates appearance, locale, buffer limits, reconnection, and close state', async () => {
   setupSessions();
   const app = useAppStore();
-  const wrapper = mount(SettingsModal, { props: { show: true } });
+  const wrapper = mount(SettingsModal, {
+    props: { show: true },
+    global: { stubs: { Teleport: true } },
+  });
   expect(wrapper.find('.settings-body').exists()).toBe(true);
   const select = wrapper.find('select');
   await select.setValue('1');
@@ -1511,12 +1487,12 @@ test('SettingsModal updates appearance, locale, buffer limits, reconnection, and
 
   const switches = wrapper.findAll('.switch-stub');
   await switches[0].trigger('click');
-  await switches[1].trigger('click');
+  wrapper.findAllComponents({ name: 'NSwitch' })[1].vm.$emit('update:value', true);
   await wrapper.vm.$nextTick();
   expect(app.theme).toBe('light');
   expect(app.autoReconnect).toBe(true);
 
-  await wrapper.find('.modal-hide').trigger('click');
+  await wrapper.find('.app-modal__close').trigger('click');
   const doneButton = buttons.find((button) => button.text().includes(t('settings.done')));
   expect(doneButton).toBeDefined();
   await doneButton!.trigger('click');
@@ -1526,9 +1502,8 @@ test('SettingsModal updates appearance, locale, buffer limits, reconnection, and
 test('CreateSessionDialog syncs selected port/config, creates sessions, and saves/removes named presets', async () => {
   const sessions = setupSessions();
   const serialStore = (await import('../../src/stores/serial.ts')).useSerialStore();
-  serialStore.setAvailablePorts(['COM-busy', 'COM-free']);
-  serialStore.setSelectedPort('COM-free');
-  const busyId = sessions.createSession('COM-busy', config);
+  serialStore.setSelectedPort('COM-B');
+  const busyId = sessions.createSession('COM-A', config);
   sessions.setConnected(busyId, true);
   const wrapper = mount(CreateSessionDialog, { props: { show: false } });
   await wrapper.setProps({ show: true });
@@ -1541,7 +1516,7 @@ test('CreateSessionDialog syncs selected port/config, creates sessions, and save
   await selects[5].setValue('2');
   await wrapper.findAll('.modal-positive')[0].trigger('click');
   expect(sessionActions.createSession).toHaveBeenCalledWith(
-    'COM-free',
+    'COM-B',
     expect.objectContaining({ baudRate: 57600, parity: 'even' }),
   );
   expect(wrapper.emitted('update:show')).toContainEqual([false]);

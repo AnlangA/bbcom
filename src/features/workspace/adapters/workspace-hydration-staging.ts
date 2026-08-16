@@ -82,7 +82,7 @@ export async function stageWorkspaceHydration(
   const revision = nonNegativeInteger(options.revision, 'revision');
   const requestId = options.requestId ?? (() => crypto.randomUUID());
   const sessionPageSize = boundedInteger(options.sessionPageSize ?? 64, 1, 64, 'sessionPageSize');
-  const framePageSize = boundedInteger(options.framePageSize ?? 256, 1, 256, 'framePageSize');
+  const framePageSize = boundedInteger(options.framePageSize ?? 2048, 1, 2048, 'framePageSize');
   const aiPageSize = boundedInteger(options.aiPageSize ?? 256, 1, 256, 'aiPageSize');
   const waveformPageSize = boundedInteger(
     options.waveformPageSize ?? 4_096,

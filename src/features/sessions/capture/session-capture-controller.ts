@@ -7,6 +7,7 @@ import {
   resetSessionFrames,
   trimSessionsToGlobalByteLimit,
 } from '../../../lib/session-store-helpers';
+import { CaptureAccountingStore } from '../../application';
 import type { DataFrame } from '../../../types/serial';
 import type { SerialSession } from '../../../types/session';
 
@@ -54,11 +55,22 @@ export function createSessionCaptureController({
   onCaptureCleared = () => undefined,
   onCaptureTrimmed = () => undefined,
 }: SessionCaptureControllerDependencies) {
-  const sessionFrameBytes = new Map<string, number>();
+  /**
+   * Retained in-memory capture-buffer bytes per session plus the global
+   * aggregate, accounted through the shared workspace capture-accounting
+   * store (this instance tracks only the bytes fields).
+   */
+  const accounting = new CaptureAccountingStore();
   const rxQueueDroppedBytes = new Map<string, number>();
   const frameBufferDroppedBytes = new Map<string, number>();
   const frameClearListeners = new Map<string, Set<() => void>>();
-  let totalFrameBytes = 0;
+
+  function retainedSessionBytes(sessionId: string, session?: SerialSession): number {
+    return (
+      accounting.sessionTotals(sessionId)?.captureBytes ??
+      (session ? frameBuffersByteLength(session) : 0)
+    );
+  }
 
   function getSessionFramesVersion(sessionId: string): number {
     return frameVersions[sessionId] ?? 0;
@@ -71,15 +83,17 @@ export function createSessionCaptureController({
   function initializeSession(session: SerialSession): void {
     const retainedBytes = frameBuffersByteLength(session);
     frameVersions[session.id] = 0;
-    sessionFrameBytes.set(session.id, retainedBytes);
+    accounting.registerSession(session.id, {
+      nextSequence: 0,
+      frameCount: 0,
+      captureBytes: retainedBytes,
+    });
     rxQueueDroppedBytes.set(session.id, 0);
     frameBufferDroppedBytes.set(session.id, 0);
-    totalFrameBytes += retainedBytes;
   }
 
   function replaceSessions(sessions: readonly SerialSession[]): void {
-    totalFrameBytes = 0;
-    sessionFrameBytes.clear();
+    accounting.replaceWorkspace([]);
     rxQueueDroppedBytes.clear();
     frameBufferDroppedBytes.clear();
     for (const id of Object.keys(frameVersions)) delete frameVersions[id];
@@ -87,9 +101,7 @@ export function createSessionCaptureController({
   }
 
   function removeSession(sessionId: string): void {
-    const retainedBytes = sessionFrameBytes.get(sessionId) ?? 0;
-    totalFrameBytes = Math.max(0, totalFrameBytes - retainedBytes);
-    sessionFrameBytes.delete(sessionId);
+    accounting.removeSession(sessionId);
     rxQueueDroppedBytes.delete(sessionId);
     frameBufferDroppedBytes.delete(sessionId);
     frameClearListeners.delete(sessionId);
@@ -97,9 +109,7 @@ export function createSessionCaptureController({
   }
 
   function setRetainedFrameBytes(sessionId: string, retainedBytes: number): void {
-    const previous = sessionFrameBytes.get(sessionId) ?? 0;
-    sessionFrameBytes.set(sessionId, retainedBytes);
-    totalFrameBytes += retainedBytes - previous;
+    accounting.setSessionBytes(sessionId, retainedBytes);
   }
 
   function addFrameBufferDrop(sessionId: string, droppedBytes: number): void {
@@ -117,6 +127,7 @@ export function createSessionCaptureController({
 
   function enforceGlobalFrameByteLimit():
     Map<string, { droppedFrames: number; droppedBytes: number }> | undefined {
+    const totalFrameBytes = accounting.workspaceTotals().captureBytes;
     if (totalFrameBytes <= MAX_GLOBAL_FRAME_BYTES) return undefined;
     const affected = new Map<string, { droppedFrames: number; droppedBytes: number }>();
     const result = trimSessionsToGlobalByteLimit(
@@ -124,11 +135,10 @@ export function createSessionCaptureController({
       totalFrameBytes,
       MAX_GLOBAL_FRAME_BYTES,
     );
-    totalFrameBytes = result.retainedBytes;
     for (const [sessionId, droppedBytes] of result.droppedBytesBySession) {
-      sessionFrameBytes.set(
+      accounting.setSessionBytes(
         sessionId,
-        Math.max(0, (sessionFrameBytes.get(sessionId) ?? 0) - droppedBytes),
+        Math.max(0, (accounting.sessionTotals(sessionId)?.captureBytes ?? 0) - droppedBytes),
       );
       addFrameBufferDrop(sessionId, droppedBytes);
       affected.set(sessionId, {
@@ -136,6 +146,9 @@ export function createSessionCaptureController({
         droppedBytes,
       });
     }
+    // The trim result reports the retained aggregate directly; re-baseline it
+    // after the per-session row adjustments above.
+    accounting.setWorkspaceBytes(result.retainedBytes);
     return affected;
   }
 
@@ -175,7 +188,7 @@ export function createSessionCaptureController({
     const session = findSession(sessionId);
     if (!session) return undefined;
     const fullFrame = decorateFrame({ ...frame, id: createId(), timestamp: now() });
-    const currentBytes = sessionFrameBytes.get(sessionId) ?? frameBuffersByteLength(session);
+    const currentBytes = retainedSessionBytes(sessionId, session);
     const trim = appendFrameToSession(unwrapSession(session), fullFrame, getMaxBufferFrames(), {
       currentBytes,
       maxBytes: MAX_SESSION_FRAME_BYTES,
@@ -242,7 +255,7 @@ export function createSessionCaptureController({
     session.capturePaused = paused;
     if (!paused && session.pausedFrames.length > 0) {
       const trim = flushPausedFramesToLive(session, getMaxBufferFrames(), {
-        currentBytes: sessionFrameBytes.get(sessionId) ?? frameBuffersByteLength(session),
+        currentBytes: retainedSessionBytes(sessionId, session),
         maxBytes: MAX_SESSION_FRAME_BYTES,
       });
       setRetainedFrameBytes(sessionId, trim.retainedBytes);

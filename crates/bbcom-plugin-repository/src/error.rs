@@ -69,8 +69,6 @@ pub enum RepositoryError {
     RollbackUnavailable,
     #[error("plugin rollback state requires native recovery before continuing")]
     RollbackRecoveryRequired,
-    #[error("plugin publisher identity changed across an update")]
-    PublisherIdentityChanged,
     #[error("plugin filesystem root is unsafe")]
     UnsafeFilesystemRoot,
     #[error("plugin data exceeds its fixed limit")]

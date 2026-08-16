@@ -4,7 +4,7 @@ import type {
   WorkspaceSessionKind,
 } from '../../generated/ipc-contracts';
 import type { SerialSession } from '../../types';
-import type { WorkspaceSessionChangeEvent, useSessionStore } from '../../stores/sessions';
+import type { WorkspaceSessionChangeEvent, WorkspaceSessionPort } from '../sessions';
 import { projectWorkspaceSessionMutations, projectWorkspaceWaveformPreferences } from './adapters';
 import type { WorkspaceApplicationService } from './application';
 import type {
@@ -12,8 +12,6 @@ import type {
   WorkspaceRuntimePersistenceDrain,
   WorkspaceSessionFacade,
 } from './application';
-
-type SessionStore = ReturnType<typeof useSessionStore>;
 
 /** Bridges the temporary Pinia compatibility facade to the application-owned
  * workspace service. The bridge never sees a native path and only submits
@@ -28,7 +26,7 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
   private persistenceDrain: WorkspaceRuntimePersistenceDrain | null = null;
 
   constructor(
-    private readonly store: SessionStore,
+    private readonly store: WorkspaceSessionPort,
     private readonly application: WorkspaceApplicationService,
   ) {}
 
@@ -422,7 +420,7 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
 
 function projectSessionCommands(
   session: SerialSession,
-  store: SessionStore,
+  store: WorkspaceSessionPort,
   sortOrder: number,
 ): WorkspaceConfigMutationCommand[] {
   const rebind = store.workspaceRebindBySessionId[session.id];

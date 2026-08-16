@@ -6,6 +6,8 @@
   "plugins": [
     {
       "id": "dev.bbcom.golden",
+      "name": "Golden fixture",
+      "description": "Protocol and repository contract fixture",
       "publisher_identity": "publisher:bbcom-contract-fixtures",
       "packages": [
         {

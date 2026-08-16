@@ -19,7 +19,7 @@ use super::host_launcher::{
     PluginPersistedState, PluginStatePersistenceKey, PluginStatePersistencePort,
 };
 
-const ROOT_DIRECTORY: &str = "plugin-state-v1";
+const ROOT_DIRECTORY: &str = "plugin-state-v2";
 const STATE_FILE: &str = "state.bin";
 const RECORD_MAGIC: &[u8; 8] = b"BBCPST01";
 const RECORD_VERSION: u32 = 1;
@@ -68,7 +68,7 @@ impl NativePluginStatePersistencePort {
             (ArtifactSlot::Active, HostLaunchMode::Active) => "active".to_owned(),
             (ArtifactSlot::Prepared(token), HostLaunchMode::UpdatePreflight) => {
                 validate_identity(token.as_str())?;
-                format!("prepared\0{}", token.as_str())
+                format!("prepared:{}", token.as_str())
             }
             _ => return Err(HostFailure::Initialization),
         };

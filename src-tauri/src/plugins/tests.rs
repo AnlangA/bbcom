@@ -94,6 +94,20 @@ impl RepositoryStagingBackend for FakeRepositoryBackend {
         self.discarded += 1;
         Ok(())
     }
+
+    fn prepare_local(
+        &mut self,
+        _package_root: &std::path::Path,
+        _current: Option<&PluginArtifact>,
+    ) -> Result<PreparedRepositoryArtifact, Self::Error> {
+        let _ = self;
+        Err(())
+    }
+
+    fn remove_installed(&mut self, _artifact: &PluginArtifact) -> Result<(), Self::Error> {
+        self.discarded += 1;
+        Ok(())
+    }
 }
 
 #[test]
@@ -180,7 +194,12 @@ fn artifact(plugin_id: &str, version: &str) -> PluginArtifact {
     PluginArtifact::new(
         plugin_id,
         version,
-        format!("publisher:sha256-{}", "0".repeat(64)),
+        "0".repeat(64),
+        "1".repeat(64),
+        bbcom_plugin_manager::PluginArtifactSource {
+            source_id: "test".to_owned(),
+            kind: bbcom_plugin_manager::PluginSourceKind::Https,
+        },
         BTreeSet::new(),
     )
     .expect("artifact")

@@ -16,11 +16,11 @@ pub use digest::Sha256Digest;
 pub use error::{ContractError, Result};
 pub use limits::*;
 pub use manifest::{ComponentManifest, PluginManifest, PublisherManifest};
-pub use permission::{
-    AuthorizationKey, Permission, PermissionPlan, PermissionRisk, RiskCombination, permission_plan,
-    validate_persistent_grant,
+pub use permission::{CapabilityPlan, Permission, capability_plan, parse_permission};
+pub use repository::{
+    MAX_REDIRECTS, RepositoryCatalog, RepositoryConfiguration, RepositoryEndpoint, RepositoryIndex,
+    RepositoryPackage, RepositoryPlugin, validate_repository_id,
 };
-pub use repository::{RepositoryCatalog, RepositoryIndex, RepositoryPackage, RepositoryPlugin};
 pub use wire::{decode_frame, encode_frame, validate_envelope, validate_queue_bytes};
 
 #[must_use]

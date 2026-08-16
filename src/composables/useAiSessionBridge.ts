@@ -1,38 +1,58 @@
 import { computed, getCurrentInstance, onMounted, onUnmounted, watch } from 'vue';
-import { emit, listen } from '@tauri-apps/api/event';
+import { emitNativeEvent as emit, listenNativeEvent as listen } from '../features/native';
 import { buildLogAiContext } from '../lib/ai-log-context';
-import { isValidAiModel } from '../lib/ai-models';
 import { logger } from '../lib/logger';
-import { useSessionStore } from '../stores/sessions';
 import { useAppStore } from '../stores/app';
-import { useSessionApplicationServices } from '../features/sessions/runtime/session-application-services';
+import {
+  useSessionApplicationServices,
+  useSessionCatalog,
+  useSessionDocument,
+  useSessionRuntimeStatuses,
+} from '../features/sessions';
 import { useOptionalWorkspaceApplication } from '../features/workspace/application';
 import {
   AI_BRIDGE_EVENTS,
   NO_AI_SESSION_ID,
   NO_AI_WORKSPACE_ID,
-  AiActivityCancelledError,
   AiActivityCenter,
   createAiBridgeEnvelope,
   isAiActivityRunPayload,
   isPayloadKind,
   parseAiBridgeEnvelope,
 } from '../features/ai-activity';
-import { IPC_LIMITS, type IpcError, type OperationRecord } from '../generated/ipc-contracts';
-import type {
-  AiChatMessage,
-  AiChatSnapshot,
-  AiLogContextSnapshot,
-  AiModel,
-  AiSessionSummary,
-  LogAiContextMode,
-  SerialSession,
-} from '../types';
+import { IPC_LIMITS, type IpcError } from '../generated/ipc-contracts';
+import {
+  MAX_AI_MESSAGE_BYTES,
+  aiActivityError,
+  applyAiSessionUpdate,
+  canPersistAiResponse,
+  hasBoundedText,
+  isAiCommandApplyEvent,
+  isRecord,
+  isTerminalOperation,
+  rejectedAiActivity,
+  sameOperationBinding,
+  toAiChatSnapshot,
+  toAiSessionSummary,
+  workspaceAiMessageLimitError,
+} from '../features/ai/ai-session-projection';
+import { AiResponseBindingRegistry } from '../features/ai/ai-response-binding-registry';
+import type { AiLogContextSnapshot } from '../types';
 
-interface AiCommandApplyEvent {
-  kind?: 'command-apply';
-  command: string;
-}
+// The pure helpers and the response-binding state machine moved into
+// framework-free modules under `features/ai`. They are re-exported here so
+// every existing import site keeps working unchanged.
+export {
+  applyAiSessionUpdate,
+  canPersistAiResponse,
+  isAiSessionUpdate,
+  toAiChatSnapshot,
+  toAiSessionSummary,
+  workspaceAiMessageLimitError,
+  type AiResponseBinding,
+  type AiResponseBindingPhase,
+} from '../features/ai/ai-session-projection';
+export { isAiResponseBindingTransitionAllowed } from '../features/ai/ai-response-binding-registry';
 
 interface AiSessionUpdateEvent {
   kind?: 'session-update';
@@ -40,228 +60,39 @@ interface AiSessionUpdateEvent {
   value: unknown;
 }
 
-export interface AiResponseBinding {
-  readonly workspaceId: string;
-  readonly sessionId: string;
-  readonly revision: number;
-  readonly requestId?: string;
-}
-
-export type AiResponseBindingPhase = 'context-issued' | 'user-committed' | 'running' | 'rejected';
-
-interface StoredAiResponseBinding extends AiResponseBinding {
-  readonly requestId: string;
-  readonly phase: AiResponseBindingPhase;
-  readonly error?: IpcError;
-}
-
-const MAX_AI_SUMMARY_BYTES = 10 * 1024;
-const MAX_AI_CHAT_MESSAGES = 100;
-const MAX_AI_CHAT_BYTES = 1024 * 1024;
-const MAX_AI_COMMAND_BYTES = 16 * 1024;
-const MAX_AI_MESSAGE_BYTES = 256 * 1024;
-const MAX_AI_SESSION_ID_BYTES = 256;
-const encoder = new TextEncoder();
-const LOG_AI_CONTEXT_MODES = new Set<LogAiContextMode>([
-  'latest-10k',
-  'latest-n-frames',
-  'full-capped',
-]);
-
-/**
- * Apply a single AI-window session-update event to the session store. Extracted
- * as a pure dispatcher so the action routing is unit-testable without the
- * event bus.
- */
-export function applyAiSessionUpdate(
-  event: unknown,
-  sessionStore: {
-    setTerminalAiModel: (id: string, model: AiModel) => void;
-    setLogAiModel: (id: string, model: AiModel) => void;
-    setLogAiContextMode: (id: string, mode: LogAiContextMode) => void;
-    setLogAiFrameLimit: (id: string, limit: number) => void;
-    addLogAiMessage: (id: string, message: Omit<AiChatMessage, 'id' | 'timestamp'>) => void;
-    clearLogAiMessages: (id: string) => void;
-  },
-  activeSessionId: string | null,
-): boolean {
-  if (!isAiSessionUpdate(event, activeSessionId)) return false;
-  switch (event.action) {
-    case 'setTerminalAiModel':
-      sessionStore.setTerminalAiModel(event.sessionId, event.value);
-      return true;
-    case 'setLogAiModel':
-      sessionStore.setLogAiModel(event.sessionId, event.value);
-      return true;
-    case 'setLogAiContextMode':
-      sessionStore.setLogAiContextMode(event.sessionId, event.value);
-      return true;
-    case 'setLogAiFrameLimit':
-      sessionStore.setLogAiFrameLimit(event.sessionId, event.value);
-      return true;
-    case 'addLogAiMessage':
-      sessionStore.addLogAiMessage(event.sessionId, event.value);
-      return true;
-    case 'clearLogAiMessages':
-      sessionStore.clearLogAiMessages(event.sessionId);
-      return true;
-  }
-}
-
-type ValidAiSessionUpdate =
-  | { sessionId: string; action: 'setTerminalAiModel' | 'setLogAiModel'; value: AiModel }
-  | { sessionId: string; action: 'setLogAiContextMode'; value: LogAiContextMode }
-  | { sessionId: string; action: 'setLogAiFrameLimit'; value: number }
-  | {
-      sessionId: string;
-      action: 'addLogAiMessage';
-      value: Omit<AiChatMessage, 'id' | 'timestamp'>;
-    }
-  | { sessionId: string; action: 'clearLogAiMessages'; value: null };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function hasBoundedText(value: unknown, maxBytes: number, allowEmpty = false): value is string {
-  return (
-    typeof value === 'string' &&
-    (allowEmpty || value.trim().length > 0) &&
-    encoder.encode(value).byteLength <= maxBytes
-  );
-}
-
-/**
- * Cross-window events are untrusted input even though both webviews are our
- * own.  Keep the AI surface constrained to its active-session settings and
- * bounded message payloads before it reaches the persisted session store.
- */
-export function isAiSessionUpdate(
-  event: unknown,
-  activeSessionId: string | null,
-): event is ValidAiSessionUpdate {
-  if (!isRecord(event)) return false;
-  if (
-    !hasBoundedText(event.sessionId, MAX_AI_SESSION_ID_BYTES) ||
-    event.sessionId !== activeSessionId ||
-    typeof event.action !== 'string'
-  ) {
-    return false;
-  }
-
-  switch (event.action) {
-    case 'setTerminalAiModel':
-    case 'setLogAiModel':
-      return typeof event.value === 'string' && isValidAiModel(event.value);
-    case 'setLogAiContextMode':
-      return (
-        typeof event.value === 'string' && LOG_AI_CONTEXT_MODES.has(event.value as LogAiContextMode)
-      );
-    case 'setLogAiFrameLimit':
-      return (
-        typeof event.value === 'number' &&
-        Number.isInteger(event.value) &&
-        event.value >= 20 &&
-        event.value <= 2000
-      );
-    case 'addLogAiMessage':
-      return (
-        isRecord(event.value) &&
-        event.value.role === 'user' &&
-        hasBoundedText(event.value.content, MAX_AI_MESSAGE_BYTES)
-      );
-    case 'clearLogAiMessages':
-      return event.value === null;
-    default:
-      return false;
-  }
-}
-
-function isAiCommandApplyEvent(value: unknown): value is AiCommandApplyEvent {
-  return isRecord(value) && hasBoundedText(value.command, MAX_AI_COMMAND_BYTES);
-}
-
-function boundedText(value: string, maxBytes: number): string {
-  if (encoder.encode(value).byteLength <= maxBytes) return value;
-  let end = Math.min(value.length, maxBytes);
-  while (end > 0 && encoder.encode(value.slice(0, end)).byteLength > maxBytes) end -= 1;
-  return value.slice(0, end);
-}
-
-/** Build a regular event payload with no frame, secret, or message content. */
-export function toAiSessionSummary(session: SerialSession): AiSessionSummary {
-  const summary: AiSessionSummary = {
-    id: boundedText(session.id, 256),
-    portName: boundedText(session.portName, 1024),
-    baudRate: session.portConfig.baudRate,
-    isConnected: session.isConnected,
-    txBytes: session.txBytes,
-    rxBytes: session.rxBytes,
-    txFrames: session.txFrames,
-    rxFrames: session.rxFrames,
-    terminalAiModel: session.terminalAiModel,
-    logAiModel: session.logAiModel,
-    logAiContextMode: session.logAiContextMode,
-    logAiFrameLimit: session.logAiFrameLimit,
-  };
-  // This is a defensive invariant: normal events must remain comfortably
-  // below the declared 10 KiB contract even if a port label is malicious.
-  if (encoder.encode(JSON.stringify(summary)).byteLength > MAX_AI_SUMMARY_BYTES) {
-    summary.portName = '';
-  }
-  return summary;
-}
-
-/** Retain only the recent 100 messages and at most 1 MiB of serialized text. */
-export function toAiChatSnapshot(session: SerialSession): AiChatSnapshot {
-  const messages: AiChatMessage[] = [];
-  let remaining = MAX_AI_CHAT_BYTES;
-  for (let index = session.logAiMessages.length - 1; index >= 0; index -= 1) {
-    if (messages.length >= MAX_AI_CHAT_MESSAGES || remaining <= 0) break;
-    const message = session.logAiMessages[index];
-    const overhead =
-      encoder.encode(`${message.id}${message.role}${message.timestamp}`).byteLength + 32;
-    const content = boundedText(message.content, Math.max(0, remaining - overhead));
-    const bytes = encoder.encode(content).byteLength + overhead;
-    if (bytes > remaining) break;
-    messages.push({ ...message, content });
-    remaining -= bytes;
-  }
-  messages.reverse();
-  // The conservative per-message accounting above avoids repeated full JSON
-  // serialization on the normal path. Account for JSON punctuation/escaping
-  // exactly before emitting so this payload cannot cross the 1 MiB boundary.
-  while (
-    messages.length > 0 &&
-    encoder.encode(JSON.stringify({ sessionId: session.id, messages })).byteLength >
-      MAX_AI_CHAT_BYTES
-  ) {
-    const oldest = messages[0];
-    const payloadBytes = encoder.encode(
-      JSON.stringify({ sessionId: session.id, messages }),
-    ).byteLength;
-    const excess = payloadBytes - MAX_AI_CHAT_BYTES;
-    const contentBytes = encoder.encode(oldest.content).byteLength;
-    if (contentBytes <= excess + 16) {
-      messages.shift();
-    } else {
-      oldest.content = boundedText(oldest.content, contentBytes - excess - 16);
-    }
-  }
-  return { sessionId: session.id, messages };
-}
-
 export function useAiSessionBridge() {
-  const sessionStore = useSessionStore();
+  const catalog = useSessionCatalog();
   const appStore = useAppStore();
   const applicationServices = useSessionApplicationServices();
+  const { isConnected } = useSessionRuntimeStatuses();
   const workspace = useOptionalWorkspaceApplication();
   const activityCenter = new AiActivityCenter({
     operations: applicationServices.operationRegistry,
   });
-  const session = computed(() => sessionStore.activeSession);
+  const session = computed(() => catalog.activeSession.value);
+  const aiSessionMutations = {
+    setTerminalAiModel: (
+      id: string,
+      value: Parameters<ReturnType<typeof useSessionDocument>['setTerminalAiModel']>[1],
+    ) => useSessionDocument(id).setTerminalAiModel(id, value),
+    setLogAiModel: (
+      id: string,
+      value: Parameters<ReturnType<typeof useSessionDocument>['setLogAiModel']>[1],
+    ) => useSessionDocument(id).setLogAiModel(id, value),
+    setLogAiContextMode: (
+      id: string,
+      value: Parameters<ReturnType<typeof useSessionDocument>['setLogAiContextMode']>[1],
+    ) => useSessionDocument(id).setLogAiContextMode(id, value),
+    setLogAiFrameLimit: (id: string, value: number) =>
+      useSessionDocument(id).setLogAiFrameLimit(id, value),
+    addLogAiMessage: (
+      id: string,
+      value: Parameters<ReturnType<typeof useSessionDocument>['addLogAiMessage']>[1],
+    ) => useSessionDocument(id).addLogAiMessage(id, value),
+    clearLogAiMessages: (id: string) => useSessionDocument(id).clearLogAiMessages(id),
+  };
   const unlisteners: Array<() => void> = [];
-  const responseBindings = new Map<string, StoredAiResponseBinding>();
+  const responseBindings = new AiResponseBindingRegistry();
   let revision = 1;
   let observedWorkspaceId = currentWorkspaceId();
   let unsubscribeOperations: (() => void) | null = null;
@@ -289,7 +120,7 @@ export function useAiSessionBridge() {
           sessionId,
           payload: {
             kind: 'session-snapshot',
-            session: active ? toAiSessionSummary(active) : null,
+            session: active ? toAiSessionSummary(active, isConnected(active.id)) : null,
           },
         }),
       );
@@ -335,7 +166,7 @@ export function useAiSessionBridge() {
   }
 
   async function sendLogContext(requestId: string, sessionId: string) {
-    const active = sessionStore.sessions.find((candidate) => candidate.id === sessionId);
+    const active = catalog.sessions.value.find((candidate) => candidate.id === sessionId);
     if (!active) return;
     const context = buildLogAiContext(active);
     const payload: AiLogContextSnapshot = { sessionId: active.id, ...context };
@@ -361,67 +192,11 @@ export function useAiSessionBridge() {
   }
 
   function isKnownSession(sessionId: string): boolean {
-    return sessionStore.sessions.some((candidate) => candidate.id === sessionId);
-  }
-
-  function rememberResponseBinding(
-    requestId: string,
-    workspaceId: string,
-    sessionId: string,
-    sourceRevision: number,
-    phase: AiResponseBindingPhase = 'context-issued',
-    error?: IpcError,
-  ): boolean {
-    const existing = responseBindings.get(requestId);
-    if (
-      existing &&
-      !sameResponseBinding(existing, {
-        requestId,
-        workspaceId,
-        sessionId,
-        revision: sourceRevision,
-      })
-    ) {
-      return false;
-    }
-    if (!isAiResponseBindingTransitionAllowed(existing?.phase ?? null, phase)) return false;
-    if (!responseBindings.has(requestId) && responseBindings.size >= 32) return false;
-    responseBindings.delete(requestId);
-    responseBindings.set(requestId, {
-      requestId,
-      workspaceId,
-      sessionId,
-      revision: sourceRevision,
-      phase,
-      ...(error ? { error } : {}),
-    });
-    return true;
-  }
-
-  function responseBindingFor(envelope: {
-    readonly workspaceId: string;
-    readonly sessionId: string;
-    readonly revision: number;
-    readonly requestId: string;
-  }): StoredAiResponseBinding | undefined {
-    const binding = responseBindings.get(envelope.requestId);
-    return binding && sameResponseBinding(binding, envelope) ? binding : undefined;
-  }
-
-  function forgetResponseBinding(envelope: {
-    readonly workspaceId: string;
-    readonly sessionId: string;
-    readonly revision: number;
-    readonly requestId: string;
-  }): void {
-    if (responseBindingFor(envelope)) responseBindings.delete(envelope.requestId);
+    return catalog.sessions.value.some((candidate) => candidate.id === sessionId);
   }
 
   function invalidateSessionAiActivities(workspaceId: string, sessionId: string): void {
-    const requestIds = [...responseBindings.values()]
-      .filter((binding) => binding.workspaceId === workspaceId && binding.sessionId === sessionId)
-      .map((binding) => binding.requestId);
-    for (const requestId of requestIds) {
+    for (const requestId of responseBindings.requestIdsFor(workspaceId, sessionId)) {
       responseBindings.delete(requestId);
       const operation = applicationServices.operationRegistry.get(requestId);
       if (!operation || isTerminalOperation(operation)) continue;
@@ -429,21 +204,6 @@ export function useAiSessionBridge() {
         logger.debug('failed to cancel invalidated AI log activity:', error);
       });
     }
-  }
-
-  function pendingAiResponseReservation(excludeRequestId?: string): {
-    readonly messages: number;
-    readonly bytes: number;
-  } {
-    const requests = [...responseBindings.values()].filter(
-      (binding) =>
-        binding.requestId !== excludeRequestId &&
-        (binding.phase === 'user-committed' || binding.phase === 'running'),
-    ).length;
-    return {
-      messages: requests,
-      bytes: requests * IPC_LIMITS.MAX_AI_RESPONSE_BYTES,
-    };
   }
 
   function handleSessionUpdate(value: unknown): void {
@@ -454,7 +214,7 @@ export function useAiSessionBridge() {
       action: envelope.payload.action as string,
       value: envelope.payload.value,
     };
-    const correlated = responseBindingFor(envelope);
+    const correlated = responseBindings.responseBindingFor(envelope);
     const chatMessage =
       update.action === 'addLogAiMessage' && isRecord(update.value) ? update.value : null;
     const isChatMessage = chatMessage !== null;
@@ -482,9 +242,9 @@ export function useAiSessionBridge() {
       return;
     }
     if (isUserMessage) {
-      const reservation = pendingAiResponseReservation();
+      const reservation = responseBindings.pendingAiResponseReservation();
       const error = workspaceAiMessageLimitError(
-        sessionStore.sessions,
+        catalog.sessions.value,
         userMessageContent,
         envelope.requestId,
         {
@@ -493,7 +253,7 @@ export function useAiSessionBridge() {
         },
       );
       if (error) {
-        rememberResponseBinding(
+        responseBindings.remember(
           envelope.requestId,
           envelope.workspaceId,
           envelope.sessionId,
@@ -508,7 +268,7 @@ export function useAiSessionBridge() {
     if (
       !applyAiSessionUpdate(
         { ...update, sessionId: envelope.sessionId },
-        sessionStore,
+        aiSessionMutations,
         envelope.sessionId,
       )
     ) {
@@ -516,7 +276,7 @@ export function useAiSessionBridge() {
     }
 
     if (isUserMessage) {
-      rememberResponseBinding(
+      responseBindings.remember(
         envelope.requestId,
         envelope.workspaceId,
         envelope.sessionId,
@@ -546,7 +306,7 @@ export function useAiSessionBridge() {
     if (request.kind === 'terminal') {
       return envelope.revision === revision && envelope.sessionId === session.value?.id;
     }
-    return responseBindingFor(envelope)?.phase === 'user-committed';
+    return responseBindings.responseBindingFor(envelope)?.phase === 'user-committed';
   }
 
   async function sendActivityResult(
@@ -585,11 +345,11 @@ export function useAiSessionBridge() {
       requestId: envelope.requestId,
     } as const;
     if (!acceptsActivityBinding(envelope, request)) {
-      const rejected = responseBindingFor(binding);
+      const rejected = responseBindings.responseBindingFor(binding);
       // A replay while the original request is running must not publish a
       // failure with the same correlation id and reject the legitimate waiter.
       if (rejected?.phase === 'running') return;
-      forgetResponseBinding(binding);
+      responseBindings.forgetResponseBinding(binding);
       await sendActivityResult(binding, {
         kind: 'activity-result',
         outcome: 'failed',
@@ -601,7 +361,7 @@ export function useAiSessionBridge() {
       return;
     }
     if (request.kind === 'log') {
-      rememberResponseBinding(
+      responseBindings.remember(
         binding.requestId,
         binding.workspaceId,
         binding.sessionId,
@@ -624,7 +384,7 @@ export function useAiSessionBridge() {
         error: aiActivityError(error, envelope.requestId),
       });
     } finally {
-      if (request.kind === 'log') forgetResponseBinding(binding);
+      if (request.kind === 'log') responseBindings.forgetResponseBinding(binding);
     }
   }
 
@@ -638,7 +398,7 @@ export function useAiSessionBridge() {
     result: Awaited<ReturnType<AiActivityCenter['run']>>['result'],
   ): Promise<void> {
     if (result.kind !== 'log') return;
-    const correlated = responseBindingFor(binding);
+    const correlated = responseBindings.responseBindingFor(binding);
     const canCommit =
       correlated?.phase === 'running' &&
       canPersistAiResponse(
@@ -649,9 +409,9 @@ export function useAiSessionBridge() {
         isKnownSession(binding.sessionId),
       );
     if (!canCommit) return;
-    const reservation = pendingAiResponseReservation(binding.requestId);
+    const reservation = responseBindings.pendingAiResponseReservation(binding.requestId);
     const limitError = workspaceAiMessageLimitError(
-      sessionStore.sessions,
+      catalog.sessions.value,
       result.answer,
       binding.requestId,
       {
@@ -660,7 +420,7 @@ export function useAiSessionBridge() {
       },
     );
     if (limitError) throw limitError;
-    sessionStore.addLogAiMessage(binding.sessionId, {
+    aiSessionMutations.addLogAiMessage(binding.sessionId, {
       role: 'assistant',
       content: result.answer,
     });
@@ -671,7 +431,7 @@ export function useAiSessionBridge() {
   async function handleActivityCancel(value: unknown): Promise<void> {
     const envelope = receiveEnvelope(value);
     if (!envelope || !isPayloadKind(envelope.payload, 'activity-cancel')) return;
-    forgetResponseBinding(envelope);
+    responseBindings.forgetResponseBinding(envelope);
     const operation = applicationServices.operationRegistry.get(envelope.requestId);
     if (!sameOperationBinding(operation, envelope)) return;
     await activityCenter.cancel(envelope.requestId);
@@ -751,7 +511,7 @@ export function useAiSessionBridge() {
             ) {
               if (responseBindings.has(envelope.requestId)) return;
               if (
-                !rememberResponseBinding(
+                !responseBindings.remember(
                   envelope.requestId,
                   envelope.workspaceId,
                   envelope.sessionId,
@@ -826,7 +586,7 @@ export function useAiSessionBridge() {
   );
 
   watch(
-    () => session.value?.isConnected,
+    () => (session.value ? isConnected(session.value.id) : false),
     () => {
       revision += 1;
       void sendSnapshot();
@@ -850,162 +610,4 @@ export function useAiSessionBridge() {
       return revision;
     },
   });
-}
-
-export function canPersistAiResponse(
-  binding: AiResponseBinding,
-  correlated: AiResponseBinding | undefined,
-  currentWorkspaceId: string,
-  acceptsSaves: boolean,
-  sessionExists: boolean,
-): boolean {
-  return (
-    acceptsSaves &&
-    sessionExists &&
-    binding.workspaceId === currentWorkspaceId &&
-    correlated?.workspaceId === binding.workspaceId &&
-    correlated.sessionId === binding.sessionId &&
-    correlated.revision === binding.revision
-  );
-}
-
-export function isAiResponseBindingTransitionAllowed(
-  current: AiResponseBindingPhase | null,
-  next: AiResponseBindingPhase,
-): boolean {
-  if (current === null) return next === 'context-issued';
-  if (current === 'context-issued') return next === 'user-committed' || next === 'rejected';
-  return current === 'user-committed' && next === 'running';
-}
-
-export function workspaceAiMessageLimitError(
-  sessions: readonly Pick<SerialSession, 'logAiMessages'>[],
-  content: string,
-  requestId: string,
-  reservation: Readonly<{ reservedMessages: number; reservedBytes: number }> = {
-    reservedMessages: 0,
-    reservedBytes: 0,
-  },
-): IpcError | null {
-  const contentBytes = encoder.encode(content).byteLength;
-  if (contentBytes > IPC_LIMITS.MAX_WORKSPACE_AI_MESSAGE_BYTES) {
-    return aiLimitError(
-      requestId,
-      'aiMessage.content',
-      IPC_LIMITS.MAX_WORKSPACE_AI_MESSAGE_BYTES,
-      contentBytes,
-    );
-  }
-  let messageCount = 0;
-  let totalBytes = 0;
-  for (const session of sessions) {
-    messageCount += session.logAiMessages.length;
-    for (const message of session.logAiMessages) {
-      totalBytes += encoder.encode(message.content).byteLength;
-    }
-  }
-  if (messageCount + 1 + reservation.reservedMessages > IPC_LIMITS.MAX_WORKSPACE_AI_MESSAGES) {
-    return aiLimitError(
-      requestId,
-      'aiMessages',
-      IPC_LIMITS.MAX_WORKSPACE_AI_MESSAGES,
-      messageCount + 1 + reservation.reservedMessages,
-    );
-  }
-  if (totalBytes + contentBytes + reservation.reservedBytes > IPC_LIMITS.MAX_WORKSPACE_AI_BYTES) {
-    return aiLimitError(
-      requestId,
-      'aiBytes',
-      IPC_LIMITS.MAX_WORKSPACE_AI_BYTES,
-      totalBytes + contentBytes + reservation.reservedBytes,
-    );
-  }
-  return null;
-}
-
-function sameResponseBinding(
-  left: AiResponseBinding,
-  right: {
-    readonly workspaceId: string;
-    readonly sessionId: string;
-    readonly revision: number;
-    readonly requestId: string;
-  },
-): boolean {
-  return (
-    left.requestId === right.requestId &&
-    left.workspaceId === right.workspaceId &&
-    left.sessionId === right.sessionId &&
-    left.revision === right.revision
-  );
-}
-
-function isTerminalOperation(operation: OperationRecord): boolean {
-  return (
-    operation.status === 'completed' ||
-    operation.status === 'failed' ||
-    operation.status === 'cancelled' ||
-    operation.status === 'interrupted'
-  );
-}
-
-function aiLimitError(requestId: string, field: string, limit: number, actual: number): IpcError {
-  return Object.freeze({
-    code: 'LIMIT_EXCEEDED',
-    messageKey: 'error.limit_exceeded',
-    retryable: false,
-    operation: 'run_ai_request',
-    requestId,
-    field,
-    limit,
-    actual,
-  });
-}
-
-function sameOperationBinding(
-  operation: OperationRecord | undefined,
-  envelope: {
-    readonly workspaceId: string;
-    readonly sessionId: string;
-    readonly requestId: string;
-  },
-): boolean {
-  return (
-    operation?.kind === 'ai-request' &&
-    operation.operationId === envelope.requestId &&
-    operation.workspaceId === envelope.workspaceId &&
-    operation.sessionId === envelope.sessionId
-  );
-}
-
-function rejectedAiActivity(requestId: string): IpcError {
-  return Object.freeze({
-    code: 'CANCELLED',
-    messageKey: 'error.cancelled',
-    retryable: false,
-    operation: 'run_ai_request',
-    requestId,
-  });
-}
-
-function aiActivityError(error: unknown, requestId: string): IpcError {
-  if (isIpcError(error)) return Object.freeze({ ...error, requestId });
-  if (error instanceof AiActivityCancelledError) return rejectedAiActivity(requestId);
-  return Object.freeze({
-    code: 'AI_PROVIDER_FAILED',
-    messageKey: 'error.ai_request_failed',
-    retryable: true,
-    operation: 'run_ai_request',
-    requestId,
-  });
-}
-
-function isIpcError(value: unknown): value is IpcError {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.code === 'string' &&
-    typeof value.messageKey === 'string' &&
-    typeof value.retryable === 'boolean' &&
-    typeof value.operation === 'string'
-  );
 }

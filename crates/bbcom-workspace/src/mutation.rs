@@ -9,7 +9,7 @@ use bbcom_contracts::{
     WorkspaceSessionUpsertPayload, WorkspaceWaveformChannelsPayload,
     WorkspaceWaveformSamplesPayload,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Statement, params};
 use std::collections::BTreeSet;
 
 use crate::model::{
@@ -20,6 +20,11 @@ use crate::{Result, WorkspaceError};
 
 /// One sequence is one plotted row; this matches the renderer's bounded cache.
 const MAX_WAVEFORM_SAMPLE_GROUPS: usize = 600;
+
+const INSERT_FRAME_SQL: &str = "INSERT INTO frames (
+   session_id, seq, id, direction, timestamp_ms, data, tx_status, requested_bytes,
+   omitted_bytes
+ ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
 
 pub(crate) fn apply_mutations(
     connection: &Connection,
@@ -292,6 +297,10 @@ fn append_frames(
     if payload.frames.is_empty() {
         return Err(WorkspaceError::InvalidInput { field: "frames" });
     }
+    // Prepare the per-frame INSERT once per batch (the connection's statement
+    // cache keeps it warm across batches) instead of re-preparing it for every
+    // frame on the capture hot path.
+    let mut insert = connection.prepare_cached(INSERT_FRAME_SQL)?;
     for (offset, frame) in payload.frames.iter().enumerate() {
         validate_frame_payload(frame)?;
         let sequence = payload
@@ -299,7 +308,7 @@ fn append_frames(
             .checked_add(u64::try_from(offset).expect("usize always fits u64"))
             .and_then(|value| i64::try_from(value).ok())
             .ok_or(WorkspaceError::InvalidInput { field: "sequence" })?;
-        insert_frame(connection, session_id, sequence, frame)?;
+        execute_frame_insert(&mut insert, session_id, sequence, frame)?;
     }
     Ok(())
 }
@@ -312,10 +321,11 @@ fn replace_capture(
     validate_identifier(session_id, "sessionId")?;
     ensure_session_exists(connection, session_id)?;
     connection.execute("DELETE FROM frames WHERE session_id = ?1", [session_id])?;
+    let mut insert = connection.prepare_cached(INSERT_FRAME_SQL)?;
     for (sequence, frame) in payload.frames.iter().enumerate() {
         validate_frame_payload(frame)?;
-        insert_frame(
-            connection,
+        execute_frame_insert(
+            &mut insert,
             session_id,
             i64::try_from(sequence).expect("usize always fits i64"),
             frame,
@@ -345,35 +355,29 @@ fn trim_capture(connection: &Connection, session_id: &str, frame_count: u32) -> 
     Ok(())
 }
 
-fn insert_frame(
-    connection: &Connection,
+fn execute_frame_insert(
+    statement: &mut Statement<'_>,
     session_id: &str,
     sequence: i64,
     frame: &WorkspaceFramePayload,
 ) -> Result<()> {
     validate_frame_payload_limit(frame.data.len())?;
-    connection.execute(
-        "INSERT INTO frames (
-           session_id, seq, id, direction, timestamp_ms, data, tx_status, requested_bytes,
-           omitted_bytes
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            session_id,
-            sequence,
-            frame.id,
-            match frame.direction {
-                bbcom_contracts::Direction::Tx => "TX",
-                bbcom_contracts::Direction::Rx => "RX",
-            },
-            i64::try_from(frame.timestamp_ms).map_err(|_| WorkspaceError::InvalidInput {
-                field: "timestampMs"
-            })?,
-            frame.data,
-            frame.tx_status,
-            optional_u64_to_i64(frame.requested_bytes, "requestedBytes")?,
-            optional_u64_to_i64(frame.omitted_bytes, "omittedBytes")?,
-        ],
-    )?;
+    statement.execute(params![
+        session_id,
+        sequence,
+        frame.id,
+        match frame.direction {
+            bbcom_contracts::Direction::Tx => "TX",
+            bbcom_contracts::Direction::Rx => "RX",
+        },
+        i64::try_from(frame.timestamp_ms).map_err(|_| WorkspaceError::InvalidInput {
+            field: "timestampMs"
+        })?,
+        frame.data,
+        frame.tx_status,
+        optional_u64_to_i64(frame.requested_bytes, "requestedBytes")?,
+        optional_u64_to_i64(frame.omitted_bytes, "omittedBytes")?,
+    ])?;
     Ok(())
 }
 
@@ -499,56 +503,56 @@ fn replace_session_collections(
             [session_id],
         )?;
     }
+    let mut insert = connection.prepare_cached(
+        "INSERT INTO send_history(session_id, position, data, is_hex)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
     for (position, entry) in payload.send_history.iter().enumerate() {
-        connection.execute(
-            "INSERT INTO send_history(session_id, position, data, is_hex)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                session_id,
-                usize_to_i64(position)?,
-                entry.data,
-                entry.is_hex
-            ],
-        )?;
+        insert.execute(params![
+            session_id,
+            usize_to_i64(position)?,
+            entry.data,
+            entry.is_hex
+        ])?;
     }
+    let mut insert = connection.prepare_cached(
+        "INSERT INTO quick_commands(session_id, id, position, name, data, is_hex)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
     for (position, command) in payload.quick_commands.iter().enumerate() {
-        connection.execute(
-            "INSERT INTO quick_commands(session_id, id, position, name, data, is_hex)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                session_id,
-                command.id,
-                usize_to_i64(position)?,
-                command.name,
-                command.data,
-                command.is_hex
-            ],
-        )?;
+        insert.execute(params![
+            session_id,
+            command.id,
+            usize_to_i64(position)?,
+            command.name,
+            command.data,
+            command.is_hex
+        ])?;
     }
+    let mut insert = connection.prepare_cached(
+        "INSERT INTO macros(session_id, id, position, name) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    let mut insert_step = connection.prepare_cached(
+        "INSERT INTO macro_steps(
+           session_id, macro_id, position, data, is_hex, delay_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
     for (position, macro_item) in payload.macros.iter().enumerate() {
-        connection.execute(
-            "INSERT INTO macros(session_id, id, position, name) VALUES (?1, ?2, ?3, ?4)",
-            params![
+        insert.execute(params![
+            session_id,
+            macro_item.id,
+            usize_to_i64(position)?,
+            macro_item.name
+        ])?;
+        for (step_position, step) in macro_item.steps.iter().enumerate() {
+            insert_step.execute(params![
                 session_id,
                 macro_item.id,
-                usize_to_i64(position)?,
-                macro_item.name
-            ],
-        )?;
-        for (step_position, step) in macro_item.steps.iter().enumerate() {
-            connection.execute(
-                "INSERT INTO macro_steps(
-                   session_id, macro_id, position, data, is_hex, delay_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    session_id,
-                    macro_item.id,
-                    usize_to_i64(step_position)?,
-                    step.data,
-                    step.is_hex,
-                    i64::from(step.delay_ms)
-                ],
-            )?;
+                usize_to_i64(step_position)?,
+                step.data,
+                step.is_hex,
+                i64::from(step.delay_ms)
+            ])?;
         }
     }
     insert_config_rows(connection, "triggers", session_id, &payload.triggers, false)?;
@@ -586,27 +590,27 @@ fn append_ai_messages(
             field: "aiMessages.startPosition",
         });
     }
+    let mut insert = connection.prepare_cached(
+        "INSERT INTO ai_messages(session_id, position, id, role, content, timestamp_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
     for (offset, message) in payload.messages.iter().enumerate() {
         let position = i64::from(payload.start_position)
             .checked_add(usize_to_i64(offset)?)
             .ok_or(WorkspaceError::InvalidInput {
                 field: "aiMessages.position",
             })?;
-        connection.execute(
-            "INSERT INTO ai_messages(session_id, position, id, role, content, timestamp_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                session_id,
-                position,
-                message.id,
-                match message.role {
-                    WorkspaceAiRole::User => "user",
-                    WorkspaceAiRole::Assistant => "assistant",
-                },
-                message.content,
-                u64_to_i64(message.timestamp_ms, "aiMessage.timestampMs")?
-            ],
-        )?;
+        insert.execute(params![
+            session_id,
+            position,
+            message.id,
+            match message.role {
+                WorkspaceAiRole::User => "user",
+                WorkspaceAiRole::Assistant => "assistant",
+            },
+            message.content,
+            u64_to_i64(message.timestamp_ms, "aiMessage.timestampMs")?
+        ])?;
     }
     Ok(())
 }
@@ -653,16 +657,16 @@ fn replace_waveform_channels(
         "DELETE FROM waveform_channels WHERE session_id = ?1",
         [session_id],
     )?;
+    let mut insert = connection.prepare_cached(
+        "INSERT INTO waveform_channels(session_id, channel_index, config_json)
+         VALUES (?1, ?2, ?3)",
+    )?;
     for channel in &payload.channels {
-        connection.execute(
-            "INSERT INTO waveform_channels(session_id, channel_index, config_json)
-             VALUES (?1, ?2, ?3)",
-            params![
-                session_id,
-                i64::from(channel.channel_index),
-                serde_json::to_string(&channel.config)?
-            ],
-        )?;
+        insert.execute(params![
+            session_id,
+            i64::from(channel.channel_index),
+            serde_json::to_string(&channel.config)?
+        ])?;
     }
     Ok(())
 }
@@ -697,30 +701,26 @@ fn append_waveform_samples(
     validate_identifier(session_id, "sessionId")?;
     ensure_session_exists(connection, session_id)?;
     validate_waveform_samples(payload)?;
+    let mut channel_exists = connection.prepare_cached(
+        "SELECT 1 FROM waveform_channels WHERE session_id = ?1 AND channel_index = ?2",
+    )?;
+    let mut insert = connection.prepare_cached(
+        "INSERT INTO waveform_samples(session_id, channel_index, seq, timestamp_ms, value)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
     for sample in &payload.samples {
-        let channel_exists: bool = connection.query_row(
-            "SELECT EXISTS(
-               SELECT 1 FROM waveform_channels WHERE session_id = ?1 AND channel_index = ?2
-             )",
-            params![session_id, i64::from(sample.channel_index)],
-            |row| row.get(0),
-        )?;
-        if !channel_exists {
+        if !channel_exists.exists(params![session_id, i64::from(sample.channel_index)])? {
             return Err(WorkspaceError::InvalidInput {
                 field: "waveformSample.channelIndex",
             });
         }
-        connection.execute(
-            "INSERT INTO waveform_samples(session_id, channel_index, seq, timestamp_ms, value)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                session_id,
-                i64::from(sample.channel_index),
-                u64_to_i64(sample.seq, "waveformSample.seq")?,
-                u64_to_i64(sample.timestamp_ms, "waveformSample.timestampMs")?,
-                sample.value
-            ],
-        )?;
+        insert.execute(params![
+            session_id,
+            i64::from(sample.channel_index),
+            u64_to_i64(sample.seq, "waveformSample.seq")?,
+            u64_to_i64(sample.timestamp_ms, "waveformSample.timestampMs")?,
+            sample.value
+        ])?;
     }
     // The caller may append register samples or text-derived rows. Prune only
     // after the complete mutation has been inserted so every retained `seq`
@@ -758,27 +758,25 @@ fn insert_config_rows(
     rows: &[WorkspaceConfigRow],
     has_runtime_column: bool,
 ) -> Result<()> {
+    let sql = if has_runtime_column {
+        format!(
+            "INSERT INTO {table}(session_id, id, position, config_json, runtime_json)
+             VALUES (?1, ?2, ?3, ?4, NULL)"
+        )
+    } else {
+        format!(
+            "INSERT INTO {table}(session_id, id, position, config_json)
+             VALUES (?1, ?2, ?3, ?4)"
+        )
+    };
+    let mut insert = connection.prepare_cached(&sql)?;
     for (position, row) in rows.iter().enumerate() {
-        let sql = if has_runtime_column {
-            format!(
-                "INSERT INTO {table}(session_id, id, position, config_json, runtime_json)
-                 VALUES (?1, ?2, ?3, ?4, NULL)"
-            )
-        } else {
-            format!(
-                "INSERT INTO {table}(session_id, id, position, config_json)
-                 VALUES (?1, ?2, ?3, ?4)"
-            )
-        };
-        connection.execute(
-            &sql,
-            params![
-                session_id,
-                row.id,
-                usize_to_i64(position)?,
-                serde_json::to_string(&row.config)?
-            ],
-        )?;
+        insert.execute(params![
+            session_id,
+            row.id,
+            usize_to_i64(position)?,
+            serde_json::to_string(&row.config)?
+        ])?;
     }
     Ok(())
 }

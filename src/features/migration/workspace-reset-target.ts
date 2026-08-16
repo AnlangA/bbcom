@@ -1,4 +1,4 @@
-import type { WorkspaceApplicationActivation } from '../workspace/application';
+import type { WorkspaceApplicationActivation } from '../workspace';
 import type { LegacyReadContext, WorkspaceResetTarget } from './types';
 
 /** Opens and verifies the fixed workspace already committed by native reset. */

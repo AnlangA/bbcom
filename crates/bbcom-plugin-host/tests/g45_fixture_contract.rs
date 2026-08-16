@@ -6,8 +6,15 @@ use sha2::{Digest, Sha256};
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine};
 
+/// The host allows one live component store per process; the two tests
+/// share this lock instead of racing the process-wide guard.
+static HOST_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn reviewed_fixture_sources_compile_match_the_v1_world_and_reach_each_runtime_boundary() {
+    let _serial = HOST_STORE_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let fixtures = [
         (
             "primary",
@@ -82,8 +89,10 @@ fn reviewed_fixture_sources_compile_match_the_v1_world_and_reach_each_runtime_bo
 
 #[test]
 fn ambient_fixture_fails_only_because_its_wasi_import_is_unlinked() {
-    const AMBIENT_IMPORT: &str =
-        "  (import \"wasi:sockets/network@0.2.0\" (instance $ambient-socket))\n";
+    let _serial = HOST_STORE_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    const AMBIENT_IMPORT: &str = "  (import \"wasi:sockets/network@0.2.0\" (instance $ambient-socket (type $ambient-network)))\n";
 
     let source = std::str::from_utf8(include_bytes!(
         "../../../tests/fixtures/plugins/malicious/g45-ambient-import.component.wat"

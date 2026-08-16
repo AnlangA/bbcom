@@ -11,12 +11,7 @@ import {
   normalizePersistedMruSessionIds,
   normalizePortConfig,
   serializeSessionSnapshots,
-  sessionSnapshotsForLocalStorage,
 } from '../../src/lib/session-persistence.ts';
-import {
-  SessionPersistenceScheduler,
-  type SessionPersistenceTimerScheduler,
-} from '../../src/lib/session-persistence-scheduler.ts';
 import {
   appendFrameToSession,
   flushPausedFramesToLive,
@@ -30,7 +25,8 @@ import {
   saveJson,
   saveString,
 } from '../../src/lib/storage.ts';
-import type { DataFrame, PortConfig } from '../../src/types/index.ts';
+import type { PortConfig } from '../../src/types/index.ts';
+import { frame } from './helpers/frames.ts';
 
 const config: PortConfig = {
   baudRate: 115200,
@@ -42,32 +38,6 @@ const config: PortConfig = {
   dtr: false,
   rts: false,
 };
-
-function frame(id: string, direction: 'TX' | 'RX', bytes: number[], timestamp = 1): DataFrame {
-  return { id, direction, timestamp, data: new Uint8Array(bytes) };
-}
-
-class LeakyTimers implements SessionPersistenceTimerScheduler {
-  private nextId = 1;
-  private readonly tasks = new Map<number, () => void>();
-
-  schedule(callback: () => void): unknown {
-    const id = this.nextId++;
-    this.tasks.set(id, callback);
-    return id;
-  }
-
-  // Deliberately retain cancelled callbacks. Browsers may already have queued
-  // a timer callback when an owner tears down, and the scheduler must remain
-  // safe if that callback arrives late.
-  cancel(): void {}
-
-  runAll(): void {
-    const callbacks = [...this.tasks.values()];
-    this.tasks.clear();
-    for (const callback of callbacks) callback();
-  }
-}
 
 const originalStorage = (globalThis as { localStorage?: Storage }).localStorage;
 
@@ -175,7 +145,7 @@ test('persistence normalizers retain valid alternatives and reject malformed fra
   );
 });
 
-test('persistence serialization obeys byte caps, MRU choices, and JSON fallback encoding', () => {
+test('persistence serialization obeys byte caps and MRU choices', () => {
   const oversized = frame(
     'oversized',
     'RX',
@@ -212,11 +182,6 @@ test('persistence serialization obeys byte caps, MRU choices, and JSON fallback 
     snapshot.sessions[0].frames.map((item) => item.id),
     ['retained'],
   );
-  const local = sessionSnapshotsForLocalStorage(snapshot) as {
-    sessions: Array<{ frames: Array<{ data?: Uint8Array; dataHex?: string }> }>;
-  };
-  assert.equal(local.sessions[0].frames[0].data, undefined);
-  assert.equal(local.sessions[0].frames[0].dataHex, '0102');
 });
 
 test('hydration handles every persisted tail boundary and valid persisted configuration variants', () => {
@@ -313,79 +278,15 @@ test('hydration handles every persisted tail boundary and valid persisted config
       },
     ],
   });
-  const local = sessionSnapshotsForLocalStorage(
-    serializeSessionSnapshots([partial], 'partial-local'),
-  ) as {
-    sessions: Array<{ frames: Array<{ txStatus?: string; requestedBytes?: number }> }>;
-  };
-  assert.deepEqual(local.sessions[0].frames[0], {
+  const persisted = serializeSessionSnapshots([partial], 'partial-local');
+  assert.deepEqual(persisted.sessions[0].frames[0], {
     id: 'partial',
     direction: 'TX',
     timestamp: 1,
-    dataHex: '01',
+    data: new Uint8Array([1]),
     txStatus: 'partial-unknown',
     requestedBytes: 4,
   });
-});
-
-test('persistence scheduler remains safe across late callbacks and failed final writes', async () => {
-  const timers = new LeakyTimers();
-  const errors: unknown[] = [];
-  const flushes: boolean[] = [];
-  const scheduler = new SessionPersistenceScheduler(
-    async (includeFrames) => {
-      flushes.push(includeFrames);
-      throw new Error('disk unavailable');
-    },
-    { timers, onError: (error) => errors.push(error) },
-  );
-
-  scheduler.markConfigDirty();
-  await scheduler.flushNow().catch(() => undefined);
-  timers.runAll();
-  await Promise.resolve();
-  assert.deepEqual(flushes, [true]);
-
-  scheduler.markFramesDirty();
-  scheduler.dispose();
-  timers.runAll();
-  await Promise.resolve();
-  assert.deepEqual(flushes, [true]);
-
-  await assert.rejects(scheduler.flushFinal(), /disk unavailable/);
-  await Promise.resolve();
-  assert.equal(errors.length, 1);
-});
-
-test('final-flush completion and late settlement callbacks are idempotent', async () => {
-  const timers = new LeakyTimers();
-  let resolve!: () => void;
-  const scheduler = new SessionPersistenceScheduler(
-    () =>
-      new Promise<void>((done) => {
-        resolve = done;
-      }),
-    { timers },
-  );
-  const completed = scheduler.flushFinal();
-  resolve();
-  await Promise.resolve();
-  assert.equal(await completed, 'completed');
-  timers.runAll();
-
-  let reject!: (error: Error) => void;
-  const rejecting = new SessionPersistenceScheduler(
-    () =>
-      new Promise<void>((_resolve, fail) => {
-        reject = fail;
-      }),
-    { timers },
-  );
-  const timedOut = rejecting.flushFinal();
-  timers.runAll();
-  assert.equal(await timedOut, 'timeout');
-  reject(new Error('late failure'));
-  await Promise.resolve();
 });
 
 test('buffer helpers cover empty, frame-count, and global-empty eviction paths', () => {

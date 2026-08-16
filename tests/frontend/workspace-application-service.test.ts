@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test, vi } from 'vitest';
 import { IPC_LIMITS } from '../../src/generated/ipc-contracts.ts';
+import { base64ToBytes } from '../../src/lib/base64.ts';
 import type {
   ApplyWorkspaceBatchRequest,
   HydrateWorkspaceSessionsRequest,
@@ -14,9 +15,48 @@ import type { WorkspaceHydrationPort } from '../../src/features/workspace/adapte
 import {
   WORKSPACE_STOPPED_ACTIVITY_POLICY,
   WorkspaceApplicationService,
+  type CaptureAccountingStore,
   type WorkspaceFacadeSnapshot,
   type WorkspaceSessionFacade,
 } from '../../src/features/workspace/application/index.ts';
+
+interface AccountingProbe {
+  captureAccounting: CaptureAccountingStore;
+  undoCaptureState: {
+    sessionId: string;
+    nextSequence: number;
+    frameCount: number;
+    captureBytes: number;
+  } | null;
+}
+
+const ACCOUNTING_SCRATCH_SESSION = 'capture-limit-scratch';
+
+/** White-box aggregate override preserved from the pre-extraction test: drive
+ * the workspace frame total to an exact value through the accounting store. */
+function forceWorkspaceFrameCount(store: CaptureAccountingStore, target: number): void {
+  if (!store.hasSession(ACCOUNTING_SCRATCH_SESSION)) {
+    store.registerSession(ACCOUNTING_SCRATCH_SESSION, {
+      nextSequence: 0,
+      frameCount: 0,
+      captureBytes: 0,
+    });
+  }
+  store.recordFrames(ACCOUNTING_SCRATCH_SESSION, target - store.workspaceTotals().frameCount, 0);
+}
+
+function releaseWorkspaceFrameScratch(store: CaptureAccountingStore): void {
+  store.removeSession(ACCOUNTING_SCRATCH_SESSION);
+}
+
+/** Drive one session's frame count to an exact value through the store. */
+function forceSessionFrameCount(
+  store: CaptureAccountingStore,
+  sessionId: string,
+  target: number,
+): void {
+  store.recordFrames(sessionId, target - (store.sessionTotals(sessionId)?.frameCount ?? 0), 0);
+}
 import type { WorkspaceRuntimeLifecycle } from '../../src/features/workspace/application/types.ts';
 import {
   WorkspaceCoordinator,
@@ -1128,19 +1168,7 @@ test('session registration and capture accounting reject every invalid boundary 
     definition('workspace', 0, [sessionSnapshot('alpha'), sessionSnapshot('beta')]),
   ]);
   assert.equal((await system.application.openWorkspace('workspace')).outcome, 'completed');
-  const state = system.application as unknown as {
-    nextFrameSequence: Map<string, number>;
-    sessionFrameCounts: Map<string, number>;
-    sessionCaptureBytes: Map<string, number>;
-    workspaceFrameCount: number;
-    workspaceCaptureBytes: number;
-    undoCaptureState: {
-      sessionId: string;
-      nextSequence: number;
-      frameCount: number;
-      captureBytes: number;
-    } | null;
-  };
+  const state = system.application as unknown as AccountingProbe;
 
   assert.deepEqual(system.application.registerSession('alpha'), { accepted: true });
   for (const [sessionId, frameCount, captureBytes, messageKey] of [
@@ -1166,23 +1194,27 @@ test('session registration and capture accounting reject every invalid boundary 
   system.application.unregisterSession('alpha');
   assert.deepEqual(system.application.registerSession('alpha'), { accepted: true });
 
-  const originalFrameCount = state.workspaceFrameCount;
-  const originalCaptureBytes = state.workspaceCaptureBytes;
+  const originalFrameCount = state.captureAccounting.workspaceTotals().frameCount;
+  const originalCaptureBytes = state.captureAccounting.workspaceTotals().captureBytes;
   const dummyIds: string[] = [];
   for (
-    let index = state.nextFrameSequence.size;
+    let index = state.captureAccounting.sessionCount;
     index < IPC_LIMITS.MAX_WORKSPACE_SESSIONS;
     index++
   ) {
     const id = `dummy-${index}`;
     dummyIds.push(id);
-    state.nextFrameSequence.set(id, 0);
+    state.captureAccounting.registerSession(id, {
+      nextSequence: 0,
+      frameCount: 0,
+      captureBytes: 0,
+    });
   }
   assert.deepEqual(system.application.preflightSessionRegistration('one-too-many', 0, 0), {
     accepted: false,
     messageKey: 'workspace.capture.limit_exceeded',
   });
-  for (const id of dummyIds) state.nextFrameSequence.delete(id);
+  for (const id of dummyIds) state.captureAccounting.removeSession(id);
 
   assert.deepEqual(
     system.application.preflightSessionRegistration(
@@ -1212,7 +1244,7 @@ test('session registration and capture accounting reject every invalid boundary 
     frameCount: 1,
     captureBytes: 0,
   };
-  state.workspaceFrameCount = IPC_LIMITS.MAX_WORKSPACE_FRAMES;
+  forceWorkspaceFrameCount(state.captureAccounting, IPC_LIMITS.MAX_WORKSPACE_FRAMES);
   assert.deepEqual(system.application.preflightSessionRegistration('workspace-frame-limit', 1, 0), {
     accepted: false,
     messageKey: 'workspace.capture.limit_exceeded',
@@ -1223,13 +1255,13 @@ test('session registration and capture accounting reject every invalid boundary 
     frameCount: 0,
     captureBytes: 1,
   };
-  state.workspaceFrameCount = originalFrameCount;
-  state.workspaceCaptureBytes = IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES;
+  forceWorkspaceFrameCount(state.captureAccounting, originalFrameCount);
+  state.captureAccounting.setWorkspaceBytes(IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES);
   assert.deepEqual(system.application.preflightSessionRegistration('workspace-byte-limit', 0, 1), {
     accepted: false,
     messageKey: 'workspace.capture.limit_exceeded',
   });
-  state.workspaceCaptureBytes = originalCaptureBytes;
+  state.captureAccounting.setWorkspaceBytes(originalCaptureBytes);
   state.undoCaptureState = null;
 
   for (const [sessionId, frame] of [
@@ -1244,8 +1276,12 @@ test('session registration and capture accounting reject every invalid boundary 
     });
   }
 
-  const alphaCount = state.sessionFrameCounts.get('alpha') ?? 0;
-  state.sessionFrameCounts.set('alpha', IPC_LIMITS.MAX_WORKSPACE_FRAMES_PER_SESSION);
+  const alphaCount = state.captureAccounting.sessionTotals('alpha')?.frameCount ?? 0;
+  forceSessionFrameCount(
+    state.captureAccounting,
+    'alpha',
+    IPC_LIMITS.MAX_WORKSPACE_FRAMES_PER_SESSION,
+  );
   assert.deepEqual(
     system.application.preflightCapturedFrame('alpha', {
       direction: 'RX',
@@ -1253,8 +1289,8 @@ test('session registration and capture accounting reject every invalid boundary 
     }),
     { accepted: false, messageKey: 'workspace.capture.limit_exceeded' },
   );
-  state.sessionFrameCounts.set('alpha', alphaCount);
-  state.workspaceFrameCount = IPC_LIMITS.MAX_WORKSPACE_FRAMES;
+  forceSessionFrameCount(state.captureAccounting, 'alpha', alphaCount);
+  forceWorkspaceFrameCount(state.captureAccounting, IPC_LIMITS.MAX_WORKSPACE_FRAMES);
   assert.equal(
     system.application.preflightCapturedFrame('alpha', {
       direction: 'RX',
@@ -1262,8 +1298,8 @@ test('session registration and capture accounting reject every invalid boundary 
     }).accepted,
     false,
   );
-  state.workspaceFrameCount = originalFrameCount;
-  state.workspaceCaptureBytes = IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES;
+  forceWorkspaceFrameCount(state.captureAccounting, originalFrameCount);
+  state.captureAccounting.setWorkspaceBytes(IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES);
   assert.equal(
     system.application.preflightCapturedFrame('alpha', {
       direction: 'RX',
@@ -1271,7 +1307,8 @@ test('session registration and capture accounting reject every invalid boundary 
     }).accepted,
     false,
   );
-  state.workspaceCaptureBytes = originalCaptureBytes;
+  state.captureAccounting.setWorkspaceBytes(originalCaptureBytes);
+  releaseWorkspaceFrameScratch(state.captureAccounting);
 });
 
 test('captured-frame ordering, reset and trim boundaries preserve exact append sequences', async () => {
@@ -1279,13 +1316,7 @@ test('captured-frame ordering, reset and trim boundaries preserve exact append s
     definition('workspace', 0, [sessionSnapshot('alpha'), sessionSnapshot('beta')]),
   ]);
   assert.equal((await system.application.openWorkspace('workspace')).outcome, 'completed');
-  const state = system.application as unknown as {
-    nextFrameSequence: Map<string, number>;
-    sessionFrameCounts: Map<string, number>;
-    sessionCaptureBytes: Map<string, number>;
-    workspaceFrameCount: number;
-    workspaceCaptureBytes: number;
-  };
+  const state = system.application as unknown as AccountingProbe;
 
   assert.deepEqual(
     system.application.queueCapturedFrame({ sessionId: 'alpha', frame: dataFrame('object', 1) }),
@@ -1300,13 +1331,13 @@ test('captured-frame ordering, reset and trim boundaries preserve exact append s
     { accepted: false, messageKey: 'workspace.capture.invalid_session' },
   );
 
-  const nextAlpha = state.nextFrameSequence.get('alpha') ?? 0;
-  state.nextFrameSequence.set('alpha', Number.MAX_SAFE_INTEGER);
+  const nextAlpha = state.captureAccounting.nextFrameSequence('alpha') ?? 0;
+  state.captureAccounting.setNextFrameSequence('alpha', Number.MAX_SAFE_INTEGER);
   assert.deepEqual(system.application.queueCapturedFrame('alpha', dataFrame('exhausted', 1)), {
     accepted: false,
     messageKey: 'workspace.capture.sequence_exhausted',
   });
-  state.nextFrameSequence.set('alpha', nextAlpha);
+  state.captureAccounting.setNextFrameSequence('alpha', nextAlpha);
   assert.deepEqual(
     system.application.queueCapturedFrame('alpha', {
       ...dataFrame('invalid-frame', 1),
@@ -1315,27 +1346,32 @@ test('captured-frame ordering, reset and trim boundaries preserve exact append s
     { accepted: false, messageKey: 'workspace.capture.invalid' },
   );
 
-  const alphaCount = state.sessionFrameCounts.get('alpha') ?? 0;
-  state.sessionFrameCounts.set('alpha', IPC_LIMITS.MAX_WORKSPACE_FRAMES_PER_SESSION);
+  const alphaCount = state.captureAccounting.sessionTotals('alpha')?.frameCount ?? 0;
+  forceSessionFrameCount(
+    state.captureAccounting,
+    'alpha',
+    IPC_LIMITS.MAX_WORKSPACE_FRAMES_PER_SESSION,
+  );
   assert.deepEqual(system.application.queueCapturedFrame('alpha', dataFrame('session-limit', 1)), {
     accepted: false,
     messageKey: 'workspace.capture.limit_exceeded',
   });
-  state.sessionFrameCounts.set('alpha', alphaCount);
-  const workspaceCount = state.workspaceFrameCount;
-  state.workspaceFrameCount = IPC_LIMITS.MAX_WORKSPACE_FRAMES;
+  forceSessionFrameCount(state.captureAccounting, 'alpha', alphaCount);
+  const workspaceCount = state.captureAccounting.workspaceTotals().frameCount;
+  forceWorkspaceFrameCount(state.captureAccounting, IPC_LIMITS.MAX_WORKSPACE_FRAMES);
   assert.equal(
     system.application.queueCapturedFrame('alpha', dataFrame('workspace-limit', 1)).accepted,
     false,
   );
-  state.workspaceFrameCount = workspaceCount;
-  const workspaceBytes = state.workspaceCaptureBytes;
-  state.workspaceCaptureBytes = IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES;
+  forceWorkspaceFrameCount(state.captureAccounting, workspaceCount);
+  const workspaceBytes = state.captureAccounting.workspaceTotals().captureBytes;
+  state.captureAccounting.setWorkspaceBytes(IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES);
   assert.equal(
     system.application.queueCapturedFrame('alpha', dataFrame('byte-limit', 1)).accepted,
     false,
   );
-  state.workspaceCaptureBytes = workspaceBytes;
+  state.captureAccounting.setWorkspaceBytes(workspaceBytes);
+  releaseWorkspaceFrameScratch(state.captureAccounting);
 
   system.application.queueCapturedFrame('beta', dataFrame('other-session', 1));
   system.application.queueCapturedFrame('alpha', dataFrame('large-a', 300 * 1024));
@@ -1354,12 +1390,16 @@ test('captured-frame ordering, reset and trim boundaries preserve exact append s
     true,
   );
   assert.equal(
-    appends.some((mutation) => mutation.payload.frames[0]?.data.length === 600 * 1024),
+    appends.some(
+      (mutation) =>
+        mutation.payload.frames[0]?.dataB64 !== undefined &&
+        base64ToBytes(mutation.payload.frames[0].dataB64).byteLength === 600 * 1024,
+    ),
     true,
   );
 
-  const frameCount = state.sessionFrameCounts.get('alpha') ?? 0;
-  const captureBytes = state.sessionCaptureBytes.get('alpha') ?? 0;
+  const frameCount = state.captureAccounting.sessionTotals('alpha')?.frameCount ?? 0;
+  const captureBytes = state.captureAccounting.sessionTotals('alpha')?.captureBytes ?? 0;
   const invalidTrims = [
     ['missing', 1, 0],
     ['alpha', Number.NaN, 0],
@@ -1375,9 +1415,9 @@ test('captured-frame ordering, reset and trim boundaries preserve exact append s
       messageKey: 'workspace.capture.invalid_trim',
     });
   }
-  state.sessionFrameCounts.set('alpha', 0x1_0000_0000);
+  forceSessionFrameCount(state.captureAccounting, 'alpha', 0x1_0000_0000);
   assert.equal(system.application.queueCaptureTrim('alpha', 0x1_0000_0000, 0).accepted, false);
-  state.sessionFrameCounts.set('alpha', frameCount);
+  forceSessionFrameCount(state.captureAccounting, 'alpha', frameCount);
 
   assert.deepEqual(system.application.queueCaptureReset('alpha'), { accepted: true });
   assert.equal((await system.application.flush()).outcome, 'completed');

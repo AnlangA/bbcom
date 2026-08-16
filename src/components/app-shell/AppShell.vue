@@ -2,7 +2,7 @@
   <div class="app-layout">
     <aside
       class="sidebar"
-      :class="{ collapsed: appStore.sidebarCollapsed }"
+      :class="{ collapsed: workspaceUi.sidebarCollapsed }"
       :style="sidebarStyle"
       :aria-label="t('app.name')"
     >
@@ -11,16 +11,16 @@
           <button
             class="collapse-btn"
             type="button"
-            @click="appStore.toggleSidebarCollapsed"
-            :title="appStore.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')"
-            :aria-label="appStore.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')"
-            :aria-expanded="!appStore.sidebarCollapsed"
+            @click="workspaceUi.toggleSidebarCollapsed"
+            :title="workspaceUi.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')"
+            :aria-label="workspaceUi.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')"
+            :aria-expanded="!workspaceUi.sidebarCollapsed"
             aria-controls="app-sidebar-body"
           >
-            <PanelLeftClose v-if="!appStore.sidebarCollapsed" class="icon" />
+            <PanelLeftClose v-if="!workspaceUi.sidebarCollapsed" class="icon" />
             <PanelLeftOpen v-else class="icon" />
           </button>
-          <div v-if="!appStore.sidebarCollapsed" class="brand-lockup">
+          <div v-if="!workspaceUi.sidebarCollapsed" class="brand-lockup">
             <span class="brand-mark" aria-hidden="true">
               <Cable class="brand-mark-icon" />
             </span>
@@ -29,7 +29,7 @@
         </div>
         <div class="sidebar-actions">
           <n-button
-            v-if="!appStore.sidebarCollapsed"
+            v-if="!workspaceUi.sidebarCollapsed"
             size="tiny"
             :type="aiWindowVisible ? 'primary' : 'default'"
             secondary
@@ -42,41 +42,6 @@
             <template #icon>
               <Bot v-if="aiWindowVisible" class="icon-sm" />
               <BotOff v-else class="icon-sm" />
-            </template>
-          </n-button>
-          <n-button
-            size="tiny"
-            quaternary
-            class="locale-toggle"
-            :title="
-              appStore.locale === 'zh'
-                ? t('sidebar.locale.toEnglish')
-                : t('sidebar.locale.toChinese')
-            "
-            :aria-label="
-              appStore.locale === 'zh'
-                ? t('sidebar.locale.toEnglish')
-                : t('sidebar.locale.toChinese')
-            "
-            @click="toggleLocale"
-          >
-            <template #icon>
-              <Languages class="icon-sm" />
-            </template>
-          </n-button>
-          <n-button
-            size="tiny"
-            quaternary
-            class="theme-toggle"
-            :title="appStore.theme === 'light' ? t('sidebar.theme.light') : t('sidebar.theme.dark')"
-            :aria-label="
-              appStore.theme === 'light' ? t('sidebar.theme.light') : t('sidebar.theme.dark')
-            "
-            @click="toggleTheme"
-          >
-            <template #icon>
-              <Moon v-if="appStore.theme === 'light'" class="icon-sm" />
-              <Sun v-else class="icon-sm" />
             </template>
           </n-button>
           <n-button
@@ -96,110 +61,116 @@
       <div
         id="app-sidebar-body"
         class="sidebar-body"
-        :class="{ hidden: appStore.sidebarCollapsed }"
-        :aria-hidden="appStore.sidebarCollapsed"
-        :inert="appStore.sidebarCollapsed ? true : undefined"
+        :class="{ hidden: workspaceUi.sidebarCollapsed }"
+        :aria-hidden="workspaceUi.sidebarCollapsed"
+        :inert="workspaceUi.sidebarCollapsed ? true : undefined"
       >
         <AiSettingsPanel v-if="aiWindowVisible" compact />
         <WorkspacePanel />
-        <div class="sidebar-content">
-          <PortSelector />
-        </div>
       </div>
     </aside>
 
     <div
       class="resize-handle"
-      :class="{ dragging: isDragging, disabled: appStore.sidebarCollapsed }"
+      :class="{ dragging: isDragging, disabled: workspaceUi.sidebarCollapsed }"
       role="separator"
       aria-orientation="vertical"
       :aria-label="t('sidebar.resize')"
       :aria-valuemin="SIDEBAR_WIDTH_MIN"
       :aria-valuemax="SIDEBAR_WIDTH_MAX"
-      :aria-valuenow="appStore.sidebarWidth"
-      :aria-disabled="appStore.sidebarCollapsed"
-      :tabindex="appStore.sidebarCollapsed ? -1 : 0"
+      :aria-valuenow="workspaceUi.sidebarWidth"
+      :aria-disabled="workspaceUi.sidebarCollapsed"
+      :tabindex="workspaceUi.sidebarCollapsed ? -1 : 0"
       @mousedown="startResize"
       @keydown="onResizeKeydown"
     ></div>
 
     <main class="main">
-      <div
-        v-if="sessionStore.persistenceReadOnly"
-        class="persistence-readonly-banner"
-        role="status"
-        aria-live="polite"
-      >
-        <strong>{{ t('persistence.readOnly.title') }}</strong>
-        <span>{{ t('persistence.readOnly.description') }}</span>
-      </div>
-      <SessionTabs @create="requestCreateSession" />
-      <div class="session-viewport">
-        <div v-if="sessions.length === 0" class="empty-state">
-          <div class="empty-mark">
-            <Cable class="icon-lg" />
-          </div>
-          <div class="empty-title">{{ t('session.empty.title') }}</div>
-          <div class="empty-text">{{ t('session.empty.hint') }}</div>
-          <div class="empty-actions">
-            <n-button
-              type="primary"
-              size="medium"
-              :disabled="!sessionStore.userMutationsAllowed"
-              @click="requestCreateSession"
-            >
-              <template #icon>
-                <Plus class="icon-sm" />
-              </template>
-              {{ t('common.newSession') }}
-            </n-button>
-          </div>
-          <div class="empty-shortcuts">
-            <span class="shortcut"
-              ><kbd>Ctrl</kbd>+<kbd>N</kbd> {{ t('shortcut.newSession') }}</span
-            >
-            <span class="shortcut"
-              ><kbd>Ctrl</kbd>+<kbd>W</kbd> {{ t('shortcut.closeSession') }}</span
-            >
-          </div>
+      <nav class="workspace-mode-tabs" :aria-label="t('app.name')">
+        <button
+          type="button"
+          :class="{ active: workspaceMode === 'sessions' }"
+          :aria-pressed="workspaceMode === 'sessions'"
+          @click="workspaceMode = 'sessions'"
+        >
+          {{ t('workspaceMode.sessions') }}
+        </button>
+        <button
+          type="button"
+          :class="{ active: workspaceMode === 'plugins' }"
+          :aria-pressed="workspaceMode === 'plugins'"
+          @click="workspaceMode = 'plugins'"
+        >
+          {{ t('plugins.title') }}
+        </button>
+      </nav>
+      <template v-if="workspaceMode === 'sessions'">
+        <div
+          v-if="mutationPolicy.persistenceReadOnly.value"
+          class="persistence-readonly-banner"
+          role="status"
+          aria-live="polite"
+        >
+          <strong>{{ t('persistence.readOnly.title') }}</strong>
+          <span>{{ t('persistence.readOnly.description') }}</span>
         </div>
-        <SessionRuntimeHost :sessions="sessions" :active-session-id="activeSession?.id ?? null" />
+        <SessionTabs @create="requestCreateSession" />
+        <div class="session-viewport">
+          <div v-if="sessions.length === 0" class="empty-state">
+            <div class="empty-mark">
+              <Cable class="icon-lg" />
+            </div>
+            <div class="empty-title">{{ t('session.empty.title') }}</div>
+            <div class="empty-text">{{ t('session.empty.hint') }}</div>
+            <div class="empty-actions">
+              <n-button
+                type="primary"
+                size="medium"
+                :disabled="!mutationPolicy.userMutationsAllowed.value"
+                @click="requestCreateSession()"
+              >
+                <template #icon>
+                  <Plus class="icon-sm" />
+                </template>
+                {{ t('common.newSession') }}
+              </n-button>
+            </div>
+            <div class="empty-shortcuts">
+              <span class="shortcut"
+                ><kbd>Ctrl</kbd>+<kbd>N</kbd> {{ t('shortcut.newSession') }}</span
+              >
+            </div>
+          </div>
+          <SessionRuntimeHost :sessions="sessions" :active-session-id="activeSession?.id ?? null" />
+        </div>
+        <StatusBar :session="activeSession" :frames-version="activeFramesVersion" />
+      </template>
+      <div v-else class="plugin-workspace">
+        <PluginCenterPanel />
       </div>
-      <StatusBar :session="activeSession" :frames-version="activeFramesVersion" />
     </main>
 
-    <CreateSessionDialog v-model:show="showCreateDialog" />
+    <CreateSessionDialog v-model:show="showCreateDialog" :preferred-port="preferredCreatePort" />
     <SettingsModal v-model:show="showSettings" />
+    <PluginPromptHost />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onErrorCaptured, onMounted, onUnmounted, ref } from 'vue';
 import { NButton, useMessage } from 'naive-ui';
-import {
-  Bot,
-  BotOff,
-  Cable,
-  Languages,
-  Moon,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Plus,
-  Settings,
-  Sun,
-} from '@lucide/vue';
-import PortSelector from '../port-selector/PortSelector.vue';
+import { Bot, BotOff, Cable, PanelLeftClose, PanelLeftOpen, Plus, Settings } from '@lucide/vue';
 import SessionTabs from '../session-tabs/SessionTabs.vue';
 import StatusBar from '../status-bar/StatusBar.vue';
 import WorkspacePanel from '../workspace/WorkspacePanel.vue';
-import { SessionRuntimeHost } from '../../features/sessions';
+import SessionRuntimeHost from '../../features/sessions/ui/SessionRuntimeHost.vue';
 import { useAiWindowState } from '../../composables/useAiWindowState';
 import { useAppShortcuts } from '../../composables/useAppShortcuts';
 import { useSessionActions } from '../../composables/useSessionActions';
-import { useSessionStore } from '../../stores/sessions';
-import { useAppStore } from '../../stores/app';
+import { useWorkspaceUiStore } from '../../features/workspace';
+import { useSessionCatalog, useSessionMutationPolicy } from '../../features/sessions';
 import { AUTO_LOG_FAILURE_EVENT } from '../../composables/useAutoLog';
-import { t, setLocale } from '../../lib/i18n';
+import { t } from '../../lib/i18n';
 import {
   SIDEBAR_WIDTH_LARGE_STEP,
   SIDEBAR_WIDTH_MAX,
@@ -210,27 +181,33 @@ import {
 // Code-split the heavy modals/panels so their naive-ui dependencies (NModal,
 // NForm, NFormItem) are fetched on first open, not at first paint. Together
 // these trim a meaningful slice off the eager bundle; the main window renders
-// with PortSelector/SessionView/StatusBar only.
+// with SessionView/StatusBar only.
 const CreateSessionDialog = defineAsyncComponent(() => import('./CreateSessionDialog.vue'));
 const SettingsModal = defineAsyncComponent(() => import('./SettingsModal.vue'));
 const AiSettingsPanel = defineAsyncComponent(() => import('../ai/AiSettingsPanel.vue'));
+const PluginCenterPanel = defineAsyncComponent(() => import('../plugins/PluginCenterPanel.vue'));
+const PluginPromptHost = defineAsyncComponent(() => import('../plugins/PluginPromptHost.vue'));
 
-const sessionStore = useSessionStore();
-const appStore = useAppStore();
+const catalog = useSessionCatalog();
+const mutationPolicy = useSessionMutationPolicy();
+const workspaceUi = useWorkspaceUiStore();
 const { requestCloseSession } = useSessionActions();
 const { visible: aiWindowVisible, toggle: toggleAiWindow } = useAiWindowState();
 
-const sessions = computed(() => sessionStore.sessions);
-const activeSession = computed(() => sessionStore.activeSession);
+const sessions = computed(() => catalog.sessions.value);
+const activeSession = computed(() => catalog.activeSession.value);
 const activeFramesVersion = computed(() =>
-  activeSession.value ? sessionStore.getSessionFramesVersion(activeSession.value.id) : 0,
+  activeSession.value ? catalog.framesVersion(activeSession.value.id) : 0,
 );
 const showCreateDialog = ref(false);
+const preferredCreatePort = ref('');
 const showSettings = ref(false);
+const workspaceMode = ref<'sessions' | 'plugins'>('sessions');
 const message = useMessage();
 
-function requestCreateSession(): void {
-  if (!sessionStore.userMutationsAllowed) return;
+function requestCreateSession(preferredPort = ''): void {
+  if (!mutationPolicy.userMutationsAllowed.value) return;
+  preferredCreatePort.value = preferredPort;
   showCreateDialog.value = true;
 }
 
@@ -245,14 +222,6 @@ function onAutoLogFailure(event: Event) {
 onMounted(() => {
   window.addEventListener(AUTO_LOG_FAILURE_EVENT, onAutoLogFailure);
 });
-
-function toggleTheme() {
-  appStore.setTheme(appStore.theme === 'light' ? 'dark' : 'light');
-}
-
-function toggleLocale() {
-  setLocale(appStore.locale === 'zh' ? 'en' : 'zh');
-}
 
 onErrorCaptured((err) => {
   // Surface component render errors with a toast instead of a silent blank
@@ -271,14 +240,14 @@ let startX = 0;
 let startWidth = 0;
 
 const sidebarStyle = computed(() => ({
-  width: appStore.sidebarCollapsed ? '48px' : `${appStore.sidebarWidth}px`,
+  width: workspaceUi.sidebarCollapsed ? '48px' : `${workspaceUi.sidebarWidth}px`,
 }));
 
 function startResize(e: MouseEvent) {
-  if (appStore.sidebarCollapsed) return;
+  if (workspaceUi.sidebarCollapsed) return;
   isDragging.value = true;
   startX = e.clientX;
-  startWidth = appStore.sidebarWidth;
+  startWidth = workspaceUi.sidebarWidth;
   document.addEventListener('mousemove', onResize);
   document.addEventListener('mouseup', stopResize);
   document.body.style.cursor = 'col-resize';
@@ -287,20 +256,20 @@ function startResize(e: MouseEvent) {
 
 function onResize(e: MouseEvent) {
   const delta = e.clientX - startX;
-  appStore.setSidebarWidth(startWidth + delta);
+  workspaceUi.setSidebarWidth(startWidth + delta);
 }
 
 function onResizeKeydown(event: KeyboardEvent) {
-  if (appStore.sidebarCollapsed) return;
+  if (workspaceUi.sidebarCollapsed) return;
 
   const step = event.shiftKey ? SIDEBAR_WIDTH_LARGE_STEP : SIDEBAR_WIDTH_STEP;
   let nextWidth: number;
   switch (event.key) {
     case 'ArrowLeft':
-      nextWidth = appStore.sidebarWidth - step;
+      nextWidth = workspaceUi.sidebarWidth - step;
       break;
     case 'ArrowRight':
-      nextWidth = appStore.sidebarWidth + step;
+      nextWidth = workspaceUi.sidebarWidth + step;
       break;
     case 'Home':
       nextWidth = SIDEBAR_WIDTH_MIN;
@@ -313,7 +282,7 @@ function onResizeKeydown(event: KeyboardEvent) {
   }
 
   event.preventDefault();
-  appStore.setSidebarWidth(nextWidth);
+  workspaceUi.setSidebarWidth(nextWidth);
 }
 
 function stopResize() {
@@ -335,7 +304,7 @@ useAppShortcuts({
     requestCreateSession();
   },
   onCloseSession: () => {
-    const id = sessionStore.activeSessionId;
+    const id = catalog.activeSessionId.value;
     if (id) requestCloseSession(id);
   },
 });
@@ -502,13 +471,7 @@ useAppShortcuts({
   --n-size-tiny: 30px;
 }
 
-.sidebar-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-/* Wraps AiSettingsPanel + PortSelector so the whole lower region fades/slides
+/* Wraps the sidebar body so the whole lower region fades/slides
    out together with the width animation when collapsing, instead of being
    yanked by v-if mid-transition (which flashed empty space). */
 .sidebar-body {
@@ -568,6 +531,43 @@ useAppShortcuts({
   overflow: hidden;
   background: var(--bg-primary);
   min-width: 0;
+}
+
+.workspace-mode-tabs {
+  display: flex;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.workspace-mode-tabs button {
+  min-height: 28px;
+  padding: 4px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.workspace-mode-tabs button.active {
+  border-color: var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.workspace-mode-tabs button:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.plugin-workspace {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-lg);
 }
 
 .persistence-readonly-banner {

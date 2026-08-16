@@ -1,9 +1,13 @@
 import { effectScope, shallowRef, type EffectScope } from 'vue';
 import { getActivePinia, setActivePinia, type Pinia } from 'pinia';
 import type { SerialSession } from '../../../types';
-import type { ApplicationRuntimeRegistryOptions } from '../../application/application-runtime-registry';
-import type { ApplicationNotificationPort } from '../../application/application-notifications';
-import type { PortLeaseClient } from '../../serial/application/port-lease-registry';
+import type {
+  ApplicationNotificationPort,
+  ApplicationRuntimeRegistryOptions,
+} from '../../application';
+import type { PortLeaseClient } from '../../serial';
+import type { SessionRuntimeStatusRegistry } from './session-runtime-status';
+export { SessionRuntimeStatusRegistry } from './session-runtime-status';
 import {
   useSessionRuntimeController,
   type SessionRuntimeController,
@@ -17,6 +21,7 @@ export interface SessionRuntimeFactoryDependencies {
   readonly pinia: Pinia;
   readonly notifications: ApplicationNotificationPort;
   readonly portLeaseClient: PortLeaseClient;
+  readonly runtimeStatusRegistry?: SessionRuntimeStatusRegistry;
 }
 
 /**
@@ -48,6 +53,7 @@ export function createDetachedSessionRuntime(
       useSessionRuntimeController(sessionRef, {
         notifications: dependencies.notifications,
         portLeaseClient: dependencies.portLeaseClient,
+        runtimeStatusRegistry: dependencies.runtimeStatusRegistry,
       }),
     );
   } finally {

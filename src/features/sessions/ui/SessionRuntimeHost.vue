@@ -15,11 +15,11 @@ import { computed, onBeforeUnmount, shallowRef, watch } from 'vue';
 import { useMessage } from 'naive-ui';
 import SessionView from '../../../components/session/SessionView.vue';
 import { logger } from '../../../lib/logger';
-import { useSessionStore } from '../../../stores/sessions';
 import type { SerialSession } from '../../../types';
-import type { ApplicationRuntimeEntry } from '../../application/application-runtime-registry';
+import type { ApplicationRuntimeEntry } from '../../application';
 import { useSessionApplicationServices } from '../runtime/session-application-services';
 import type { ApplicationSessionRuntime } from '../runtime/session-runtime-factory';
+import { useSessionMutationPolicy } from '../session-ports';
 
 const props = defineProps<{
   sessions: readonly SerialSession[];
@@ -27,7 +27,7 @@ const props = defineProps<{
 }>();
 
 const services = useSessionApplicationServices();
-const sessionStore = useSessionStore();
+const mutationPolicy = useSessionMutationPolicy();
 const message = useMessage();
 const runtimeEntries = shallowRef<
   readonly ApplicationRuntimeEntry<SerialSession, ApplicationSessionRuntime>[]
@@ -60,7 +60,7 @@ const stopCatalogWatch = watch(
     const catalog = [...sessions];
     const revision = ++catalogRevision;
     for (const session of catalog) {
-      sessionStore.registerCleanup(session.id, () =>
+      mutationPolicy.registerCleanup(session.id, () =>
         services.runtimeRegistry.disposeSession(session.id),
       );
     }

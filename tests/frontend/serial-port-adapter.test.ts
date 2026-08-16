@@ -5,16 +5,23 @@ const mocked = vi.hoisted(() => ({
   calls: [] as Array<{ method: string; args: unknown[] }>,
 }));
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: async (command: string, args: unknown) => {
-    mocked.calls.push({ method: command, args: [args] });
-    return {
-      bytes: [0xaa, 0xbb],
-      guaranteed: true,
-      completion: 'idle-gap-observed',
-    };
-  },
-}));
+vi.mock('@tauri-apps/api/core', async () => {
+  const { createInvokeMock } = await import('./helpers/invoke-mock.ts');
+  return {
+    invoke: createInvokeMock({
+      onCall: (command, args) => {
+        mocked.calls.push({ method: command, args: [args] });
+      },
+      responses: {
+        drain_serial_input: () => ({
+          bytes: [0xaa, 0xbb],
+          guaranteed: true,
+          completion: 'idle-gap-observed',
+        }),
+      },
+    }),
+  };
+});
 
 vi.mock('tauri-plugin-serialplugin-api', () => {
   class SerialPort {
@@ -63,7 +70,7 @@ vi.mock('tauri-plugin-serialplugin-api', () => {
   return { SerialPort };
 });
 
-import { createTauriSerialPort } from '../../src/lib/serial-port-adapter.ts';
+import { createTauriSerialPort } from '../../src/features/serial/index.ts';
 
 beforeEach(() => {
   mocked.calls.splice(0);

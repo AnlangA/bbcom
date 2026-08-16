@@ -171,3 +171,229 @@ Node 24.13.0 的 zlib 口径揭示总量门禁仅余 497 B，仍然偏紧；下�
 - 自动日志开始、append、abort、expiry、应用退出和同路径并发；
 - OS keyring 写失败后 session key 立即用于 AI 请求；
 - TXT/CSV/JSONL/BIN 导出、取消、磁盘满和原目标保护。
+
+## 8. 2026-08 架构与性能优化：基准与发现留档
+
+本节记录 Wave 1/Wave 2 优化的测量数据与过程中发现的缺陷，供回归对比与复审。
+
+### 8.1 前端基准（pnpm bench:frontend，Wave 1 改动前基线，12 用例全绿）
+
+| 用例                         | ops/s  | 中位轮 ms | CV    |
+| ---------------------------- | ------ | --------- | ----- |
+| formatHex_50k                | 10     | 1454.7    | 1.43% |
+| formatUtf8_50k               | 42     | 1151.9    | 1.72% |
+| format_hexascii_64k          | 3.6k   | 928.3     | 0.74% |
+| concat_64chunks              | 99.6k  | 1607.2    | 3.77% |
+| merged_projection_50k        | 753    | 1291.4    | 2.14% |
+| protocol_parser_feed_50k     | 54     | 1137.1    | 1.64% |
+| waveform_parse_50k           | 81     | 1065.2    | 1.18% |
+| serialrxqueue_drop_512       | 151.9k | 1104.2    | 0.49% |
+| sessions_push_50k            | 9      | 1035.8    | 3.45% |
+| modbus_readbatch_256         | 92.2k  | 1154.0    | 0.82% |
+| modbus_scan_rtu_noise        | 1.16M  | 1110.3    | 0.96% |
+| waveform_ingest_tick（新增） | 1.0k   | 1151.7    | 2.11% |
+
+### 8.2 Rust 基准（cargo bench --bench hot_paths，T2 改动前基线）
+
+- workspace_apply_batch/append_256_frames_512kib：**5.4958 ms（90.98 MiB/s）**
+- timestamp_format/format_timestamp_4k：**995.98 µs（4.11 Melem/s）**
+- 其余既有用例：checksum/sum8 22.03 ns、crc8 321.52 ns、crc16 392.47 ns、
+  crc32 372.03 ns；format_hex_256b 273.59 ns；export jsonl/10000 1.7214 ms、
+  txt_hex/10000 1.9706 ms。
+
+### 8.3 过程中发现并修复的缺陷（非本轮改动引入）
+
+1. **plugins/state prepared 槽位持久化必然失败（HEAD 既有、可静态证明）**：
+   `address()` 将 prepared 槽位标识构造为 `prepared\0<token>`（内嵌 NUL），
+   而 `put_string`→`validate_identity` 拒绝含 NUL/控制字符的字符串，导致
+   prepared 槽位 `persist_state` 在任何平台都返回 `Initialization`。该路径
+   从未成功写入过，故将分隔符改为 `:`（`prepared:<token>`）无磁盘兼容性
+   影响。修复后 `plugins::state` 4/4 测试通过。
+2. **waveform_samples 通道存在性检查恒真（T2 过程中发现）**：mutation.rs 使用
+   `SELECT EXISTS(...)` 搭配 rusqlite `Statement::exists()`——`SELECT EXISTS`
+   总是返回一行，`exists()` 恒为 true。改为 `SELECT 1` + `exists()`。
+3. **时间戳 UTC+8 跨日本地日缓存键缺失（T2 新测试捕获）**：仅按 UTC epoch-day
+   缓存日期前缀时，UTC+8 的晚间捕获永远命中不了缓存；已改为本地日键。
+4. **plugin-dialog-safety.test.ts 缺少 happy-dom 指令（HEAD 既有）**：该文件用
+   `@vue/test-utils` 挂载组件但未声明 `@vitest-environment happy-dom`，导致
+   `ReferenceError: document is not defined`，3/3 用例在 HEAD 上即失败。已补指令。
+
+### 8.4 Wave 2：IPC 通道基准与改造（T5）
+
+ipc_payload 基准（number-array JSON vs base64，编码+解码往返中位数）：
+
+| 档位    | number array | base64    | 提速  |
+| ------- | ------------ | --------- | ----- |
+| 64 B    | 630.01 ns    | 143.15 ns | 4.40x |
+| 4 KiB   | 33.603 µs    | 4.2517 µs | 7.90x |
+| 512 KiB | 4.1975 ms    | 536.05 µs | 7.83x |
+
+判定规则（任一档位劣化 >10% 则保留 number-array）未触发；导出批量、
+hydration、checksum 三条路径全部切换为双通道 DTO（`data`/`dataB64`
+校验器强制二选一；预解码按填充感知上界先行校验限制）。旧 number-array
+发送方保持线兼容。
+
+### 8.5 Wave 2：合约/错误去重（T3.4-3.5）
+
+- `Permission`（13 变体）与 `RepositoryEndpoint`/`RepositoryConfiguration`/
+  `MAX_REDIRECTS`/id 字符集校验合一；command_adapter 的 36 行双向转换删除；
+  TS 绑定零 diff（线格式不变）。
+- `RiskCombination` 保持 plugin-contracts 本地：broker 的穷尽 3 臂 match
+  （authorization.rs）依赖其子集语义，统一属后续独立决策。
+- AppError→IpcError 双 mapper 合一（以 models/ipc_error.rs 为准）。语义
+  修正：AI 路径的 ConfigError 现映射 SecurityDenied（原 InvalidInput）、
+  Io/Export 错误映射 ExportReplaceFailed（原 InvalidInput）、Limit/Validation
+  的字段名收敛到稳定词表 "request"。
+- bbcom-plugin-host 的 `g45_fixture_contract` 2 个 wasm-fixture 测试在干净
+  HEAD 上同样失败（属 --ignored 门控测试，不在常规套件内），非本轮引入。
+
+### 8.6 Wave 2 末前后对比（同会话/干净环境）
+
+前端（ops/s，基线 → 改后，12/12 用例 CV 达标）：
+
+- **waveform_ingest_tick：1.0k → 12.7k（12.7 倍）**
+- concat_64chunks 99.6k → 118.4k（+19%）、protocol_parser_feed 54 → 58、
+  merged_projection 753 → 781、modbus_readbatch 92.2k → 95.0k、
+  serialrxqueue 151.9k → 156.0k；formatHex/formatUtf8/hexascii/
+  waveform_parse/sessions_push/modbus_scan 持平（±3%）。
+- 结论：无任何用例劣化 >10%，T1 各子步全部保留。
+
+Rust（中位数）：
+
+- **workspace_apply_batch：5.4958 ms → 4.5562 ms（-17.1%，90.98 → 109.7 MiB/s）**
+- **timestamp_format：995.98 µs → 262.02 µs（-73.7%，4.11 → 15.6 Melem/s）**
+- export_format：jsonl/10000 1.7214 → 1.764 ms（+2.5%），txt_hex/10000
+  1.9706 → 1.956 ms，均处于噪声带；checksum/hex 各用例持平。
+
+测量方法学备注：前后端 bench 并行执行会互相污染（formatUtf8 CV 超标与
+sessions_push -11% 均为并发负载所致，单独重跑后消失；log_text_visit 对
+基线的 +13% 经 stash 对照证实为机器状态漂移——HEAD 同状态实测 13.44 µs，
+与优化后树的 13.22 µs 持平）。基线与复测必须串行执行。
+
+### 8.7 后续问题处理（2026-08-15 第二批）
+
+1. **g45_fixture_contract 既有失败（修复）**：根因是五个 fixture 在组件根导出
+   裸函数、且函数签名引用的 record/enum 类型从未进入导出集合，触发
+   wasmparser 0.252 的命名类型规则（`func/type not valid to be used as
+export`）。修复：类型改为经 `bbcom:plugin/types@1.0.0` 实例导出，函数经
+   `alias export` 引用导出后的类型（对齐 wit-component 真实产物形状）；
+   ambient fixture 的空实例导入会被 wasmtime 平凡满足，改为类型化实例导入
+   （要求 `resolve` 函数）使其必然链接失败；两测试以 HOST_STORE_LOCK 串行
+   （宿主进程级单 store 守卫）。顺带修复同文件既有的 listener 竞态
+   （`events.last()` 可能读到超时动作的旧 correlation id）。
+2. **本地 Rust 门禁覆盖缺口（修复）**：`test:rust` 此前不带 `--workspace`，
+   只运行 bbcom 包——插件系列 crate 的测试从未进入本地全量（CI 的
+   llvm-cov 带 --workspace 会运行）。已补齐并对齐。
+3. **插件组合重试（实现）**：新增 `ensure_plugin_runtime`，setup 装入
+   fail-closed 默认托管态（一次性 manage 空生命周期句柄与 ack 注册表，
+   之后全部内部替换、避免 Tauri 弃用的 unsafe `unmanage`）；
+   `create_workspace`/`open_workspace` 成功后在阻塞线程重组插件运行时——
+   首次启动无活动工作区不再需要重启，工作区切换自动重绑新 workspace。
+   重组失败时旧（已 close_project）运行时降级为 Unavailable（无部分行为）。
+   轮询循环带世代号，重组后旧循环自动退出。wiring 函数泛型化到
+   `R: tauri::Runtime` 以支持 `tauri::test::mock_app` 回归测试。
+4. **vendored glib（结论：保留）**：上游 glib 0.18 线在 0.18.5 后停止发版
+   （修复只进 0.19/0.20 线），而 tauri 2.11.5（2026-07-01，当前最新）的
+   Linux 后端仍解析 0.18 线。补丁在下一个升级 wry/tao 依赖的 Tauri 发布
+   之前无法移除；维持现状并保留 vendor README 的移除条件。
+
+### 8.8 Wave 4（2026-08-16）：启动分页、波形摊销、DB 导出与架构收尾
+
+**性能改动与同会话结论**（详见 §8.6 方法学：跨会话绝对值受机器状态影响，
+以同会话相对比较与零改动锚点归一为准）：
+
+- **Hydration 分页扩容**：256→2048 帧/页、512KiB→4MiB/页
+  （bbcom-workspace service.rs + staging 默认值）。10 万帧会话
+  391→**49 次**串行往返（调用计数测试断言 ≤50）。
+- **波形 append 摊销**：溢出判定 O(1) 化（组数 ≤600 上界，与
+  retainLatestWaveformGroups 精确等价），未溢出跳过 Set+sort。
+  `waveform_register_tick` 在本会话降速机器上仍 3.2k→4.7k ops/s
+  （+47%；按锚点归一 ≈2.7 倍）。
+- **自动日志 base64**：useAutoLog 改双通道；log.rs 补 resolve 步骤
+  （修复了"b64 载荷会被静默解为空帧"的隐患）。
+- **MERGED 行数缓存**：尾巴缓存 1→8 条 LRU + 行数 WeakMap（run 身份+
+  contentVersion 键），测高从每行每脉冲物化 64KiB 降为每 (run,version)
+  一次。
+- **DB 侧导出源**：begin 增可选 `source{kind:workspace-frames}`；后端经
+  `WorkspaceFrameSource` 端口分页读 SQLite frames 表逐页内 append，
+  渲染进程对 backend-source 会话的 append 被拒；parity 测试证明 DB 导出
+  与 hydration 读回逐字节一致；`db_export_paging/10k` 首录 25.4ms
+  （降速机器）。默认模式经 `captureSeqCeiling` 访问器接通（flush-first +
+  差异 UI 明示，含暂停帧语义修正：暂停帧实际会落盘）。
+- **i18n 懒加载**：en 目录动态 chunk（零静态引用者），启动图 −7.5KiB、
+  AiWindow 图 −8.0KiB gzip。
+
+**架构收尾**：workspace-session-adapter 1,481→643（三模块）；
+useAiSessionBridge 1,011→587；workspace-coordinator 1,004→704；
+sessions facade 68→54 成员（+waveform/persistence 两个薄 facade，核心店
+单例共享）；Rust workspace.rs 2,032→目录模块（mod 1,275+operations 290+
+grants 285+hydration 290）；插件服务 5 泛型→dyn 端口（净 −129 行）；
+secure_settings 三拆；测试助手去重 9 文件 ~87 行。
+
+**方法学注记**：本会话机器状态较 §8.6 降速约 2 倍（前端零改动锚点
+serialrxqueue −47%、Rust 零改动锚点 checksum/sum8 +127%，跨工具链一致）。
+所有"劣化"信号均被锚点包络；`ipc_payload` 同会话内 base64 对 number-array
+仍 5.5~7.7 倍。bench 过滤模式不输出中位数（仅全量运行打印），配对前测改用
+保守污染基线口径并在文中注明。
+
+### 8.9 真实插件落地（2026-08-16）
+
+**插件**：`plugins/counter-plugin`（dev.bbcom.counter-panel v1.0.0）——no_std
+wasm32-wasip2 组件（9.8 KiB），使用 plugin.storage / session-list /
+publish-panel 三个宿主导入，面板含计数/会话数/按钮字段；工件为
+digest-pinned 清单（tests/fixtures/plugins/counter）。关键工程约束：宿主
+v1 不链接任何 WASI，Rust std 会拖入 wasi:io/poll——guest 必须 no_std +
+自提供 cabi_realloc（wasm32-wasip2 组件必需，std 平时隐藏了这一事实）。
+
+**补全的宿主能力**（原为设计未落地面）：`PluginRuntime::handle_panel_event`
+与 `take_published_panel`（面板可观测通道）；sidecar 协议新增
+`panel-event` invoke（body=JSON {fieldId,value}，响应体=更新后面板 JSON）。
+`PluginExecutor` trait 与两个测试桩同步扩展；`bindings` 模块公开供测试。
+
+**测试**（全绿）：进程内契约 3 项（digest 篡改拒绝；生命周期+事件+跨
+runtime 存储恢复；无 session.metadata.read 时 fail-closed 拒绝且无面板
+发布）+ 真实 sidecar 进程 1 项（握手含隐式权限集 → 种子状态上传
+counter=5 → initialize → bump 事件返回 count=6 → shutdown → 状态回读
+=6 → CompleteShutdown 干净退出）。
+
+**语义确认**：UiPanel/PluginStorage 为隐式权限（宿主恒授予，清单请求即
+拒绝）；握手 granted 集必须与期望集完全相等（含隐式项）。
+
+### 8.10 运行时插件装卸与自动加载（2026-08-16 第三批）
+
+**目标**：运行中安装（本地路径、免签名）+ 运行中卸载 + 重启后自动加载。
+
+**实现**（六层贯通，签名校验按需求关闭）：
+
+1. **Repository crate**：`DownloadedPackage::from_local_package`（无 HTTPS/TUF/
+   发布者签名边界，仅清单组件摘要校验）；`PluginInstaller::prepare_local_install`
+   （本地目录→zip→正规 staged pipeline）；`active_installations()`（重启发现）；
+   `remove_installation()`（卸载删除）。发布者身份从组件 sha256 派生（管理器
+   要求 publisher:sha256- 格式，本地包无签名验证）。
+2. **Manager crate**：`install_local(&Path)` 镜像 install_manual（验证+撤销检查
+   +精确提交+记录插入）；`uninstall(plugin_id)` 停宿主+删记录+删持久安装。
+   InstallationPort 扩展 `prepare_local`/`remove_installed`。
+3. **Bootstrap/runtime_wiring**：`autostart_registry(builder)` — 组合成功后读
+   `plugins-autostart.json` 并自动 enable 之前运行的插件；工作区切换时
+   `ensure_plugin_runtime` 经 `installer.active_installations()` 重建记录。
+4. **命令层**：`plugin_install_local`（packageRoot 参数+主窗口守卫+绝对路径/
+   plugin.toml 存在校验）；`plugin_uninstall`；`set_enabled` 维护自启动注册表。
+5. **前端**：插件中心面板"从本地安装"表单（路径输入）+ 已安装行"卸载"按钮
+   （确认对话框）；15+11 项测试。
+6. **测试**：repository local_install 3 项（staging/digest 拒绝/持久枚举）+
+   manager local_uninstall 1 项（安装→授权→运行→卸载→重装往返）。
+
+**安装失败修复（2026-08-16 第四批）**：UI 本地安装报"另一个插件操作正在
+运行"，但安装实际已持久化成功。根因链：生产 catalog view 完全 fail-closed，
+`installed_view` 为每个已安装插件调 `plugin_display` 必然失败；`center_data`
+用硬编码 request_id="snapshot" 附加错误，`attach_request` 的请求一致性检查
+把真实 catalog 错误掩盖为 operation_conflict。首次成功安装后**所有**快照/
+安装/卸载响应都会失败。修复：catalog view 改为 `LocalInstallCatalogView`
+（持 `Arc<PluginInstaller>`，从持久安装目录的 plugin.toml 解析显示名；未知
+插件与 session 标签保持 fail-closed）；原生 `INVALID_INPUT` 拒绝映射到新增
+`invalid-input` 失败码（contracts 枚举 + bindings 再生成 + 中英文案）。
+回归测试：wiring `local_install_catalog_resolves_installed_display_metadata`
+（counter fixture 真实 prepare→commit→显示解析）+ 传输层 AppErrorCode→失败码
+映射 5 例。端到端验证（mock_app + 真实组合）：安装 OK→重启发现 installed=1→
+重复安装拒绝→卸载 OK；诊断用 example 已删除（其 mock app_data_dir 解析到
+`~/.local/share/` 根目录，保留有污染风险）。

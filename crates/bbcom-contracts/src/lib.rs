@@ -62,14 +62,42 @@ mod tests {
             token: "opaque-grant".to_owned(),
             expected_frames: 2,
             expected_raw_bytes: 3,
+            source: None,
         };
         assert_eq!(
-            serde_json::to_value(export).unwrap(),
+            serde_json::to_value(&export).unwrap(),
             serde_json::json!({
                 "format": "jsonl",
                 "token": "opaque-grant",
                 "expectedFrames": 2,
                 "expectedRawBytes": 3
+            })
+        );
+
+        // Backend-source mode is additive: the optional selector round-trips
+        // and the renderer-source request stays byte-compatible.
+        let backend = serde_json::to_value(BeginExportRequest {
+            source: Some(ExportSource::WorkspaceFrames {
+                workspace_id: "01234567-89ab-cdef-0123-456789abcdef".to_owned(),
+                session_id: "session-1".to_owned(),
+                to_seq_exclusive: 42,
+            }),
+            ..export
+        })
+        .unwrap();
+        assert_eq!(
+            backend,
+            serde_json::json!({
+                "format": "jsonl",
+                "token": "opaque-grant",
+                "expectedFrames": 2,
+                "expectedRawBytes": 3,
+                "source": {
+                    "kind": "workspace-frames",
+                    "workspaceId": "01234567-89ab-cdef-0123-456789abcdef",
+                    "sessionId": "session-1",
+                    "toSeqExclusive": 42,
+                }
             })
         );
 
@@ -130,7 +158,7 @@ mod tests {
             "export type OperationRecord",
             "export type PluginCommandResponse",
             "export type PluginCenterData",
-            "export type SubmitPluginAuthorizationRequest",
+            "export type InstalledPluginView",
             "export type SerialSendResult",
             "export type PortLeaseConflict",
             "export const IPC_LIMITS",

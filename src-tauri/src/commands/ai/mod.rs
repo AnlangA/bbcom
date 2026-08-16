@@ -25,10 +25,9 @@ pub use types::{
 };
 
 use crate::models::errors::AppError;
-use crate::models::ipc_error::{AppErrorCode, IpcError};
-use crate::secure_settings::{
-    SecureSettingsState, ensure_main_window_label, load_ai_key_for_request,
-};
+use crate::models::ipc_error::{AppErrorCode, IpcError, from_app_error};
+use crate::secure_settings::{SecureSettingsState, load_ai_key_for_request};
+use crate::utils::window::require_main_window_label;
 use parser::{parse_log_ai_response, parse_terminal_ai_response};
 use prompts::{LOG_SYSTEM_PROMPT, TERMINAL_SYSTEM_PROMPT};
 use request_manager::AiRequestManager;
@@ -45,72 +44,10 @@ pub const AI_WINDOW_LABEL: &str = "ai-assistant";
 // Commands
 // ---------------------------------------------------------------------------
 
-fn app_error_to_ipc(error: AppError, operation: &'static str, request_id: &str) -> IpcError {
-    match error {
-        AppError::ValidationError { field, .. } => {
-            // Fields are selected by the command's own bounded DTO and are
-            // never influenced by model output, so exposing this identifier is
-            // safe and lets the UI highlight the right control.
-            let field = match field.as_str() {
-                "prompt" => "prompt",
-                "model" => "model",
-                "shell" => "shell",
-                "context" => "context",
-                "contextMode" => "contextMode",
-                "sessionMeta" => "sessionMeta",
-                _ => "request",
-            };
-            IpcError::invalid_input(operation, field).with_request_id(request_id)
-        }
-        AppError::Busy { .. } => IpcError::new(AppErrorCode::Busy, "error.busy", true, operation)
-            .with_request_id(request_id),
-        AppError::Timeout { .. } => {
-            IpcError::new(AppErrorCode::Timeout, "error.timeout", true, operation)
-                .with_request_id(request_id)
-        }
-        AppError::AiError { .. } => IpcError::new(
-            AppErrorCode::AiProviderFailed,
-            "error.ai_request_failed",
-            true,
-            operation,
-        )
-        .with_request_id(request_id),
-        AppError::LimitError {
-            field,
-            limit,
-            actual,
-            ..
-        } => {
-            let field = match field.as_str() {
-                "prompt" => "prompt",
-                "context" => "context",
-                "model" => "model",
-                "shell" => "shell",
-                "sessionMeta" => "sessionMeta",
-                "contextMode" => "contextMode",
-                _ => "request",
-            };
-            IpcError::new(
-                AppErrorCode::LimitExceeded,
-                "error.limit_exceeded",
-                false,
-                operation,
-            )
-            .with_field(field)
-            .with_size(limit, actual)
-            .with_request_id(request_id)
-        }
-        AppError::ExportError { .. } | AppError::IoError { .. } | AppError::ConfigError { .. } => {
-            IpcError::new(
-                AppErrorCode::InvalidInput,
-                "error.ai_request_failed",
-                false,
-                operation,
-            )
-            .with_request_id(request_id)
-        }
-    }
-}
+// All AI command failures funnel through the single canonical
+// `models::ipc_error::from_app_error` mapper (see T3.5): its stable codes,
+// message keys, field names, and retryability win over any AI-specific
+// mapping that existed here before.
 
 fn validate_v050_request(request: &RunAiRequest) -> Result<(), IpcError> {
     let operation = "run_ai_request";
@@ -221,7 +158,7 @@ pub async fn run_ai_request(
     request: RunAiRequest,
 ) -> Result<AiRequestResult, IpcError> {
     const OPERATION: &str = "run_ai_request";
-    ensure_main_window_label(window.label(), OPERATION)?;
+    require_main_window_label(window.label(), OPERATION)?;
     validate_v050_request(&request)?;
     let request_id = request.request_id.clone();
     let cancellation = requests.begin(&request_id)?;
@@ -230,7 +167,7 @@ pub async fn run_ai_request(
         let api_key = load_ai_key_for_request(settings).await?;
         tokio::select! {
             result = dispatch_v050_request(&request, api_key.as_str()) => {
-                result.map_err(|error| app_error_to_ipc(error, OPERATION, &request_id))
+                result.map_err(|error| from_app_error(&error, OPERATION).with_request_id(&request_id))
             }
             _ = cancellation.cancelled() => Err(
                 IpcError::new(AppErrorCode::Cancelled, "error.cancelled", false, OPERATION)
@@ -249,7 +186,7 @@ pub fn cancel_ai_request(
     requests: State<'_, AiRequestManager>,
     request: CancelAiRequest,
 ) -> Result<(), IpcError> {
-    ensure_main_window_label(window.label(), "cancel_ai_request")?;
+    require_main_window_label(window.label(), "cancel_ai_request")?;
     requests.cancel(&request.request_id)
 }
 

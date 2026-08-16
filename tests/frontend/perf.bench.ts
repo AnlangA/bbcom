@@ -31,7 +31,7 @@ import { SerialRxQueue } from '../../src/lib/serial-rx-queue.ts';
 import { buildModbusReadBatches, readRequest, scanResponse } from '../../src/lib/modbus';
 import { usePacketFilter } from '../../src/composables/usePacketFilter.ts';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { createSessionWaveformController } from '../../src/features/sessions/waveform/session-waveform-controller.ts';
 import { effectScope, markRaw, ref, shallowRef } from 'vue';
 import type {
   DataFrame,
@@ -39,10 +39,23 @@ import type {
   PacketViewMode,
   PortConfig,
   SearchMode,
+  SessionWaveformSampleInput,
 } from '../../src/types.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = resolve(__dirname, '.perf-baseline.json');
+
+// The comparison runner deliberately executes this current benchmark contract
+// against the checked-in base revision. The session store was renamed during
+// this plan, so select the public factory that exists in each revision instead
+// of making the base harness import a future-only file.
+const sessionStoreModule: Record<string, unknown> = existsSync(
+  resolve(__dirname, '../../src/stores/session-core.ts'),
+)
+  ? await import('../../src/stores/session-core.ts')
+  : await import('../../src/stores/sessions.ts');
+const useSessionCoreStore = (sessionStoreModule.useSessionCoreStore ??
+  sessionStoreModule.useSessionStore) as typeof import('../../src/stores/session-core.ts').useSessionCoreStore;
 
 // A realistic serial mix: mostly small RX chunks (sensors/printers), a few
 // larger ones (firmware logs, file transfers). Sizes weighted toward 32–256B.
@@ -413,7 +426,7 @@ test('bench: sessions store 50k-frame push (addFrame hot path)', () => {
     'sessions_push_50k',
     () => {
       setActivePinia(createPinia());
-      const store = useSessionStore();
+      const store = useSessionCoreStore();
       const id = store.createSession('BENCH', cfg);
       for (let i = 0; i < seed.length; i++) {
         store.addFrame(id, { direction: seed[i].direction, data: seed[i].data });
@@ -481,6 +494,98 @@ test('bench: scanResponse RTU trailing-noise sweep', () => {
     },
     200,
   );
+  console.log(`[bench] ${summarize(r)}`);
+  recordResult(r);
+  assertNoRegression(r.name, r.opsPerSec);
+});
+
+test('bench: waveform ingest tick (60 UI ticks, every 4th carrying samples)', () => {
+  // Streaming with occasional parsed samples: every UI tick (~17 ms) advances
+  // the durable waveform frame cursor, but only every 4th tick actually parses
+  // sample rows (2 groups x 8 channels). Both tick kinds go through
+  // commitSessionWaveformFrameIngest, so this measures the full state update
+  // (append + group retention + freeze) per tick, not just the cursor write.
+  // Constructed exactly like the sessions store constructs its controller.
+  const controller = createSessionWaveformController({
+    hasSession: () => true,
+    canMutateUserState: () => true,
+    canCaptureRuntimeEvents: () => true,
+    onStateChanged: () => {},
+    onChange: () => {},
+  });
+  controller.addEmptySession('bench');
+  const cursorOnly: readonly SessionWaveformSampleInput[] = Object.freeze([]);
+  const sampleBatches = Array.from({ length: 15 }, (_, batch) =>
+    Array.from({ length: 16 }, (_, index) => ({
+      channelIndex: index % 8,
+      group: Math.floor(index / 8),
+      timestampMs: 1000 + batch * 2 + Math.floor(index / 8),
+      value: ((index * 37 + batch) % 1000) / 10,
+    })),
+  );
+  function runIngestTicks(): void {
+    controller.resetSessionWaveform('bench', { consumed: 0, lastFrameId: null }, true);
+    let batch = 0;
+    for (let tick = 1; tick <= 60; tick += 1) {
+      const cursor = { consumed: tick, lastFrameId: `f${tick}` };
+      if (tick % 4 === 0) {
+        controller.commitSessionWaveformFrameIngest(
+          'bench',
+          'append',
+          sampleBatches[batch],
+          cursor,
+        );
+        batch += 1;
+      } else {
+        controller.commitSessionWaveformFrameIngest('bench', 'append', cursorOnly, cursor);
+      }
+    }
+  }
+  runIngestTicks();
+  if (controller.snapshotSession('bench').samples.length !== 240) {
+    throw new Error('waveform ingest bench did not append its samples');
+  }
+  const r = benchMedian('waveform_ingest_tick', runIngestTicks, 50);
+  console.log(`[bench] ${summarize(r)}`);
+  recordResult(r);
+  assertNoRegression(r.name, r.opsPerSec);
+});
+
+test('bench: waveform register poll tick (60 Modbus polls, 1-8 samples each)', () => {
+  // Register-mode Modbus polling: every poll tick pushes one decoded row of
+  // register values (1-8 channels, one new sample group per tick) through
+  // appendSessionWaveformSamples — the durable-state append the register
+  // master drives on each poll. Constructed exactly like the sessions store
+  // constructs its controller; the reset per run keeps the workload bounded
+  // (60 groups, ~270 samples) exactly like the ingest-tick case above.
+  const controller = createSessionWaveformController({
+    hasSession: () => true,
+    canMutateUserState: () => true,
+    canCaptureRuntimeEvents: () => true,
+    onStateChanged: () => {},
+    onChange: () => {},
+  });
+  controller.addEmptySession('bench');
+  const pollBatches = Array.from({ length: 60 }, (_, tick) =>
+    Array.from({ length: (tick % 8) + 1 }, (_, channel) => ({
+      channelIndex: channel,
+      group: 0,
+      timestampMs: 1000 + tick,
+      value: ((tick * 37 + channel) % 1000) / 10,
+    })),
+  );
+  function runRegisterTicks(): void {
+    controller.resetSessionWaveform('bench', { consumed: 0, lastFrameId: null }, true);
+    for (let tick = 0; tick < pollBatches.length; tick += 1) {
+      controller.appendSessionWaveformSamples('bench', pollBatches[tick]);
+    }
+  }
+  runRegisterTicks();
+  const polledSamples = pollBatches.reduce((sum, batch) => sum + batch.length, 0);
+  if (controller.snapshotSession('bench').samples.length !== polledSamples) {
+    throw new Error('waveform register tick bench did not append its samples');
+  }
+  const r = benchMedian('waveform_register_tick', runRegisterTicks, 50);
   console.log(`[bench] ${summarize(r)}`);
   recordResult(r);
   assertNoRegression(r.name, r.opsPerSec);

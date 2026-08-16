@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
-import { SESSION_STORAGE_KEY } from '../../src/lib/session-persistence.ts';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 import type { PortConfig } from '../../src/types/index.ts';
 
 const config: PortConfig = {
@@ -42,13 +41,13 @@ function installStorage(): Map<string, string> {
 
 function store() {
   setActivePinia(createPinia());
-  return useSessionStore();
+  return useSessionCoreStore();
 }
 
 test('session store public API handles every session-owned configuration and missing-session no-ops', async () => {
-  const storage = installStorage();
+  installStorage();
   const sessions = store();
-  await sessions.whenPersistenceReady();
+  const persistence = useSessionCoreStore();
 
   const missing = 'not-a-session';
   assert.equal(
@@ -250,7 +249,7 @@ test('session store public API handles every session-owned configuration and mis
   assert.equal(sessions.sessions.length, 2);
 
   let cleaned = 0;
-  sessions.registerCleanup(second, async () => {
+  persistence.registerCleanup(second, async () => {
     cleaned += 1;
   });
   // Removing the active tab promotes the remaining resident tab and refreshes
@@ -260,8 +259,4 @@ test('session store public API handles every session-owned configuration and mis
   await sessions.removeSession(second);
   assert.equal(cleaned, 1);
   await sessions.removeSession(missing);
-
-  await sessions.flushPersistedSessions();
-  assert.ok(storage.has(SESSION_STORAGE_KEY));
-  assert.equal(await sessions.flushFinalPersistence(), 'completed');
 });

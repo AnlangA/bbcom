@@ -30,6 +30,7 @@ typed command surfaces.
 │                                                                    │
 │ composables/                                                       │
 │   useSerialConnection   serial open/listen/write/reconnect         │
+│   serial/               port lease, stop evidence, error taxonomy   │
 │   useModbusMaster       Modbus read/write/replay orchestration     │
 │   useSessionFrames      frame append/clear helpers                 │
 │   usePacket*            virtual scroll, filters, format cache      │
@@ -41,13 +42,20 @@ typed command surfaces.
 │   serial                available ports and selected config        │
 │   app                   theme, language, AI and global settings    │
 │                                                                    │
+│ features/workspace/application/                                    │
+│   workspace-application-service  activation/save facade            │
+│   capture-accounting   single source for frame/byte accounting     │
+│   save-queues           config debounce + bounded frame queue      │
+│   activation            activation state machine and recovery      │
+│                                                                    │
 │ lib/                                                               │
 │   modbus/               protocol core, batching, transport, loops  │
 │   serial-rx-queue       bounded RX buffering                       │
 │   protocol-parser       delimiter/fixed/length frame parsing       │
 │   waveform*             parsing, viewport math, canvas rendering   │
 │   sidebar-layout         shared sidebar geometry and keyboard steps │
-│   session-persistence   versioned snapshot migration               │
+│   session-persistence   snapshot serialize/hydrate + legacy keys   │
+│   base64                dependency-free byte/payload codec         │
 │   ipc                   typed Tauri command wrappers               │
 └───────────────┬────────────────────────────────────────────────────┘
                 │ Tauri invoke/listen/events
@@ -56,10 +64,11 @@ typed command surfaces.
 │ Rust backend: src-tauri/src/                                       │
 │                                                                    │
 │ commands/     ai, checksum, export/log session, window commands    │
+│ plugins/      runtime_wiring composition root + command adapter    │
 │ export/       TXT/CSV/JSONL/BIN formatters                         │
-│ models/       IPC structs and AppError                             │
+│ models/       IPC structs, AppError, single IpcError mapper        │
 │ utils/        checksum, HEX, timestamp helpers                      │
-│ benches/      checksum/export hot-path benchmarks                   │
+│ benches/      checksum/export/workspace/IPC hot-path benchmarks    │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -85,6 +94,21 @@ typed command surfaces.
 - **Tauri plugins:** serialplugin provides binary serial channels. Native save
   dialogs and credential access remain behind allowlisted Rust commands; no
   updater plugin is shipped.
+- **Native plugin runtime:** `plugins/runtime_wiring.rs` is the single
+  composition root. Application setup installs the fail-closed unavailable
+  service first and swaps in the real `ProductionPluginRuntimeBuilder` graph
+  (installer, host, sandbox, broker, state persistence, audit, webview serial
+  scheduler/upstream) only when every port resolves; composition failure keeps
+  the unavailable service and logs only the stable error code. Until reviewed
+  repository metadata exists, the repository and catalog ports are empty
+  fail-closed adapters, so nothing is fetchable or installable while the host,
+  sandbox, and lifecycle machinery is live. Workspace switches and native
+  shutdown call `close_plugin_project` through the retained lifecycle handle.
+- **Bulk IPC payloads are base64-first.** Export batches, workspace frame
+  hydration, and checksum inputs use dual-channel DTOs (`data` number array or
+  `dataB64` string, validators enforce exactly one). The frontend converts at
+  the `lib/ipc` boundary and the single `toIpcFramePayload` site; measured
+  round-trips are ~4-8x faster than number arrays at 64 B-512 KiB.
 
 ## Data Flows
 
@@ -113,9 +137,16 @@ typed command surfaces.
 
 ### Persistence
 
-1. Mutators call `schedulePersist`.
+1. Mutators call `schedulePersist`; the workspace application service owns all
+   durable writes through `save-queues` (300 ms config debounce; 250 ms /
+   256-frame / 512 KiB frame batches). The legacy IndexedDB/localStorage write
+   path is removed — the 0.7.3 repository stays read-only for the one-time
+   migration (`features/migration/legacy-session-snapshot-reader.ts`) and for
+   downgrade compatibility.
 2. Frame mutations increment a per-session version; config mutations do not
-   invalidate unrelated frame consumers.
+   invalidate unrelated frame consumers. Frame/byte totals come from the single
+   `capture-accounting` store; save-gate decisions are cached and notifications
+   throttled while frames stream.
 3. `serializeSessionSnapshots` caps persisted sessions, frame count, and bytes.
 4. Load validates and migrates before hydration. A future schema is copied to a
    recovery key and persistence becomes read-only instead of overwriting it.
@@ -176,12 +207,16 @@ These are the rules most likely to protect users from subtle serial bugs:
 | Frontend benchmarks         | `pnpm bench:frontend`    |
 | Rust benchmarks             | `pnpm bench:rust`        |
 | TypeScript import cycles    | `pnpm cycles`            |
-| Mandatory local commit gate | `pnpm precommit`         |
+| Fast local commit gate      | `pnpm precommit`         |
+| Full local pre-push gate    | `pnpm precommit:full`    |
 
-The repository's `.githooks/pre-commit` invokes `pnpm precommit`, and
-`.github/workflows/quality.yml` runs the same correctness boundaries for every
-pull request, every `master` push, and every tagged release. The workflow runs
-the complete Vitest suite exactly once through V8 coverage and the complete
+The repository's `.githooks/pre-commit` invokes the fast `pnpm precommit` gate
+(lint, formatting, architecture, build, bundle budgets), while
+`.githooks/pre-push` runs the full `pnpm precommit:full` gate — the same
+correctness boundaries plus coverage, browser-mock E2E, and the benchmark
+comparison — before commits are published. `.github/workflows/quality.yml`
+runs the full gate for every pull request, every `master` push, and every
+tagged release. The workflow runs the complete Vitest suite exactly once through V8 coverage and the complete
 Rust suite exactly once through `cargo llvm-cov`; it does not duplicate those
 tests with separate `test` jobs. Browser-mock E2E is a separate required check.
 The benchmark comparison runs only on `master` and manual workflow dispatches,

@@ -1,52 +1,96 @@
 import { getCurrentInstance, inject } from 'vue';
-import { createDiscreteApi } from 'naive-ui';
-import { useSessionStore } from '../stores/sessions';
+import { useDialog } from 'naive-ui';
 import { useSerialStore } from '../stores/serial';
 import { useAppStore } from '../stores/app';
+import { logger } from '../lib/logger';
 import { t } from '../lib/i18n';
 import type { PortConfig } from '../types';
 import { SESSION_APPLICATION_SERVICES_KEY } from '../features/sessions/runtime/session-application-services';
-
-let dialogInstance: ReturnType<typeof createDiscreteApi>['dialog'] | null = null;
-
-function getDialog() {
-  if (!dialogInstance) {
-    dialogInstance = createDiscreteApi(['dialog']).dialog;
-  }
-  return dialogInstance;
-}
+import {
+  SessionApplicationService,
+  useSessionCapture,
+  useSessionCatalog,
+  useSessionDocument,
+  useSessionMutationPolicy,
+  useSessionRuntimeStatuses,
+} from '../features/sessions';
 
 export function useSessionActions() {
-  const sessionStore = useSessionStore();
+  const catalog = useSessionCatalog();
+  const mutationPolicy = useSessionMutationPolicy();
   const serialStore = useSerialStore();
   const appStore = useAppStore();
   const applicationServices = getCurrentInstance()
     ? inject(SESSION_APPLICATION_SERVICES_KEY, null)
     : null;
+  const { isConnected } = useSessionRuntimeStatuses();
+  const sessions = new SessionApplicationService({
+    catalog,
+    mutationPolicy,
+    captureFor: useSessionCapture,
+    documentFor: useSessionDocument,
+    runtimeIsImportant: (sessionId) => {
+      if (isConnected(sessionId)) return true;
+      const runtime = applicationServices?.runtimeRegistry.get(sessionId);
+      if (
+        runtime &&
+        (runtime.isConnecting.value ||
+          runtime.reconnecting.value ||
+          runtime.looping.value ||
+          runtime.macro.running.value ||
+          runtime.modbus.master.running.value ||
+          runtime.modbus.master.replaying.value ||
+          runtime.modbus.master.writing.value)
+      ) {
+        return true;
+      }
+      return Boolean(
+        applicationServices?.operationRegistry
+          .snapshot()
+          .some(
+            (operation) =>
+              operation.sessionId === sessionId &&
+              (operation.status === 'queued' ||
+                operation.status === 'running' ||
+                operation.status === 'cancelling'),
+          ),
+      );
+    },
+  });
+  // The dialog provider is mounted in App.vue; createDiscreteApi would drag a
+  // second provider tree into the startup bundle for the same confirmations.
+  const dialog = getCurrentInstance() ? useDialog() : null;
+
+  function getDialog() {
+    if (!dialog) {
+      logger.warn('session confirmation dialog is unavailable without a dialog provider');
+      return null;
+    }
+    return dialog;
+  }
 
   function createSession(portName: string, config: PortConfig): string | null {
-    if (!portName || !sessionStore.userMutationsAllowed) return null;
-    const id = sessionStore.createSession(portName, { ...config });
+    const id = sessions.createSession(portName, config);
     if (!id) return null;
     serialStore.setPortConfig(config);
     const pendingCommand = appStore.consumePendingAiCommand();
     if (pendingCommand) {
-      sessionStore.setSendDraft(id, pendingCommand);
+      useSessionDocument(id).setSendDraft(id, pendingCommand);
     }
     return id;
   }
 
   function requestCloseSession(id: string) {
-    if (!sessionStore.userMutationsAllowed) return;
-    const session = sessionStore.sessions.find((s) => s.id === id);
+    if (!mutationPolicy.userMutationsAllowed.value) return;
+    const session = sessions.session(id);
     if (!session) return;
 
     if (!isImportantSession(id)) {
-      void sessionStore.removeSession(id);
+      void sessions.remove(id);
       return;
     }
 
-    getDialog().warning({
+    getDialog()?.warning({
       title: t('dialog.closeImportantTitle'),
       content: t('dialog.closeImportantContent', {
         name: session.portName || id,
@@ -55,63 +99,27 @@ export function useSessionActions() {
       positiveText: t('common.close'),
       negativeText: t('common.cancel'),
       onPositiveClick: () => {
-        void sessionStore.removeSession(id);
+        void sessions.remove(id);
       },
     });
   }
 
   function isImportantSession(sessionId: string): boolean {
-    const session = sessionStore.sessions.find((candidate) => candidate.id === sessionId);
-    if (!session) return false;
-    if (
-      session.frames.length > 0 ||
-      session.pausedFrames.length > 0 ||
-      session.isConnected ||
-      session.autoLogEnabled ||
-      sessionStore.isSessionConfigurationDirty(sessionId)
-    ) {
-      return true;
-    }
-
-    const runtime = applicationServices?.runtimeRegistry.get(sessionId);
-    if (
-      runtime &&
-      (runtime.isConnecting.value ||
-        runtime.reconnecting.value ||
-        runtime.looping.value ||
-        runtime.macro.running.value ||
-        runtime.modbus.master.running.value ||
-        runtime.modbus.master.replaying.value ||
-        runtime.modbus.master.writing.value)
-    ) {
-      return true;
-    }
-
-    return Boolean(
-      applicationServices?.operationRegistry
-        .snapshot()
-        .some(
-          (operation) =>
-            operation.sessionId === sessionId &&
-            (operation.status === 'queued' ||
-              operation.status === 'running' ||
-              operation.status === 'cancelling'),
-        ),
-    );
+    return sessions.isImportant(sessionId);
   }
 
   function requestClearFrames(sessionId: string) {
-    if (!sessionStore.userMutationsAllowed) return;
-    const session = sessionStore.sessions.find((s) => s.id === sessionId);
+    if (!mutationPolicy.userMutationsAllowed.value) return;
+    const session = sessions.session(sessionId);
     if (!session || session.frames.length === 0) return;
 
-    getDialog().warning({
+    getDialog()?.warning({
       title: t('dialog.clearDataTitle'),
       content: t('dialog.clearDataContent'),
       positiveText: t('common.clear'),
       negativeText: t('common.cancel'),
       onPositiveClick: () => {
-        sessionStore.clearFrames(sessionId);
+        sessions.clearCapture(sessionId);
       },
     });
   }

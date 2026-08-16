@@ -81,6 +81,13 @@ export default [
     },
   },
   {
-    ignores: ['dist/**', 'node_modules/**', 'src-tauri/**', 'target/**'],
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'src-tauri/**',
+      'target/**',
+      // Checker self-test fixtures are scanner inputs, not lint targets.
+      'scripts/architecture-fixtures/**',
+    ],
   },
 ];

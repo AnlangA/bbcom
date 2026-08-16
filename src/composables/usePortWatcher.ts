@@ -1,5 +1,5 @@
 import { getCurrentInstance, ref, onMounted, onUnmounted } from 'vue';
-import { SerialPort } from 'tauri-plugin-serialplugin-api';
+import { enumerateTauriSerialPorts } from '../features/serial';
 import { useSerialStore } from '../stores/serial';
 import { isRealSerialPort, mergePortLists } from '../lib/serial-utils';
 import { logger } from '../lib/logger';
@@ -15,7 +15,7 @@ export function usePortWatcher(interval = 1500, options: UsePortWatcherOptions =
   const ports = ref<string[]>([]);
   const serialStore = useSerialStore();
   let timer: ReturnType<typeof setInterval> | null = null;
-  const enumerate = options.enumerate ?? (() => SerialPort.available_ports());
+  const enumerate = options.enumerate ?? enumerateTauriSerialPorts;
 
   async function refresh() {
     try {

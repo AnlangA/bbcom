@@ -19,7 +19,7 @@
 
 /**
  * The eight public Modbus function codes. Plain `const` numbers (not a `const
- * enum`) so this file loads under Node's --experimental-strip-types runner,
+ * enum`) so this file loads under Node's --experimental-transform-types runner,
  * whose parser rejects TypeScript enums.
  */
 export const MODBUS_FC = {

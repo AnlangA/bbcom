@@ -1,11 +1,14 @@
 //! Bounded, backend-owned export sessions.
 
+use crate::commands::streaming_sessions::{
+    SharedStreamingSession, StreamingSession, StreamingSessionNaming, StreamingSessionTable,
+    is_lower_hex, limit_error, validate_hex_session_id, validation_error,
+};
 use crate::export::{ExportFormat, formatter};
 use crate::models::data_frame::DataFrame;
 use crate::models::errors::AppError;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
+use std::collections::HashSet;
 use std::io::ErrorKind;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
@@ -14,21 +17,76 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit};
 
-pub const MAX_EXPORT_FRAMES: usize = 100_000;
-pub const MAX_EXPORT_BYTES: usize = 128 * 1024 * 1024;
-pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
-pub const MAX_BATCH_FRAMES: usize = 256;
-pub const MAX_BATCH_BYTES: usize = 512 * 1024;
+pub use bbcom_contracts::{
+    MAX_EXPORT_BATCH_BYTES as MAX_BATCH_BYTES, MAX_EXPORT_BATCH_FRAMES as MAX_BATCH_FRAMES,
+    MAX_EXPORT_BYTES, MAX_EXPORT_FRAME_BYTES as MAX_FRAME_BYTES, MAX_EXPORT_FRAMES,
+};
 const MAX_ACTIVE_EXPORTS: usize = 8;
 const MAX_FRAME_ID_BYTES: usize = 256;
 const EXPORT_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+/// Page size for backend-sourced frame reads. Mirrors the workspace crate's
+/// hydration page cap so every internal page also satisfies the export batch
+/// limits (`MAX_BATCH_FRAMES` / `MAX_BATCH_BYTES`) enforced by
+/// [`ExportSessionManager::append_locked`].
+pub const SOURCE_PAGE_FRAMES: usize = 256;
+/// Longest accepted workspace/session identifier in a backend-source query;
+/// the workspace crate's own identifier validation is the authoritative check.
+const MAX_SOURCE_ID_BYTES: usize = 128;
 // A part file can only be removed when it is unmistakably abandoned.  Export
 // sessions themselves expire much sooner, but their files remain recoverable
 // for a full day so a delayed scheduler cannot delete a live user's output.
 const STALE_EXPORT_PART_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-type SharedExportSession = Arc<Mutex<ExportSession>>;
+type SharedExportSession = SharedStreamingSession<ExportSession>;
+
+/// Identity and strict sequence ceiling of one backend-sourced export.
+///
+/// `to_seq_exclusive` is the caller's next append sequence after flushing its
+/// save queue: every frame with `seq < to_seq_exclusive` is exported, every
+/// frame at or above it is excluded even once persisted later.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceFrameQuery {
+    pub workspace_id: String,
+    pub session_id: String,
+    pub to_seq_exclusive: u64,
+}
+
+/// Frame and raw-payload-byte totals for one [`WorkspaceFrameQuery`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkspaceFrameTotals {
+    pub frames: usize,
+    pub raw_bytes: usize,
+}
+
+/// One bounded ascending page of frames plus the continuation cursor.
+#[derive(Clone, Debug, Default)]
+pub struct WorkspaceFrameSlice {
+    pub frames: Vec<DataFrame>,
+    /// Seq of the first frame below the ceiling that is not in this page, or
+    /// `None` when no eligible frames remain.
+    pub next_seq: Option<u64>,
+}
+
+/// Read-only paged frame source over a durable workspace, injected per
+/// backend-sourced begin so the export manager stays workspace-crate agnostic
+/// and unit-testable with a fake source. Implementations must honor the
+/// `to_seq_exclusive` ceiling strictly and never mutate the source.
+pub trait WorkspaceFrameSource: Send + Sync {
+    /// Totals the backend will commit to enforce at finish.
+    fn expected_totals(
+        &self,
+        query: &WorkspaceFrameQuery,
+    ) -> Result<WorkspaceFrameTotals, AppError>;
+
+    /// Frames with `from_seq <= seq < query.to_seq_exclusive`, ascending, at
+    /// most [`SOURCE_PAGE_FRAMES`] frames per call.
+    fn read_page(
+        &self,
+        query: &WorkspaceFrameQuery,
+        from_seq: u64,
+    ) -> Result<WorkspaceFrameSlice, AppError>;
+}
 
 #[cfg(windows)]
 type TargetIdentity = String;
@@ -36,12 +94,9 @@ type TargetIdentity = String;
 type TargetIdentity = PathBuf;
 
 pub struct ExportSessionManager {
-    sessions: Mutex<HashMap<String, SharedExportSession>>,
+    table: StreamingSessionTable<ExportSession>,
     active_temps: Mutex<HashSet<PathBuf>>,
-    reserved_ids: Mutex<HashSet<String>>,
     active_targets: Arc<StdMutex<HashSet<TargetIdentity>>>,
-    slots: Arc<Semaphore>,
-    session_ttl: Duration,
 }
 
 struct ExportSession {
@@ -57,8 +112,28 @@ struct ExportSession {
     started_at: Instant,
     last_activity: Instant,
     terminal: bool,
+    /// Backend-sourced session: frames are paged in by the manager itself and
+    /// renderer `append` calls are rejected for this id.
+    backend_sourced: bool,
     _slot: OwnedSemaphorePermit,
     _target: TargetReservation,
+}
+
+impl StreamingSession for ExportSession {
+    type Detached = (PathBuf, Option<BufWriter<File>>);
+
+    fn last_activity(&self) -> Instant {
+        self.last_activity
+    }
+
+    fn seal_expired(&mut self) {
+        self.terminal = true;
+        self.last_activity = Instant::now();
+    }
+
+    fn detach_expired(&mut self) -> Self::Detached {
+        (self.temp.clone(), self.writer.take())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -75,6 +150,14 @@ pub struct ExportFinishStats {
     pub raw_bytes: usize,
     pub output_bytes: usize,
     pub duration_ms: u64,
+}
+
+/// Result of [`ExportSessionManager::begin_backend_sourced`]: the session id
+/// plus the backend-computed frame total the finish will enforce.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackendExportBegin {
+    pub export_id: String,
+    pub expected_frames: usize,
 }
 
 struct TargetReservation {
@@ -94,19 +177,24 @@ impl Drop for TargetReservation {
 impl Default for ExportSessionManager {
     fn default() -> Self {
         Self {
-            sessions: Mutex::new(HashMap::new()),
+            table: StreamingSessionTable::new(
+                MAX_ACTIVE_EXPORTS,
+                EXPORT_SESSION_TTL,
+                StreamingSessionNaming {
+                    id_field: "exportId",
+                    noun: "export",
+                    unknown_message: "unknown or finished export session",
+                },
+            ),
             active_temps: Mutex::new(HashSet::new()),
-            reserved_ids: Mutex::new(HashSet::new()),
             active_targets: Arc::new(StdMutex::new(HashSet::new())),
-            slots: Arc::new(Semaphore::new(MAX_ACTIVE_EXPORTS)),
-            session_ttl: EXPORT_SESSION_TTL,
         }
     }
 }
 
 impl ExportSessionManager {
     pub async fn begin(&self, format: ExportFormat, target: PathBuf) -> Result<String, AppError> {
-        self.begin_inner(format, target, None).await
+        self.begin_inner(format, target, None, false).await
     }
 
     /// Start a frontend export whose confirmed totals must match exactly at
@@ -119,28 +207,93 @@ impl ExportSessionManager {
         expected_frames: usize,
         expected_raw_bytes: usize,
     ) -> Result<String, AppError> {
-        if expected_frames == 0 {
-            return Err(validation_error(
-                "expectedFrames",
-                "expected frame count must be greater than zero",
-            ));
+        validate_expected_totals(expected_frames, expected_raw_bytes)?;
+        self.begin_inner(
+            format,
+            target,
+            Some((expected_frames, expected_raw_bytes)),
+            false,
+        )
+        .await
+    }
+
+    /// Start a backend-sourced export: the confirmed totals are read from the
+    /// durable source (never trusted from the renderer), then the manager
+    /// pages the frames in itself through the internal append path — no IPC
+    /// per batch. When this returns, every source frame below
+    /// `query.to_seq_exclusive` is already written to the temp file and the
+    /// caller only owes `finish` (or `abort`).
+    pub async fn begin_backend_sourced(
+        &self,
+        format: ExportFormat,
+        target: PathBuf,
+        source: std::sync::Arc<dyn WorkspaceFrameSource>,
+        query: WorkspaceFrameQuery,
+    ) -> Result<BackendExportBegin, AppError> {
+        validate_source_query(&query)?;
+        let totals = run_source_task(Arc::clone(&source), query.clone(), move |source, query| {
+            source.expected_totals(&query)
+        })
+        .await?;
+        validate_expected_totals(totals.frames, totals.raw_bytes)?;
+        let id = self
+            .begin_inner(
+                format,
+                target,
+                Some((totals.frames, totals.raw_bytes)),
+                true,
+            )
+            .await?;
+        if let Err(error) = self.append_source_pages(&id, source, query).await {
+            // A failed page loop is terminal: release the target and capacity
+            // reservations and remove the backend-owned temp before returning.
+            self.abort(&id).await.ok();
+            return Err(error);
         }
-        if expected_frames > MAX_EXPORT_FRAMES {
-            return Err(limit_error(
-                "expectedFrames",
-                MAX_EXPORT_FRAMES,
-                expected_frames,
-            ));
+        Ok(BackendExportBegin {
+            export_id: id,
+            expected_frames: totals.frames,
+        })
+    }
+
+    /// Page the durable source in bounded slices and append each through the
+    /// internal path so the per-session frame/byte accounting, the finish-time
+    /// totals enforcement, and abort semantics all stay identical to the
+    /// renderer-streamed flow.
+    async fn append_source_pages(
+        &self,
+        id: &str,
+        source: std::sync::Arc<dyn WorkspaceFrameSource>,
+        query: WorkspaceFrameQuery,
+    ) -> Result<(), AppError> {
+        let mut from_seq = 0_u64;
+        loop {
+            let page = run_source_task(Arc::clone(&source), query.clone(), move |source, query| {
+                source.read_page(&query, from_seq)
+            })
+            .await?;
+            if page.frames.is_empty() {
+                return Ok(());
+            }
+            let batch_bytes =
+                validate_frame_batch(&page.frames, MAX_BATCH_FRAMES, MAX_BATCH_BYTES)?;
+            let shared = self.get(id).await?;
+            let mut session = shared.lock().await;
+            Self::append_locked(&mut session, &page.frames, batch_bytes).await?;
+            match page.next_seq {
+                None => return Ok(()),
+                Some(next_seq) if next_seq >= query.to_seq_exclusive => return Ok(()),
+                Some(next_seq) if next_seq > from_seq => from_seq = next_seq,
+                // A cursor that does not advance would loop forever; treat it
+                // as a broken source instead of silently truncating.
+                Some(_) => {
+                    return Err(validation_error(
+                        "source",
+                        "workspace frame source cursor did not advance",
+                    ));
+                }
+            }
         }
-        if expected_raw_bytes > MAX_EXPORT_BYTES {
-            return Err(limit_error(
-                "expectedRawBytes",
-                MAX_EXPORT_BYTES,
-                expected_raw_bytes,
-            ));
-        }
-        self.begin_inner(format, target, Some((expected_frames, expected_raw_bytes)))
-            .await
     }
 
     async fn begin_inner(
@@ -148,15 +301,14 @@ impl ExportSessionManager {
         format: ExportFormat,
         target: PathBuf,
         expected_totals: Option<(usize, usize)>,
+        backend_sourced: bool,
     ) -> Result<String, AppError> {
         self.cleanup_expired().await;
         // Reserve capacity before touching the filesystem. A semaphore makes
         // concurrent begin calls part of the same admission decision, so a
         // burst cannot temporarily create more than MAX_ACTIVE_EXPORTS temp
         // files while each caller observes a stale map length.
-        let slot = Arc::clone(&self.slots)
-            .try_acquire_owned()
-            .map_err(|_| limit_error("exportId", MAX_ACTIVE_EXPORTS, MAX_ACTIVE_EXPORTS + 1))?;
+        let slot = self.table.acquire_slot()?;
         let target_identity = canonical_target_identity(&target, format).await?;
         let target_reservation = self.reserve_target(target_identity)?;
         let active_temps = self.active_temp_paths().await;
@@ -169,11 +321,11 @@ impl ExportSessionManager {
         )
         .await?;
 
-        let id = self.reserve_new_id().await?;
+        let id = self.table.reserve_new_id().await?;
         let (temp, file) = match create_temp_file(&target, format, &id).await {
             Ok(value) => value,
             Err(error) => {
-                self.reserved_ids.lock().await.remove(&id);
+                self.table.release_reserved(&id).await;
                 return Err(error);
             }
         };
@@ -183,7 +335,7 @@ impl ExportSessionManager {
         let writer = match initialize_writer(writer, &header, &temp, format, &target).await {
             Ok(writer) => writer,
             Err(error) => {
-                self.reserved_ids.lock().await.remove(&id);
+                self.table.release_reserved(&id).await;
                 return Err(error);
             }
         };
@@ -201,16 +353,13 @@ impl ExportSessionManager {
             started_at: Instant::now(),
             last_activity: Instant::now(),
             terminal: false,
+            backend_sourced,
             _slot: slot,
             _target: target_reservation,
         }));
         self.active_temps.lock().await.insert(temp);
-        let replaced = self
-            .sessions
-            .lock()
-            .await
-            .insert(id.clone(), Arc::clone(&session));
-        self.reserved_ids.lock().await.remove(&id);
+        let replaced = self.table.insert(id.clone(), Arc::clone(&session)).await;
+        self.table.release_reserved(&id).await;
         debug_assert!(replaced.is_none(), "export ids must be unique per manager");
         Ok(id)
     }
@@ -224,6 +373,15 @@ impl ExportSessionManager {
         let batch_bytes = validate_frame_batch(frames, MAX_BATCH_FRAMES, MAX_BATCH_BYTES)?;
         let shared = self.get(id).await?;
         let mut session = shared.lock().await;
+        if session.backend_sourced {
+            // The renderer must never feed a backend-sourced session: the
+            // backend already wrote the confirmed totals below the seq
+            // ceiling, and a mixed-source file would silently diverge.
+            return Err(validation_error(
+                "exportId",
+                "append is only allowed for renderer-sourced export sessions",
+            ));
+        }
         Self::append_locked(&mut session, frames, batch_bytes).await
     }
 
@@ -391,57 +549,22 @@ impl ExportSessionManager {
     }
 
     async fn remove_current(&self, id: &str, shared: &SharedExportSession) -> bool {
-        let mut sessions = self.sessions.lock().await;
-        let is_current = sessions
-            .get(id)
-            .is_some_and(|current| Arc::ptr_eq(current, shared));
-        if is_current {
-            sessions.remove(id);
-        }
-        is_current
+        self.table.remove_current(id, shared).await
     }
 
     async fn get(&self, id: &str) -> Result<SharedExportSession, AppError> {
-        self.sessions
-            .lock()
-            .await
-            .get(id)
-            .cloned()
-            .ok_or_else(|| validation_error("exportId", "unknown or finished export session"))
+        self.table.get(id).await
     }
 
     async fn cleanup_expired(&self) -> usize {
-        let now = Instant::now();
-        let snapshot = {
-            let sessions = self.sessions.lock().await;
-            sessions
-                .iter()
-                .map(|(id, session)| (id.clone(), Arc::clone(session)))
-                .collect::<Vec<_>>()
-        };
-
-        let mut count = 0;
-        for (id, shared) in snapshot {
-            // A session holding its mutex is actively writing/flushing. Never
-            // make a new export wait behind that disk I/O merely to perform a
-            // best-effort expiry sweep; it can be reconsidered next begin.
-            let Ok(mut session) = shared.try_lock() else {
-                continue;
-            };
-            if now.saturating_duration_since(session.last_activity) < self.session_ttl {
-                continue;
-            }
-            let removed = self.remove_current(&id, &shared).await;
-            if !removed {
-                continue;
-            }
-            let temp = session.temp.clone();
-            let writer = session.writer.take();
-            drop(session);
+        // A session holding its mutex is actively writing/flushing. Never
+        // make a new export wait behind that disk I/O merely to perform a
+        // best-effort expiry sweep; it can be reconsidered next begin.
+        let (count, expired) = self.table.sweep_expired().await;
+        for (temp, writer) in expired {
             drop(writer);
             remove_if_exists(&temp).await;
             self.active_temps.lock().await.remove(&temp);
-            count += 1;
         }
         if count > 0 {
             tracing::info!(count, "removed expired export sessions");
@@ -468,22 +591,6 @@ impl ExportSessionManager {
         Ok(TargetReservation {
             active_targets: Arc::clone(&self.active_targets),
             identity,
-        })
-    }
-
-    async fn reserve_new_id(&self) -> Result<String, AppError> {
-        for _ in 0..8 {
-            let id = random_id_hex()?;
-            if self.sessions.lock().await.contains_key(&id) {
-                continue;
-            }
-            if self.reserved_ids.lock().await.insert(id.clone()) {
-                return Ok(id);
-            }
-        }
-        Err(AppError::IoError {
-            message: "failed to allocate a unique export session id".to_string(),
-            kind: ErrorKind::Other,
         })
     }
 }
@@ -570,10 +677,78 @@ pub fn validate_frame_batch(
 }
 
 fn validate_session_id(id: &str) -> Result<(), AppError> {
-    if id.len() != 32 || !is_lower_hex(id, 32) {
-        return Err(validation_error("exportId", "invalid export session id"));
+    validate_hex_session_id(id, "exportId", "export")
+}
+
+/// Shared admission bounds for confirmed totals (renderer-confirmed and
+/// backend-computed alike).
+fn validate_expected_totals(
+    expected_frames: usize,
+    expected_raw_bytes: usize,
+) -> Result<(), AppError> {
+    if expected_frames == 0 {
+        return Err(validation_error(
+            "expectedFrames",
+            "expected frame count must be greater than zero",
+        ));
+    }
+    if expected_frames > MAX_EXPORT_FRAMES {
+        return Err(limit_error(
+            "expectedFrames",
+            MAX_EXPORT_FRAMES,
+            expected_frames,
+        ));
+    }
+    if expected_raw_bytes > MAX_EXPORT_BYTES {
+        return Err(limit_error(
+            "expectedRawBytes",
+            MAX_EXPORT_BYTES,
+            expected_raw_bytes,
+        ));
     }
     Ok(())
+}
+
+fn validate_source_query(query: &WorkspaceFrameQuery) -> Result<(), AppError> {
+    for (field, value) in [
+        ("workspaceId", &query.workspace_id),
+        ("sessionId", &query.session_id),
+    ] {
+        if value.is_empty() || value.len() > MAX_SOURCE_ID_BYTES {
+            return Err(validation_error(
+                field,
+                "backend export source identifiers must be 1-128 bytes",
+            ));
+        }
+    }
+    if query.to_seq_exclusive == 0 {
+        return Err(validation_error(
+            "source",
+            "toSeqExclusive must be greater than zero",
+        ));
+    }
+    Ok(())
+}
+
+/// Run one blocking source read on the blocking pool (SQLite reads must stay
+/// off the async runtime workers), mapping a task panic into a retryable
+/// busy error.
+async fn run_source_task<T, F>(
+    source: Arc<dyn WorkspaceFrameSource>,
+    query: WorkspaceFrameQuery,
+    task: F,
+) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<dyn WorkspaceFrameSource>, WorkspaceFrameQuery) -> Result<T, AppError>
+        + Send
+        + 'static,
+{
+    tokio::task::spawn_blocking(move || task(source, query))
+        .await
+        .map_err(|error| AppError::Busy {
+            message: format!("workspace frame source task failed: {error}"),
+        })?
 }
 
 fn temp_path(target: &Path, id: &str) -> Option<PathBuf> {
@@ -584,14 +759,6 @@ fn temp_path(target: &Path, id: &str) -> Option<PathBuf> {
 fn classify_artifact(file_name: &str) -> Option<&str> {
     let id = file_name.strip_prefix(".bbcom.")?.strip_suffix(".part")?;
     (id.len() == 32 && is_lower_hex(id, 32)).then_some(id)
-}
-
-fn is_lower_hex(value: &str, max_len: usize) -> bool {
-    !value.is_empty()
-        && value.len() <= max_len
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 async fn reconcile_export_residue(
@@ -690,19 +857,6 @@ async fn create_temp_file(
         .await
         .map_err(|error| export_error(error, format, target))?;
     Ok((temp, file))
-}
-
-fn random_id_hex() -> Result<String, AppError> {
-    let mut random = [0_u8; 16];
-    getrandom::fill(&mut random).map_err(|error| AppError::IoError {
-        message: format!("failed to obtain randomness for export session id: {error}"),
-        kind: ErrorKind::Other,
-    })?;
-    let mut id = String::with_capacity(random.len() * 2);
-    for byte in random {
-        write!(&mut id, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    Ok(id)
 }
 
 async fn replace_target(temp: &Path, target: &Path, format: ExportFormat) -> Result<(), AppError> {
@@ -818,22 +972,6 @@ async fn remove_if_exists(path: &Path) {
     }
 }
 
-fn validation_error(field: &str, message: impl Into<String>) -> AppError {
-    AppError::ValidationError {
-        message: message.into(),
-        field: field.to_string(),
-    }
-}
-
-fn limit_error(field: &str, limit: usize, actual: usize) -> AppError {
-    AppError::LimitError {
-        message: format!("{field} exceeds its limit"),
-        field: field.to_string(),
-        limit,
-        actual,
-    }
-}
-
 fn export_error(error: std::io::Error, format: ExportFormat, path: &Path) -> AppError {
     AppError::ExportError {
         message: error.to_string(),
@@ -852,6 +990,7 @@ fn display_name(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::streaming_sessions::random_session_id_hex;
     use crate::models::data_frame::Direction;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -888,7 +1027,7 @@ mod tests {
     }
 
     async fn shared_session(manager: &ExportSessionManager, id: &str) -> SharedExportSession {
-        manager.sessions.lock().await.get(id).unwrap().clone()
+        manager.get(id).await.unwrap()
     }
 
     fn frame(id: &str, data: &[u8]) -> DataFrame {
@@ -897,6 +1036,7 @@ mod tests {
             direction: Direction::Rx,
             timestamp: 1.0,
             data: data.to_vec(),
+            data_b64: None,
         }
     }
 
@@ -1012,7 +1152,7 @@ mod tests {
             );
             assert_eq!(std::fs::read(&target).unwrap(), b"original target");
             assert!(!temp.exists(), "{name} temp must be removed");
-            assert!(manager.sessions.lock().await.is_empty());
+            assert!(manager.table.is_empty().await);
             assert!(manager.active_temps.lock().await.is_empty());
             assert!(
                 manager
@@ -1079,11 +1219,11 @@ mod tests {
         );
         let expired_at = Instant::now() - EXPORT_SESSION_TTL - Duration::from_secs(1);
         let sessions = manager
-            .sessions
-            .lock()
+            .table
+            .snapshot()
             .await
-            .values()
-            .cloned()
+            .into_iter()
+            .map(|(_, shared)| shared)
             .collect::<Vec<_>>();
         for shared in sessions {
             shared.lock().await.last_activity = expired_at;
@@ -1095,7 +1235,7 @@ mod tests {
             .unwrap();
 
         assert!(temp_files.iter().all(|path| !path.exists()));
-        assert_eq!(manager.sessions.lock().await.len(), 1);
+        assert_eq!(manager.table.len().await, 1);
         assert_eq!(
             manager
                 .active_targets
@@ -1123,7 +1263,7 @@ mod tests {
         let first_shared = shared_session(&manager, &first_id).await;
         let first_guard = first_shared.lock().await;
 
-        let map_guard = manager.sessions.lock().await;
+        let map_guard = manager.table.lock_map().await;
         let blocked_manager = Arc::clone(&manager);
         let blocked_id = first_id.clone();
         let blocked = tokio::spawn(async move {
@@ -1134,7 +1274,7 @@ mod tests {
         tokio::task::yield_now().await;
         drop(map_guard);
 
-        let reacquired = timeout(Duration::from_secs(1), manager.sessions.lock())
+        let reacquired = timeout(Duration::from_secs(1), manager.table.lock_map())
             .await
             .expect("an append waiting on its session must release the global map");
         drop(reacquired);
@@ -1198,7 +1338,7 @@ mod tests {
             results => panic!("exactly one same-target begin must succeed: {results:?}"),
         };
         assert!(matches!(rejected, AppError::ValidationError { field, .. } if field == "path"));
-        assert_eq!(manager.sessions.lock().await.len(), 1);
+        assert_eq!(manager.table.len().await, 1);
         assert_eq!(
             manager
                 .active_targets
@@ -1207,10 +1347,10 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(manager.slots.available_permits(), MAX_ACTIVE_EXPORTS - 1);
+        assert_eq!(manager.table.available_permits(), MAX_ACTIVE_EXPORTS - 1);
 
         manager.abort(&active_id).await.unwrap();
-        assert_eq!(manager.slots.available_permits(), MAX_ACTIVE_EXPORTS);
+        assert_eq!(manager.table.available_permits(), MAX_ACTIVE_EXPORTS);
         let next = manager
             .begin(ExportFormat::Jsonl, alias)
             .await
@@ -1252,7 +1392,7 @@ mod tests {
 
         assert_eq!(opened.len(), MAX_ACTIVE_EXPORTS);
         assert_eq!(rejected, MAX_ACTIVE_EXPORTS);
-        assert_eq!(manager.sessions.lock().await.len(), MAX_ACTIVE_EXPORTS);
+        assert_eq!(manager.table.len().await, MAX_ACTIVE_EXPORTS);
         assert_eq!(manager.active_temps.lock().await.len(), MAX_ACTIVE_EXPORTS);
         for (id, target) in opened {
             manager.abort(&id).await.unwrap();
@@ -1290,8 +1430,8 @@ mod tests {
 
         assert!(manager.finish(&id).await.is_err());
 
-        assert_eq!(manager.slots.available_permits(), MAX_ACTIVE_EXPORTS);
-        assert!(manager.sessions.lock().await.is_empty());
+        assert_eq!(manager.table.available_permits(), MAX_ACTIVE_EXPORTS);
+        assert!(manager.table.is_empty().await);
         assert!(manager.active_temps.lock().await.is_empty());
         assert!(
             manager
@@ -1443,8 +1583,8 @@ mod tests {
 
     #[test]
     fn random_session_ids_are_full_width_and_unpredictable() {
-        let first = random_id_hex().unwrap();
-        let second = random_id_hex().unwrap();
+        let first = random_session_id_hex("export").unwrap();
+        let second = random_session_id_hex("export").unwrap();
         assert_eq!(first.len(), 32);
         assert!(is_lower_hex(&first, 32));
         assert_ne!(first, second);
@@ -1495,6 +1635,413 @@ mod tests {
             )
             .unwrap(),
             MAX_FRAME_BYTES,
+        );
+    }
+
+    // ---- backend-sourced sessions -----------------------------------------
+
+    const SOURCE_WORKSPACE_ID: &str = "01234567-89ab-cdef-0123-456789abcdef";
+    const SOURCE_SESSION_ID: &str = "session-1";
+
+    fn source_query(to_seq_exclusive: u64) -> WorkspaceFrameQuery {
+        WorkspaceFrameQuery {
+            workspace_id: SOURCE_WORKSPACE_ID.to_owned(),
+            session_id: SOURCE_SESSION_ID.to_owned(),
+            to_seq_exclusive,
+        }
+    }
+
+    /// In-memory fake durable source: dense 0-based seqs, optional per-page
+    /// failure injection, optional totals override.
+    struct FakeSource {
+        frames: Vec<DataFrame>,
+        totals_override: Option<WorkspaceFrameTotals>,
+        fail_page_from: Option<usize>,
+        pages_read: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeSource {
+        fn new(frames: Vec<DataFrame>) -> Arc<Self> {
+            Arc::new(Self {
+                frames,
+                totals_override: None,
+                fail_page_from: None,
+                pages_read: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+
+        fn pages_read(&self) -> usize {
+            self.pages_read.load(Ordering::SeqCst)
+        }
+
+        fn frames_below(&self, ceiling: u64) -> &[DataFrame] {
+            let limit = usize::try_from(ceiling).unwrap_or(0);
+            &self.frames[..limit.min(self.frames.len())]
+        }
+    }
+
+    impl WorkspaceFrameSource for FakeSource {
+        fn expected_totals(
+            &self,
+            query: &WorkspaceFrameQuery,
+        ) -> Result<WorkspaceFrameTotals, AppError> {
+            let frames = self.frames_below(query.to_seq_exclusive);
+            Ok(self.totals_override.unwrap_or(WorkspaceFrameTotals {
+                frames: frames.len(),
+                raw_bytes: frames.iter().map(|frame| frame.data.len()).sum(),
+            }))
+        }
+
+        fn read_page(
+            &self,
+            query: &WorkspaceFrameQuery,
+            from_seq: u64,
+        ) -> Result<WorkspaceFrameSlice, AppError> {
+            let page_index = self.pages_read.fetch_add(1, Ordering::SeqCst);
+            if self.fail_page_from.is_some_and(|from| page_index >= from) {
+                return Err(AppError::Busy {
+                    message: "injected source failure".to_owned(),
+                });
+            }
+            let frames = self.frames_below(query.to_seq_exclusive);
+            let start = usize::try_from(from_seq).unwrap_or(usize::MAX);
+            if start >= frames.len() {
+                return Ok(WorkspaceFrameSlice::default());
+            }
+            let end = (start + SOURCE_PAGE_FRAMES).min(frames.len());
+            Ok(WorkspaceFrameSlice {
+                frames: frames[start..end].to_vec(),
+                next_seq: (end < frames.len()).then(|| u64::try_from(end).unwrap()),
+            })
+        }
+    }
+
+    fn source_frame(id: &str, data: &[u8], direction: Direction) -> DataFrame {
+        DataFrame {
+            id: id.to_string(),
+            direction,
+            timestamp: 1.0,
+            data: data.to_vec(),
+            data_b64: None,
+        }
+    }
+
+    fn source_frames(count: usize) -> Vec<DataFrame> {
+        (0..count)
+            .map(|index| {
+                let data = vec![(index % 7) as u8; (index % 7) + 1];
+                source_frame(
+                    &format!("s{index}"),
+                    &data,
+                    if index % 2 == 0 {
+                        Direction::Rx
+                    } else {
+                        Direction::Tx
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn backend_sourced_begin_pages_the_source_and_finishes_atomically() {
+        let (directory, target) = isolated_target("backend.jsonl");
+        std::fs::write(&target, b"previous").unwrap();
+        let manager = ExportSessionManager::default();
+        // 300 frames force two pages (page cap is SOURCE_PAGE_FRAMES).
+        let frames = source_frames(SOURCE_PAGE_FRAMES + 44);
+        let raw_bytes: usize = frames.iter().map(|frame| frame.data.len()).sum();
+        let source = FakeSource::new(frames);
+        let pages_before = source.pages_read();
+        let begin = manager
+            .begin_backend_sourced(
+                ExportFormat::Jsonl,
+                target.clone(),
+                source.clone(),
+                source_query(u64::try_from(SOURCE_PAGE_FRAMES + 44).unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(begin.expected_frames, SOURCE_PAGE_FRAMES + 44);
+        assert_eq!(
+            source.pages_read() - pages_before,
+            2,
+            "multi-page sources are paged, not slurped"
+        );
+        let stats = manager.finish(&begin.export_id).await.unwrap();
+        assert_eq!(stats.frames, SOURCE_PAGE_FRAMES + 44);
+        assert_eq!(stats.raw_bytes, raw_bytes);
+        let lines = std::fs::read_to_string(&target).unwrap().lines().count();
+        assert_eq!(lines, SOURCE_PAGE_FRAMES + 44);
+        assert!(
+            !std::fs::read_to_string(&target)
+                .unwrap()
+                .contains("previous")
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn backend_sourced_totals_enforcement_is_terminal_and_preserves_the_target() {
+        let (directory, target) = isolated_target("diverged.csv");
+        std::fs::write(&target, b"original target").unwrap();
+        let manager = ExportSessionManager::default();
+        // The source claims 4 frames in its totals but only holds 3: the
+        // finish-time totals enforcement must fail the export, remove the
+        // temp, and leave the existing target byte-for-byte unchanged.
+        let frames = source_frames(3);
+        let raw_bytes: usize = frames.iter().map(|frame| frame.data.len()).sum();
+        let mut source = FakeSource::new(frames);
+        Arc::get_mut(&mut source).unwrap().totals_override = Some(WorkspaceFrameTotals {
+            frames: 4,
+            raw_bytes,
+        });
+        let source: Arc<dyn WorkspaceFrameSource> = source;
+        let begin = manager
+            .begin_backend_sourced(ExportFormat::Csv, target.clone(), source, source_query(3))
+            .await
+            .unwrap();
+        let error = manager.finish(&begin.export_id).await.unwrap_err();
+        assert!(
+            matches!(&error, AppError::ValidationError { field, .. } if field == "expectedFrames"),
+            "unexpected totals error: {error:?}"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"original target");
+        assert_eq!(manager.table.available_permits(), MAX_ACTIVE_EXPORTS);
+        assert!(manager.table.is_empty().await);
+        assert!(manager.active_temps.lock().await.is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn renderer_appends_to_a_backend_sourced_session_are_rejected() {
+        let (directory, target) = isolated_target("locked.jsonl");
+        let manager = ExportSessionManager::default();
+        let source: Arc<dyn WorkspaceFrameSource> = FakeSource::new(source_frames(2));
+        let begin = manager
+            .begin_backend_sourced(ExportFormat::Jsonl, target.clone(), source, source_query(2))
+            .await
+            .unwrap();
+        let error = manager
+            .append(&begin.export_id, &[frame("renderer", &[0x41])])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, AppError::ValidationError { field, .. } if field == "exportId"),
+            "unexpected append error: {error:?}"
+        );
+        // The backend-written content survives the rejected append.
+        let stats = manager.finish(&begin.export_id).await.unwrap();
+        assert_eq!(stats.frames, 2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn backend_sourced_page_failure_aborts_and_releases_reservations() {
+        let (directory, target) = isolated_target("failing.jsonl");
+        let manager = ExportSessionManager::default();
+        let mut source = FakeSource::new(source_frames(SOURCE_PAGE_FRAMES * 2));
+        Arc::get_mut(&mut source).unwrap().fail_page_from = Some(1);
+        let source: Arc<dyn WorkspaceFrameSource> = source;
+        let error = manager
+            .begin_backend_sourced(
+                ExportFormat::Jsonl,
+                target.clone(),
+                source,
+                source_query(u64::try_from(SOURCE_PAGE_FRAMES * 2).unwrap()),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, AppError::Busy { .. }),
+            "unexpected {error:?}"
+        );
+        assert!(!target.exists());
+        assert_eq!(manager.table.available_permits(), MAX_ACTIVE_EXPORTS);
+        assert!(manager.table.is_empty().await);
+        assert!(manager.active_temps.lock().await.is_empty());
+        assert!(
+            manager
+                .active_targets
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
+        let residue: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(
+            residue.is_empty(),
+            "temp residue must be removed: {residue:?}"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn backend_sourced_export_matches_renderer_streamed_output_byte_for_byte() {
+        use bbcom_contracts::{
+            ApplyWorkspaceBatchRequest, WorkspaceAppendFramesPayload, WorkspaceFramePayload,
+            WorkspaceMutation, WorkspaceSessionKind, WorkspaceSessionUpsertPayload,
+        };
+        use bbcom_workspace::{CreateWorkspaceRequest, WorkspaceService};
+
+        const TOTAL_FRAMES: usize = 700; // spans several bounded pages
+        const CEILING: u64 = 650; // frames 650..699 stay persisted but excluded
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let workspace_path = root.join(format!("{SOURCE_WORKSPACE_ID}.bbcom"));
+        let mut service = WorkspaceService::create(
+            &workspace_path,
+            CreateWorkspaceRequest {
+                workspace_id: SOURCE_WORKSPACE_ID.to_owned(),
+                name: "Export parity".to_owned(),
+                created_at_ms: 1_747_000_000_000,
+            },
+        )
+        .unwrap();
+        let mut revision = service
+            .apply_batch(ApplyWorkspaceBatchRequest {
+                workspace_id: SOURCE_WORKSPACE_ID.to_owned(),
+                client_batch_id: "parity-bootstrap".to_owned(),
+                base_revision: 0,
+                mutations: vec![WorkspaceMutation::UpsertSession {
+                    sequence: 0,
+                    session_id: SOURCE_SESSION_ID.to_owned(),
+                    payload: WorkspaceSessionUpsertPayload {
+                        name: "Parity session".to_owned(),
+                        sort_order: 0,
+                        kind: WorkspaceSessionKind::Live,
+                        last_port_hint: None,
+                        port_config: serde_json::json!({}),
+                        document: serde_json::json!({}),
+                    },
+                }],
+            })
+            .unwrap()
+            .committed_revision;
+
+        let payloads: Vec<WorkspaceFramePayload> = (0..TOTAL_FRAMES)
+            .map(|index| WorkspaceFramePayload {
+                id: format!("parity-{index}"),
+                direction: if index % 3 == 0 {
+                    bbcom_contracts::Direction::Tx
+                } else {
+                    bbcom_contracts::Direction::Rx
+                },
+                timestamp_ms: 1_747_000_000_000 + index as u64,
+                data: vec![(index % 251) as u8; (index % 11) + 1],
+                data_b64: None,
+                tx_status: if index % 3 == 0 {
+                    Some("complete".to_owned())
+                } else {
+                    None
+                },
+                requested_bytes: None,
+                omitted_bytes: None,
+            })
+            .collect();
+        // Seed through the public mutation API in capture-sized batches
+        // (MAX_WORKSPACE_FRAMES_PER_BATCH is 256, like the save queue).
+        let mut start_seq = 0_u64;
+        let mut seed_batch = 0_u64;
+        for chunk in payloads.chunks(256) {
+            seed_batch += 1;
+            let batch_start_seq = start_seq;
+            start_seq += chunk.len() as u64;
+            revision = service
+                .apply_batch(ApplyWorkspaceBatchRequest {
+                    workspace_id: SOURCE_WORKSPACE_ID.to_owned(),
+                    client_batch_id: format!("parity-frames-{seed_batch}"),
+                    base_revision: revision,
+                    mutations: vec![WorkspaceMutation::AppendFrames {
+                        sequence: 0,
+                        session_id: SOURCE_SESSION_ID.to_owned(),
+                        payload: WorkspaceAppendFramesPayload {
+                            start_seq: batch_start_seq,
+                            frames: chunk.to_vec(),
+                        },
+                    }],
+                })
+                .unwrap()
+                .committed_revision;
+        }
+        assert!(revision > 0);
+
+        // Renderer path: hydrate the same frames back and stream them through
+        // the public begin/append/finish flow.
+        let mut hydrated = Vec::new();
+        let mut cursor = 0_u64;
+        loop {
+            let page = service
+                .hydrate_frames(SOURCE_SESSION_ID, cursor, 128)
+                .unwrap();
+            if page.frames.is_empty() {
+                break;
+            }
+            for frame in page.frames {
+                if frame.seq >= CEILING {
+                    break;
+                }
+                hydrated.push(DataFrame {
+                    id: frame.id,
+                    direction: match frame.direction.as_str() {
+                        "TX" => Direction::Tx,
+                        _ => Direction::Rx,
+                    },
+                    timestamp: frame.timestamp_ms as f64,
+                    data: frame.data,
+                    data_b64: None,
+                });
+            }
+            let Some(next) = page.next_seq else { break };
+            if next >= CEILING {
+                break;
+            }
+            cursor = next;
+        }
+        assert_eq!(hydrated.len(), CEILING as usize);
+
+        let manager = ExportSessionManager::default();
+        let renderer_target = root.join("renderer.jsonl");
+        let renderer_id = manager
+            .begin(ExportFormat::Jsonl, renderer_target.clone())
+            .await
+            .unwrap();
+        for batch in hydrated.chunks(64) {
+            manager.append(&renderer_id, batch).await.unwrap();
+        }
+        manager.finish(&renderer_id).await.unwrap();
+
+        // Backend path: the real managed-library adapter over the same file.
+        let adapter =
+            crate::commands::export::ManagedWorkspaceFrameSource::open(&root, SOURCE_WORKSPACE_ID)
+                .unwrap();
+        let backend_target = root.join("backend.jsonl");
+        let begin = manager
+            .begin_backend_sourced(
+                ExportFormat::Jsonl,
+                backend_target.clone(),
+                std::sync::Arc::new(adapter),
+                source_query(CEILING),
+            )
+            .await
+            .unwrap();
+        assert_eq!(begin.expected_frames, CEILING as usize);
+        manager.finish(&begin.export_id).await.unwrap();
+
+        let renderer_bytes = std::fs::read(&renderer_target).unwrap();
+        let backend_bytes = std::fs::read(&backend_target).unwrap();
+        assert_eq!(
+            renderer_bytes, backend_bytes,
+            "backend-sourced export must be byte-identical to the renderer-streamed export"
+        );
+        let line_count = backend_bytes.iter().filter(|byte| **byte == b'\n').count();
+        assert_eq!(line_count, CEILING as usize);
+        assert!(
+            !String::from_utf8_lossy(&backend_bytes).contains("parity-650"),
+            "frames at/above the seq ceiling are excluded"
         );
     }
 }

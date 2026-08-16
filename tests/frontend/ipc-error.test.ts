@@ -1,9 +1,9 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { getCommandErrorMessage } from '../../src/lib/ipc.ts';
-import { setLocale } from '../../src/lib/i18n.ts';
+import { getCommandErrorMessage } from '../../src/features/native/index.ts';
+import { ensureLocaleLoaded, setLocale } from '../../src/lib/i18n.ts';
 
-test('stable command errors are localized from their code without backend prose', () => {
+test('stable command errors are localized from their code without backend prose', async () => {
   const native = {
     code: 'IO_PERMISSION_DENIED',
     messageKey: 'error.io_permission_denied',
@@ -11,6 +11,7 @@ test('stable command errors are localized from their code without backend prose'
     message: '/secret/path must not be rendered',
   };
   setLocale('en');
+  await ensureLocaleLoaded('en');
   assert.equal(
     getCommandErrorMessage(native, 'fallback'),
     'The target file cannot be written because permission was denied.',
@@ -19,8 +20,9 @@ test('stable command errors are localized from their code without backend prose'
   assert.equal(getCommandErrorMessage(native, 'fallback'), '没有写入目标文件的权限。');
 });
 
-test('every export boundary code has a deterministic local message', () => {
+test('every export boundary code has a deterministic local message', async () => {
   setLocale('en');
+  await ensureLocaleLoaded('en');
   for (const code of [
     'INVALID_INPUT',
     'LIMIT_EXCEEDED',

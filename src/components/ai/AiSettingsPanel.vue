@@ -117,7 +117,7 @@ async function saveApiKey() {
 
 .settings-state {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   font-weight: 500;
   padding: 1px 6px;
   border: 1px solid var(--border-subtle);

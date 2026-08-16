@@ -89,7 +89,7 @@ import {
 } from '../../lib/parser-panel';
 import { formatHex } from '../../lib/format';
 import { t } from '../../lib/i18n';
-import { useSessionStore } from '../../stores/sessions';
+import { useSessionDocument } from '../../features/sessions';
 import ParserConfigBar from './ParserConfigBar.vue';
 import ParserStatsBar from './ParserStatsBar.vue';
 import ParserFrameDetail from './ParserFrameDetail.vue';
@@ -110,7 +110,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 
-const sessionStore = useSessionStore();
+const document = useSessionDocument(props.sessionId);
 const message = useMessage();
 
 const kindOptions = computed(() => [
@@ -126,7 +126,7 @@ const lenSizeOptions = [
 
 const presetOptions = PARSER_PRESETS.map((p) => ({ label: p.name, value: p.id }));
 
-const session = computed(() => sessionStore.sessions.find((s) => s.id === props.sessionId));
+const session = computed(() => document.session.value ?? undefined);
 const parserState = computed(
   () =>
     session.value?.parserState ?? {
@@ -202,7 +202,7 @@ const lenAdjust = computed({
 });
 
 function setConfig(config: ParserConfig, selectedPresetId: string | null) {
-  sessionStore.setParserState(props.sessionId, config, selectedPresetId);
+  document.setParserState(props.sessionId, config, selectedPresetId);
 }
 
 const selectedFrame = ref<DisplayParsedFrame | null>(null);
@@ -285,7 +285,7 @@ async function copyAscii(f: { data: Uint8Array }) {
 
 .pp-empty {
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   padding: 24px 12px;
   text-align: center;
 }
@@ -296,7 +296,7 @@ async function copyAscii(f: { data: Uint8Array }) {
   gap: 8px;
   padding: 3px 6px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
@@ -317,7 +317,7 @@ async function copyAscii(f: { data: Uint8Array }) {
 
 .pp-idx {
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   min-width: 36px;
 }
 
@@ -332,7 +332,7 @@ async function copyAscii(f: { data: Uint8Array }) {
 
 .pp-len {
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   font-variant-numeric: tabular-nums;
 }
 

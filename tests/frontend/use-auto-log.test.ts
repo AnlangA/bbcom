@@ -1,7 +1,8 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { base64ToBytes, bytesToBase64 } from '../../src/lib/base64.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 import { useAppStore } from '../../src/stores/app.ts';
 import {
   AUTO_LOG_DEBOUNCE_MS,
@@ -15,7 +16,7 @@ import {
   type AutoLogSessionClient,
   type UseAutoLogDeps,
 } from '../../src/composables/useAutoLog.ts';
-import type { AutoLogFormat, ExportFramePayload } from '../../src/lib/ipc.ts';
+import type { AutoLogFormat, ExportFramePayload } from '../../src/features/native/index.ts';
 import type { DataFrame, PortConfig } from '../../src/types/index.ts';
 
 interface LocalStorageLike {
@@ -80,7 +81,7 @@ type SetupOptions = Omit<UseAutoLogDeps, 'sessionClient'> & {
 
 function setup(options: SetupOptions = {}) {
   setActivePinia(createPinia());
-  const sessions = useSessionStore();
+  const sessions = useSessionCoreStore();
   const app = useAppStore();
   const sessionId = sessions.createSession('COM1', cfg);
   const calls: Calls = { begins: [], appends: [], finishes: [], aborts: [], revoked: [] };
@@ -201,6 +202,33 @@ test('useAutoLog: batches preserve order and obey frame and raw-byte limits', as
           call.frames.reduce((total, item) => total + item.data.length, 0) <=
           AUTO_LOG_MAX_BATCH_BYTES,
       ),
+    );
+  });
+});
+
+test('useAutoLog: appended frames cross IPC over the base64 channel only', async () => {
+  await withLocalStorageMock(async () => {
+    const { sessionId, calls, auto } = setup({ debounceMs: 10 });
+    await auto.enable(sessionId);
+    const first = frame('RX', 3, 1);
+    const second = frame('TX', 2, 2);
+    auto.appendFrame(sessionId, first);
+    auto.appendFrame(sessionId, second);
+    await auto.disable(sessionId);
+
+    const payloads = calls.appends.flatMap((call) => call.frames);
+    assert.equal(payloads.length, 2);
+    for (const payload of payloads) {
+      assert.deepEqual(payload.data, [], 'legacy number-array channel stays empty');
+      assert.equal(typeof payload.dataB64, 'string');
+    }
+    assert.deepEqual(
+      payloads.map((item) => item.dataB64),
+      [bytesToBase64(first.data), bytesToBase64(second.data)],
+    );
+    assert.deepEqual(
+      payloads.flatMap((item) => Array.from(base64ToBytes(item.dataB64 ?? ''))),
+      [1, 1, 1, 2, 2],
     );
   });
 });

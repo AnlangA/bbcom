@@ -8,23 +8,24 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use bbcom_contracts::RuntimeInstanceKey;
 use bbcom_plugin_broker::{
-    AuditSink, AuthorizationBroker, AuthorizationGeneration, AuthorizationReview,
-    AuthorizationState, AuthorizationStore, BrokerAction, BrokerError, DeclarativePanel,
-    DeclarativePanelBroker, ExtraConfirmationReason, HostedPanel, NoActionReason, PanelEvent,
-    PanelEventAction, ProposalContext, ProposalDecision, ProposalResolution, ReviewCapability,
-    SerialProposalBroker, SerialProposalRequest, SerialProposalView,
+    AuditSink, BrokerAction, BrokerError, DeclarativePanel, DeclarativePanelBroker, HostedPanel,
+    NoActionReason, PanelControlKind, PanelEvent, PanelEventAction, PanelField, ProposalContext,
+    ProposalDecision, ProposalResolution, SerialProposalBroker, SerialProposalRequest,
+    SerialProposalView,
 };
-use bbcom_plugin_contracts::{AuthorizationKey, Permission};
+use bbcom_plugin_contracts::Permission;
 use bbcom_plugin_manager::{
-    ArtifactRevocationStore, AuthorizationTarget, Clock, HostLauncher, InstallationPort,
-    ManualPackageRequest, PluginAuthorizationStore, PluginSnapshot, PluginStatus,
+    Clock, HostLauncher, HostPanel, HostPanelFieldKind, HostPublishedPanel, InstallationPort,
+    ManualPackageRequest, PluginSnapshot,
 };
 
 use super::service::{PluginService, PluginServiceError};
 
-const MAX_OPERATIONS: usize = 1_024;
-const MAX_PENDING_REVIEWS: usize = 1;
+const MAX_ACTIVE_OPERATIONS: usize = 128;
+const MAX_COMPLETED_OPERATIONS: usize = 256;
+const COMPLETED_OPERATION_RETENTION_MS: u64 = 15 * 60 * 1_000;
 const MAX_PENDING_PANELS: usize = 128;
 const MAX_PENDING_PROPOSALS: usize = 1_024;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -38,6 +39,290 @@ pub enum PluginOperationStatus {
     Failed,
     Cancelled,
     Interrupted,
+}
+
+#[cfg(test)]
+mod operation_retention_tests {
+    use super::*;
+    use bbcom_plugin_broker::NoopAuditSink;
+    use bbcom_plugin_manager::{
+        PluginArtifact, PluginArtifactSource, PluginSourceKind, PluginStatus,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Lifecycle;
+
+    impl PluginLifecyclePort for Lifecycle {
+        fn snapshots(&self) -> Result<Vec<PluginSnapshot>, PluginOperationFailure> {
+            Ok(Vec::new())
+        }
+
+        fn workspace_id(&self) -> Result<Option<String>, PluginOperationFailure> {
+            Ok(Some("11111111-1111-1111-1111-111111111111".to_owned()))
+        }
+
+        fn install_manual(
+            &self,
+            _request: &ManualPackageRequest,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            Err(failure())
+        }
+
+        fn install_local(
+            &self,
+            _package_root: &std::path::Path,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            Err(failure())
+        }
+
+        fn uninstall(&self, _plugin_id: &str) -> Result<PluginSnapshot, PluginOperationFailure> {
+            Err(failure())
+        }
+
+        fn set_enabled(
+            &self,
+            _plugin_id: &str,
+            _enabled: bool,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            Err(failure())
+        }
+    }
+
+    struct Upstream;
+
+    impl PluginCommandUpstreamPort for Upstream {
+        fn current_proposal_context(
+            &mut self,
+            _proposal: &SerialProposalView,
+        ) -> Result<ProposalContext, PluginUpstreamFailure> {
+            Err(PluginUpstreamFailure::ProposalContextUnavailable)
+        }
+
+        fn execute_serial_action(
+            &mut self,
+            _runtime: RuntimeInstanceKey,
+            _action: BrokerAction,
+        ) -> Result<(), PluginUpstreamFailure> {
+            Err(PluginUpstreamFailure::SerialExecutionUnavailable)
+        }
+
+        fn deliver_panel_event(
+            &mut self,
+            _action: PanelEventAction,
+        ) -> Result<(), PluginUpstreamFailure> {
+            Err(PluginUpstreamFailure::PanelDeliveryUnavailable)
+        }
+    }
+
+    fn failure() -> PluginOperationFailure {
+        PluginOperationFailure {
+            code: "TEST_FAILURE",
+            message_key: "plugin.error.test",
+        }
+    }
+
+    fn service() -> PluginCommandService {
+        let audit: &'static NoopAuditSink = Box::leak(Box::new(NoopAuditSink));
+        PluginCommandService::new(
+            Arc::new(Lifecycle),
+            Box::new(Upstream),
+            Box::new(SerialProposalBroker::new(audit)),
+            Box::new(DeclarativePanelBroker::new(audit)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn five_thousand_terminal_operations_keep_registry_and_correlations_bounded() {
+        let mut service = service();
+        for index in 0..5_000_u64 {
+            let queued = service
+                .queue_set_enabled(
+                    service.snapshot().revision,
+                    format!("request-{index}"),
+                    "dev.bbcom.fixture".to_owned(),
+                    true,
+                )
+                .unwrap();
+            let terminal = service.execute(&queued.operation_id, index + 1).unwrap();
+            assert!(terminal.status.is_terminal());
+        }
+        let snapshot = service.snapshot();
+        assert_eq!(snapshot.operations.len(), MAX_COMPLETED_OPERATIONS);
+        assert_eq!(service.requests.len(), MAX_COMPLETED_OPERATIONS);
+
+        // Advancing beyond retention removes the old request correlations too.
+        let queued = service
+            .queue_set_enabled(
+                snapshot.revision,
+                "request-after-retention".to_owned(),
+                "dev.bbcom.fixture".to_owned(),
+                true,
+            )
+            .unwrap();
+        service
+            .execute(
+                &queued.operation_id,
+                COMPLETED_OPERATION_RETENTION_MS + 10_000,
+            )
+            .unwrap();
+        assert!(service.snapshot().operations.len() <= MAX_COMPLETED_OPERATIONS);
+    }
+
+    struct RunningLifecycle(PluginSnapshot);
+
+    impl PluginLifecyclePort for RunningLifecycle {
+        fn snapshots(&self) -> Result<Vec<PluginSnapshot>, PluginOperationFailure> {
+            Ok(vec![self.0.clone()])
+        }
+        fn workspace_id(&self) -> Result<Option<String>, PluginOperationFailure> {
+            Ok(Some("11111111-1111-1111-1111-111111111111".to_owned()))
+        }
+        fn install_manual(
+            &self,
+            _: &ManualPackageRequest,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            Ok(self.0.clone())
+        }
+        fn install_local(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            Ok(self.0.clone())
+        }
+        fn uninstall(&self, _: &str) -> Result<PluginSnapshot, PluginOperationFailure> {
+            Ok(self.0.clone())
+        }
+        fn set_enabled(&self, _: &str, _: bool) -> Result<PluginSnapshot, PluginOperationFailure> {
+            Ok(self.0.clone())
+        }
+    }
+
+    struct CountingUpstream(Arc<AtomicUsize>);
+
+    impl PluginCommandUpstreamPort for CountingUpstream {
+        fn current_proposal_context(
+            &mut self,
+            proposal: &SerialProposalView,
+        ) -> Result<ProposalContext, PluginUpstreamFailure> {
+            Ok(ProposalContext {
+                operation_id: proposal.operation_id.clone(),
+                session_id: proposal.session_id.clone(),
+            })
+        }
+        fn execute_serial_action(
+            &mut self,
+            _: RuntimeInstanceKey,
+            _: BrokerAction,
+        ) -> Result<(), PluginUpstreamFailure> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn deliver_panel_event(
+            &mut self,
+            _: PanelEventAction,
+        ) -> Result<(), PluginUpstreamFailure> {
+            Ok(())
+        }
+    }
+
+    fn running_snapshot() -> PluginSnapshot {
+        PluginSnapshot {
+            artifact: PluginArtifact::new(
+                "dev.bbcom.fixture",
+                "1.0.0",
+                "a".repeat(64),
+                "b".repeat(64),
+                PluginArtifactSource {
+                    source_id: "local".to_owned(),
+                    kind: PluginSourceKind::LocalPackage,
+                },
+                [Permission::SerialWriteProposal],
+            )
+            .unwrap(),
+            expected_enabled: true,
+            status: PluginStatus::Running,
+            pending_version: None,
+            running_instance_id: Some(7),
+            generation: 3,
+            crashes_in_window: 0,
+            last_error: None,
+        }
+    }
+
+    fn proposal(index: u8) -> SerialProposalRequest {
+        SerialProposalRequest {
+            operation_id: format!("operation-{index}"),
+            session_id: "session-1".to_owned(),
+            payload: vec![index],
+            display_label: "send".to_owned(),
+        }
+    }
+
+    fn proposal_service(counter: Arc<AtomicUsize>) -> PluginCommandService {
+        let audit: &'static NoopAuditSink = Box::leak(Box::new(NoopAuditSink));
+        PluginCommandService::new(
+            Arc::new(RunningLifecycle(running_snapshot())),
+            Box::new(CountingUpstream(counter)),
+            Box::new(SerialProposalBroker::new(audit)),
+            Box::new(DeclarativePanelBroker::new(audit)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn first_write_decision_is_reused_only_within_the_runtime_generation() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut service = proposal_service(Arc::clone(&count));
+        let declared = BTreeSet::from([Permission::SerialWriteProposal]);
+        let first = service
+            .register_proposal("dev.bbcom.fixture", &declared, proposal(1), 1)
+            .unwrap();
+        assert_eq!(service.snapshot().proposals.len(), 1);
+        let queued = service
+            .queue_proposal_decision(
+                service.snapshot().revision,
+                "approve-first".to_owned(),
+                first.proposal_id,
+                ProposalDecision::Approve,
+            )
+            .unwrap();
+        assert_eq!(
+            service.execute(&queued.operation_id, 2).unwrap().status,
+            PluginOperationStatus::Completed
+        );
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+
+        service
+            .register_proposal("dev.bbcom.fixture", &declared, proposal(2), 3)
+            .unwrap();
+        assert!(service.snapshot().proposals.is_empty());
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn rejection_is_cached_and_suppresses_later_prompts_and_writes() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut service = proposal_service(Arc::clone(&count));
+        let declared = BTreeSet::from([Permission::SerialWriteProposal]);
+        let first = service
+            .register_proposal("dev.bbcom.fixture", &declared, proposal(1), 1)
+            .unwrap();
+        let queued = service
+            .queue_proposal_decision(
+                service.snapshot().revision,
+                "reject-first".to_owned(),
+                first.proposal_id,
+                ProposalDecision::Reject,
+            )
+            .unwrap();
+        service.execute(&queued.operation_id, 2).unwrap();
+        service
+            .register_proposal("dev.bbcom.fixture", &declared, proposal(2), 3)
+            .unwrap();
+        assert!(service.snapshot().proposals.is_empty());
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
 }
 
 impl PluginOperationStatus {
@@ -66,15 +351,14 @@ impl PluginOperationStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginOperationKind {
     Install,
+    Uninstall,
     SetEnabled,
-    AuthorizationDecision,
     ProposalDecision,
     PanelEvent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginUpstreamFailure {
-    AuthorizationContextUnavailable,
     ProposalContextUnavailable,
     SerialExecutionUnavailable,
     PanelDeliveryUnavailable,
@@ -84,7 +368,6 @@ impl PluginUpstreamFailure {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
-            Self::AuthorizationContextUnavailable => "PLUGIN_AUTHORIZATION_CONTEXT_UNAVAILABLE",
             Self::ProposalContextUnavailable => "PLUGIN_PROPOSAL_CONTEXT_UNAVAILABLE",
             Self::SerialExecutionUnavailable => "PLUGIN_SERIAL_EXECUTION_UNAVAILABLE",
             Self::PanelDeliveryUnavailable => "PLUGIN_PANEL_DELIVERY_UNAVAILABLE",
@@ -94,7 +377,6 @@ impl PluginUpstreamFailure {
     #[must_use]
     pub const fn message_key(self) -> &'static str {
         match self {
-            Self::AuthorizationContextUnavailable => "plugin.error.authorizationContextUnavailable",
             Self::ProposalContextUnavailable => "plugin.error.proposalContextUnavailable",
             Self::SerialExecutionUnavailable => "plugin.error.serialExecutionUnavailable",
             Self::PanelDeliveryUnavailable => "plugin.error.panelDeliveryUnavailable",
@@ -134,32 +416,11 @@ pub struct PluginOperationSnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuthorizationReviewSnapshot {
-    pub review_id: String,
-    pub plugin_id: String,
-    pub artifact_version: String,
-    pub implicit: BTreeSet<Permission>,
-    pub requires_persistent_approval: BTreeSet<Permission>,
-    pub requires_per_request_approval: BTreeSet<Permission>,
-    pub unavailable: BTreeSet<ReviewCapability>,
-    pub extra_confirmation: bool,
-    pub extra_confirmation_reasons: BTreeSet<ExtraConfirmationReason>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReviewedAuthorizationReceipt {
-    pub artifact_version: String,
-    pub reviewed_permissions: BTreeSet<Permission>,
-    pub revision: u64,
-    pub decision_generation: AuthorizationGeneration,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginCommandSnapshot {
     pub revision: u64,
+    pub workspace_id: Option<String>,
     pub plugins: Vec<PluginSnapshot>,
     pub operations: Vec<PluginOperationSnapshot>,
-    pub authorization_reviews: Vec<AuthorizationReviewSnapshot>,
     pub proposals: Vec<SerialProposalView>,
     pub panels: Vec<HostedPanel>,
 }
@@ -171,7 +432,6 @@ pub enum PluginCommandErrorCode {
     RegistryLimit,
     OperationNotFound,
     OperationNotCancellable,
-    AuthorizationReviewNotFound,
     ProposalNotFound,
     PanelNotFound,
     LifecycleUnavailable,
@@ -188,7 +448,6 @@ impl PluginCommandErrorCode {
             Self::RegistryLimit => "PLUGIN_COMMAND_REGISTRY_LIMIT",
             Self::OperationNotFound => "PLUGIN_OPERATION_NOT_FOUND",
             Self::OperationNotCancellable => "PLUGIN_OPERATION_NOT_CANCELLABLE",
-            Self::AuthorizationReviewNotFound => "PLUGIN_AUTHORIZATION_REVIEW_NOT_FOUND",
             Self::ProposalNotFound => "PLUGIN_PROPOSAL_NOT_FOUND",
             Self::PanelNotFound => "PLUGIN_PANEL_NOT_FOUND",
             Self::LifecycleUnavailable => "PLUGIN_LIFECYCLE_UNAVAILABLE",
@@ -205,7 +464,7 @@ pub struct PluginCommandError {
 }
 
 impl PluginCommandError {
-    fn new(code: PluginCommandErrorCode) -> Self {
+    pub fn new(code: PluginCommandErrorCode) -> Self {
         Self {
             code,
             failure: None,
@@ -222,19 +481,38 @@ impl PluginCommandError {
 
 pub trait PluginLifecyclePort {
     fn snapshots(&self) -> Result<Vec<PluginSnapshot>, PluginOperationFailure>;
-    fn authorization_target(
+    fn workspace_id(&self) -> Result<Option<String>, PluginOperationFailure> {
+        Ok(None)
+    }
+    fn take_published_panels(&self) -> Result<Vec<HostPublishedPanel>, PluginOperationFailure> {
+        Ok(Vec::new())
+    }
+    fn invoke_panel_event(
         &self,
-        plugin_id: &str,
-    ) -> Result<AuthorizationTarget, PluginOperationFailure>;
-    fn complete_authorization(
-        &self,
-        target: &AuthorizationTarget,
-        approved: bool,
-    ) -> Result<PluginSnapshot, PluginOperationFailure>;
+        _plugin_id: &str,
+        _field_id: &str,
+        _value: &str,
+    ) -> Result<Option<HostPanel>, PluginOperationFailure> {
+        Err(PluginOperationFailure {
+            code: "PLUGIN_PANEL_DELIVERY_UNAVAILABLE",
+            message_key: "plugin.error.panelDeliveryUnavailable",
+        })
+    }
     fn install_manual(
         &self,
         request: &ManualPackageRequest,
     ) -> Result<PluginSnapshot, PluginOperationFailure>;
+    fn update_manual(
+        &self,
+        request: &ManualPackageRequest,
+    ) -> Result<PluginSnapshot, PluginOperationFailure> {
+        self.install_manual(request)
+    }
+    fn install_local(
+        &self,
+        package_root: &std::path::Path,
+    ) -> Result<PluginSnapshot, PluginOperationFailure>;
+    fn uninstall(&self, plugin_id: &str) -> Result<PluginSnapshot, PluginOperationFailure>;
     fn set_enabled(
         &self,
         plugin_id: &str,
@@ -242,67 +520,32 @@ pub trait PluginLifecyclePort {
     ) -> Result<PluginSnapshot, PluginOperationFailure>;
 }
 
-impl<T: PluginLifecyclePort> PluginLifecyclePort for Arc<T> {
-    fn snapshots(&self) -> Result<Vec<PluginSnapshot>, PluginOperationFailure> {
-        self.as_ref().snapshots()
-    }
-
-    fn authorization_target(
-        &self,
-        plugin_id: &str,
-    ) -> Result<AuthorizationTarget, PluginOperationFailure> {
-        self.as_ref().authorization_target(plugin_id)
-    }
-
-    fn complete_authorization(
-        &self,
-        target: &AuthorizationTarget,
-        approved: bool,
-    ) -> Result<PluginSnapshot, PluginOperationFailure> {
-        self.as_ref().complete_authorization(target, approved)
-    }
-
-    fn install_manual(
-        &self,
-        request: &ManualPackageRequest,
-    ) -> Result<PluginSnapshot, PluginOperationFailure> {
-        self.as_ref().install_manual(request)
-    }
-
-    fn set_enabled(
-        &self,
-        plugin_id: &str,
-        enabled: bool,
-    ) -> Result<PluginSnapshot, PluginOperationFailure> {
-        self.as_ref().set_enabled(plugin_id, enabled)
-    }
-}
-
-impl<I, H, A, R, C> PluginLifecyclePort for PluginService<I, H, A, R, C>
+impl<I, H, C> PluginLifecyclePort for PluginService<I, H, C>
 where
     I: InstallationPort,
     H: HostLauncher,
-    A: PluginAuthorizationStore,
-    R: ArtifactRevocationStore,
     C: Clock,
 {
     fn snapshots(&self) -> Result<Vec<PluginSnapshot>, PluginOperationFailure> {
         PluginService::snapshots(self).map_err(lifecycle_failure)
     }
 
-    fn authorization_target(
-        &self,
-        plugin_id: &str,
-    ) -> Result<AuthorizationTarget, PluginOperationFailure> {
-        PluginService::authorization_target(self, plugin_id).map_err(lifecycle_failure)
+    fn workspace_id(&self) -> Result<Option<String>, PluginOperationFailure> {
+        PluginService::workspace_id(self).map_err(lifecycle_failure)
     }
 
-    fn complete_authorization(
+    fn take_published_panels(&self) -> Result<Vec<HostPublishedPanel>, PluginOperationFailure> {
+        PluginService::take_published_panels(self).map_err(lifecycle_failure)
+    }
+
+    fn invoke_panel_event(
         &self,
-        target: &AuthorizationTarget,
-        approved: bool,
-    ) -> Result<PluginSnapshot, PluginOperationFailure> {
-        PluginService::complete_authorization(self, target, approved).map_err(lifecycle_failure)
+        plugin_id: &str,
+        field_id: &str,
+        value: &str,
+    ) -> Result<Option<HostPanel>, PluginOperationFailure> {
+        PluginService::invoke_panel_event(self, plugin_id, field_id, value)
+            .map_err(lifecycle_failure)
     }
 
     fn install_manual(
@@ -310,6 +553,13 @@ where
         request: &ManualPackageRequest,
     ) -> Result<PluginSnapshot, PluginOperationFailure> {
         PluginService::install_manual(self, request).map_err(lifecycle_failure)
+    }
+
+    fn update_manual(
+        &self,
+        request: &ManualPackageRequest,
+    ) -> Result<PluginSnapshot, PluginOperationFailure> {
+        PluginService::update_manual(self, request).map_err(lifecycle_failure)
     }
 
     fn set_enabled(
@@ -322,6 +572,17 @@ where
         } else {
             PluginService::disable(self, plugin_id).map_err(lifecycle_failure)
         }
+    }
+
+    fn install_local(
+        &self,
+        package_root: &std::path::Path,
+    ) -> Result<PluginSnapshot, PluginOperationFailure> {
+        PluginService::install_local(self, package_root).map_err(lifecycle_failure)
+    }
+
+    fn uninstall(&self, plugin_id: &str) -> Result<PluginSnapshot, PluginOperationFailure> {
+        PluginService::uninstall(self, plugin_id).map_err(lifecycle_failure)
     }
 }
 
@@ -342,67 +603,34 @@ fn lifecycle_failure(error: PluginServiceError) -> PluginOperationFailure {
     }
 }
 
-pub trait AuthorizationBrokerPort {
-    fn review(
-        &self,
-        key: AuthorizationKey,
-        requested: &[Permission],
-        network_requested: bool,
-    ) -> Result<AuthorizationReview, BrokerError>;
-
-    fn record_decisions(
-        &self,
-        review: &AuthorizationReview,
-        decisions: &[(Permission, AuthorizationState)],
-        extra_confirmation_acknowledged: bool,
-        target: &AuthorizationTarget,
-        reviewed_permissions: BTreeSet<Permission>,
-        revision: u64,
-    ) -> Result<ReviewedAuthorizationReceipt, BrokerError>;
-}
-
-impl<'a, S, A> AuthorizationBrokerPort for AuthorizationBroker<'a, S, A>
-where
-    S: AuthorizationStore,
-    A: AuditSink,
-{
-    fn review(
-        &self,
-        key: AuthorizationKey,
-        requested: &[Permission],
-        network_requested: bool,
-    ) -> Result<AuthorizationReview, BrokerError> {
-        AuthorizationBroker::review(self, key, requested, network_requested)
-    }
-
-    fn record_decisions(
-        &self,
-        review: &AuthorizationReview,
-        decisions: &[(Permission, AuthorizationState)],
-        extra_confirmation_acknowledged: bool,
-        target: &AuthorizationTarget,
-        reviewed_permissions: BTreeSet<Permission>,
-        revision: u64,
-    ) -> Result<ReviewedAuthorizationReceipt, BrokerError> {
-        let decision_generation = AuthorizationBroker::record_decisions(
-            self,
-            review,
-            decisions,
-            extra_confirmation_acknowledged,
-        )?;
-        Ok(ReviewedAuthorizationReceipt {
-            artifact_version: target.artifact.version.clone(),
-            reviewed_permissions,
-            revision,
-            decision_generation,
-        })
+fn host_panel_to_broker(panel: HostPanel) -> DeclarativePanel {
+    DeclarativePanel {
+        title: panel.title,
+        fields: panel
+            .fields
+            .into_iter()
+            .map(|field| PanelField {
+                id: field.id,
+                label: field.label,
+                kind: match field.kind {
+                    HostPanelFieldKind::Text => PanelControlKind::Text,
+                    HostPanelFieldKind::Number => PanelControlKind::Number,
+                    HostPanelFieldKind::Toggle => PanelControlKind::Toggle,
+                    HostPanelFieldKind::Select => PanelControlKind::Select,
+                    HostPanelFieldKind::Button => PanelControlKind::Button,
+                },
+                value: field.value,
+                options: field.options,
+                disabled: field.disabled,
+            })
+            .collect(),
     }
 }
 
 pub trait ProposalBrokerPort {
     fn create(
         &mut self,
-        key: &AuthorizationKey,
+        plugin_id: &str,
         declared: &BTreeSet<Permission>,
         request: SerialProposalRequest,
         now_ms: u64,
@@ -420,12 +648,12 @@ pub trait ProposalBrokerPort {
 impl<'a, A: AuditSink> ProposalBrokerPort for SerialProposalBroker<'a, A> {
     fn create(
         &mut self,
-        key: &AuthorizationKey,
+        plugin_id: &str,
         declared: &BTreeSet<Permission>,
         request: SerialProposalRequest,
         now_ms: u64,
     ) -> Result<SerialProposalView, BrokerError> {
-        SerialProposalBroker::create(self, key, declared, request, now_ms)
+        SerialProposalBroker::create(self, plugin_id, declared, request, now_ms)
     }
 
     fn resolve(
@@ -440,11 +668,8 @@ impl<'a, A: AuditSink> ProposalBrokerPort for SerialProposalBroker<'a, A> {
 }
 
 pub trait PanelBrokerPort {
-    fn publish(
-        &self,
-        key: &AuthorizationKey,
-        panel: DeclarativePanel,
-    ) -> Result<HostedPanel, BrokerError>;
+    fn publish(&self, plugin_id: &str, panel: DeclarativePanel)
+    -> Result<HostedPanel, BrokerError>;
 
     fn event(
         &self,
@@ -456,10 +681,10 @@ pub trait PanelBrokerPort {
 impl<'a, A: AuditSink> PanelBrokerPort for DeclarativePanelBroker<'a, A> {
     fn publish(
         &self,
-        key: &AuthorizationKey,
+        plugin_id: &str,
         panel: DeclarativePanel,
     ) -> Result<HostedPanel, BrokerError> {
-        DeclarativePanelBroker::publish(self, key, panel)
+        DeclarativePanelBroker::publish(self, plugin_id, panel)
     }
 
     fn event(
@@ -471,31 +696,24 @@ impl<'a, A: AuditSink> PanelBrokerPort for DeclarativePanelBroker<'a, A> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuthorizationSubject {
-    pub workspace_id: String,
-    pub network_requested: bool,
-}
-
 /// Missing native integrations are explicit and fail closed.
 ///
-/// Implementations obtain authorization identity and current proposal context
-/// from application-owned state. `execute_serial_action` is the only place an
+/// Implementations obtain current proposal context from application-owned
+/// state. `execute_serial_action` is the only place an
 /// approved broker action may reach the serial subsystem. `deliver_panel_event`
 /// is the only place a validated event may reach a host. No permissive default
 /// implementation exists.
 pub trait PluginCommandUpstreamPort {
-    fn authorization_subject(
-        &mut self,
-        plugin_id: &str,
-    ) -> Result<AuthorizationSubject, PluginUpstreamFailure>;
-
     fn current_proposal_context(
         &mut self,
         proposal: &SerialProposalView,
     ) -> Result<ProposalContext, PluginUpstreamFailure>;
 
-    fn execute_serial_action(&mut self, action: BrokerAction) -> Result<(), PluginUpstreamFailure>;
+    fn execute_serial_action(
+        &mut self,
+        runtime: RuntimeInstanceKey,
+        action: BrokerAction,
+    ) -> Result<(), PluginUpstreamFailure>;
 
     fn deliver_panel_event(
         &mut self,
@@ -506,18 +724,15 @@ pub trait PluginCommandUpstreamPort {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum QueuedAction {
     Install(ManualPackageRequest),
+    InstallLocal {
+        package_root: std::path::PathBuf,
+    },
+    Uninstall {
+        plugin_id: String,
+    },
     SetEnabled {
         plugin_id: String,
         enabled: bool,
-    },
-    AuthorizationDecision {
-        review_id: String,
-        decisions: Vec<(Permission, AuthorizationState)>,
-        per_request_acknowledged: BTreeSet<Permission>,
-        extra_confirmation_acknowledged: bool,
-    },
-    DismissAuthorization {
-        review_id: String,
     },
     ProposalDecision {
         proposal_id: String,
@@ -532,11 +747,9 @@ enum QueuedAction {
 impl QueuedAction {
     const fn kind(&self) -> PluginOperationKind {
         match self {
-            Self::Install(_) => PluginOperationKind::Install,
+            Self::Install(_) | Self::InstallLocal { .. } => PluginOperationKind::Install,
+            Self::Uninstall { .. } => PluginOperationKind::Uninstall,
             Self::SetEnabled { .. } => PluginOperationKind::SetEnabled,
-            Self::AuthorizationDecision { .. } | Self::DismissAuthorization { .. } => {
-                PluginOperationKind::AuthorizationDecision
-            }
             Self::ProposalDecision { .. } => PluginOperationKind::ProposalDecision,
             Self::PanelEvent { .. } => PluginOperationKind::PanelEvent,
         }
@@ -547,69 +760,63 @@ impl QueuedAction {
 struct OperationRecord {
     snapshot: PluginOperationSnapshot,
     action: QueuedAction,
+    terminal_at_ms: Option<u64>,
 }
 
-struct PendingReview {
-    snapshot: AuthorizationReviewSnapshot,
-    review: AuthorizationReview,
-    target: AuthorizationTarget,
-}
-
-pub struct PluginCommandService<L, U, AB, PB, DB> {
-    lifecycle: L,
-    upstream: U,
-    authorization: AB,
-    proposals: PB,
-    panels: DB,
+/// Application-owned plugin command core. The five reviewed native ports are
+/// dyn objects because production wiring has exactly one implementation of
+/// each; the port traits remain the reviewed contract every implementation
+/// (including test fakes) must satisfy before it is boxed or shared here.
+pub struct PluginCommandService {
+    lifecycle: Arc<dyn PluginLifecyclePort + Send + Sync>,
+    upstream: Box<dyn PluginCommandUpstreamPort + Send>,
+    proposals: Box<dyn ProposalBrokerPort + Send>,
+    panels: Box<dyn PanelBrokerPort + Send>,
     revision: u64,
+    workspace_id: Option<String>,
     next_operation_id: u64,
-    next_review_id: u64,
     operations: BTreeMap<String, OperationRecord>,
     requests: BTreeMap<String, String>,
-    reviews: BTreeMap<String, PendingReview>,
-    deferred_review_plugins: BTreeSet<String>,
     proposal_views: BTreeMap<String, SerialProposalView>,
+    proposal_generations: BTreeMap<String, u64>,
     hosted_panels: BTreeMap<String, HostedPanel>,
+    panel_generations: BTreeMap<String, u64>,
+    serial_write_decisions: BTreeMap<(String, u64), bool>,
     plugin_snapshots: BTreeMap<String, PluginSnapshot>,
 }
 
-impl<L, U, AB, PB, DB> PluginCommandService<L, U, AB, PB, DB>
-where
-    L: PluginLifecyclePort,
-    U: PluginCommandUpstreamPort,
-    AB: AuthorizationBrokerPort,
-    PB: ProposalBrokerPort,
-    DB: PanelBrokerPort,
-{
+impl PluginCommandService {
     pub fn new(
-        lifecycle: L,
-        upstream: U,
-        authorization: AB,
-        proposals: PB,
-        panels: DB,
+        lifecycle: Arc<dyn PluginLifecyclePort + Send + Sync>,
+        upstream: Box<dyn PluginCommandUpstreamPort + Send>,
+        proposals: Box<dyn ProposalBrokerPort + Send>,
+        panels: Box<dyn PanelBrokerPort + Send>,
     ) -> Result<Self, PluginCommandError> {
         let initial = lifecycle.snapshots().map_err(|failure| {
             PluginCommandError::with_failure(PluginCommandErrorCode::LifecycleUnavailable, failure)
         })?;
         let plugin_snapshots = collect_plugin_snapshots(initial)?;
+        let workspace_id = lifecycle.workspace_id().map_err(|failure| {
+            PluginCommandError::with_failure(PluginCommandErrorCode::LifecycleUnavailable, failure)
+        })?;
         let mut service = Self {
             lifecycle,
             upstream,
-            authorization,
             proposals,
             panels,
             revision: 1,
+            workspace_id,
             next_operation_id: 1,
-            next_review_id: 1,
             operations: BTreeMap::new(),
             requests: BTreeMap::new(),
-            reviews: BTreeMap::new(),
-            deferred_review_plugins: BTreeSet::new(),
             proposal_views: BTreeMap::new(),
+            proposal_generations: BTreeMap::new(),
             hosted_panels: BTreeMap::new(),
+            panel_generations: BTreeMap::new(),
+            serial_write_decisions: BTreeMap::new(),
             plugin_snapshots,
         };
-        service.ensure_next_authorization_review()?;
+        service.ingest_published_panels()?;
         Ok(service)
     }
 
@@ -617,16 +824,12 @@ where
     pub fn snapshot(&self) -> PluginCommandSnapshot {
         PluginCommandSnapshot {
             revision: self.revision,
+            workspace_id: self.workspace_id.clone(),
             plugins: self.plugin_snapshots.values().cloned().collect(),
             operations: self
                 .operations
                 .values()
                 .map(|record| record.snapshot.clone())
-                .collect(),
-            authorization_reviews: self
-                .reviews
-                .values()
-                .map(|review| review.snapshot.clone())
                 .collect(),
             proposals: self.proposal_views.values().cloned().collect(),
             panels: self.hosted_panels.values().cloned().collect(),
@@ -641,40 +844,44 @@ where
             PluginCommandError::with_failure(PluginCommandErrorCode::LifecycleUnavailable, failure)
         })?;
         let next = collect_plugin_snapshots(next)?;
-        if next != self.plugin_snapshots {
+        let workspace_id = self.lifecycle.workspace_id().map_err(|failure| {
+            PluginCommandError::with_failure(PluginCommandErrorCode::LifecycleUnavailable, failure)
+        })?;
+        if next != self.plugin_snapshots || workspace_id != self.workspace_id {
             self.ensure_revision_capacity(1)?;
             self.plugin_snapshots = next;
-            self.deferred_review_plugins
-                .retain(|plugin_id| self.plugin_snapshots.contains_key(plugin_id));
+            self.workspace_id = workspace_id;
+            self.reconcile_runtime_instances();
             self.bump_revision()?;
         }
-        let stale_reviews = self
-            .reviews
-            .iter()
-            .filter_map(|(review_id, pending)| {
-                match self
-                    .lifecycle
-                    .authorization_target(&pending.snapshot.plugin_id)
-                {
-                    Ok(current) if current == pending.target => None,
-                    _ => Some(review_id.clone()),
-                }
-            })
-            .collect::<Vec<_>>();
-        if !stale_reviews.is_empty() {
-            // Removing the stale target and immediately materializing its
-            // replacement can each advance the renderer-visible revision.
-            self.ensure_revision_capacity(2)?;
-            for review_id in stale_reviews {
-                self.reviews.remove(&review_id);
-            }
-            self.bump_revision()?;
-        }
-        // Retry review materialization even when lifecycle state is unchanged.
-        // A transient trusted-upstream failure must not strand an already
-        // committed install or upgrade without a review forever.
-        self.ensure_next_authorization_review()?;
+        self.ingest_published_panels()?;
         Ok(self.revision)
+    }
+
+    pub fn queue_install_local(
+        &mut self,
+        expected_revision: u64,
+        client_request_id: String,
+        package_root: std::path::PathBuf,
+    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
+        self.queue(
+            expected_revision,
+            client_request_id,
+            QueuedAction::InstallLocal { package_root },
+        )
+    }
+
+    pub fn queue_uninstall(
+        &mut self,
+        expected_revision: u64,
+        client_request_id: String,
+        plugin_id: String,
+    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
+        self.queue(
+            expected_revision,
+            client_request_id,
+            QueuedAction::Uninstall { plugin_id },
+        )
     }
 
     pub fn queue_install(
@@ -704,173 +911,11 @@ where
         )
     }
 
-    pub fn begin_authorization_review(
-        &mut self,
-        expected_revision: u64,
-        plugin_id: &str,
-    ) -> Result<AuthorizationReviewSnapshot, PluginCommandError> {
-        self.expect_revision(expected_revision)?;
-        if let Some(existing) = self
-            .reviews
-            .values()
-            .find(|review| review.snapshot.plugin_id == plugin_id)
-        {
-            return Ok(existing.snapshot.clone());
-        }
-        if !self.reviews.is_empty() {
-            return Err(PluginCommandError::new(
-                PluginCommandErrorCode::RegistryLimit,
-            ));
-        }
-        self.deferred_review_plugins.remove(plugin_id);
-        self.create_authorization_review(plugin_id)
-    }
-
-    fn create_authorization_review(
-        &mut self,
-        plugin_id: &str,
-    ) -> Result<AuthorizationReviewSnapshot, PluginCommandError> {
-        self.ensure_revision_capacity(1)?;
-        if self.reviews.len() >= MAX_PENDING_REVIEWS {
-            return Err(PluginCommandError::new(
-                PluginCommandErrorCode::RegistryLimit,
-            ));
-        }
-        let target = self
-            .lifecycle
-            .authorization_target(plugin_id)
-            .map_err(|failure| {
-                PluginCommandError::with_failure(
-                    PluginCommandErrorCode::LifecycleUnavailable,
-                    failure,
-                )
-            })?;
-        let subject = self
-            .upstream
-            .authorization_subject(plugin_id)
-            .map_err(|error| {
-                PluginCommandError::with_failure(
-                    PluginCommandErrorCode::UpstreamUnavailable,
-                    PluginOperationFailure::upstream(error),
-                )
-            })?;
-        let expected_key = target
-            .artifact
-            .authorization_key(&subject.workspace_id)
-            .map_err(|_| PluginCommandError::new(PluginCommandErrorCode::UpstreamUnavailable))?;
-        let review = self
-            .authorization
-            .review(
-                expected_key,
-                &target
-                    .artifact
-                    .requested_permissions
-                    .iter()
-                    .copied()
-                    .collect::<Vec<_>>(),
-                subject.network_requested,
-            )
-            .map_err(|error| {
-                PluginCommandError::with_failure(
-                    PluginCommandErrorCode::BrokerRejected,
-                    PluginOperationFailure::broker(error),
-                )
-            })?;
-        let review_id = format!("plugin-review-{:016x}", self.next_review_id);
-        self.next_review_id = self
-            .next_review_id
-            .checked_add(1)
-            .ok_or_else(|| PluginCommandError::new(PluginCommandErrorCode::RegistryLimit))?;
-        let snapshot = AuthorizationReviewSnapshot {
-            review_id: review_id.clone(),
-            plugin_id: review.key().plugin_id.clone(),
-            artifact_version: target.artifact.version.clone(),
-            implicit: review.implicit().clone(),
-            requires_persistent_approval: review.requires_persistent_approval().clone(),
-            requires_per_request_approval: review.requires_per_request_approval().clone(),
-            unavailable: review.unavailable().clone(),
-            extra_confirmation: review.extra_confirmation(),
-            extra_confirmation_reasons: review.extra_confirmation_reasons().clone(),
-        };
-        self.reviews.insert(
-            review_id,
-            PendingReview {
-                snapshot: snapshot.clone(),
-                review,
-                target,
-            },
-        );
-        self.bump_revision()?;
-        Ok(snapshot)
-    }
-
-    fn ensure_next_authorization_review(&mut self) -> Result<(), PluginCommandError> {
-        if !self.reviews.is_empty() {
-            return Ok(());
-        }
-        let next = self
-            .plugin_snapshots
-            .values()
-            .find(|snapshot| {
-                matches!(snapshot.status, PluginStatus::ApprovalRequired(_))
-                    && !self
-                        .deferred_review_plugins
-                        .contains(&snapshot.artifact.plugin_id)
-            })
-            .map(|snapshot| snapshot.artifact.plugin_id.clone());
-        if let Some(plugin_id) = next {
-            self.create_authorization_review(&plugin_id)?;
-        }
-        Ok(())
-    }
-
-    pub fn queue_authorization_decisions(
-        &mut self,
-        expected_revision: u64,
-        client_request_id: String,
-        review_id: String,
-        decisions: Vec<(Permission, AuthorizationState)>,
-        per_request_acknowledged: BTreeSet<Permission>,
-        extra_confirmation_acknowledged: bool,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-        let action = QueuedAction::AuthorizationDecision {
-            review_id: review_id.clone(),
-            decisions,
-            per_request_acknowledged,
-            extra_confirmation_acknowledged,
-        };
-        if !self.requests.contains_key(&client_request_id) && !self.reviews.contains_key(&review_id)
-        {
-            return Err(PluginCommandError::new(
-                PluginCommandErrorCode::AuthorizationReviewNotFound,
-            ));
-        }
-        self.queue(expected_revision, client_request_id, action)
-    }
-
-    pub fn queue_dismiss_authorization(
-        &mut self,
-        expected_revision: u64,
-        client_request_id: String,
-        review_id: String,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-        let action = QueuedAction::DismissAuthorization {
-            review_id: review_id.clone(),
-        };
-        if !self.requests.contains_key(&client_request_id) && !self.reviews.contains_key(&review_id)
-        {
-            return Err(PluginCommandError::new(
-                PluginCommandErrorCode::AuthorizationReviewNotFound,
-            ));
-        }
-        self.queue(expected_revision, client_request_id, action)
-    }
-
-    /// Trusted host ingress. `key` and `declared` come from the native running
+    /// Trusted host ingress. `plugin_id` and `declared` come from the native running
     /// instance, never from a renderer request.
     pub fn register_proposal(
         &mut self,
-        key: &AuthorizationKey,
+        plugin_id: &str,
         declared: &BTreeSet<Permission>,
         request: SerialProposalRequest,
         now_ms: u64,
@@ -881,17 +926,57 @@ where
             ));
         }
         self.ensure_revision_capacity(1)?;
+        let generation = self.running_generation(plugin_id)?;
         let view = self
             .proposals
-            .create(key, declared, request, now_ms)
+            .create(plugin_id, declared, request, now_ms)
             .map_err(|error| {
                 PluginCommandError::with_failure(
                     PluginCommandErrorCode::BrokerRejected,
                     PluginOperationFailure::broker(error),
                 )
             })?;
-        self.proposal_views
-            .insert(view.proposal_id.clone(), view.clone());
+        if let Some(approved) = self
+            .serial_write_decisions
+            .get(&(plugin_id.to_owned(), generation))
+            .copied()
+        {
+            let current = self
+                .upstream
+                .current_proposal_context(&view)
+                .map_err(|error| {
+                    PluginCommandError::with_failure(
+                        PluginCommandErrorCode::UpstreamUnavailable,
+                        PluginOperationFailure::upstream(error),
+                    )
+                })?;
+            let resolution = self.proposals.resolve(
+                &view.proposal_id,
+                if approved {
+                    ProposalDecision::Approve
+                } else {
+                    ProposalDecision::Reject
+                },
+                &current,
+                now_ms,
+            );
+            if let ProposalResolution::Action(action) = resolution {
+                let runtime = self.running_instance_key(plugin_id)?;
+                self.upstream
+                    .execute_serial_action(runtime, action)
+                    .map_err(|error| {
+                        PluginCommandError::with_failure(
+                            PluginCommandErrorCode::UpstreamUnavailable,
+                            PluginOperationFailure::upstream(error),
+                        )
+                    })?;
+            }
+        } else {
+            self.proposal_generations
+                .insert(view.proposal_id.clone(), generation);
+            self.proposal_views
+                .insert(view.proposal_id.clone(), view.clone());
+        }
         self.bump_revision()?;
         Ok(view)
     }
@@ -921,10 +1006,10 @@ where
     /// panel before it becomes visible to command snapshots.
     pub fn publish_panel(
         &mut self,
-        key: &AuthorizationKey,
+        plugin_id: &str,
         panel: DeclarativePanel,
     ) -> Result<HostedPanel, PluginCommandError> {
-        if !self.hosted_panels.contains_key(&key.plugin_id)
+        if !self.hosted_panels.contains_key(plugin_id)
             && self.hosted_panels.len() >= MAX_PENDING_PANELS
         {
             return Err(PluginCommandError::new(
@@ -932,7 +1017,7 @@ where
             ));
         }
         self.ensure_revision_capacity(1)?;
-        let hosted = self.panels.publish(key, panel).map_err(|error| {
+        let hosted = self.panels.publish(plugin_id, panel).map_err(|error| {
             PluginCommandError::with_failure(
                 PluginCommandErrorCode::BrokerRejected,
                 PluginOperationFailure::broker(error),
@@ -940,6 +1025,8 @@ where
         })?;
         self.hosted_panels
             .insert(hosted.plugin_id().to_owned(), hosted.clone());
+        self.panel_generations
+            .insert(plugin_id.to_owned(), self.running_generation(plugin_id)?);
         self.bump_revision()?;
         Ok(hosted)
     }
@@ -952,6 +1039,13 @@ where
         event: PanelEvent,
     ) -> Result<PluginOperationSnapshot, PluginCommandError> {
         if !self.hosted_panels.contains_key(&plugin_id) {
+            return Err(PluginCommandError::new(
+                PluginCommandErrorCode::PanelNotFound,
+            ));
+        }
+        if self.panel_generations.get(&plugin_id).copied()
+            != Some(self.running_generation(&plugin_id)?)
+        {
             return Err(PluginCommandError::new(
                 PluginCommandErrorCode::PanelNotFound,
             ));
@@ -981,6 +1075,7 @@ where
         operation_id: &str,
         now_ms: u64,
     ) -> Result<PluginOperationSnapshot, PluginCommandError> {
+        self.prune_terminal_operations(now_ms);
         if let Some(record) = self.operations.get(operation_id) {
             if record.snapshot.status.is_terminal() {
                 return Ok(record.snapshot.clone());
@@ -990,9 +1085,7 @@ where
                 PluginCommandErrorCode::OperationNotFound,
             ));
         }
-        // An action can create the next authorization review, which owns one
-        // additional observable revision between running and terminal.
-        self.ensure_revision_capacity(3)?;
+        self.ensure_revision_capacity(2)?;
         let action = {
             let record = self
                 .operations
@@ -1024,6 +1117,10 @@ where
         }
         let snapshot = record.snapshot.clone();
         self.bump_revision()?;
+        if let Some(record) = self.operations.get_mut(operation_id) {
+            record.terminal_at_ms = Some(now_ms);
+        }
+        self.prune_terminal_operations(now_ms);
         Ok(snapshot)
     }
 
@@ -1056,8 +1153,10 @@ where
             ));
         }
         record.snapshot.status = PluginOperationStatus::Cancelled;
+        record.terminal_at_ms = Some(0);
         let snapshot = record.snapshot.clone();
         self.bump_revision()?;
+        self.prune_terminal_capacity();
         Ok(snapshot)
     }
 
@@ -1082,7 +1181,14 @@ where
         }
         self.expect_revision(expected_revision)?;
         self.ensure_revision_capacity(1)?;
-        if self.operations.len() >= MAX_OPERATIONS {
+        self.prune_terminal_capacity();
+        if self
+            .operations
+            .values()
+            .filter(|record| !record.snapshot.status.is_terminal())
+            .count()
+            >= MAX_ACTIVE_OPERATIONS
+        {
             return Err(PluginCommandError::new(
                 PluginCommandErrorCode::RegistryLimit,
             ));
@@ -1104,6 +1210,7 @@ where
             OperationRecord {
                 snapshot: snapshot.clone(),
                 action,
+                terminal_at_ms: None,
             },
         );
         self.requests.insert(client_request_id, operation_id);
@@ -1118,105 +1225,31 @@ where
     ) -> Result<(), PluginOperationFailure> {
         match action {
             QueuedAction::Install(request) => {
-                let snapshot = self.lifecycle.install_manual(&request)?;
-                let plugin_id = snapshot.artifact.plugin_id.clone();
+                let snapshot = if self.plugin_snapshots.contains_key(&request.plugin_id) {
+                    self.lifecycle.update_manual(&request)?
+                } else {
+                    self.lifecycle.install_manual(&request)?
+                };
                 self.upsert_plugin_snapshot(snapshot);
-                self.deferred_review_plugins.remove(&plugin_id);
-                let _ = self.ensure_next_authorization_review();
+                Ok(())
+            }
+            QueuedAction::InstallLocal { package_root } => {
+                let snapshot = self.lifecycle.install_local(&package_root)?;
+                self.upsert_plugin_snapshot(snapshot);
+                Ok(())
+            }
+            QueuedAction::Uninstall { plugin_id } => {
+                self.lifecycle.uninstall(&plugin_id)?;
+                self.plugin_snapshots.remove(&plugin_id);
+                self.hosted_panels.remove(&plugin_id);
+                self.panel_generations.remove(&plugin_id);
+                self.serial_write_decisions
+                    .retain(|(candidate, _), _| candidate != &plugin_id);
                 Ok(())
             }
             QueuedAction::SetEnabled { plugin_id, enabled } => {
-                if enabled {
-                    self.deferred_review_plugins.remove(&plugin_id);
-                }
-                match self.lifecycle.set_enabled(&plugin_id, enabled) {
-                    Ok(snapshot) => {
-                        self.upsert_plugin_snapshot(snapshot);
-                        let _ = self.ensure_next_authorization_review();
-                        Ok(())
-                    }
-                    Err(failure) => {
-                        if enabled && failure.code.contains("AUTHORIZATION") {
-                            let _ = self.ensure_next_authorization_review();
-                        }
-                        Err(failure)
-                    }
-                }
-            }
-            QueuedAction::AuthorizationDecision {
-                review_id,
-                decisions,
-                per_request_acknowledged,
-                extra_confirmation_acknowledged,
-            } => {
-                let review = self.reviews.get(&review_id).ok_or(PluginOperationFailure {
-                    code: "PLUGIN_AUTHORIZATION_REVIEW_NOT_FOUND",
-                    message_key: "plugin.error.authorizationReviewNotFound",
-                })?;
-                let target = review.target.clone();
-                let reviewed_permissions = decisions
-                    .iter()
-                    .filter_map(|(permission, state)| {
-                        (*state == AuthorizationState::Granted).then_some(*permission)
-                    })
-                    .chain(per_request_acknowledged.iter().copied())
-                    .chain(review.snapshot.implicit.iter().copied())
-                    .collect();
-                if per_request_acknowledged != review.snapshot.requires_per_request_approval {
-                    return Err(PluginOperationFailure {
-                        code: "PLUGIN_AUTHORIZATION_REVIEW_MISMATCH",
-                        message_key: "plugin.error.authorizationReviewMismatch",
-                    });
-                }
-                let receipt = self
-                    .authorization
-                    .record_decisions(
-                        &review.review,
-                        &decisions,
-                        extra_confirmation_acknowledged,
-                        &target,
-                        reviewed_permissions,
-                        self.revision,
-                    )
-                    .map_err(PluginOperationFailure::broker)?;
-                let fully_approved = review.snapshot.unavailable.is_empty()
-                    && target
-                        .artifact
-                        .requested_permissions
-                        .is_subset(&receipt.reviewed_permissions);
-                let completed_snapshot = self
-                    .lifecycle
-                    .complete_authorization(&target, fully_approved)?;
-                self.upsert_plugin_snapshot(completed_snapshot);
-                if let Some(completed) = self.reviews.remove(&review_id) {
-                    self.deferred_review_plugins
-                        .insert(completed.snapshot.plugin_id);
-                }
-                let _ = self.ensure_next_authorization_review();
-                Ok(())
-            }
-            QueuedAction::DismissAuthorization { review_id } => {
-                let target = self
-                    .reviews
-                    .get(&review_id)
-                    .ok_or(PluginOperationFailure {
-                        code: "PLUGIN_AUTHORIZATION_REVIEW_NOT_FOUND",
-                        message_key: "plugin.error.authorizationReviewNotFound",
-                    })?
-                    .target
-                    .clone();
-                let snapshot = self.lifecycle.complete_authorization(&target, false)?;
+                let snapshot = self.lifecycle.set_enabled(&plugin_id, enabled)?;
                 self.upsert_plugin_snapshot(snapshot);
-                let dismissed = self
-                    .reviews
-                    .remove(&review_id)
-                    .ok_or(PluginOperationFailure {
-                        code: "PLUGIN_AUTHORIZATION_REVIEW_NOT_FOUND",
-                        message_key: "plugin.error.authorizationReviewNotFound",
-                    })?;
-                self.deferred_review_plugins
-                    .insert(dismissed.snapshot.plugin_id);
-                let _ = self.ensure_next_authorization_review();
                 Ok(())
             }
             QueuedAction::ProposalDecision {
@@ -1237,15 +1270,35 @@ where
                     .proposals
                     .resolve(&proposal_id, decision, &context, now_ms);
                 self.proposal_views.remove(&proposal_id);
+                let generation = self.proposal_generations.remove(&proposal_id).ok_or(
+                    PluginOperationFailure {
+                        code: "PLUGIN_PROPOSAL_NOT_FOUND",
+                        message_key: "plugin.error.proposalNotFound",
+                    },
+                )?;
                 match resolution {
-                    ProposalResolution::Action(action) => self
-                        .upstream
-                        .execute_serial_action(action)
-                        .map_err(PluginOperationFailure::upstream),
+                    ProposalResolution::Action(action) => {
+                        self.serial_write_decisions
+                            .insert((view.plugin_id.clone(), generation), true);
+                        let runtime =
+                            self.running_instance_key(&view.plugin_id)
+                                .map_err(|error| {
+                                    error.failure.unwrap_or(PluginOperationFailure {
+                                        code: "PLUGIN_LIFECYCLE_UNAVAILABLE",
+                                        message_key: "plugin.error.lifecycleUnavailable",
+                                    })
+                                })?;
+                        self.upstream
+                            .execute_serial_action(runtime, action)
+                            .map_err(PluginOperationFailure::upstream)
+                    }
+                    ProposalResolution::NoAction(NoActionReason::Rejected) => {
+                        self.serial_write_decisions
+                            .insert((view.plugin_id.clone(), generation), false);
+                        Ok(())
+                    }
                     ProposalResolution::NoAction(
-                        NoActionReason::Rejected
-                        | NoActionReason::Expired
-                        | NoActionReason::ContextChanged,
+                        NoActionReason::Expired | NoActionReason::ContextChanged,
                     ) => Ok(()),
                     ProposalResolution::NoAction(NoActionReason::UnknownOrConsumed) => {
                         Err(PluginOperationFailure {
@@ -1256,6 +1309,15 @@ where
                 }
             }
             QueuedAction::PanelEvent { plugin_id, event } => {
+                let generation = self
+                    .plugin_snapshots
+                    .get(&plugin_id)
+                    .filter(|snapshot| snapshot.running_instance_id.is_some())
+                    .map(|snapshot| snapshot.generation)
+                    .ok_or(PluginOperationFailure {
+                        code: "PLUGIN_PANEL_NOT_FOUND",
+                        message_key: "plugin.error.panelNotFound",
+                    })?;
                 let hosted = self
                     .hosted_panels
                     .get(&plugin_id)
@@ -1267,11 +1329,59 @@ where
                     .panels
                     .event(hosted, event)
                     .map_err(PluginOperationFailure::broker)?;
-                self.upstream
-                    .deliver_panel_event(action)
-                    .map_err(PluginOperationFailure::upstream)
+                let returned = self.lifecycle.invoke_panel_event(
+                    &action.plugin_id,
+                    &action.event.field_id,
+                    &action.event.value,
+                )?;
+                if let Some(panel) = returned {
+                    let hosted = self
+                        .panels
+                        .publish(&plugin_id, host_panel_to_broker(panel))
+                        .map_err(PluginOperationFailure::broker)?;
+                    self.hosted_panels.insert(plugin_id.clone(), hosted);
+                    self.panel_generations.insert(plugin_id.clone(), generation);
+                }
+                Ok(())
             }
         }
+    }
+
+    fn ingest_published_panels(&mut self) -> Result<(), PluginCommandError> {
+        let panels = self.lifecycle.take_published_panels().map_err(|failure| {
+            PluginCommandError::with_failure(PluginCommandErrorCode::LifecycleUnavailable, failure)
+        })?;
+        if panels.is_empty() {
+            return Ok(());
+        }
+        self.ensure_revision_capacity(1)?;
+        let mut changed = false;
+        for published in panels {
+            let Some(snapshot) = self.plugin_snapshots.get(&published.plugin_id) else {
+                continue;
+            };
+            if snapshot.running_instance_id != Some(published.instance_id) {
+                continue;
+            }
+            let hosted = self
+                .panels
+                .publish(&published.plugin_id, host_panel_to_broker(published.panel))
+                .map_err(|error| {
+                    PluginCommandError::with_failure(
+                        PluginCommandErrorCode::BrokerRejected,
+                        PluginOperationFailure::broker(error),
+                    )
+                })?;
+            self.hosted_panels
+                .insert(published.plugin_id.clone(), hosted);
+            self.panel_generations
+                .insert(published.plugin_id, snapshot.generation);
+            changed = true;
+        }
+        if changed {
+            self.bump_revision()?;
+        }
+        Ok(())
     }
 
     fn expect_revision(&self, expected: u64) -> Result<(), PluginCommandError> {
@@ -1287,6 +1397,71 @@ where
     fn upsert_plugin_snapshot(&mut self, snapshot: PluginSnapshot) {
         self.plugin_snapshots
             .insert(snapshot.artifact.plugin_id.clone(), snapshot);
+        self.reconcile_runtime_instances();
+    }
+
+    fn running_generation(&self, plugin_id: &str) -> Result<u64, PluginCommandError> {
+        self.plugin_snapshots
+            .get(plugin_id)
+            .filter(|snapshot| {
+                snapshot.status == bbcom_plugin_manager::PluginStatus::Running
+                    && snapshot.running_instance_id.is_some()
+            })
+            .map(|snapshot| snapshot.generation)
+            .ok_or_else(|| PluginCommandError::new(PluginCommandErrorCode::LifecycleUnavailable))
+    }
+
+    fn running_instance_key(
+        &self,
+        plugin_id: &str,
+    ) -> Result<RuntimeInstanceKey, PluginCommandError> {
+        let workspace_id = self
+            .workspace_id
+            .clone()
+            .ok_or_else(|| PluginCommandError::new(PluginCommandErrorCode::LifecycleUnavailable))?;
+        let snapshot = self
+            .plugin_snapshots
+            .get(plugin_id)
+            .filter(|snapshot| snapshot.status == bbcom_plugin_manager::PluginStatus::Running)
+            .ok_or_else(|| PluginCommandError::new(PluginCommandErrorCode::LifecycleUnavailable))?;
+        let instance_id = snapshot
+            .running_instance_id
+            .ok_or_else(|| PluginCommandError::new(PluginCommandErrorCode::LifecycleUnavailable))?;
+        Ok(RuntimeInstanceKey {
+            workspace_id,
+            plugin_id: plugin_id.to_owned(),
+            instance_id,
+            generation: snapshot.generation,
+        })
+    }
+
+    fn reconcile_runtime_instances(&mut self) {
+        let current = self
+            .plugin_snapshots
+            .iter()
+            .filter(|(_, snapshot)| {
+                snapshot.status == bbcom_plugin_manager::PluginStatus::Running
+                    && snapshot.running_instance_id.is_some()
+            })
+            .map(|(plugin_id, snapshot)| (plugin_id.clone(), snapshot.generation))
+            .collect::<BTreeMap<_, _>>();
+        self.serial_write_decisions
+            .retain(|(plugin_id, generation), _| {
+                current.get(plugin_id).copied() == Some(*generation)
+            });
+        self.panel_generations
+            .retain(|plugin_id, generation| current.get(plugin_id).copied() == Some(*generation));
+        self.hosted_panels
+            .retain(|plugin_id, _| self.panel_generations.contains_key(plugin_id));
+        self.proposal_generations.retain(|proposal_id, generation| {
+            self.proposal_views
+                .get(proposal_id)
+                .and_then(|view| current.get(&view.plugin_id))
+                .copied()
+                == Some(*generation)
+        });
+        self.proposal_views
+            .retain(|proposal_id, _| self.proposal_generations.contains_key(proposal_id));
     }
 
     fn bump_revision(&mut self) -> Result<(), PluginCommandError> {
@@ -1302,6 +1477,56 @@ where
             .checked_add(increments)
             .map(|_| ())
             .ok_or_else(|| PluginCommandError::new(PluginCommandErrorCode::RegistryLimit))
+    }
+
+    fn prune_terminal_operations(&mut self, now_ms: u64) {
+        let expired: Vec<_> = self
+            .operations
+            .iter()
+            .filter_map(|(operation_id, record)| {
+                let terminal_at = record.terminal_at_ms?;
+                (terminal_at > 0
+                    && now_ms.saturating_sub(terminal_at) > COMPLETED_OPERATION_RETENTION_MS)
+                    .then(|| operation_id.clone())
+            })
+            .collect();
+        for operation_id in expired {
+            self.remove_operation(&operation_id);
+        }
+        self.prune_terminal_capacity();
+    }
+
+    fn prune_terminal_capacity(&mut self) {
+        let excess = self
+            .operations
+            .values()
+            .filter(|record| record.snapshot.status.is_terminal())
+            .count()
+            .saturating_sub(MAX_COMPLETED_OPERATIONS);
+        let removals: Vec<_> = self
+            .operations
+            .iter()
+            .filter(|(_, record)| record.snapshot.status.is_terminal())
+            .take(excess)
+            .map(|(operation_id, _)| operation_id.clone())
+            .collect();
+        for operation_id in removals {
+            self.remove_operation(&operation_id);
+        }
+    }
+
+    fn remove_operation(&mut self, operation_id: &str) {
+        let Some(record) = self.operations.remove(operation_id) else {
+            return;
+        };
+        if self
+            .requests
+            .get(&record.snapshot.client_request_id)
+            .map(String::as_str)
+            == Some(operation_id)
+        {
+            self.requests.remove(&record.snapshot.client_request_id);
+        }
     }
 }
 
@@ -1332,436 +1557,5 @@ fn validate_request_id(value: &str) -> Result<(), PluginCommandError> {
         ))
     } else {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bbcom_plugin_broker::{
-        AuditEvent, AuthorizationStoreError, NoopAuditSink, PanelControlKind, PanelField,
-    };
-    use bbcom_plugin_manager::{ApprovalReason, PluginArtifact, PluginStatus};
-    use std::sync::Mutex;
-
-    #[derive(Default)]
-    struct Lifecycle {
-        snapshots: Vec<PluginSnapshot>,
-        target: Option<AuthorizationTarget>,
-        completion_decisions: Arc<Mutex<Vec<bool>>>,
-        fail: bool,
-        fail_complete: bool,
-    }
-
-    impl PluginLifecyclePort for Lifecycle {
-        fn snapshots(&self) -> Result<Vec<PluginSnapshot>, PluginOperationFailure> {
-            Ok(self.snapshots.clone())
-        }
-
-        fn authorization_target(
-            &self,
-            plugin_id: &str,
-        ) -> Result<AuthorizationTarget, PluginOperationFailure> {
-            self.target
-                .clone()
-                .filter(|target| target.artifact.plugin_id == plugin_id)
-                .or_else(|| {
-                    self.snapshots
-                        .iter()
-                        .find(|snapshot| snapshot.artifact.plugin_id == plugin_id)
-                        .map(|snapshot| snapshot.artifact.clone())
-                        .or_else(|| (plugin_id == "dev.bbcom.fixture").then(|| snapshot().artifact))
-                        .map(|artifact| AuthorizationTarget {
-                            artifact,
-                            preparation_token: None,
-                        })
-                })
-                .ok_or(PluginOperationFailure {
-                    code: "PLUGIN_ARTIFACT_NOT_INSTALLED",
-                    message_key: "plugin.error.artifactNotInstalled",
-                })
-        }
-
-        fn complete_authorization(
-            &self,
-            target: &AuthorizationTarget,
-            approved: bool,
-        ) -> Result<PluginSnapshot, PluginOperationFailure> {
-            self.completion_decisions.lock().unwrap().push(approved);
-            if self.fail_complete {
-                return Err(PluginOperationFailure {
-                    code: "PLUGIN_AUTHORIZATION_COMPLETION_FAILED",
-                    message_key: "plugin.error.authorizationCompletionFailed",
-                });
-            }
-            self.snapshots
-                .iter()
-                .find(|snapshot| snapshot.artifact.plugin_id == target.artifact.plugin_id)
-                .cloned()
-                .or_else(|| (target.artifact.plugin_id == "dev.bbcom.fixture").then(snapshot))
-                .ok_or(PluginOperationFailure {
-                    code: "PLUGIN_ARTIFACT_NOT_INSTALLED",
-                    message_key: "plugin.error.artifactNotInstalled",
-                })
-        }
-
-        fn install_manual(
-            &self,
-            _request: &ManualPackageRequest,
-        ) -> Result<PluginSnapshot, PluginOperationFailure> {
-            if self.fail {
-                Err(PluginOperationFailure {
-                    code: "PLUGIN_INSTALL_PREPARE_FAILED",
-                    message_key: "plugin.error.installPrepareFailed",
-                })
-            } else {
-                Ok(snapshot())
-            }
-        }
-
-        fn set_enabled(
-            &self,
-            _plugin_id: &str,
-            _enabled: bool,
-        ) -> Result<PluginSnapshot, PluginOperationFailure> {
-            Ok(snapshot())
-        }
-    }
-
-    struct Store;
-
-    impl AuthorizationStore for Store {
-        fn state(
-            &self,
-            _key: &AuthorizationKey,
-            _permission: Permission,
-        ) -> Result<AuthorizationState, AuthorizationStoreError> {
-            Ok(AuthorizationState::Missing)
-        }
-
-        fn replace_states(
-            &self,
-            _key: &AuthorizationKey,
-            _decisions: &[(Permission, AuthorizationState)],
-        ) -> Result<AuthorizationGeneration, AuthorizationStoreError> {
-            Ok(AuthorizationGeneration::from_bytes([1; 32]))
-        }
-    }
-
-    #[derive(Default)]
-    struct Upstream {
-        serial_actions: usize,
-        panel_actions: usize,
-        fail_serial: bool,
-    }
-
-    impl PluginCommandUpstreamPort for Upstream {
-        fn authorization_subject(
-            &mut self,
-            plugin_id: &str,
-        ) -> Result<AuthorizationSubject, PluginUpstreamFailure> {
-            Ok(AuthorizationSubject {
-                workspace_id: key(plugin_id).workspace_id,
-                network_requested: false,
-            })
-        }
-
-        fn current_proposal_context(
-            &mut self,
-            proposal: &SerialProposalView,
-        ) -> Result<ProposalContext, PluginUpstreamFailure> {
-            Ok(ProposalContext {
-                operation_id: proposal.operation_id.clone(),
-                session_id: proposal.session_id.clone(),
-            })
-        }
-
-        fn execute_serial_action(
-            &mut self,
-            _action: BrokerAction,
-        ) -> Result<(), PluginUpstreamFailure> {
-            if self.fail_serial {
-                Err(PluginUpstreamFailure::SerialExecutionUnavailable)
-            } else {
-                self.serial_actions += 1;
-                Ok(())
-            }
-        }
-
-        fn deliver_panel_event(
-            &mut self,
-            _action: PanelEventAction,
-        ) -> Result<(), PluginUpstreamFailure> {
-            self.panel_actions += 1;
-            Ok(())
-        }
-    }
-
-    struct Audit(Mutex<Vec<AuditEvent>>);
-
-    impl AuditSink for Audit {
-        fn record(&self, event: AuditEvent) {
-            self.0.lock().unwrap().push(event);
-        }
-    }
-
-    fn key(plugin_id: &str) -> AuthorizationKey {
-        AuthorizationKey {
-            plugin_id: plugin_id.to_owned(),
-            publisher_identity: format!("publisher:sha256-{}", "a".repeat(64)),
-            plugin_major: 1,
-            workspace_id: "11111111-1111-1111-1111-111111111111".to_owned(),
-        }
-    }
-
-    fn snapshot() -> PluginSnapshot {
-        PluginSnapshot {
-            artifact: PluginArtifact::new(
-                "dev.bbcom.fixture",
-                "1.0.0",
-                format!("publisher:sha256-{}", "a".repeat(64)),
-                [Permission::SerialWriteProposal],
-            )
-            .unwrap(),
-            status: PluginStatus::Stopped,
-            pending_version: None,
-            running_instance_id: None,
-            crashes_in_window: 0,
-            last_error: None,
-        }
-    }
-
-    fn panel() -> DeclarativePanel {
-        DeclarativePanel {
-            title: "Fixture".to_owned(),
-            fields: vec![PanelField {
-                id: "run".to_owned(),
-                label: "Run".to_owned(),
-                kind: PanelControlKind::Button,
-                value: String::new(),
-                options: Vec::new(),
-                disabled: false,
-            }],
-        }
-    }
-
-    #[test]
-    fn queued_lifecycle_work_is_idempotent_cancelable_and_revision_guarded() {
-        let audit = NoopAuditSink;
-        let store = Store;
-        let mut service = PluginCommandService::new(
-            Lifecycle::default(),
-            Upstream::default(),
-            AuthorizationBroker::new(&store, &audit),
-            SerialProposalBroker::new(&audit),
-            DeclarativePanelBroker::new(&audit),
-        )
-        .unwrap();
-        let request =
-            ManualPackageRequest::new("official", "dev.bbcom.fixture", "1.0.0").expect("request");
-        let queued = service
-            .queue_install(1, "request-1".to_owned(), request.clone())
-            .unwrap();
-        assert_eq!(queued.status, PluginOperationStatus::Queued);
-        assert_eq!(
-            service
-                .queue_install(1, "request-1".to_owned(), request)
-                .unwrap(),
-            queued
-        );
-        let cancelled = service.cancel(2, &queued.operation_id).unwrap();
-        assert_eq!(cancelled.status, PluginOperationStatus::Cancelled);
-        assert_eq!(service.execute(&queued.operation_id, 1).unwrap(), cancelled);
-    }
-
-    #[test]
-    fn brokered_proposal_is_consumed_once_and_serial_failure_is_terminal() {
-        let audit = Audit(Mutex::new(Vec::new()));
-        let store = Store;
-        let mut service = PluginCommandService::new(
-            Lifecycle::default(),
-            Upstream {
-                fail_serial: true,
-                ..Upstream::default()
-            },
-            AuthorizationBroker::new(&store, &audit),
-            SerialProposalBroker::new(&audit),
-            DeclarativePanelBroker::new(&audit),
-        )
-        .unwrap();
-        let view = service
-            .register_proposal(
-                &key("dev.bbcom.fixture"),
-                &BTreeSet::from([Permission::SerialWriteProposal]),
-                SerialProposalRequest {
-                    operation_id: "operation-1".to_owned(),
-                    session_id: "session-1".to_owned(),
-                    payload: vec![1, 2],
-                    display_label: "Send".to_owned(),
-                },
-                1,
-            )
-            .unwrap();
-        let queued = service
-            .queue_proposal_decision(
-                2,
-                "request-proposal".to_owned(),
-                view.proposal_id,
-                ProposalDecision::Approve,
-            )
-            .unwrap();
-        let terminal = service.execute(&queued.operation_id, 2).unwrap();
-        assert_eq!(terminal.status, PluginOperationStatus::Failed);
-        assert_eq!(
-            terminal.failure.unwrap().code,
-            "PLUGIN_SERIAL_EXECUTION_UNAVAILABLE"
-        );
-        assert!(service.snapshot().proposals.is_empty());
-    }
-
-    #[test]
-    fn authorization_and_panel_only_use_broker_validated_native_context() {
-        let audit = NoopAuditSink;
-        let store = Store;
-        let mut service = PluginCommandService::new(
-            Lifecycle::default(),
-            Upstream::default(),
-            AuthorizationBroker::new(&store, &audit),
-            SerialProposalBroker::new(&audit),
-            DeclarativePanelBroker::new(&audit),
-        )
-        .unwrap();
-        let review = service
-            .begin_authorization_review(1, "dev.bbcom.fixture")
-            .unwrap();
-        assert!(
-            review
-                .requires_per_request_approval
-                .contains(&Permission::SerialWriteProposal)
-        );
-        let hosted = service
-            .publish_panel(&key("dev.bbcom.fixture"), panel())
-            .unwrap();
-        let queued = service
-            .queue_panel_event(
-                3,
-                "panel-event-1".to_owned(),
-                hosted.plugin_id().to_owned(),
-                PanelEvent {
-                    field_id: "run".to_owned(),
-                    value: String::new(),
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            service.execute(&queued.operation_id, 1).unwrap().status,
-            PluginOperationStatus::Completed
-        );
-    }
-
-    #[test]
-    fn grouped_authorization_review_is_automatically_created_and_completed() {
-        let audit = NoopAuditSink;
-        let store = Store;
-        let mut approval = snapshot();
-        approval.artifact = PluginArtifact::new(
-            "dev.bbcom.fixture",
-            "1.0.0",
-            format!("publisher:sha256-{}", "a".repeat(64)),
-            [Permission::SessionMetadataRead],
-        )
-        .unwrap();
-        approval.status = PluginStatus::ApprovalRequired(ApprovalReason::InitialInstall);
-        let mut service = PluginCommandService::new(
-            Lifecycle {
-                snapshots: vec![approval],
-                ..Lifecycle::default()
-            },
-            Upstream::default(),
-            AuthorizationBroker::new(&store, &audit),
-            SerialProposalBroker::new(&audit),
-            DeclarativePanelBroker::new(&audit),
-        )
-        .unwrap();
-
-        let snapshot = service.snapshot();
-        assert_eq!(snapshot.revision, 2);
-        let review = snapshot.authorization_reviews.first().unwrap();
-        assert_eq!(review.plugin_id, "dev.bbcom.fixture");
-        assert_eq!(
-            review.requires_persistent_approval,
-            BTreeSet::from([Permission::SessionMetadataRead])
-        );
-
-        let queued = service
-            .queue_authorization_decisions(
-                snapshot.revision,
-                "grouped-authorization-1".to_owned(),
-                review.review_id.clone(),
-                vec![(Permission::SessionMetadataRead, AuthorizationState::Granted)],
-                BTreeSet::new(),
-                false,
-            )
-            .unwrap();
-        let completed = service.execute(&queued.operation_id, 1).unwrap();
-        assert_eq!(completed.status, PluginOperationStatus::Completed);
-        assert!(service.snapshot().authorization_reviews.is_empty());
-    }
-
-    #[test]
-    fn dismiss_keeps_the_review_when_pending_target_discard_fails() {
-        let audit = NoopAuditSink;
-        let store = Store;
-        let mut approval = snapshot();
-        approval.artifact = PluginArtifact::new(
-            "dev.bbcom.fixture",
-            "1.0.0",
-            format!("publisher:sha256-{}", "a".repeat(64)),
-            [Permission::SessionMetadataRead],
-        )
-        .unwrap();
-        approval.status = PluginStatus::ApprovalRequired(ApprovalReason::ArtifactChanged);
-        approval.pending_version = Some("1.1.0".to_owned());
-        let target = AuthorizationTarget {
-            artifact: PluginArtifact::new(
-                "dev.bbcom.fixture",
-                "1.1.0",
-                format!("publisher:sha256-{}", "a".repeat(64)),
-                [Permission::SessionMetadataRead],
-            )
-            .unwrap(),
-            preparation_token: Some(
-                bbcom_plugin_manager::PreparationToken::new("pending-v1.1.0").unwrap(),
-            ),
-        };
-        let completion_decisions = Arc::new(Mutex::new(Vec::new()));
-        let mut service = PluginCommandService::new(
-            Lifecycle {
-                snapshots: vec![approval],
-                target: Some(target),
-                completion_decisions: Arc::clone(&completion_decisions),
-                fail_complete: true,
-                ..Lifecycle::default()
-            },
-            Upstream::default(),
-            AuthorizationBroker::new(&store, &audit),
-            SerialProposalBroker::new(&audit),
-            DeclarativePanelBroker::new(&audit),
-        )
-        .unwrap();
-        let initial = service.snapshot();
-        let review_id = initial.authorization_reviews[0].review_id.clone();
-        let queued = service
-            .queue_dismiss_authorization(
-                initial.revision,
-                "dismiss-pending-upgrade".to_owned(),
-                review_id,
-            )
-            .unwrap();
-
-        let failed = service.execute(&queued.operation_id, 1).unwrap();
-        assert_eq!(failed.status, PluginOperationStatus::Failed);
-        assert_eq!(*completion_decisions.lock().unwrap(), vec![false]);
-        assert_eq!(service.snapshot().authorization_reviews.len(), 1);
     }
 }

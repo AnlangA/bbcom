@@ -7,14 +7,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use atomic_write_file::AtomicWriteFile;
+use std::io::Cursor;
+
 use bbcom_plugin_contracts::{
-    MAX_PACKAGE_EXPANDED_BYTES, MAX_PACKAGE_FILES, Permission, PluginManifest,
+    MAX_PACKAGE_EXPANDED_BYTES, MAX_PACKAGE_FILES, Permission, PluginManifest, RepositoryPackage,
+    Sha256Digest,
 };
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::archive::{INSTALL_MARKER_FILE, extract_and_verify};
-use crate::{DownloadedPackage, RepositoryError, Result};
+use crate::{DownloadedPackage, LOCAL_INSTALL_ORIGIN, RepositoryError, Result};
 
 pub const MAX_ROLLBACK_CANDIDATES: usize = 2;
 pub const MAX_PLUGIN_DATA_BYTES: u64 = 16 * 1024 * 1024;
@@ -33,9 +36,9 @@ static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 pub struct ActiveInstallation {
     pub plugin_id: String,
     pub version: String,
-    pub publisher_identity: String,
     pub repository_origin: String,
     pub package_sha256: String,
+    pub component_sha256: String,
     pub package_directory: PathBuf,
 }
 
@@ -43,9 +46,9 @@ pub struct ActiveInstallation {
 pub struct RollbackCandidate {
     pub plugin_id: String,
     pub version: String,
-    pub publisher_identity: String,
     pub repository_origin: String,
     pub package_sha256: String,
+    pub component_sha256: String,
     pub package_directory: PathBuf,
     pub data_snapshot_directory: Option<PathBuf>,
 }
@@ -84,7 +87,9 @@ pub struct PreparedPluginInstallation {
     token: String,
     plugin_id: String,
     version: String,
-    publisher_identity: String,
+    package_sha256: String,
+    component_sha256: String,
+    repository_origin: String,
     requested_permissions: BTreeSet<Permission>,
     kind: PreparedInstallationKind,
 }
@@ -106,8 +111,18 @@ impl PreparedPluginInstallation {
     }
 
     #[must_use]
-    pub fn publisher_identity(&self) -> &str {
-        &self.publisher_identity
+    pub fn package_sha256(&self) -> &str {
+        &self.package_sha256
+    }
+
+    #[must_use]
+    pub fn component_sha256(&self) -> &str {
+        &self.component_sha256
+    }
+
+    #[must_use]
+    pub fn repository_origin(&self) -> &str {
+        &self.repository_origin
     }
 
     #[must_use]
@@ -128,9 +143,12 @@ struct PreparedInstallationJournal {
     token: String,
     plugin_id: String,
     version: String,
-    publisher_identity: String,
+    /// Legacy self-asserted identity retained only for v1 journal decoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publisher_identity: Option<String>,
     repository_origin: String,
     package_sha256: String,
+    component_sha256: String,
     requested_permissions: BTreeSet<Permission>,
     kind: PreparedInstallationKind,
     previous_version: Option<String>,
@@ -143,7 +161,9 @@ impl PreparedInstallationJournal {
             token: self.token.clone(),
             plugin_id: self.plugin_id.clone(),
             version: self.version.clone(),
-            publisher_identity: self.publisher_identity.clone(),
+            package_sha256: self.package_sha256.clone(),
+            component_sha256: self.component_sha256.clone(),
+            repository_origin: self.repository_origin.clone(),
             requested_permissions: self.requested_permissions.clone(),
             kind: self.kind,
         }
@@ -172,6 +192,63 @@ impl PluginInstaller {
         })
     }
 
+    /// Development-mode local install: builds a package from a local package
+    /// directory (plugin.toml + its declared component), enforces the
+    /// manifest's component digest, and stages it through the exact same
+    /// prepared-installation pipeline as repository packages. No HTTPS, TUF,
+    /// or publisher-signature boundary is involved — the caller must only
+    /// pass user-selected local paths.
+    pub fn prepare_local_install(&self, package_root: &Path) -> Result<PreparedPluginInstallation> {
+        let download = build_local_package(package_root)?;
+        self.prepare_install(&download)
+    }
+
+    /// Every durable active installation below the package root, for restart
+    /// discovery. Corrupt or partial states are skipped, never fatal.
+    pub fn active_installations(&self) -> Vec<ActiveInstallation> {
+        let plugins_root = self.package_root.join("plugins");
+        let Ok(entries) = fs::read_dir(&plugins_root) else {
+            return Vec::new();
+        };
+        let mut active = Vec::new();
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let Some(plugin_id) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if validate_plugin_id(&plugin_id).is_err() {
+                continue;
+            }
+            let plugin_root = self.plugin_root(&plugin_id);
+            let Ok(state) = self.load_recovered_state(&plugin_root, &plugin_id) else {
+                continue;
+            };
+            if let Ok(Some(record)) = state.active_record() {
+                active.push(to_active(&plugin_root, &state, record));
+            }
+        }
+        active.sort_by(|a, b| a.plugin_id.cmp(&b.plugin_id));
+        active
+    }
+
+    /// Removes one plugin's durable installation entirely: active version,
+    /// verified history, snapshots, and private data copies. Stopping hosts
+    /// and clearing grants/state remains the caller's responsibility.
+    pub fn remove_installation(&self, plugin_id: &str) -> Result<()> {
+        validate_plugin_id(plugin_id)?;
+        let plugin_root = self.plugin_root(plugin_id);
+        if !plugin_root.exists() {
+            return Ok(());
+        }
+        // Package files are deliberately read-only; clear before removal.
+        clear_read_only_tree(&plugin_root);
+        fs::remove_dir_all(&plugin_root).map_err(|_| RepositoryError::CorruptInstallState)?;
+        sync_directory(&self.package_root.join("plugins"))?;
+        Ok(())
+    }
+
     /// Verifies and durably stages a downloaded package without changing the
     /// active installation. The returned token is allocated by this installer;
     /// callers cannot select or inject a staging path.
@@ -191,9 +268,6 @@ impl PluginInstaller {
         let state = self.load_recovered_state(&plugin_root, download.plugin_id())?;
         let (kind, previous_version) = match state.active_record()? {
             Some(active) => {
-                if state.publisher_identity != download.publisher_identity() {
-                    return Err(RepositoryError::PublisherIdentityChanged);
-                }
                 let active_version = Version::parse(&active.version)
                     .map_err(|_| RepositoryError::CorruptInstallState)?;
                 if new_version == active_version {
@@ -240,9 +314,10 @@ impl PluginInstaller {
             token: staging.token.clone(),
             plugin_id: download.plugin_id().to_owned(),
             version: download.package().version.clone(),
-            publisher_identity: download.publisher_identity().to_owned(),
+            publisher_identity: None,
             repository_origin: download.repository_origin().to_owned(),
             package_sha256: download.package().sha256.clone(),
+            component_sha256: verified.manifest.component.sha256.clone(),
             requested_permissions,
             kind,
             previous_version,
@@ -291,10 +366,7 @@ impl PluginInstaller {
         let staged_package = staging.path.join("package");
         copy_package_tree(&source, &staged_package)?;
         let manifest = load_package_manifest(&staged_package)?;
-        if manifest.id != plugin_id
-            || manifest.version != target.version
-            || manifest.publisher.identity != state.publisher_identity
-        {
+        if manifest.id != plugin_id || manifest.version != target.version {
             return Err(RepositoryError::CorruptInstallState);
         }
         let journal = PreparedInstallationJournal {
@@ -302,9 +374,10 @@ impl PluginInstaller {
             token: staging.token.clone(),
             plugin_id: plugin_id.to_owned(),
             version: target.version.clone(),
-            publisher_identity: state.publisher_identity.clone(),
+            publisher_identity: None,
             repository_origin: target.repository_origin.clone(),
             package_sha256: target.package_sha256.clone(),
+            component_sha256: manifest.component.sha256.clone(),
             requested_permissions: manifest.permissions()?.into_iter().collect(),
             kind: PreparedInstallationKind::Rollback,
             previous_version: Some(current_version.to_owned()),
@@ -392,9 +465,7 @@ impl PluginInstaller {
                     let record = state
                         .active_record()?
                         .ok_or(RepositoryError::CorruptInstallState)?;
-                    if record.package_sha256 != journal.package_sha256
-                        || state.publisher_identity != journal.publisher_identity
-                    {
+                    if record.package_sha256 != journal.package_sha256 {
                         return Err(RepositoryError::PreparedDescriptorMismatch);
                     }
                     to_active(&plugin_root, &state, record)
@@ -442,9 +513,6 @@ impl PluginInstaller {
         let mut state = self.load_recovered_state(&plugin_root, download.plugin_id())?;
 
         if let Some(active) = state.active_record()? {
-            if state.publisher_identity != download.publisher_identity() {
-                return Err(RepositoryError::PublisherIdentityChanged);
-            }
             let active_version = Version::parse(&active.version)
                 .map_err(|_| RepositoryError::CorruptInstallState)?;
             if active_version == new_version {
@@ -467,8 +535,6 @@ impl PluginInstaller {
             {
                 return Err(RepositoryError::NotANewerVersion);
             }
-        } else {
-            state.publisher_identity = download.publisher_identity().to_owned();
         }
 
         let staging = StagingDirectory::create(&self.package_root.join(".staging"))?;
@@ -527,6 +593,7 @@ impl PluginInstaller {
         let record = VerifiedVersion {
             version: download.package().version.clone(),
             package_sha256: download.package().sha256.clone(),
+            component_sha256: verified.manifest.component.sha256.clone(),
             repository_origin: download.repository_origin().to_owned(),
             sequence: state.next_sequence,
             data_snapshot_token: None,
@@ -600,9 +667,9 @@ impl PluginInstaller {
                 Ok(RollbackCandidate {
                     plugin_id: plugin_id.to_owned(),
                     version: record.version.clone(),
-                    publisher_identity: state.publisher_identity.clone(),
                     repository_origin: record.repository_origin.clone(),
                     package_sha256: record.package_sha256.clone(),
+                    component_sha256: record.component_sha256.clone(),
                     package_directory: plugin_root.join("versions").join(&record.version),
                     data_snapshot_directory,
                 })
@@ -790,9 +857,7 @@ impl PluginInstaller {
             let record = state
                 .active_record()?
                 .ok_or(RepositoryError::CorruptInstallState)?;
-            if record.package_sha256 != journal.package_sha256
-                || state.publisher_identity != journal.publisher_identity
-            {
+            if record.package_sha256 != journal.package_sha256 {
                 return Err(RepositoryError::PreparedDescriptorMismatch);
             }
             validate_version_directory(&plugin_root, &journal.plugin_id, record)?;
@@ -805,14 +870,8 @@ impl PluginInstaller {
             PreparedInstallationKind::InitialInstall if state.active_version.is_some() => {
                 return Err(RepositoryError::PreparedStateChanged);
             }
-            PreparedInstallationKind::ManualUpgrade => {
-                if state.publisher_identity != journal.publisher_identity {
-                    return Err(RepositoryError::PublisherIdentityChanged);
-                }
-            }
-            PreparedInstallationKind::InitialInstall => {
-                state.publisher_identity = journal.publisher_identity.clone();
-            }
+            PreparedInstallationKind::ManualUpgrade => {}
+            PreparedInstallationKind::InitialInstall => {}
             PreparedInstallationKind::Rollback => {
                 return Err(RepositoryError::PreparedDescriptorMismatch);
             }
@@ -873,6 +932,7 @@ impl PluginInstaller {
             VerifiedVersion {
                 version: journal.version.clone(),
                 package_sha256: journal.package_sha256.clone(),
+                component_sha256: journal.component_sha256.clone(),
                 repository_origin: journal.repository_origin.clone(),
                 sequence: state.next_sequence,
                 data_snapshot_token: None,
@@ -941,7 +1001,6 @@ impl PluginInstaller {
             .collect();
         if manifest.id != journal.plugin_id
             || manifest.version != journal.version
-            || manifest.publisher.identity != journal.publisher_identity
             || permissions != journal.requested_permissions
         {
             return Err(RepositoryError::PreparedDescriptorMismatch);
@@ -1165,7 +1224,9 @@ fn remove_optional_snapshot(plugin_root: &Path, token: Option<&str>) {
 struct InstallState {
     schema: u32,
     plugin_id: String,
-    publisher_identity: String,
+    /// Legacy self-asserted identity; never consulted or generated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publisher_identity: Option<String>,
     next_sequence: u64,
     active_version: Option<String>,
     verified: Vec<VerifiedVersion>,
@@ -1176,7 +1237,7 @@ impl InstallState {
         Self {
             schema: INSTALL_STATE_SCHEMA,
             plugin_id: plugin_id.to_owned(),
-            publisher_identity: String::new(),
+            publisher_identity: None,
             next_sequence: 1,
             active_version: None,
             verified: Vec::new(),
@@ -1200,6 +1261,8 @@ impl InstallState {
 struct VerifiedVersion {
     version: String,
     package_sha256: String,
+    #[serde(default)]
+    component_sha256: String,
     repository_origin: String,
     sequence: u64,
     data_snapshot_token: Option<String>,
@@ -1309,7 +1372,6 @@ fn validate_state(state: &InstallState, plugin_id: &str) -> Result<()> {
         || state.plugin_id != plugin_id
         || state.next_sequence == 0
         || state.verified.len() > MAX_ROLLBACK_CANDIDATES + 1
-        || (state.active_version.is_some() && state.publisher_identity.is_empty())
         || (state.active_version.is_none() && !state.verified.is_empty())
     {
         return Err(RepositoryError::CorruptInstallState);
@@ -1323,6 +1385,7 @@ fn validate_state(state: &InstallState, plugin_id: &str) -> Result<()> {
             || record.sequence >= state.next_sequence
             || record.repository_origin.is_empty()
             || !is_sha256(&record.package_sha256)
+            || (!record.component_sha256.is_empty() && !is_sha256(&record.component_sha256))
             || record
                 .data_snapshot_token
                 .as_deref()
@@ -1342,9 +1405,9 @@ fn validate_prepared_journal(journal: &PreparedInstallationJournal) -> Result<()
     if journal.schema != INSTALL_STATE_SCHEMA
         || !valid_staging_token(&journal.token)
         || Version::parse(&journal.version).is_err()
-        || journal.publisher_identity.is_empty()
         || journal.repository_origin.is_empty()
         || !is_sha256(&journal.package_sha256)
+        || !is_sha256(&journal.component_sha256)
         || journal
             .previous_version
             .as_deref()
@@ -1409,6 +1472,149 @@ fn validate_version_directory(
     .map_err(|_| RepositoryError::CorruptInstallState)
 }
 
+/// Builds a `DownloadedPackage` from a local package directory. The
+/// manifest's component digest is the integrity boundary in local mode.
+fn build_local_package(package_root: &Path) -> Result<DownloadedPackage> {
+    use std::io::Read as _;
+
+    let manifest_path = package_root.join("plugin.toml");
+    let metadata =
+        fs::symlink_metadata(&manifest_path).map_err(|_| RepositoryError::ManifestUnavailable)?;
+    if !metadata.is_file() || metadata.len() > 64 * 1024 {
+        return Err(RepositoryError::ManifestUnavailable);
+    }
+    let manifest_text =
+        fs::read_to_string(&manifest_path).map_err(|_| RepositoryError::ManifestUnavailable)?;
+    let manifest = PluginManifest::parse(&manifest_text)?;
+
+    let component_relative = Path::new(&manifest.component.path);
+    if component_relative.is_absolute()
+        || component_relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(RepositoryError::ManifestMismatch("component.path"));
+    }
+    let component_path = package_root.join(component_relative);
+    let component_metadata =
+        fs::symlink_metadata(&component_path).map_err(|_| RepositoryError::PackageNotFound)?;
+    if !component_metadata.is_file() {
+        return Err(RepositoryError::PackageNotFound);
+    }
+    let mut component = Vec::new();
+    File::open(&component_path)
+        .and_then(|mut file| file.read_to_end(&mut component))
+        .map_err(|_| RepositoryError::PackageNotFound)?;
+    if component.len() > MAX_PACKAGE_EXPANDED_BYTES as usize {
+        return Err(RepositoryError::ResponseTooLarge {
+            limit: MAX_PACKAGE_EXPANDED_BYTES,
+        });
+    }
+    let expected = Sha256Digest::parse_hex(&manifest.component.sha256, "component.sha256")?;
+    if !expected.verifies(&component) {
+        return Err(RepositoryError::PackageDigestMismatch);
+    }
+
+    // Deterministic archive: manifest first, then directories and component.
+    let parent = component_relative
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let mut directories: Vec<String> = Vec::new();
+    if let Some(parent) = parent {
+        let mut prefix = String::new();
+        for component in parent.components() {
+            let Some(part) = component.as_os_str().to_str() else {
+                return Err(RepositoryError::ManifestMismatch("component.path"));
+            };
+            prefix.push_str(part);
+            prefix.push('/');
+            directories.push(prefix.clone());
+        }
+    }
+
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        use zip::ZipWriter;
+        use zip::write::SimpleFileOptions;
+        let mut archive = ZipWriter::new(&mut cursor);
+        let file_options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o644);
+        let dir_options = SimpleFileOptions::default().unix_permissions(0o755);
+        for directory in &directories {
+            archive
+                .add_directory(directory.clone(), dir_options)
+                .map_err(|_| RepositoryError::InvalidArchive("write"))?;
+        }
+        archive
+            .start_file("plugin.toml", file_options)
+            .map_err(|_| RepositoryError::InvalidArchive("write"))?;
+        archive
+            .write_all(manifest_text.as_bytes())
+            .map_err(|_| RepositoryError::InvalidArchive("write"))?;
+        archive
+            .start_file(
+                component_relative
+                    .to_str()
+                    .ok_or(RepositoryError::ManifestMismatch("component.path"))?,
+                file_options,
+            )
+            .map_err(|_| RepositoryError::InvalidArchive("write"))?;
+        archive
+            .write_all(&component)
+            .map_err(|_| RepositoryError::InvalidArchive("write"))?;
+        archive
+            .finish()
+            .map_err(|_| RepositoryError::InvalidArchive("write"))?;
+    }
+    let bytes = cursor.into_inner();
+    let digest = Sha256Digest::calculate(&bytes);
+    let package = RepositoryPackage {
+        version: manifest.version.clone(),
+        url: format!("{LOCAL_INSTALL_ORIGIN}/packages/{}.zip", manifest.id),
+        sha256: hex(digest.as_bytes()),
+        download_bytes: bytes.len() as u64,
+        expanded_bytes: component.len() as u64 + manifest_text.len() as u64,
+        files: 2,
+    };
+    DownloadedPackage::from_local_package(manifest.id.clone(), package, bytes)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+fn clear_read_only_tree(root: &Path) {
+    fn visit(path: &Path) {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return;
+        };
+        if metadata.is_dir() {
+            let _ = fs::read_dir(path).map(|entries| {
+                for entry in entries.flatten() {
+                    visit(&entry.path());
+                }
+            });
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = match fs::metadata(path) {
+                Ok(meta) => meta.permissions(),
+                Err(_) => return,
+            };
+            permissions.set_mode(permissions.mode() | 0o200);
+            let _ = fs::set_permissions(path, permissions);
+        }
+    }
+    visit(root);
+}
+
 fn to_active(
     plugin_root: &Path,
     state: &InstallState,
@@ -1417,9 +1623,9 @@ fn to_active(
     ActiveInstallation {
         plugin_id: state.plugin_id.clone(),
         version: record.version.clone(),
-        publisher_identity: state.publisher_identity.clone(),
         repository_origin: record.repository_origin.clone(),
         package_sha256: record.package_sha256.clone(),
+        component_sha256: record.component_sha256.clone(),
         package_directory: plugin_root.join("versions").join(&record.version),
     }
 }

@@ -1,17 +1,19 @@
 <template>
   <n-config-provider :theme-overrides="activeOverrides">
     <n-message-provider>
-      <LegacyResetGate>
-        <AppShell />
-      </LegacyResetGate>
-      <ShutdownDialog />
+      <n-dialog-provider>
+        <LegacyResetGate>
+          <AppShell />
+        </LegacyResetGate>
+        <ShutdownDialog />
+      </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>
 </template>
 
 <script setup lang="ts">
 import { computed, onErrorCaptured, watch } from 'vue';
-import { NConfigProvider, NMessageProvider } from 'naive-ui';
+import { NConfigProvider, NDialogProvider, NMessageProvider } from 'naive-ui';
 import AppShell from './components/app-shell/AppShell.vue';
 import LegacyResetGate from './components/migration/LegacyResetGate.vue';
 import ShutdownDialog from './components/app-shell/ShutdownDialog.vue';

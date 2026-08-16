@@ -1,7 +1,7 @@
 //! Native isolation boundary for one bbcom Wasm Component plugin.
 
 pub mod artifact;
-mod bindings;
+pub mod bindings;
 pub mod error;
 pub mod handshake;
 mod host_state;

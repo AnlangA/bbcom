@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,12 +9,12 @@ use std::time::Duration;
 use bbcom_plugin_contracts::generated::{
     CancelRequest, CompleteShutdownResponse, Envelope, Error as ProtocolError,
     GetStateChunkRequest, GetStateChunkResponse, InitializeRequest, InitializeResponse,
-    InvokeRequest, OpaqueStateKind, PutStateChunkRequest, PutStateChunkResponse, ShutdownResponse,
-    StateSnapshotDescriptor, envelope,
+    InvokeRequest, InvokeResponse, OpaqueStateKind, PutStateChunkRequest, PutStateChunkResponse,
+    ShutdownResponse, StateSnapshotDescriptor, envelope,
 };
 use bbcom_plugin_contracts::{
     HANDSHAKE_TIMEOUT_MS, MAX_PLUGIN_PERSISTED_STATE_BYTES, MAX_PLUGIN_STATE_CHUNK_BYTES,
-    PLUGIN_STATE_SCHEMA_VERSION, PROTOCOL_MAJOR, PROTOCOL_MINOR, Permission,
+    PLUGIN_STATE_SCHEMA_VERSION, PROTOCOL_MAJOR, PROTOCOL_MINOR, Permission, parse_permission,
 };
 
 use crate::handshake::{HandshakeExpectation, HandshakeMachine};
@@ -37,6 +36,8 @@ pub enum SidecarExit {
 pub trait PluginExecutor {
     fn initialize_with_kind(&mut self, kind: CallKind) -> Result<()>;
     fn shutdown(&mut self) -> Result<()>;
+    fn handle_panel_event(&mut self, event: crate::bindings::PanelEvent) -> Result<()>;
+    fn take_published_panel(&mut self) -> Option<crate::bindings::DeclarativePanel>;
     fn restore_persisted_state(
         &mut self,
         plugin_storage: &[u8],
@@ -68,6 +69,14 @@ impl PluginExecutor for PluginRuntime {
 
     fn shutdown(&mut self) -> Result<()> {
         PluginRuntime::shutdown(self)
+    }
+
+    fn handle_panel_event(&mut self, event: crate::bindings::PanelEvent) -> Result<()> {
+        PluginRuntime::handle_panel_event(self, event)
+    }
+
+    fn take_published_panel(&mut self) -> Option<crate::bindings::DeclarativePanel> {
+        PluginRuntime::take_published_panel(self)
     }
 
     fn restore_persisted_state(
@@ -230,6 +239,30 @@ pub struct Sidecar<E = PluginRuntime> {
     shutdown_prepared: bool,
 }
 
+#[derive(serde::Deserialize)]
+struct PanelEventBody {
+    #[serde(rename = "fieldId")]
+    field_id: String,
+    value: String,
+}
+
+fn panel_json(panel: &crate::bindings::DeclarativePanel) -> Vec<u8> {
+    use serde_json::json;
+    json!({
+        "title": panel.title,
+        "fields": panel.fields.iter().map(|field| json!({
+            "id": field.id,
+            "label": field.label,
+            "kind": format!("{:?}", field.kind).to_lowercase(),
+            "value": field.value,
+            "options": field.options,
+            "disabled": field.disabled,
+        })).collect::<Vec<_>>(),
+    })
+    .to_string()
+    .into_bytes()
+}
+
 impl<E: PluginExecutor> Sidecar<E> {
     #[must_use]
     pub fn new(runtime: E, expectation: HandshakeExpectation) -> Self {
@@ -372,12 +405,84 @@ impl<E: PluginExecutor> Sidecar<E> {
             ))?;
             return Ok(None);
         }
+        if request.method == "panel-event" {
+            return self.handle_panel_event_invoke(request_id, request, writer);
+        }
         let error = HostError::UnsupportedMethod;
         writer.write_envelope(&protocol_error(
             request_id,
             error.code(),
             error.message_key(),
         ))?;
+        Ok(None)
+    }
+
+    /// Delivers a declarative-panel event to the plugin. The request body is
+    /// JSON `{"fieldId": string, "value": string}`; the response body is the
+    /// plugin's returned panel serialized as JSON
+    /// `{"title": string, "fields": [{"id", "label", "kind", "value",
+    /// "options", "disabled"}]}`.
+    fn handle_panel_event_invoke<W: Write>(
+        &mut self,
+        request_id: u64,
+        request: InvokeRequest,
+        writer: &mut FrameWriter<W>,
+    ) -> Result<Option<SidecarExit>> {
+        if !self.initialized || self.shutdown_prepared {
+            self.operations.discard(request_id);
+            writer.write_envelope(&protocol_error(
+                request_id,
+                "PLUGIN_PROTOCOL_INVALID",
+                "plugin.error.protocolInvalid",
+            ))?;
+            return Ok(None);
+        }
+        let event: PanelEventBody = match serde_json::from_slice(&request.body) {
+            Ok(event) => event,
+            Err(_) => {
+                self.operations.discard(request_id);
+                writer.write_envelope(&protocol_error(
+                    request_id,
+                    "PLUGIN_PROTOCOL_INVALID",
+                    "plugin.error.protocolInvalid",
+                ))?;
+                return Ok(None);
+            }
+        };
+        let event = crate::bindings::PanelEvent {
+            field_id: event.field_id,
+            value: event.value,
+        };
+        self.runtime.prepare_interruptible_call();
+        let active = self
+            .operations
+            .begin(request_id, self.runtime.interrupt_handle());
+        let result = self.runtime.handle_panel_event(event);
+        let cancelled = active.finish();
+        if cancelled {
+            writer.write_envelope(&cancelled_error(request_id))?;
+            return Ok(None);
+        }
+        let panel = match result {
+            Ok(()) => self.runtime.take_published_panel(),
+            Err(error) => {
+                writer.write_envelope(&protocol_error(
+                    request_id,
+                    error.code(),
+                    error.message_key(),
+                ))?;
+                return Ok(None);
+            }
+        };
+        let body = panel
+            .map(|panel| panel_json(&panel))
+            .unwrap_or_else(|| serde_json::Value::Null.to_string().into_bytes());
+        writer.write_envelope(&Envelope {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
+            request_id,
+            payload: Some(envelope::Payload::InvokeResponse(InvokeResponse { body })),
+        })?;
         Ok(None)
     }
 
@@ -526,6 +631,11 @@ impl<E: PluginExecutor> Sidecar<E> {
             ));
         }
         self.initialized = true;
+        let panel_json = self
+            .runtime
+            .take_published_panel()
+            .map(|panel| panel_json(&panel))
+            .unwrap_or_default();
         let descriptor = self.publish_runtime_state()?;
         writer.write_envelope(&Envelope {
             protocol_major: PROTOCOL_MAJOR,
@@ -533,6 +643,7 @@ impl<E: PluginExecutor> Sidecar<E> {
             request_id,
             payload: Some(envelope::Payload::InitializeResponse(InitializeResponse {
                 state: Some(descriptor),
+                panel_json,
             })),
         })
     }
@@ -782,7 +893,7 @@ impl LaunchArguments {
                 "--sandbox-private-fs" => restricts_filesystem = true,
                 "--grant" => {
                     let value = arguments.next().ok_or(HostError::InvalidHandshake)?;
-                    granted.insert(Permission::from_str(&value)?);
+                    granted.insert(parse_permission(&value)?);
                 }
                 _ => return Err(HostError::InvalidProcessLimit),
             }

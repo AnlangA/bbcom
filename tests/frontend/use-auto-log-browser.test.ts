@@ -12,8 +12,9 @@ import {
   AUTO_LOG_MAX_BATCH_BYTES,
   useAutoLog,
 } from '../../src/composables/useAutoLog.ts';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 import type { DataFrame, PortConfig } from '../../src/types.ts';
+import { createInvokeHandler, unexpectedCommand } from './helpers/invoke-mock.ts';
 
 const config: PortConfig = {
   baudRate: 115200,
@@ -28,7 +29,7 @@ const config: PortConfig = {
 
 function setup() {
   setActivePinia(createPinia());
-  const sessions = useSessionStore();
+  const sessions = useSessionCoreStore();
   const sessionId = sessions.createSession('COM7', config);
   return { sessions, sessionId };
 }
@@ -79,20 +80,17 @@ test('useAutoLog reports begin and overflow failures to the visible main window 
 });
 
 test('useAutoLog defaults use only grant-token and bounded auto-log IPC commands', async () => {
-  invoke.mockImplementation(async (command: string) => {
-    switch (command) {
-      case 'request_save_target':
-        return { token: 'opaque-grant', displayName: 'capture.txt' };
-      case 'begin_auto_log':
-        return { logId: 'log-id' };
-      case 'append_auto_log_batch':
-        return { frames: 1, rawBytes: 1 };
-      case 'finish_auto_log':
-        return undefined;
-      default:
-        throw new Error(`unexpected command ${command}`);
-    }
-  });
+  invoke.mockImplementation(
+    createInvokeHandler({
+      responses: {
+        request_save_target: { token: 'opaque-grant', displayName: 'capture.txt' },
+        begin_auto_log: { logId: 'log-id' },
+        append_auto_log_batch: { frames: 1, rawBytes: 1 },
+        finish_auto_log: undefined,
+      },
+      fallback: unexpectedCommand,
+    }),
+  );
   const { sessionId } = setup();
   const auto = useAutoLog({ debounceMs: 1 });
 
@@ -108,7 +106,7 @@ test('useAutoLog defaults use only grant-token and bounded auto-log IPC commands
       {
         request: {
           logId: 'log-id',
-          frames: [{ id: 'f1', direction: 'RX', timestamp: 1, data: [0] }],
+          frames: [{ id: 'f1', direction: 'RX', timestamp: 1, data: [], dataB64: 'AA==' }],
         },
       },
     ],

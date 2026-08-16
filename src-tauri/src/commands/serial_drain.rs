@@ -14,8 +14,7 @@ use bbcom_contracts::{
 use tauri::{State, WebviewWindow};
 use tauri_plugin_serialplugin::api::SerialPort;
 
-use crate::commands::file_grants::ensure_main_window;
-use crate::models::ipc_error::from_app_error;
+use crate::utils::window::require_main_window_label;
 
 const OPERATION: &str = "drain_serial_input";
 const NATIVE_IDLE_GAP: Duration = Duration::from_millis(25);
@@ -79,7 +78,7 @@ pub async fn drain_serial_input(
     serial: State<'_, SerialPort<tauri::Wry>>,
     request: SerialDrainRequest,
 ) -> Result<SerialDrainResponse, IpcError> {
-    ensure_main_window(window.label()).map_err(|error| from_app_error(&error, OPERATION))?;
+    require_main_window_label(window.label(), OPERATION)?;
     validate_path(&request.path)?;
 
     let path = request.path;

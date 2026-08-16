@@ -8,7 +8,7 @@ use bbcom_plugin_contracts::Permission;
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store, Trap};
 
-use crate::bindings::Plugin;
+use crate::bindings::{DeclarativePanel, PanelEvent, Plugin};
 use crate::host_state::{StoreState, TrackingLimits};
 use crate::policy::{AmbientAuthorityPolicy, HostPolicy};
 use crate::{ExecutionFailure, ExecutionFailureKind, HostError, Result, TrustedPluginArtifact};
@@ -157,6 +157,24 @@ impl PluginRuntime {
     #[must_use]
     pub fn persisted_state(&self) -> (Vec<u8>, Option<Vec<u8>>) {
         self.store.data().persisted_state()
+    }
+
+    /// Delivers a declarative-panel event to the plugin and publishes the
+    /// returned panel. Mirrors the initialize contract: guest errors surface
+    /// as `PluginRejected` without partial state.
+    pub fn handle_panel_event(&mut self, event: PanelEvent) -> Result<()> {
+        self.ensure_open()?;
+        let panel = self.execute(CallKind::Normal, |store, bindings| {
+            bindings.call_handle_panel_event(store, &event)
+        })?;
+        let panel = panel.map_err(|_| HostError::PluginRejected)?;
+        self.store.data_mut().publish_returned_panel(panel);
+        Ok(())
+    }
+
+    /// Drains the most recently published panel for embedders and tests.
+    pub fn take_published_panel(&mut self) -> Option<DeclarativePanel> {
+        self.store.data_mut().take_published_panel()
     }
 
     pub fn shutdown(&mut self) -> Result<()> {

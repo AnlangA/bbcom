@@ -1,5 +1,4 @@
 import type {
-  WorkspaceFramePayload,
   WorkspaceSaveHealth,
   WorkspaceWaveformChannel,
   WorkspaceWaveformSample,
@@ -11,6 +10,7 @@ import {
   stageWorkspaceHydration,
   type WorkspaceHydrationPort,
   type WorkspaceHydrationStaging,
+  type WorkspaceQueuedFramePayload,
 } from '../adapters';
 import type {
   ActiveWorkspaceViewModel,
@@ -26,10 +26,22 @@ import {
   observeWorkspaceFrameSequences,
 } from './abortable-hydration-port';
 import {
-  WORKSPACE_CONFIG_AUTOSAVE_DELAY_MS,
-  WORKSPACE_FRAME_AUTOSAVE_DELAY_MS,
-  WORKSPACE_FRAME_AUTOSAVE_MAX_BYTES,
-  WORKSPACE_FRAME_AUTOSAVE_MAX_FRAMES,
+  abortAndRecoverActivation,
+  WorkspaceActivationEngine,
+  markRecoveryRequired,
+  recoverActivationOwner,
+  staleOrCancelled,
+  type ActivationAttempt,
+  type ActivationRecoveryHost,
+  type RuntimeTransition,
+} from './activation';
+import {
+  partitionWorkspaceMutationCommands,
+  type SaveContext,
+  type WorkspaceBufferedMutationCommand,
+} from './save-queues';
+import { WorkspaceSaveCoordinator } from './workspace-save-coordinator';
+import {
   WORKSPACE_STOPPED_ACTIVITY_POLICY,
   type WorkspaceApplicationListener,
   type WorkspaceApplicationOptions,
@@ -49,48 +61,6 @@ import {
   type WorkspaceWaveformFrameIngest,
 } from './types';
 
-interface ActivationAttempt {
-  readonly generation: number;
-  readonly controller: AbortController;
-  previousWorkspaceId: string | null;
-  nativeActivationStarted: boolean;
-  cancelledByUser: boolean;
-  activatedWorkspaceId: string | null;
-  phase:
-    'queued' | 'draining' | 'activating' | 'hydrating' | 'committing' | 'rolling-back' | 'terminal';
-}
-
-interface RuntimeTransition {
-  readonly id: string;
-  readonly previousWorkspaceId: string | null;
-  quiesceStarted: boolean;
-  quiesceFailure: WorkspaceActionFailure | null;
-  disposeStarted: boolean;
-  disposeCompleted: boolean;
-  stoppedWorkspaceId: string | null;
-}
-
-interface SaveContext {
-  readonly epoch: number;
-  readonly workspaceId: string;
-}
-
-type WorkspaceBufferedMutationCommand =
-  | WorkspaceConfigMutationCommand
-  | Extract<WorkspaceMutationCommand, { readonly kind: 'append-waveform-samples' }>;
-
-interface PendingConfigMutation {
-  readonly context: SaveContext;
-  readonly command: WorkspaceBufferedMutationCommand;
-}
-
-interface PendingFrame {
-  readonly context: SaveContext;
-  readonly sessionId: string;
-  readonly sequence: number;
-  readonly payload: WorkspaceFramePayload;
-}
-
 interface UndoCaptureState {
   readonly sessionId: string;
   readonly nextSequence: number;
@@ -98,7 +68,6 @@ interface UndoCaptureState {
   readonly captureBytes: number;
 }
 
-type TimerHandle = ReturnType<typeof globalThis.setTimeout>;
 type ActivateWorkspace = () => Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>>;
 
 let fallbackRequestSequence = 0;
@@ -130,33 +99,14 @@ export class WorkspaceApplicationService {
     result: Promise<WorkspaceProjectExportOutcome> | null;
   } | null = null;
   private exportGeneration = 0;
-  private activationGeneration = 0;
-  private activationAttempt: ActivationAttempt | null = null;
-  private activationTail: Promise<void> = Promise.resolve();
+  private readonly activations = new WorkspaceActivationEngine();
   private switchDrain: Promise<WorkspaceActionFailure | null> | null = null;
   private runtimeTransition: RuntimeTransition | null = null;
   private internalDrainTransition: RuntimeTransition | null = null;
   private runtimeLifecycleTail: Promise<void> = Promise.resolve();
 
-  private workspaceEpoch = 0;
-  private readonly nextFrameSequence = new Map<string, number>();
-  private readonly sessionFrameCounts = new Map<string, number>();
-  private readonly sessionCaptureBytes = new Map<string, number>();
-  private workspaceFrameCount = 0;
-  private workspaceCaptureBytes = 0;
   private undoCaptureState: UndoCaptureState | null = null;
-
-  private configQueue: PendingConfigMutation[] = [];
-  private configTimer: TimerHandle | null = null;
-  private frameQueue: PendingFrame[] = [];
-  private frameQueueBytes = 0;
-  private frameTimer: TimerHandle | null = null;
-
-  private saveTail: Promise<void> = Promise.resolve();
-  private scheduledSaveGroups = 0;
-  private saveInFlight = false;
-  private lastSaveFailure: WorkspaceLatchedSaveFailure | null = null;
-  private retainedUnsavedMutations = 0;
+  private readonly saves: WorkspaceSaveCoordinator;
 
   constructor(
     private readonly coordinator: WorkspaceCoordinator,
@@ -167,6 +117,75 @@ export class WorkspaceApplicationService {
     this.requestId = options.requestId ?? defaultRequestId;
     this.runtimeLifecycle = options.runtimeLifecycle ?? NOOP_RUNTIME_LIFECYCLE;
     this.onPersistenceFailure = options.onPersistenceFailure ?? (() => undefined);
+    this.saves = new WorkspaceSaveCoordinator({
+      scheduleSaveGroup: (context, commands) => this.scheduleSaveGroup(context, commands),
+      emitNotify: () => this.emitNotify(),
+    });
+  }
+
+  private get workspaceEpoch(): number {
+    return this.saves.workspaceEpoch;
+  }
+
+  private get captureAccounting() {
+    return this.saves.captureAccounting;
+  }
+
+  private get saveQueues() {
+    return this.saves.queues;
+  }
+
+  private get saveGate() {
+    return this.saves.gate;
+  }
+
+  private get saveTail(): Promise<void> {
+    return this.saves.saveTail;
+  }
+
+  private set saveTail(value: Promise<void>) {
+    this.saves.saveTail = value;
+  }
+
+  private get scheduledSaveGroups(): number {
+    return this.saves.scheduledSaveGroups;
+  }
+
+  private set scheduledSaveGroups(value: number) {
+    this.saves.scheduledSaveGroups = value;
+  }
+
+  private get saveInFlight(): boolean {
+    return this.saves.saveInFlight;
+  }
+
+  private set saveInFlight(value: boolean) {
+    this.saves.saveInFlight = value;
+  }
+
+  private get lastSaveFailure(): WorkspaceLatchedSaveFailure | null {
+    return this.saves.lastSaveFailure;
+  }
+
+  private set lastSaveFailure(value: WorkspaceLatchedSaveFailure | null) {
+    this.saves.lastSaveFailure = value;
+  }
+
+  private get retainedUnsavedMutations(): number {
+    return this.saves.retainedUnsavedMutations;
+  }
+
+  private set retainedUnsavedMutations(value: number) {
+    this.saves.retainedUnsavedMutations = value;
+  }
+
+  /**
+   * Next append sequence for one session (last assigned seq + 1). DB-sourced
+   * exports use it as the exclusive durability ceiling. Null for sessions the
+   * capture accounting does not know.
+   */
+  captureSeqCeiling(sessionId: string): number | null {
+    return this.captureAccounting.nextFrameSequence(sessionId) ?? null;
   }
 
   snapshot(): WorkspaceApplicationViewModel {
@@ -247,7 +266,7 @@ export class WorkspaceApplicationService {
     };
     this.exportAttempt = attempt;
 
-    this.releaseAllQueues();
+    this.saveQueues.releaseAll();
     const predecessor = this.saveTail;
     const exportAtBarrier = predecessor.then(async (): Promise<WorkspaceProjectExportOutcome> => {
       if (attempt.cancelled) return Object.freeze({ outcome: 'cancelled' });
@@ -300,7 +319,7 @@ export class WorkspaceApplicationService {
    * later request may enter the native activation phase.
    */
   cancelActivation(): boolean {
-    const attempt = this.activationAttempt;
+    const attempt = this.activations.attempt;
     if (!attempt) return this.coordinator.cancelActivation();
     if (attempt.phase === 'committing' || attempt.phase === 'terminal') return false;
     attempt.cancelledByUser = true;
@@ -358,14 +377,7 @@ export class WorkspaceApplicationService {
     } catch {
       return rejectedQueue('workspace.mutation.invalid');
     }
-    for (const command of clonedCommands) this.configQueue.push({ context, command });
-    if (clonedCommands.length === 0) return acceptedQueue();
-    if (this.configTimer !== null) globalThis.clearTimeout(this.configTimer);
-    this.configTimer = globalThis.setTimeout(() => {
-      this.configTimer = null;
-      this.releaseConfigQueue();
-    }, WORKSPACE_CONFIG_AUTOSAVE_DELAY_MS);
-    this.notify();
+    this.saveQueues.enqueueConfigMutations(context, clonedCommands);
     return acceptedQueue();
   }
 
@@ -375,7 +387,7 @@ export class WorkspaceApplicationService {
     samples: readonly WorkspaceWaveformSample[],
   ): WorkspaceQueueOutcome {
     const context = this.acceptingSaveContext();
-    if (!context || !this.nextFrameSequence.has(sessionId)) {
+    if (!context || !this.captureAccounting.hasSession(sessionId)) {
       return rejectedQueue(this.queueRejectionMessage());
     }
     return this.enqueueWaveformReplacement(context, sessionId, channels, samples);
@@ -386,7 +398,7 @@ export class WorkspaceApplicationService {
     samples: readonly WorkspaceWaveformSample[],
   ): WorkspaceQueueOutcome {
     const context = this.acceptingSaveContext();
-    if (!context || !this.nextFrameSequence.has(sessionId)) {
+    if (!context || !this.captureAccounting.hasSession(sessionId)) {
       return rejectedQueue(this.queueRejectionMessage());
     }
     return this.enqueueWaveformSamples(context, sessionId, samples);
@@ -394,7 +406,7 @@ export class WorkspaceApplicationService {
 
   queueWaveformFrameIngest(ingest: Readonly<WorkspaceWaveformFrameIngest>): WorkspaceQueueOutcome {
     const context = this.acceptingSaveContext();
-    if (!context || !this.nextFrameSequence.has(ingest.sessionId)) {
+    if (!context || !this.captureAccounting.hasSession(ingest.sessionId)) {
       return rejectedQueue(this.queueRejectionMessage());
     }
     return this.enqueueWaveformFrameIngest(context, ingest);
@@ -422,7 +434,7 @@ export class WorkspaceApplicationService {
     }
     // Replacement deletes channel rows (and their samples) by contract, so it
     // is a hard ordering barrier before the complete shared snapshot append.
-    this.releaseAllQueues();
+    this.saveQueues.releaseAll();
     this.scheduleSaveGroup(context, clonedCommands);
     this.notify();
     return acceptedQueue();
@@ -441,6 +453,26 @@ export class WorkspaceApplicationService {
     context: SaveContext,
     ingest: Readonly<WorkspaceWaveformFrameIngest>,
   ): WorkspaceQueueOutcome {
+    // A cursor-only append tick committed no new samples, so there is nothing
+    // that must stay atomic with the cursor: persist it through the regular
+    // 300 ms config debounce instead of releasing every queue and forcing an
+    // immediate native batch on every UI tick while streaming. Ordering is
+    // preserved because sample-bearing ingests and ordered mutations release
+    // the config queue before committing their own group.
+    if (ingest.mode === 'append' && ingest.samples.length === 0) {
+      const cursorCommand: Extract<WorkspaceMutationCommand, { kind: 'upsert-feature-state' }> = {
+        kind: 'upsert-feature-state',
+        entityId: ingest.sessionId,
+        payload: { feature: 'waveform', state: { ...ingest.featureState } },
+      };
+      let clonedCommand: WorkspaceConfigMutationCommand;
+      try {
+        clonedCommand = cloneAndFreeze(cursorCommand);
+      } catch {
+        return rejectedQueue('workspace.mutation.invalid');
+      }
+      return this.enqueueBufferedMutations(context, [clonedCommand]);
+    }
     const commands: WorkspaceMutationCommand[] = [];
     if (ingest.mode === 'replace') {
       commands.push({
@@ -470,7 +502,7 @@ export class WorkspaceApplicationService {
     if (!batches || batches.length !== 1) {
       return rejectedQueue('workspace.mutation.limit_exceeded');
     }
-    this.releaseAllQueues();
+    this.saveQueues.releaseAll();
     this.scheduleSaveGroup(context, clonedCommands, true);
     this.notify();
     return acceptedQueue();
@@ -487,7 +519,7 @@ export class WorkspaceApplicationService {
       return rejectedQueue('workspace.mutation.invalid');
     }
     if (clonedCommands.length === 0) return acceptedQueue();
-    this.releaseAllQueues();
+    this.saveQueues.releaseAll();
     this.scheduleSaveGroup(context, clonedCommands);
     this.notify();
     return acceptedQueue();
@@ -495,7 +527,7 @@ export class WorkspaceApplicationService {
 
   /** Register a newly-created renderer session before it can emit frames. */
   registerSession(sessionId: string): WorkspaceQueueOutcome {
-    if (this.nextFrameSequence.has(sessionId)) return acceptedQueue();
+    if (this.captureAccounting.hasSession(sessionId)) return acceptedQueue();
     const restored = this.undoCaptureState?.sessionId === sessionId ? this.undoCaptureState : null;
     const preflight = this.preflightSessionRegistration(
       sessionId,
@@ -503,14 +535,12 @@ export class WorkspaceApplicationService {
       restored?.captureBytes ?? 0,
     );
     if (!preflight.accepted) return preflight;
-    if (!this.nextFrameSequence.has(sessionId)) {
-      const frameCount = restored?.frameCount ?? 0;
-      const captureBytes = restored?.captureBytes ?? 0;
-      this.nextFrameSequence.set(sessionId, restored?.nextSequence ?? 0);
-      this.sessionFrameCounts.set(sessionId, frameCount);
-      this.sessionCaptureBytes.set(sessionId, captureBytes);
-      this.workspaceFrameCount += frameCount;
-      this.workspaceCaptureBytes += captureBytes;
+    if (!this.captureAccounting.hasSession(sessionId)) {
+      this.captureAccounting.registerSession(sessionId, {
+        nextSequence: restored?.nextSequence ?? 0,
+        frameCount: restored?.frameCount ?? 0,
+        captureBytes: restored?.captureBytes ?? 0,
+      });
       if (restored) this.undoCaptureState = null;
     }
     return acceptedQueue();
@@ -527,7 +557,7 @@ export class WorkspaceApplicationService {
     if (!this.acceptingSaveContext()) return rejectedQueue(this.queueRejectionMessage());
     if (
       !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(sessionId) ||
-      this.nextFrameSequence.has(sessionId) ||
+      this.captureAccounting.hasSession(sessionId) ||
       !Number.isSafeInteger(frameCount) ||
       frameCount < 0 ||
       !Number.isSafeInteger(captureBytes) ||
@@ -543,11 +573,12 @@ export class WorkspaceApplicationService {
     ) {
       return rejectedQueue('workspace.capture.invalid_restore');
     }
+    const workspaceTotals = this.captureAccounting.workspaceTotals();
     if (
-      this.nextFrameSequence.size + 1 > IPC_LIMITS.MAX_WORKSPACE_SESSIONS ||
+      this.captureAccounting.sessionCount + 1 > IPC_LIMITS.MAX_WORKSPACE_SESSIONS ||
       frameCount > IPC_LIMITS.MAX_WORKSPACE_FRAMES_PER_SESSION ||
-      this.workspaceFrameCount + frameCount > IPC_LIMITS.MAX_WORKSPACE_FRAMES ||
-      this.workspaceCaptureBytes + captureBytes > IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES
+      workspaceTotals.frameCount + frameCount > IPC_LIMITS.MAX_WORKSPACE_FRAMES ||
+      workspaceTotals.captureBytes + captureBytes > IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES
     ) {
       return rejectedQueue('workspace.capture.limit_exceeded');
     }
@@ -564,7 +595,7 @@ export class WorkspaceApplicationService {
    * at the application boundary. The queued replace is an empty, bounded DTO. */
   queueCaptureReset(sessionId: string): WorkspaceQueueOutcome {
     const context = this.acceptingSaveContext();
-    if (!context || !this.nextFrameSequence.has(sessionId)) {
+    if (!context || !this.captureAccounting.hasSession(sessionId)) {
       return rejectedQueue(this.queueRejectionMessage());
     }
     // Attach all accepted work to saveTail, then schedule clear immediately.
@@ -574,35 +605,24 @@ export class WorkspaceApplicationService {
       { kind: 'replace-capture', sessionId, payload: { frames: [] } },
     ]);
     if (!outcome.accepted) return outcome;
-    const removedFrames = this.sessionFrameCounts.get(sessionId) ?? 0;
-    const removedBytes = this.sessionCaptureBytes.get(sessionId) ?? 0;
-    this.workspaceFrameCount = Math.max(0, this.workspaceFrameCount - removedFrames);
-    this.workspaceCaptureBytes = Math.max(0, this.workspaceCaptureBytes - removedBytes);
-    this.sessionFrameCounts.set(sessionId, 0);
-    this.sessionCaptureBytes.set(sessionId, 0);
-    this.nextFrameSequence.set(sessionId, 0);
+    // resetSession zeroes the row (sequence, frames, bytes) and releases its
+    // previous totals from the workspace aggregates in one step.
+    this.captureAccounting.resetSession(sessionId);
     return outcome;
   }
 
   /** Stop accepting frames for a removed session and release its aggregate
    * accounting. The caller still submits the generated remove-session command. */
   forgetSession(sessionId: string): void {
-    const removedFrames = this.sessionFrameCounts.get(sessionId) ?? 0;
-    const removedBytes = this.sessionCaptureBytes.get(sessionId) ?? 0;
-    const nextSequence = this.nextFrameSequence.get(sessionId) ?? 0;
-    if (this.nextFrameSequence.has(sessionId)) {
+    const removed = this.captureAccounting.removeSession(sessionId);
+    if (removed) {
       this.undoCaptureState = Object.freeze({
         sessionId,
-        nextSequence,
-        frameCount: removedFrames,
-        captureBytes: removedBytes,
+        nextSequence: removed.nextSequence,
+        frameCount: removed.frameCount,
+        captureBytes: removed.captureBytes,
       });
     }
-    this.workspaceFrameCount = Math.max(0, this.workspaceFrameCount - removedFrames);
-    this.workspaceCaptureBytes = Math.max(0, this.workspaceCaptureBytes - removedBytes);
-    this.nextFrameSequence.delete(sessionId);
-    this.sessionFrameCounts.delete(sessionId);
-    this.sessionCaptureBytes.delete(sessionId);
   }
 
   queueCaptureTrim(
@@ -621,18 +641,16 @@ export class WorkspaceApplicationService {
     droppedFrames: number,
     droppedBytes: number,
   ): WorkspaceQueueOutcome {
-    const frameCount = this.sessionFrameCounts.get(sessionId);
-    const captureBytes = this.sessionCaptureBytes.get(sessionId);
+    const totals = this.captureAccounting.sessionTotals(sessionId);
     if (
-      frameCount === undefined ||
-      captureBytes === undefined ||
+      totals === null ||
       !Number.isSafeInteger(droppedFrames) ||
       droppedFrames < 1 ||
-      droppedFrames > frameCount ||
+      droppedFrames > totals.frameCount ||
       droppedFrames > 0xffff_ffff ||
       !Number.isSafeInteger(droppedBytes) ||
       droppedBytes < 0 ||
-      droppedBytes > captureBytes
+      droppedBytes > totals.captureBytes
     ) {
       return rejectedQueue('workspace.capture.invalid_trim');
     }
@@ -640,10 +658,9 @@ export class WorkspaceApplicationService {
       { kind: 'trim-capture', sessionId, payload: { frameCount: droppedFrames } },
     ]);
     if (!outcome.accepted) return outcome;
-    this.sessionFrameCounts.set(sessionId, frameCount - droppedFrames);
-    this.sessionCaptureBytes.set(sessionId, captureBytes - droppedBytes);
-    this.workspaceFrameCount = Math.max(0, this.workspaceFrameCount - droppedFrames);
-    this.workspaceCaptureBytes = Math.max(0, this.workspaceCaptureBytes - droppedBytes);
+    // Negative recordFrames writes the row exactly (validated above) while
+    // clamping the workspace aggregates at zero.
+    this.captureAccounting.recordFrames(sessionId, -droppedFrames, -droppedBytes);
     return outcome;
   }
 
@@ -676,18 +693,19 @@ export class WorkspaceApplicationService {
         : null);
     if (!context) return rejectedQueue(this.queueRejectionMessage());
     if (
-      !this.nextFrameSequence.has(sessionId) ||
+      !this.captureAccounting.hasSession(sessionId) ||
       !(frame?.data instanceof Uint8Array) ||
       (frame.direction !== 'RX' && frame.direction !== 'TX') ||
       frame.data.byteLength > IPC_LIMITS.MAX_WORKSPACE_FRAME_BYTES
     ) {
       return rejectedQueue('workspace.capture.invalid');
     }
-    const sessionCount = this.sessionFrameCounts.get(sessionId) ?? 0;
+    const sessionCount = this.captureAccounting.sessionTotals(sessionId)?.frameCount ?? 0;
+    const workspaceTotals = this.captureAccounting.workspaceTotals();
     if (
       sessionCount + 1 > IPC_LIMITS.MAX_WORKSPACE_FRAMES_PER_SESSION ||
-      this.workspaceFrameCount + 1 > IPC_LIMITS.MAX_WORKSPACE_FRAMES ||
-      this.workspaceCaptureBytes + frame.data.byteLength > IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES
+      workspaceTotals.frameCount + 1 > IPC_LIMITS.MAX_WORKSPACE_FRAMES ||
+      workspaceTotals.captureBytes + frame.data.byteLength > IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES
     ) {
       return rejectedQueue('workspace.capture.limit_exceeded');
     }
@@ -706,58 +724,32 @@ export class WorkspaceApplicationService {
     context: SaveContext,
     capture: WorkspaceFrameCapture,
   ): WorkspaceQueueOutcome {
-    if (!capture.frame || !this.nextFrameSequence.has(capture.sessionId)) {
+    if (!capture.frame || !this.captureAccounting.hasSession(capture.sessionId)) {
       return rejectedQueue('workspace.capture.invalid_session');
     }
-    const sequence = this.nextFrameSequence.get(capture.sessionId)!;
+    const sequence = this.captureAccounting.nextFrameSequence(capture.sessionId)!;
     if (!Number.isSafeInteger(sequence) || !Number.isSafeInteger(sequence + 1)) {
       return rejectedQueue('workspace.capture.sequence_exhausted');
     }
-    let payload: WorkspaceFramePayload;
+    let payload: WorkspaceQueuedFramePayload;
     try {
       payload = projectWorkspaceFrame(capture.frame);
     } catch {
       return rejectedQueue('workspace.capture.invalid');
     }
-    const sessionCount = this.sessionFrameCounts.get(capture.sessionId) ?? 0;
+    const sessionCount = this.captureAccounting.sessionTotals(capture.sessionId)?.frameCount ?? 0;
+    const workspaceTotals = this.captureAccounting.workspaceTotals();
     if (
       sessionCount + 1 > IPC_LIMITS.MAX_WORKSPACE_FRAMES_PER_SESSION ||
-      this.workspaceFrameCount + 1 > IPC_LIMITS.MAX_WORKSPACE_FRAMES ||
-      this.workspaceCaptureBytes + payload.data.length > IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES
+      workspaceTotals.frameCount + 1 > IPC_LIMITS.MAX_WORKSPACE_FRAMES ||
+      workspaceTotals.captureBytes + payload.data.length > IPC_LIMITS.MAX_WORKSPACE_CAPTURE_BYTES
     ) {
       return rejectedQueue('workspace.capture.limit_exceeded');
     }
 
-    if (
-      this.frameQueue.length > 0 &&
-      (this.frameQueue.length + 1 > WORKSPACE_FRAME_AUTOSAVE_MAX_FRAMES ||
-        this.frameQueueBytes + payload.data.length > WORKSPACE_FRAME_AUTOSAVE_MAX_BYTES)
-    ) {
-      this.releaseFrameQueue();
-    }
-
-    this.nextFrameSequence.set(capture.sessionId, sequence + 1);
-    this.sessionFrameCounts.set(capture.sessionId, sessionCount + 1);
-    this.sessionCaptureBytes.set(
-      capture.sessionId,
-      (this.sessionCaptureBytes.get(capture.sessionId) ?? 0) + payload.data.length,
-    );
-    this.workspaceFrameCount += 1;
-    this.workspaceCaptureBytes += payload.data.length;
-    this.frameQueue.push({ context, sessionId: capture.sessionId, sequence, payload });
-    this.frameQueueBytes += payload.data.length;
-    if (this.frameQueue.length === 1) {
-      this.frameTimer = globalThis.setTimeout(() => {
-        this.frameTimer = null;
-        this.releaseFrameQueue();
-      }, WORKSPACE_FRAME_AUTOSAVE_DELAY_MS);
-    }
-    if (
-      this.frameQueue.length >= WORKSPACE_FRAME_AUTOSAVE_MAX_FRAMES ||
-      this.frameQueueBytes >= WORKSPACE_FRAME_AUTOSAVE_MAX_BYTES
-    ) {
-      this.releaseFrameQueue();
-    }
+    this.saveQueues.enqueueFrame({ context, sessionId: capture.sessionId, sequence, payload });
+    this.captureAccounting.setNextFrameSequence(capture.sessionId, sequence + 1);
+    this.captureAccounting.recordFrames(capture.sessionId, 1, payload.data.length);
     this.notify();
     return acceptedQueue();
   }
@@ -767,7 +759,7 @@ export class WorkspaceApplicationService {
    * coordinator revision. Mutations accepted later belong to a later barrier.
    */
   async flush(): Promise<WorkspaceSaveOutcome> {
-    this.releaseAllQueues();
+    this.saveQueues.releaseAll();
     const barrier = this.saveTail;
     await barrier;
     if (this.lastSaveFailure) return this.lastSaveFailure;
@@ -782,13 +774,13 @@ export class WorkspaceApplicationService {
   }
 
   private activate(invoke: ActivateWorkspace): Promise<WorkspaceApplicationOutcome> {
-    const predecessor = this.activationAttempt;
+    const predecessor = this.activations.attempt;
     if (predecessor && predecessor.phase !== 'committing' && predecessor.phase !== 'terminal') {
       predecessor.controller.abort();
       if (predecessor.phase === 'activating') this.coordinator.cancelActivation();
     }
     const attempt: ActivationAttempt = {
-      generation: ++this.activationGeneration,
+      generation: this.activations.nextGeneration(),
       controller: new AbortController(),
       // The predecessor may still commit before this queued attempt starts.
       // Capture the rollback target only after the serialized hand-off.
@@ -798,18 +790,18 @@ export class WorkspaceApplicationService {
       activatedWorkspaceId: null,
       phase: 'queued',
     };
-    this.activationAttempt = attempt;
+    this.activations.attempt = attempt;
     this.switching = true;
     this.hydrating = false;
     this.applicationStatus = 'loading';
     this.applicationMessageKey = null;
     this.notify();
 
-    const execution = this.activationTail.then(
+    const execution = this.activations.tail.then(
       () => this.performActivation(attempt, invoke),
       () => this.performActivation(attempt, invoke),
     );
-    this.activationTail = execution.then(
+    this.activations.tail = execution.then(
       () => undefined,
       () => undefined,
     );
@@ -837,12 +829,14 @@ export class WorkspaceApplicationService {
     attempt.phase = 'draining';
 
     const drainFailure = await this.drainBeforeActivation();
-    if (!this.isAttemptActive(attempt)) return this.abortAndRecoverActivation(attempt);
+    if (!this.activations.isActive(attempt))
+      return abortAndRecoverActivation(attempt, this.activations, this.activationRecoveryHost());
     if (drainFailure) {
       const restored = await this.restoreRuntimeAfterAbortedTransition(null);
-      if (!this.isAttemptActive(attempt)) return this.abortAndRecoverActivation(attempt);
+      if (!this.activations.isActive(attempt))
+        return abortAndRecoverActivation(attempt, this.activations, this.activationRecoveryHost());
       const failure = restored ? drainFailure : failed('workspace.activation.rollback_failed');
-      if (!restored) this.markRecoveryRequired(attempt);
+      if (!restored) markRecoveryRequired(attempt, this.activations, this.activationRecoveryHost());
       this.finishActivationFailure(attempt, failure);
       return failure;
     }
@@ -853,24 +847,26 @@ export class WorkspaceApplicationService {
     try {
       activation = await invoke();
     } catch {
-      if (!this.isAttemptActive(attempt)) return this.abortAndRecoverActivation(attempt);
+      if (!this.activations.isActive(attempt))
+        return abortAndRecoverActivation(attempt, this.activations, this.activationRecoveryHost());
       const restored = await this.restoreRuntimeAfterAbortedTransition(null);
       const failure = restored
         ? failed('workspace.activation.failed')
         : failed('workspace.activation.rollback_failed');
-      if (!restored) this.markRecoveryRequired(attempt);
+      if (!restored) markRecoveryRequired(attempt, this.activations, this.activationRecoveryHost());
       this.finishActivationFailure(attempt, failure);
       return failure;
     }
     if (activation.outcome === 'completed') {
       attempt.activatedWorkspaceId = activation.value.workspaceId;
     }
-    if (!this.isAttemptActive(attempt)) return this.abortAndRecoverActivation(attempt);
+    if (!this.activations.isActive(attempt))
+      return abortAndRecoverActivation(attempt, this.activations, this.activationRecoveryHost());
     if (activation.outcome !== 'completed') {
       const restored = await this.restoreRuntimeAfterAbortedTransition(null);
       if (!restored) {
         const failure = failed('workspace.activation.rollback_failed');
-        this.markRecoveryRequired(attempt);
+        markRecoveryRequired(attempt, this.activations, this.activationRecoveryHost());
         this.finishActivationFailure(attempt, failure);
         return failure;
       }
@@ -915,8 +911,8 @@ export class WorkspaceApplicationService {
       this.installHydratedWorkspace(attempt, header, staging, frameNextSequences);
       return completed(this.snapshot());
     } catch (error) {
-      if (!this.isAttemptActive(attempt) || isWorkspaceHydrationAbort(error)) {
-        return this.abortAndRecoverActivation(attempt);
+      if (!this.activations.isActive(attempt) || isWorkspaceHydrationAbort(error)) {
+        return abortAndRecoverActivation(attempt, this.activations, this.activationRecoveryHost());
       }
       const failure = failed('workspace.hydration.failed');
       const rollback = await this.rollbackFailedActivation(attempt, failure);
@@ -935,7 +931,7 @@ export class WorkspaceApplicationService {
       return existing;
     }
     const transition: RuntimeTransition = {
-      id: `workspace-transition-${this.activationGeneration}`,
+      id: `workspace-transition-${this.activations.generation}`,
       previousWorkspaceId,
       quiesceStarted: false,
       quiesceFailure: null,
@@ -985,7 +981,7 @@ export class WorkspaceApplicationService {
     attempt: ActivationAttempt,
     transition: RuntimeTransition,
   ): void {
-    if (!this.isAttemptActive(attempt) || this.runtimeTransition !== transition) {
+    if (!this.activations.isActive(attempt) || this.runtimeTransition !== transition) {
       const error = new Error('stale workspace runtime transition');
       error.name = 'AbortError';
       throw error;
@@ -1035,13 +1031,13 @@ export class WorkspaceApplicationService {
     attempt: ActivationAttempt,
     failure: WorkspaceActionFailure,
   ): Promise<'recovered' | 'failed' | 'stale'> {
-    const recovered = await this.recoverActivationOwner(attempt);
+    const recovered = await recoverActivationOwner(attempt, this.activationRecoveryHost());
     attempt.phase = 'terminal';
     if (!recovered) {
-      this.markRecoveryRequired(attempt);
+      markRecoveryRequired(attempt, this.activations, this.activationRecoveryHost());
       return 'failed';
     }
-    if (!this.isLatestAttempt(attempt)) return 'stale';
+    if (!this.activations.isLatest(attempt)) return 'stale';
     this.finishActivationFailure(attempt, failure);
     return 'recovered';
   }
@@ -1049,65 +1045,32 @@ export class WorkspaceApplicationService {
   /**
    * The attempt that crossed native activation remains the sole rollback owner,
    * even after a newer request has become the UI-visible latest request. The
-   * activation tail does not release its successor until this method reaches a
-   * terminal native/runtime state.
+   * rollback/recovery state machine itself lives in ./activation.ts; this
+   * adapter exposes exactly the facade capabilities it relies on.
    */
-  private async recoverActivationOwner(attempt: ActivationAttempt): Promise<boolean> {
-    attempt.phase = 'rolling-back';
-    const previousWorkspaceId = attempt.previousWorkspaceId;
-    let rollbackView: ActiveWorkspaceViewModel | null = null;
-    if (!previousWorkspaceId) {
-      // With no installed facade there are no renderer writes to protect. A
-      // failed first hydration may leave a native project selected, but must
-      // remain retryable instead of permanently locking this process.
-      return this.restoreRuntimeAfterAbortedTransition(attempt.activatedWorkspaceId);
-    }
-    if (
-      attempt.nativeActivationStarted ||
-      this.coordinator.activeWorkspaceId !== previousWorkspaceId
-    ) {
-      // Once an invoke has started, renderer cancellation cannot prove that
-      // native activation did not commit. Re-open the prior project
-      // unconditionally; consulting the stale coordinator cache is unsafe.
-      let rollback: WorkspaceActionOutcome<ActiveWorkspaceViewModel>;
-      try {
-        rollback = await this.coordinator.openWorkspace(previousWorkspaceId);
-      } catch {
-        return false;
-      }
-      if (
-        rollback.outcome !== 'completed' ||
-        rollback.value.workspaceId !== previousWorkspaceId ||
-        this.coordinator.activeWorkspaceId !== previousWorkspaceId
-      ) {
-        return false;
-      }
-      rollbackView = rollback.value;
-    }
-    const restored = await this.restoreRuntimeAfterAbortedTransition(attempt.activatedWorkspaceId);
-    if (!restored) return false;
-    if (rollbackView && this.current?.workspaceId === previousWorkspaceId) {
-      this.current = freezeActive(rollbackView);
-    }
-    return true;
-  }
-
-  private async abortAndRecoverActivation(
-    attempt: ActivationAttempt,
-  ): Promise<WorkspaceApplicationOutcome> {
-    const recovered = await this.recoverActivationOwner(attempt);
-    attempt.phase = 'terminal';
-    if (!recovered) {
-      this.markRecoveryRequired(attempt);
-      return failed('workspace.activation.rollback_failed');
-    }
-    this.finishAbortedQueuedAttempt(attempt);
-    return staleOrCancelled(attempt);
+  private activationRecoveryHost(): ActivationRecoveryHost {
+    const coordinator = this.coordinator;
+    return {
+      get activeWorkspaceId(): string | null {
+        return coordinator.activeWorkspaceId;
+      },
+      openWorkspace: (workspaceId) => coordinator.openWorkspace(workspaceId),
+      restoreRuntimeAfterAbortedTransition: (failedWorkspaceId) =>
+        this.restoreRuntimeAfterAbortedTransition(failedWorkspaceId),
+      adoptRollbackView: (view, previousWorkspaceId) => {
+        if (this.current?.workspaceId === previousWorkspaceId) {
+          this.current = freezeActive(view);
+        }
+      },
+      enterRecoveryLockout: (latestIsOwner) => this.enterRecoveryLockout(latestIsOwner),
+      finishActivationFailure: (attempt, failure) => this.finishActivationFailure(attempt, failure),
+      finishAbortedQueuedAttempt: (attempt) => this.finishAbortedQueuedAttempt(attempt),
+    };
   }
 
   private finishAbortedQueuedAttempt(attempt: ActivationAttempt): void {
-    if (!this.isLatestAttempt(attempt)) return;
-    this.activationAttempt = null;
+    if (!this.activations.isLatest(attempt)) return;
+    this.activations.attempt = null;
     this.switching = false;
     this.hydrating = false;
     this.applicationStatus = this.current ? 'ready' : 'idle';
@@ -1115,17 +1078,15 @@ export class WorkspaceApplicationService {
     this.notify();
   }
 
-  private markRecoveryRequired(owner: ActivationAttempt): void {
+  /** Permanent fail-closed lockout after an activation rollback failed; the
+   * recovery state machine decided whether the latest attempt is dropped. */
+  private enterRecoveryLockout(latestIsOwner: boolean): void {
     this.recoveryRequired = true;
-    const latest = this.activationAttempt;
-    if (latest && latest !== owner && latest.phase !== 'committing') {
-      latest.controller.abort();
-    }
     this.switching = false;
     this.hydrating = false;
     this.applicationStatus = 'failed';
     this.applicationMessageKey = 'workspace.activation.rollback_failed';
-    if (latest === owner) this.activationAttempt = null;
+    if (latestIsOwner) this.activations.attempt = null;
     this.notify();
   }
 
@@ -1161,7 +1122,7 @@ export class WorkspaceApplicationService {
     }
     // The internal persistence capability is closed before the queues are
     // released. No producer can add old-workspace events behind this barrier.
-    this.releaseAllQueues();
+    this.saveQueues.releaseAll();
     const barrier = this.saveTail;
     await barrier;
     if (this.lastSaveFailure) return this.lastSaveFailure;
@@ -1267,7 +1228,7 @@ export class WorkspaceApplicationService {
     staging: WorkspaceHydrationStaging,
   ): void {
     if (
-      !this.isAttemptActive(attempt) ||
+      !this.activations.isActive(attempt) ||
       this.coordinator.activeWorkspaceId !== header.workspaceId ||
       staging.workspaceId !== header.workspaceId ||
       staging.revision !== header.revision
@@ -1319,35 +1280,19 @@ export class WorkspaceApplicationService {
   ): void {
     const transition = this.runtimeTransition;
     this.current = freezeActive(header);
-    this.workspaceEpoch += 1;
-    this.nextFrameSequence.clear();
-    this.sessionFrameCounts.clear();
-    this.sessionCaptureBytes.clear();
-    this.workspaceFrameCount = 0;
-    this.workspaceCaptureBytes = 0;
+    this.saves.openEpoch();
+    this.captureAccounting.replaceWorkspace(
+      staging.sessions.map((entry) => ({
+        sessionId: entry.session.id,
+        nextSequence: frameNextSequences.get(entry.session.id) ?? 0,
+        frameCount: entry.session.frames.length,
+        captureBytes: entry.session.frames.reduce(
+          (total, frame) => total + frame.data.byteLength,
+          0,
+        ),
+      })),
+    );
     this.undoCaptureState = null;
-    for (const entry of staging.sessions) {
-      const frameCount = entry.session.frames.length;
-      this.nextFrameSequence.set(entry.session.id, frameNextSequences.get(entry.session.id) ?? 0);
-      this.sessionFrameCounts.set(entry.session.id, frameCount);
-      this.sessionCaptureBytes.set(
-        entry.session.id,
-        entry.session.frames.reduce((total, frame) => total + frame.data.byteLength, 0),
-      );
-      this.workspaceFrameCount += frameCount;
-      this.workspaceCaptureBytes += entry.session.frames.reduce(
-        (total, frame) => total + frame.data.byteLength,
-        0,
-      );
-    }
-    this.configQueue = [];
-    this.frameQueue = [];
-    this.frameQueueBytes = 0;
-    this.saveTail = Promise.resolve();
-    this.scheduledSaveGroups = 0;
-    this.saveInFlight = false;
-    this.lastSaveFailure = null;
-    this.retainedUnsavedMutations = 0;
     this.recoveryRequired = false;
     this.hydrating = false;
     attempt.phase = 'terminal';
@@ -1365,8 +1310,8 @@ export class WorkspaceApplicationService {
       this.runtimeTransition = null;
       if (this.internalDrainTransition === transition) this.internalDrainTransition = null;
     }
-    if (this.activationAttempt === attempt) {
-      this.activationAttempt = null;
+    if (this.activations.attempt === attempt) {
+      this.activations.attempt = null;
       this.applicationStatus = 'ready';
       this.applicationMessageKey = null;
       this.switching = false;
@@ -1385,7 +1330,7 @@ export class WorkspaceApplicationService {
     outcome: Exclude<WorkspaceActionOutcome<ActiveWorkspaceViewModel>, { outcome: 'completed' }>,
   ): void {
     attempt.phase = 'terminal';
-    if (!this.isLatestAttempt(attempt)) return;
+    if (!this.activations.isLatest(attempt)) return;
     if (outcome.outcome === 'failed') {
       this.finishActivationFailure(attempt, outcome);
       return;
@@ -1394,7 +1339,7 @@ export class WorkspaceApplicationService {
     this.hydrating = false;
     this.applicationStatus = this.current ? 'ready' : 'idle';
     this.applicationMessageKey = null;
-    if (this.activationAttempt === attempt) this.activationAttempt = null;
+    if (this.activations.attempt === attempt) this.activations.attempt = null;
     this.notify();
   }
 
@@ -1403,7 +1348,7 @@ export class WorkspaceApplicationService {
     failure: WorkspaceActionFailure,
   ): void {
     attempt.phase = 'terminal';
-    if (!this.isLatestAttempt(attempt)) return;
+    if (!this.activations.isLatest(attempt)) return;
     this.switching = false;
     this.hydrating = false;
     this.applicationStatus =
@@ -1414,41 +1359,7 @@ export class WorkspaceApplicationService {
     if (failure.messageKey === 'workspace.activation.rollback_failed') {
       this.recoveryRequired = true;
     }
-    if (this.activationAttempt === attempt) this.activationAttempt = null;
-    this.notify();
-  }
-
-  private releaseAllQueues(): void {
-    this.releaseConfigQueue();
-    this.releaseFrameQueue();
-  }
-
-  private releaseConfigQueue(): void {
-    if (this.configTimer !== null) {
-      globalThis.clearTimeout(this.configTimer);
-      this.configTimer = null;
-    }
-    if (this.configQueue.length === 0) return;
-    const queued = this.configQueue;
-    this.configQueue = [];
-    for (const group of groupConfigMutationsByContext(queued)) {
-      this.scheduleSaveGroup(group.context, group.commands);
-    }
-    this.notify();
-  }
-
-  private releaseFrameQueue(): void {
-    if (this.frameTimer !== null) {
-      globalThis.clearTimeout(this.frameTimer);
-      this.frameTimer = null;
-    }
-    if (this.frameQueue.length === 0) return;
-    const queued = this.frameQueue;
-    this.frameQueue = [];
-    this.frameQueueBytes = 0;
-    for (const group of groupFramesByContext(queued)) {
-      this.scheduleSaveGroup(group.context, frameAppendCommands(group.frames));
-    }
+    if (this.activations.attempt === attempt) this.activations.attempt = null;
     this.notify();
   }
 
@@ -1524,22 +1435,39 @@ export class WorkspaceApplicationService {
   }
 
   private abandonBufferedMutations(): void {
-    if (this.configTimer !== null) globalThis.clearTimeout(this.configTimer);
-    if (this.frameTimer !== null) globalThis.clearTimeout(this.frameTimer);
-    this.configTimer = null;
-    this.frameTimer = null;
-    this.retainedUnsavedMutations += this.configQueue.length;
-    this.retainedUnsavedMutations += frameAppendCommands(this.frameQueue).length;
-    this.configQueue = [];
-    this.frameQueue = [];
-    this.frameQueueBytes = 0;
+    this.retainedUnsavedMutations += this.saveQueues.abandon();
   }
 
   private acceptingSaveContext(): SaveContext | null {
-    const snapshot = this.snapshot();
-    const current = snapshot.currentWorkspace;
-    if (!snapshot.acceptsSaves || !current) return null;
-    return Object.freeze({ epoch: this.workspaceEpoch, workspaceId: current.workspaceId });
+    // The accept/reject decision only depends on local gate state (activation
+    // phases, latched failures, and the queue/save-in-flight flags that drive
+    // save health) plus the epoch-bumped workspace identity. Every input to
+    // that decision is captured in the cache key, so while the key is stable
+    // the full view-model snapshots (two coordinator.snapshot() constructions
+    // per call) are skipped entirely — critical because this gate runs for
+    // every captured frame batch during streaming.
+    return this.saveGate.accepting(this.saveGateCacheKey(), () => {
+      const snapshot = this.snapshot();
+      const current = snapshot.currentWorkspace;
+      return !snapshot.acceptsSaves || !current
+        ? null
+        : Object.freeze({ epoch: this.workspaceEpoch, workspaceId: current.workspaceId });
+    });
+  }
+
+  private saveGateCacheKey(): string {
+    return [
+      this.current === null ? 0 : 1,
+      this.workspaceEpoch,
+      this.switching ? 1 : 0,
+      this.hydrating ? 1 : 0,
+      this.recoveryRequired ? 1 : 0,
+      this.lastSaveFailure === null ? 0 : this.lastSaveFailure.code === 'REVISION_CONFLICT' ? 2 : 1,
+      this.saveInFlight ? 1 : 0,
+      this.scheduledSaveGroups > 0 ? 1 : 0,
+      this.saveQueues.configQueued ? 1 : 0,
+      this.saveQueues.framesQueued ? 1 : 0,
+    ].join(':');
   }
 
   private isCurrentSaveContext(context: SaveContext): boolean {
@@ -1574,7 +1502,11 @@ export class WorkspaceApplicationService {
     }
     if (this.lastSaveFailure || coordinatorHealth === 'degraded') return 'degraded';
     if (this.saveInFlight) return 'saving';
-    if (this.configQueue.length > 0 || this.frameQueue.length > 0 || this.scheduledSaveGroups > 0) {
+    if (
+      this.saveQueues.configQueued ||
+      this.saveQueues.framesQueued ||
+      this.scheduledSaveGroups > 0
+    ) {
       return 'pending';
     }
     return coordinatorHealth;
@@ -1613,27 +1545,21 @@ export class WorkspaceApplicationService {
   }
 
   private unsavedMutationCount(): number {
-    return (
-      this.retainedUnsavedMutations +
-      this.configQueue.length +
-      frameAppendCommands(this.frameQueue).length
-    );
+    return this.retainedUnsavedMutations + this.saveQueues.queuedMutationCount;
   }
 
-  private isAttemptActive(attempt: ActivationAttempt): boolean {
-    return (
-      !attempt.controller.signal.aborted &&
-      attempt.phase !== 'rolling-back' &&
-      attempt.phase !== 'terminal'
-    );
-  }
-
-  private isLatestAttempt(attempt: ActivationAttempt): boolean {
-    return this.activationAttempt === attempt && attempt.generation === this.activationGeneration;
-  }
-
+  /**
+   * State-observer notification. The 250 ms coalescing window itself lives in
+   * WorkspaceSaveQueues (frame data never travels through these listeners —
+   * they observe save health and pending counts); this entry point keeps the
+   * zero-listener short-circuit.
+   */
   private notify(): void {
     if (this.listeners.size === 0) return;
+    this.saveQueues.notify();
+  }
+
+  private emitNotify(): void {
     const snapshot = this.snapshot();
     for (const listener of this.listeners) {
       try {
@@ -1643,35 +1569,6 @@ export class WorkspaceApplicationService {
       }
     }
   }
-}
-
-function frameAppendCommands(frames: readonly PendingFrame[]): WorkspaceMutationCommand[] {
-  if (frames.length === 0) return [];
-  const commands: WorkspaceMutationCommand[] = [];
-  let sessionId = frames[0].sessionId;
-  let startSeq = frames[0].sequence;
-  let previousSeq = startSeq - 1;
-  let payloads: WorkspaceFramePayload[] = [];
-  const release = (): void => {
-    if (payloads.length === 0) return;
-    commands.push({
-      kind: 'append-frames',
-      sessionId,
-      payload: { startSeq, frames: payloads },
-    });
-  };
-  for (const frame of frames) {
-    if (frame.sessionId !== sessionId || frame.sequence !== previousSeq + 1) {
-      release();
-      sessionId = frame.sessionId;
-      startSeq = frame.sequence;
-      payloads = [];
-    }
-    payloads.push(frame.payload);
-    previousSeq = frame.sequence;
-  }
-  release();
-  return commands;
 }
 
 function waveformAppendCommands(
@@ -1693,137 +1590,6 @@ function waveformAppendCommands(
     });
   }
   return commands;
-}
-
-function groupConfigMutationsByContext(
-  queued: readonly PendingConfigMutation[],
-): Array<{ context: SaveContext; commands: WorkspaceBufferedMutationCommand[] }> {
-  const groups: Array<{ context: SaveContext; commands: WorkspaceBufferedMutationCommand[] }> = [];
-  for (const item of queued) {
-    const last = groups.at(-1);
-    if (
-      last &&
-      last.context.epoch === item.context.epoch &&
-      last.context.workspaceId === item.context.workspaceId
-    ) {
-      last.commands.push(item.command);
-    } else {
-      groups.push({ context: item.context, commands: [item.command] });
-    }
-  }
-  return groups;
-}
-
-function groupFramesByContext(
-  queued: readonly PendingFrame[],
-): Array<{ context: SaveContext; frames: PendingFrame[] }> {
-  const groups: Array<{ context: SaveContext; frames: PendingFrame[] }> = [];
-  for (const item of queued) {
-    const last = groups.at(-1);
-    if (
-      last &&
-      last.context.epoch === item.context.epoch &&
-      last.context.workspaceId === item.context.workspaceId
-    ) {
-      last.frames.push(item);
-    } else {
-      groups.push({ context: item.context, frames: [item] });
-    }
-  }
-  return groups;
-}
-
-interface WorkspaceMutationLogicalWeight {
-  readonly bytes: number;
-  readonly frames: number;
-  readonly singleLargeFrame: boolean;
-}
-
-/**
- * Mirror the native logical batch budget: raw bytes for capture mutations and
- * compact UTF-8 JSON for every structured mutation. A conservative maximum
- * sequence value makes the estimate safe for every coordinator epoch.
- */
-function partitionWorkspaceMutationCommands(
-  commands: readonly WorkspaceMutationCommand[],
-): WorkspaceMutationCommand[][] | null {
-  const batches: WorkspaceMutationCommand[][] = [];
-  let batch: WorkspaceMutationCommand[] = [];
-  let batchBytes = 0;
-  let batchFrames = 0;
-  const release = (): void => {
-    if (batch.length === 0) return;
-    batches.push(batch);
-    batch = [];
-    batchBytes = 0;
-    batchFrames = 0;
-  };
-
-  for (const command of commands) {
-    const weight = workspaceMutationLogicalWeight(command);
-    if (!weight) return null;
-    if (weight.singleLargeFrame) {
-      release();
-      batches.push([command]);
-      continue;
-    }
-    if (
-      weight.bytes > IPC_LIMITS.MAX_WORKSPACE_BATCH_BYTES ||
-      weight.frames > IPC_LIMITS.MAX_WORKSPACE_FRAMES_PER_BATCH
-    ) {
-      return null;
-    }
-    if (
-      batch.length > 0 &&
-      (batch.length + 1 > IPC_LIMITS.MAX_WORKSPACE_MUTATIONS_PER_BATCH ||
-        batchBytes + weight.bytes > IPC_LIMITS.MAX_WORKSPACE_BATCH_BYTES ||
-        batchFrames + weight.frames > IPC_LIMITS.MAX_WORKSPACE_FRAMES_PER_BATCH)
-    ) {
-      release();
-    }
-    batch.push(command);
-    batchBytes += weight.bytes;
-    batchFrames += weight.frames;
-  }
-  release();
-  return batches;
-}
-
-function workspaceMutationLogicalWeight(
-  command: WorkspaceMutationCommand,
-): WorkspaceMutationLogicalWeight | null {
-  if (command.kind === 'append-frames' || command.kind === 'replace-capture') {
-    const frames = command.payload.frames;
-    if (!Array.isArray(frames)) return null;
-    let bytes = 0;
-    for (const frame of frames) {
-      if (!Array.isArray(frame.data)) return null;
-      bytes += frame.data.length;
-      if (!Number.isSafeInteger(bytes)) return null;
-    }
-    const singleLargeFrame =
-      frames.length === 1 &&
-      bytes > IPC_LIMITS.MAX_WORKSPACE_BATCH_BYTES &&
-      bytes <= IPC_LIMITS.MAX_WORKSPACE_FRAME_BYTES;
-    return { bytes, frames: frames.length, singleLargeFrame };
-  }
-
-  try {
-    const { kind, ...fields } = command;
-    const encoded = JSON.stringify({
-      kind,
-      sequence: Number.MAX_SAFE_INTEGER,
-      ...fields,
-    });
-    if (encoded === undefined) return null;
-    return {
-      bytes: new TextEncoder().encode(encoded).byteLength,
-      frames: 0,
-      singleLargeFrame: false,
-    };
-  } catch {
-    return null;
-  }
 }
 
 function assertSameSessionSet(expected: readonly string[], actual: readonly string[]): void {
@@ -1874,12 +1640,6 @@ function completed<T>(value: T): WorkspaceActionOutcome<T> {
 
 function failed(messageKey: string, code?: string): WorkspaceActionFailure {
   return Object.freeze({ outcome: 'failed', messageKey, ...(code ? { code } : {}) });
-}
-
-function staleOrCancelled(attempt: ActivationAttempt): WorkspaceApplicationOutcome {
-  return attempt.cancelledByUser
-    ? Object.freeze({ outcome: 'cancelled' })
-    : Object.freeze({ outcome: 'stale' });
 }
 
 /** Stop awaiting renderer hydration as soon as ownership is revoked. The

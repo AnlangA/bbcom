@@ -1,0 +1,14 @@
+id = "dev.bbcom.counter-panel"
+name = "Serial Counter"
+version = "1.0.0"
+api = "^1.0"
+requested-capabilities = ["session.metadata.read"]
+
+[component]
+path = "component/plugin.wasm"
+sha256 = "38a1392ae0630d551c0cf050c9c1040c78b2b2a562785f2437474641a671576b"
+
+[publisher]
+name = "bbcom samples"
+identity = "publisher:bbcom-samples"
+website = "https://example.invalid"

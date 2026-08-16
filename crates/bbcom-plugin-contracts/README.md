@@ -15,23 +15,21 @@ and tests without a system protoc installation.
   validation contracts; they must not introduce additional Wasm imports.
 - Protocol major versions are incompatible. A peer whose `protocol_major` is
   not `1` is rejected before its payload is dispatched.
-- Protocol minor versions are backward compatible. A minor release may add
-  only optional Protobuf fields, new payload variants, or capabilities that an
-  older peer can ignore. It may not change existing field numbers, meanings,
-  defaults, limits, or required behavior.
+- The sidecar and application must use the exact protocol minor. A minor
+  release may add optional Protobuf fields or payload variants but is packaged
+  and upgraded together with the application.
 - Unknown Protobuf fields are tolerated by protobuf decoding, but an unknown
   `Envelope.payload` variant is rejected because the host cannot safely route
   it. Unknown manifest and repository fields are rejected.
-- G44 must keep golden SDK fixtures for the current minor and the two previous
-  minor versions. G40 fixes the current `1.1` wire fixture. A `1.0` peer that
-  sends the legacy string-based initialize/shutdown methods receives
-  `PLUGIN_PROTOCOL_VERSION_UNSUPPORTED`; state is never silently discarded.
+- Golden SDK fixtures pin the current wire encoding. The current protocol is
+  `1.2`; older peers receive `PLUGIN_PROTOCOL_VERSION_UNSUPPORTED`, and state
+  is never silently discarded.
 
 ## Trust boundary
 
 HTTPS and SHA-256 establish transport integrity only. They do not establish a
-publisher's identity. Publisher identity is a separate authorization-key input
-and repository UIs must display this limitation permanently.
+publisher's identity. Publisher fields are informational only and repository
+UIs display this limitation permanently.
 
 Plugin packages contain a single Wasm Component and declarative metadata. DLL,
 SO, dylib, executable, install-script, and symlink declarations are not part of

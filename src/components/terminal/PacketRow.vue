@@ -203,13 +203,13 @@ function onContextMenu(ev: MouseEvent) {
 /* Badge text stays dark in both themes: the TX/RX accent hues are
    theme-invariant saturated colors, so a fixed dark ink keeps contrast. */
 .packet-item.tx .direction-badge {
-  color: #07120e;
+  color: var(--text-on-bright-accent);
   background: var(--accent-green);
   box-shadow: 0 0 7px -2px var(--accent-green);
 }
 
 .packet-item.rx .direction-badge {
-  color: #06111f;
+  color: var(--text-on-bright-accent);
   background: var(--accent-blue);
   box-shadow: 0 0 7px -2px var(--accent-blue);
 }

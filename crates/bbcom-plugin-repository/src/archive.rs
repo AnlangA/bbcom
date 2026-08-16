@@ -72,9 +72,6 @@ pub(crate) fn extract_and_verify(
     if manifest.version != download.package().version {
         return Err(RepositoryError::ManifestMismatch("version"));
     }
-    if manifest.publisher.identity != download.publisher_identity() {
-        return Err(RepositoryError::ManifestMismatch("publisher.identity"));
-    }
 
     let component_path = destination.join(&manifest.component.path);
     let component = read_bounded(&component_path, MAX_PACKAGE_EXPANDED_BYTES)

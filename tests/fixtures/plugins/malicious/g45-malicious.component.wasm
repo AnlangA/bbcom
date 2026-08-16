@@ -15,7 +15,6 @@
   (type $declarative-panel (record
     (field "title" string)
     (field "fields" $panel-fields)))
-  (type $panel-result (result $declarative-panel (error string)))
   (type $panel-event (record
     (field "field-id" string)
     (field "value" string)))
@@ -23,6 +22,14 @@
   ;; The primary fixture is a valid v1 component used for the complete
   ;; handshake/initialize path. Ambient imports are isolated in the reviewed
   ;; g45-ambient-import component so rejection occurs before the handshake.
+  (instance $types (export "bbcom:plugin/types@1.0.0")
+    (export "field-kind" (type $field-kind))
+    (export "panel-field" (type $panel-field))
+    (export "declarative-panel" (type $declarative-panel))
+    (export "panel-event" (type $panel-event)))
+  (alias export $types "declarative-panel" (type $declarative-panel-named))
+  (alias export $types "panel-event" (type $panel-event-named))
+  (type $panel-result (result $declarative-panel-named (error string)))
   (core module $memory-impl
     (memory (export "memory") 2)
     (func (export "realloc")
@@ -72,7 +79,7 @@
     (canon lift (core func $initialize)
       string-encoding=utf8 (memory $memory) (realloc $realloc)))
   (func (export "handle-panel-event")
-    (param "event" $panel-event) (result $panel-result)
+    (param "event" $panel-event-named) (result $panel-result)
     (canon lift (core func $handle-panel-event)
       string-encoding=utf8 (memory $memory) (realloc $realloc)))
   (func (export "shutdown")

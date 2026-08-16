@@ -1,17 +1,16 @@
 use std::fs;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 use bbcom_plugin_contracts::generated::{Envelope, HostHello, envelope};
 use bbcom_plugin_contracts::{
-    AuthorizationKey, CALL_TIMEOUT_MS, ContractError, FRAME_LENGTH_PREFIX_BYTES,
-    HANDSHAKE_TIMEOUT_MS, HOST_PROCESS_MEMORY_LIMIT_BYTES, LONG_TASK_TIMEOUT_MS, MAX_FRAME_BYTES,
+    CALL_TIMEOUT_MS, ContractError, FRAME_LENGTH_PREFIX_BYTES, HANDSHAKE_TIMEOUT_MS,
+    HOST_PROCESS_MEMORY_LIMIT_BYTES, LONG_TASK_TIMEOUT_MS, MAX_FRAME_BYTES,
     MAX_PACKAGE_DOWNLOAD_BYTES, MAX_PACKAGE_EXPANDED_BYTES, MAX_PACKAGE_FILES,
     MAX_PLUGIN_PERSISTED_STATE_BYTES, MAX_PLUGIN_STATE_CHUNK_BYTES, MAX_QUEUE_BYTES,
     MAX_WORKSPACE_PLUGIN_PERSISTED_STATE_BYTES, PLUGIN_STATE_SCHEMA_VERSION, PROTOCOL_MAJOR,
-    PROTOCOL_MINOR, Permission, PermissionRisk, PluginManifest, RepositoryCatalog, RepositoryIndex,
-    RiskCombination, Sha256Digest, WASM_MEMORY_LIMIT_BYTES, WIT_PACKAGE, decode_frame,
-    encode_frame, permission_plan, validate_persistent_grant, validate_queue_bytes,
+    PROTOCOL_MINOR, Permission, PluginManifest, RepositoryCatalog, RepositoryIndex, Sha256Digest,
+    WASM_MEMORY_LIMIT_BYTES, WIT_PACKAGE, capability_plan, decode_frame, encode_frame,
+    parse_permission, validate_queue_bytes,
 };
 use prost::Message;
 
@@ -100,60 +99,22 @@ fn golden_manifest_and_repository_are_strict_and_bounded() {
 }
 
 #[test]
-fn permissions_have_fixed_risk_and_authorization_scope() {
+fn declared_capabilities_are_partitioned_into_effective_and_unavailable() {
     let requested = [
         Permission::SessionMetadataRead,
-        Permission::SessionCaptureRead,
+        Permission::SerialControl,
         Permission::SerialWriteProposal,
     ];
-    let plan = permission_plan(&requested);
-    assert_eq!(
-        plan.implicit,
-        [Permission::UiPanel, Permission::PluginStorage]
-            .into_iter()
-            .collect()
-    );
-    assert_eq!(plan.maximum_risk, PermissionRisk::High);
-    assert!(
-        plan.requires_approval
-            .contains(&Permission::SerialWriteProposal)
-    );
-    assert_eq!(
-        validate_persistent_grant(Permission::SerialWriteProposal),
-        Err(ContractError::SerialProposalNotPersistable)
-    );
-    assert!(validate_persistent_grant(Permission::SessionMetadataRead).is_ok());
+    let plan = capability_plan(&requested);
+    assert!(plan.effective.contains(&Permission::SessionMetadataRead));
+    assert!(plan.effective.contains(&Permission::SerialWriteProposal));
+    assert!(plan.unavailable.contains(&Permission::SerialControl));
     assert!(matches!(
-        Permission::from_str("network.http"),
+        parse_permission("network.http"),
         Err(ContractError::UnsupportedCapability { .. })
     ));
 
-    let key = AuthorizationKey {
-        plugin_id: "dev.bbcom.golden".to_owned(),
-        publisher_identity: "publisher:bbcom-contract-fixtures".to_owned(),
-        plugin_major: 1,
-        workspace_id: "8e7b84cf-35f4-45cd-baf0-55d94ebf0213".to_owned(),
-    };
-    let mut other_workspace = key.clone();
-    other_workspace.workspace_id = "65981dbf-942d-4cc8-a351-22060936e92d".to_owned();
-    assert_ne!(key, other_workspace);
-
-    let critical = permission_plan(&[
-        Permission::SessionCaptureRead,
-        Permission::FileOpenSave,
-        Permission::SerialControl,
-        Permission::SerialWriteProposal,
-    ]);
-    assert_eq!(critical.maximum_risk, PermissionRisk::Critical);
-    assert_eq!(
-        critical.risk_combinations,
-        [
-            RiskCombination::CaptureWithExternalSink,
-            RiskCombination::SerialControlAndWriteProposal,
-        ]
-        .into_iter()
-        .collect()
-    );
+    assert!(plan.effective.is_disjoint(&plan.unavailable));
 }
 
 #[test]
@@ -201,7 +162,7 @@ fn u32_le_wire_fixture_is_stable_and_rejects_invalid_frames() {
     );
 
     let unknown_payload =
-        encode_raw_message(&[0x08, 0x01, 0x10, 0x00, 0x18, 0x01, 0xa2, 0x06, 0x00]);
+        encode_raw_message(&[0x08, 0x01, 0x10, 0x02, 0x18, 0x01, 0xa2, 0x06, 0x00]);
     assert_eq!(
         decode_frame(&unknown_payload),
         Err(ContractError::UnknownPayload)
@@ -211,7 +172,7 @@ fn u32_le_wire_fixture_is_stable_and_rejects_invalid_frames() {
 #[test]
 fn protocol_and_package_limits_are_fixed() {
     assert_eq!(PROTOCOL_MAJOR, 1);
-    assert_eq!(PROTOCOL_MINOR, 1);
+    assert_eq!(PROTOCOL_MINOR, 2);
     assert_eq!(WIT_PACKAGE, "bbcom:plugin@1.0.0");
     assert_eq!(HANDSHAKE_TIMEOUT_MS, 5_000);
     assert_eq!(CALL_TIMEOUT_MS, 2_000);

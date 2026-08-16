@@ -1,5 +1,5 @@
 import { getCurrentInstance, onMounted, onUnmounted, ref, shallowRef } from 'vue';
-import { emit, listen } from '@tauri-apps/api/event';
+import { emitNativeEvent as emit, listenNativeEvent as listen } from '../features/native';
 import type { OperationRecord, RunAiRequest } from '../generated/ipc-contracts';
 import {
   AI_BRIDGE_EVENTS,

@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { beforeEach, test, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { config as testUtilsConfig, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { defineComponent, h, nextTick } from 'vue';
 import ShutdownDialog from '../../src/components/app-shell/ShutdownDialog.vue';
@@ -11,14 +11,14 @@ import { useSessionActions } from '../../src/composables/useSessionActions.ts';
 import { APPLICATION_SHUTDOWN_KEY } from '../../src/features/shutdown/application-shutdown-context.ts';
 import { useAppStore } from '../../src/stores/app.ts';
 import { useSerialStore } from '../../src/stores/serial.ts';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 import type { ApplicationShutdownSnapshot } from '../../src/features/shutdown/application-shutdown-bootstrap.ts';
 import type { PortConfig, SerialSession } from '../../src/types/index.ts';
 
 const dialogMock = vi.hoisted(() => ({ warning: vi.fn() }));
 
 vi.mock('naive-ui', () => ({
-  createDiscreteApi: () => ({ dialog: dialogMock }),
+  useDialog: () => dialogMock,
   NModal: defineComponent({
     name: 'NModal',
     props: ['show', 'positiveButtonProps'],
@@ -116,7 +116,9 @@ function shutdownHarness(initial: ApplicationShutdownSnapshot) {
 
 beforeEach(() => {
   localStorage.clear();
-  setActivePinia(createPinia());
+  const pinia = createPinia();
+  setActivePinia(pinia);
+  testUtilsConfig.global.plugins = [pinia];
   dialogMock.warning.mockReset();
 });
 
@@ -180,6 +182,19 @@ test('ShutdownDialog covers decisions, publication retry, focus trapping, and op
   missing.unmount();
 });
 
+/** Runs a composable inside a component setup so provider-based APIs resolve. */
+function withSetup<T>(composable: () => T): T {
+  let result!: T;
+  const host = defineComponent({
+    setup() {
+      result = composable();
+      return () => h('div');
+    },
+  });
+  mount(host);
+  return result;
+}
+
 const AppSelectStub = defineComponent({
   name: 'AppSelect',
   props: ['value', 'options'],
@@ -192,7 +207,7 @@ function emptyWaveform() {
 }
 
 test('SessionRebindDialog disables used ports and handles missing, invalid, and successful rebound', async () => {
-  const sessions = useSessionStore();
+  const sessions = useSessionCoreStore();
   const serial = useSerialStore();
   const targetId = sessions.createSession('OLD', config);
   const usedId = sessions.createSession('COM2', config);
@@ -254,23 +269,24 @@ test('SessionRebindDialog disables used ports and handles missing, invalid, and 
 });
 
 function newSession(port: string): { id: string; session: SerialSession } {
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
   const id = store.createSession(port, config);
   return { id, session: store.sessions.find((candidate) => candidate.id === id)! };
 }
 
 test('useSessionActions covers guards, importance predicates, close confirmation, and clear confirmation', async () => {
-  const sessions = useSessionStore();
+  const sessions = useSessionCoreStore();
+  const persistence = useSessionCoreStore();
   const serial = useSerialStore();
   const app = useAppStore();
-  const actions = useSessionActions();
+  const actions = withSetup(() => useSessionActions());
 
   assert.equal(actions.createSession('', config), null);
-  sessions.setWorkspaceMutationPermissions({ userMutations: false, runtimeCapture: false });
+  persistence.setWorkspaceMutationPermissions({ userMutations: false, runtimeCapture: false });
   assert.equal(actions.createSession('BLOCKED', config), null);
   actions.requestCloseSession('missing');
   actions.requestClearFrames('missing');
-  sessions.setWorkspaceMutationPermissions({ userMutations: true, runtimeCapture: true });
+  persistence.setWorkspaceMutationPermissions({ userMutations: true, runtimeCapture: true });
 
   app.setPendingAiCommand('AT');
   const created = actions.createSession('COM-CREATE', config)!;
@@ -278,7 +294,7 @@ test('useSessionActions covers guards, importance predicates, close confirmation
   assert.equal(serial.portConfig.baudRate, config.baudRate);
 
   const plain = newSession('PLAIN');
-  sessions.markWorkspacePersisted();
+  persistence.markWorkspacePersisted();
   assert.equal(actions.isImportantSession('missing'), false);
   assert.equal(actions.isImportantSession(plain.id), false);
   actions.requestClearFrames(plain.id);
@@ -290,7 +306,7 @@ test('useSessionActions covers guards, importance predicates, close confirmation
   );
 
   const framed = newSession('FRAMED');
-  sessions.markWorkspacePersisted();
+  persistence.markWorkspacePersisted();
   sessions.addFrame(framed.id, { direction: 'RX', data: new Uint8Array([1]) });
   assert.equal(actions.isImportantSession(framed.id), true);
   actions.requestClearFrames(framed.id);
@@ -321,7 +337,7 @@ test('useSessionActions covers guards, importance predicates, close confirmation
   close.onPositiveClick();
   await Promise.resolve();
 
-  sessions.setWorkspaceMutationPermissions({ userMutations: false, runtimeCapture: false });
+  persistence.setWorkspaceMutationPermissions({ userMutations: false, runtimeCapture: false });
   actions.requestCloseSession(created);
   actions.requestClearFrames(created);
 });

@@ -58,14 +58,18 @@ jobs:
           pnpm exec prettier --check
           src/ tests/ scripts/ docs/
           README.md README.zh-CN.md ARCHITECTURE.md CHANGELOG.md CONTRIBUTING.md
-          RELEASING.md SECURITY.md package.json pnpm-workspace.yaml
+          RELEASING.md SECURITY.md AGENTS_PLAN.md
+          package.json pnpm-workspace.yaml
           .markdownlint-cli2.yaml vite.config.ts vitest.config.ts
           wdio.browser-mock.config.mjs wdio.native.config.mjs eslint.config.mjs
           tsconfig.json tsconfig.node.json tsconfig.eslint.json index.html
           .github/workflows/
 
       - name: Verify architecture boundaries
-        run: pnpm run architecture
+        run: |
+          pnpm run architecture:selftest
+          pnpm run architecture
+          pnpm run tokens:check
 
       - name: Build frontend
         run: pnpm run build
@@ -101,10 +105,13 @@ jobs:
           toolchain: 1.97.0
           components: clippy,rustfmt,llvm-tools-preview
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
       - name: Install pinned Rust quality tools
-        run: |
-          cargo install cargo-audit --version 0.22.2 --locked
-          cargo install cargo-llvm-cov --version 0.8.7 --locked
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2
+        with:
+          tool: cargo-audit@0.22.2,cargo-llvm-cov@0.8.7
 
       - name: Audit Rust dependencies
         run: cargo audit --deny unsound --deny yanked --file Cargo.lock

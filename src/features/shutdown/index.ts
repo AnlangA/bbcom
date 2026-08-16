@@ -14,7 +14,6 @@ export {
   type ApplicationShutdownController,
   type ApplicationShutdownListener,
   type ApplicationShutdownSnapshot,
-  type SessionPersistenceShutdownPort,
   type SettingsShutdownPort,
   type WorkspacePersistenceShutdownPort,
 } from './application-shutdown-bootstrap';

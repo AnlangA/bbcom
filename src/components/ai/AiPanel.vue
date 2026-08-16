@@ -44,9 +44,12 @@
 import { computed, onMounted, ref } from 'vue';
 import { NButton, NTabPane, NTabs, useMessage } from 'naive-ui';
 import { Bot, Pin, PinOff } from '@lucide/vue';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAiWindowSession } from '../../composables/useAiWindowSession';
-import { startAiWindowDrag } from '../../lib/ipc';
+import {
+  getCurrentWindowAlwaysOnTop,
+  setCurrentWindowAlwaysOnTop,
+  startAiWindowDrag,
+} from '../../features/native';
 import AiTerminalAssistant from '../send-panel/AiTerminalAssistant.vue';
 import AiLogAssistant from './AiLogAssistant.vue';
 import { logger } from '../../lib/logger';
@@ -60,7 +63,7 @@ const alwaysOnTop = ref(true);
 
 onMounted(async () => {
   try {
-    alwaysOnTop.value = await getCurrentWindow().isAlwaysOnTop();
+    alwaysOnTop.value = await getCurrentWindowAlwaysOnTop();
   } catch (e) {
     logger.debug('always-on-top query failed during early lifecycle:', e);
   }
@@ -77,7 +80,7 @@ async function startDrag() {
 async function toggleAlwaysOnTop() {
   try {
     const next = !alwaysOnTop.value;
-    await getCurrentWindow().setAlwaysOnTop(next);
+    await setCurrentWindowAlwaysOnTop(next);
     alwaysOnTop.value = next;
   } catch {
     message.error(t('ai.pinFailed'));
@@ -116,7 +119,7 @@ async function toggleAlwaysOnTop() {
   justify-content: flex-start;
   padding: 2px 4px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   font-weight: 700;
   cursor: grab;
   user-select: none;
@@ -160,7 +163,7 @@ async function toggleAlwaysOnTop() {
 .drag-subtitle,
 .empty-state {
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   font-weight: 500;
 }
 
@@ -170,11 +173,6 @@ async function toggleAlwaysOnTop() {
   border: 1px dashed var(--border-color);
   border-radius: var(--radius-lg);
   background: var(--bg-inset);
-}
-
-:global(.ai-model-menu) {
-  max-height: 200px !important;
-  overflow-y: auto !important;
 }
 
 @media (max-width: 720px) {

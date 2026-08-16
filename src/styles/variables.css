@@ -50,6 +50,8 @@
   --text-muted: #8d99a6;
   --text-dim: #5f6974;
   --text-inverse: #07110c;
+  --text-on-bright-accent: #07110c;
+  --overlay-backdrop: rgba(4, 6, 10, 0.62);
 
   /* Borders */
   --border-subtle: rgba(255, 255, 255, 0.06);
@@ -81,9 +83,9 @@
   --font-sans: var(--font-family);
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', 'Cascadia Mono', 'Menlo', 'Consolas', monospace;
 
-  /* Micro labels (packet mode column, badge arrows) below the xs step. */
-  --font-size-2xs: 9px;
-  --font-size-xs: 10px;
+  /* Metadata may use 11px; body and controls start at 12px. */
+  --font-size-2xs: 11px;
+  --font-size-xs: 11px;
   --font-size-sm: 11px;
   /* Dense data controls (e.g. tiny selects) sit between sm and base. */
   --font-size-data: 12px;
@@ -179,6 +181,7 @@
   --text-muted: #5c6773;
   --text-dim: #8a96a3;
   --text-inverse: #ffffff;
+  --overlay-backdrop: rgba(15, 22, 32, 0.42);
 
   --border-subtle: rgba(15, 22, 32, 0.07);
   --border-color: rgba(15, 22, 32, 0.11);
@@ -266,6 +269,13 @@
 .icon-lg {
   width: 18px;
   height: 18px;
+}
+
+/* Icon-only controls may use a small glyph, but never a small hit target. */
+button[aria-label]:has(svg),
+button[title]:has(svg) {
+  min-width: 28px;
+  min-height: 28px;
 }
 
 .scrollbar-thin::-webkit-scrollbar {

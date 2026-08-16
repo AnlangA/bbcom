@@ -5,7 +5,7 @@
     :title="t('create.title')"
     :positive-text="t('create.confirm')"
     :negative-text="t('common.cancel')"
-    :positive-button-props="{ disabled: !sessionStore.userMutationsAllowed }"
+    :positive-button-props="{ disabled: !canCreate }"
     :style="{ width: '460px' }"
     @update:show="emit('update:show', $event)"
     @positive-click="createSession"
@@ -14,12 +14,26 @@
     <div class="session-form">
       <div class="form-field form-full">
         <span class="form-label">{{ t('create.port') }}</span>
-        <AppSelect
-          v-model:value="portName"
-          :aria-label="t('create.port')"
-          :options="portOptions"
-          :placeholder="t('create.portPlaceholder')"
-        />
+        <div class="port-picker-row">
+          <AppSelect
+            v-model:value="portName"
+            :aria-label="t('create.port')"
+            :options="portOptions"
+            :placeholder="t('create.portPlaceholder')"
+          />
+          <n-button
+            quaternary
+            :loading="refreshingPorts"
+            :title="t('serial.refreshPorts')"
+            :aria-label="t('serial.refreshPorts')"
+            @click="refreshPorts"
+          >
+            <template #icon><RefreshCw class="icon-sm" /></template>
+          </n-button>
+        </div>
+        <p v-if="ports.length === 0" class="port-status" role="status" aria-live="polite">
+          {{ t('serial.noPorts') }}
+        </p>
       </div>
       <div class="form-field form-full">
         <span class="form-label">{{ t('create.preset') }}</span>
@@ -139,10 +153,15 @@ import { computed, ref, watch } from 'vue';
 import { NModal, NInput, NInputNumber, NButton } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
 import SignalToggle from '../ui/SignalToggle.vue';
-import { BookmarkPlus, Trash2 } from '@lucide/vue';
+import { BookmarkPlus, RefreshCw, Trash2 } from '@lucide/vue';
 import { useSerialStore } from '../../stores/serial';
-import { useSessionStore } from '../../stores/sessions';
+import {
+  useSessionCatalog,
+  useSessionMutationPolicy,
+  useSessionRuntimeStatuses,
+} from '../../features/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
+import { usePortWatcher } from '../../composables/usePortWatcher';
 import {
   BAUD_RATES,
   DATA_BITS_OPTIONS,
@@ -168,6 +187,7 @@ import {
 
 const props = defineProps<{
   show: boolean;
+  preferredPort?: string;
 }>();
 
 const emit = defineEmits<{
@@ -175,21 +195,15 @@ const emit = defineEmits<{
 }>();
 
 const serialStore = useSerialStore();
-const sessionStore = useSessionStore();
+const catalog = useSessionCatalog();
+const mutationPolicy = useSessionMutationPolicy();
 const { createSession: createSessionFromConfig } = useSessionActions();
+const { isConnected } = useSessionRuntimeStatuses();
+const { ports, refresh } = usePortWatcher();
+const refreshingPorts = ref(false);
 
 const portName = ref('');
 
-// Pre-fill the port from the sidebar selection when the dialog opens, mirroring
-// how the config fields are synced from serialStore.portConfig below.
-watch(
-  () => props.show,
-  (show) => {
-    if (show && serialStore.selectedPort) {
-      portName.value = serialStore.selectedPort;
-    }
-  },
-);
 const baudRate = ref(115200);
 const dataBits = ref<PortConfig['dataBits']>(8);
 const stopBits = ref<PortConfig['stopBits']>(1);
@@ -202,19 +216,51 @@ const rts = ref(false);
 const usedPorts = computed(
   () =>
     new Set(
-      sessionStore.sessions
-        .filter((session) => session.isConnected)
+      catalog.sessions.value
+        .filter((session) => isConnected(session.id))
         .map((session) => session.portName),
     ),
 );
 
+watch(
+  () => props.show,
+  (show) => {
+    if (!show) return;
+    void refreshPorts();
+    const preferred = props.preferredPort || serialStore.selectedPort;
+    if (preferred && !usedPorts.value.has(preferred)) portName.value = preferred;
+  },
+  { immediate: true },
+);
+
+watch(ports, (available) => {
+  if (!portName.value) {
+    portName.value = available.find((port) => !usedPorts.value.has(port)) ?? '';
+  }
+});
+
 const portOptions = computed(() =>
-  serialStore.availablePorts.map((port) => ({
+  ports.value.map((port) => ({
     label: usedPorts.value.has(port) ? `${port} (${t('serial.inUse')})` : port,
     value: port,
     disabled: usedPorts.value.has(port),
   })),
 );
+const canCreate = computed(
+  () =>
+    mutationPolicy.userMutationsAllowed.value &&
+    portName.value.length > 0 &&
+    !usedPorts.value.has(portName.value),
+);
+
+async function refreshPorts(): Promise<void> {
+  refreshingPorts.value = true;
+  try {
+    await refresh();
+  } finally {
+    refreshingPorts.value = false;
+  }
+}
 
 const baudRateOptions = BAUD_RATES;
 const dataBitsOptions = DATA_BITS_OPTIONS;
@@ -248,7 +294,7 @@ watch(
 );
 
 function createSession() {
-  if (!portName.value || !sessionStore.userMutationsAllowed) return false;
+  if (!canCreate.value) return false;
   const config: PortConfig = {
     baudRate: baudRate.value,
     dataBits: dataBits.value,
@@ -343,6 +389,18 @@ function currentConfig(): PortConfig {
 
 .form-label {
   color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.port-picker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-xs);
+}
+
+.port-status {
+  margin: 0;
+  color: var(--text-muted);
   font-size: var(--font-size-sm);
 }
 

@@ -26,16 +26,18 @@ use crate::schema::{
 };
 use crate::{Result, WorkspaceError};
 
-const MAX_HYDRATE_PAGE_FRAMES: usize = 256;
-const MAX_HYDRATE_PAGE_BYTES: usize = 512 * 1024;
+const MAX_HYDRATE_PAGE_FRAMES: usize = 2048;
+const MAX_HYDRATE_PAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_HYDRATE_PAGE_AI_MESSAGES: usize = 256;
 const MAX_HYDRATE_PAGE_WAVEFORM_SAMPLES: usize = 4_096;
 const MAX_WAVEFORM_SAMPLE_GROUPS: usize = 600;
 // Idempotency only needs to cover response loss/retry around recent commits.
-// Keeping a fixed revision window prevents this internal ledger from growing
+// Keeping a fixed row window prevents this internal ledger from growing
 // without bound; a retry older than the window still fails safely because its
-// stale base revision cannot be committed again.
-const COMMITTED_BATCH_RETENTION_REVISIONS: i64 = 4_096;
+// stale base revision cannot be committed again. Pruning only on every 64th
+// revision keeps the DELETE statement off the per-batch hot path.
+const COMMITTED_BATCH_RETENTION_ROWS: i64 = 1024;
+const COMMITTED_BATCH_PRUNE_INTERVAL: i64 = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceAiMessagePage {
@@ -59,6 +61,52 @@ pub struct WorkspaceService {
 }
 
 impl WorkspaceService {
+    /// Reads the complete plugin workspace context for the native runtime.
+    /// This is deliberately not part of renderer hydration.
+    pub fn plugin_bindings(&self) -> Result<Vec<crate::WorkspacePluginBindingSnapshot>> {
+        let mut statement = self.connection.prepare(
+            "SELECT b.plugin_id, b.repository_origin, b.version_requirement,
+                    b.expected_enabled, s.state
+             FROM plugin_bindings b
+             LEFT JOIN plugin_project_state s ON s.plugin_id = b.plugin_id
+             ORDER BY b.plugin_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(crate::WorkspacePluginBindingSnapshot {
+                plugin_id: row.get(0)?,
+                repository_origin: row.get(1)?,
+                version_requirement: row.get(2)?,
+                expected_enabled: row.get::<_, i64>(3)? != 0,
+                project_state: row.get(4)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// Persists runtime intent independently from renderer document batches.
+    /// Plugin bindings are native-owned and do not advance the renderer's
+    /// session/document revision.
+    pub fn set_plugin_expected_enabled(
+        &mut self,
+        plugin_id: &str,
+        expected_enabled: bool,
+    ) -> Result<()> {
+        if self.read_only {
+            return Err(WorkspaceError::ReadOnly);
+        }
+        validate_identifier(plugin_id, "pluginId")?;
+        self.connection.execute(
+            "INSERT INTO plugin_bindings (
+               plugin_id, repository_origin, version_requirement, expected_enabled
+             ) VALUES (?1, 'local', '*', ?2)
+             ON CONFLICT(plugin_id) DO UPDATE
+             SET expected_enabled = excluded.expected_enabled",
+            params![plugin_id, i64::from(expected_enabled)],
+        )?;
+        Ok(())
+    }
+
     pub fn create(path: impl AsRef<Path>, request: CreateWorkspaceRequest) -> Result<Self> {
         request.validate()?;
         let path = path.as_ref().to_path_buf();
@@ -580,10 +628,14 @@ impl WorkspaceService {
                 committed_at_ms,
             ],
         )?;
-        transaction.execute(
-            "DELETE FROM committed_batches WHERE committed_revision <= ?1",
-            [committed_revision_i64.saturating_sub(COMMITTED_BATCH_RETENTION_REVISIONS)],
-        )?;
+        if committed_revision_i64 % COMMITTED_BATCH_PRUNE_INTERVAL == 0 {
+            transaction.execute(
+                "DELETE FROM committed_batches WHERE rowid NOT IN (
+                   SELECT rowid FROM committed_batches ORDER BY rowid DESC LIMIT ?1
+                 )",
+                params![COMMITTED_BATCH_RETENTION_ROWS],
+            )?;
+        }
 
         let projected_pages: i64 =
             transaction.query_row("PRAGMA page_count", [], |row| row.get(0))?;

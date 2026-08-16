@@ -20,7 +20,6 @@
       :error="runtime.error.value"
       :connection-conflict="runtime.connectionFailure.value?.conflict"
       :needs-rebind="Boolean(rebindMetadata)"
-      :total-dropped-bytes="runtime.totalDroppedBytes.value"
       :sending-break="runtime.sendingBreak.value"
       :is-exporting="isExporting"
       :view-mode="viewMode"
@@ -71,8 +70,8 @@
           :mode="props.session.waveformSourceMode"
           :channel-labels="waveformChannelLabels"
           :waveform="waveformState"
-          :can-edit="sessionStore.userMutationsAllowed"
-          :can-append="sessionStore.runtimeCaptureAllowed"
+          :can-edit="mutationPolicy.userMutationsAllowed.value"
+          :can-append="mutationPolicy.runtimeCaptureAllowed.value"
           @toggle-mode="toggleWaveformSourceMode"
           @append-samples="appendWaveformSamples"
           @replace-samples="replaceWaveformSamples"
@@ -156,7 +155,13 @@ import DataPacketList from '../terminal/DataPacketList.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
 import SessionToolbar from './SessionToolbar.vue';
 import SessionRebindDialog from './SessionRebindDialog.vue';
-import { useSessionStore } from '../../stores/sessions';
+import {
+  useSessionCapture,
+  useSessionCatalog,
+  useSessionDocument,
+  useSessionMutationPolicy,
+  useSessionWaveform,
+} from '../../features/sessions';
 import { useAppStore } from '../../stores/app';
 import { useExport } from '../../composables/useExport';
 import { useSessionActions } from '../../composables/useSessionActions';
@@ -186,9 +191,13 @@ const ParserPanel = defineAsyncComponent(() => import('../terminal/ParserPanel.v
 const ModbusPanel = defineAsyncComponent(() => import('../terminal/ModbusPanel.vue'));
 const ExportDialog = defineAsyncComponent(() => import('./ExportDialog.vue'));
 
-const sessionStore = useSessionStore();
+const catalog = useSessionCatalog();
+const capture = useSessionCapture(props.session.id);
+const sessionDocument = useSessionDocument(props.session.id);
+const mutationPolicy = useSessionMutationPolicy();
+const waveform = useSessionWaveform(props.session.id);
 const runtime = props.runtime;
-const visibleFramesVersion = computed(() => sessionStore.getSessionFramesVersion(props.session.id));
+const visibleFramesVersion = capture.framesVersion;
 const appStore = useAppStore();
 const { requestClearFrames } = useSessionActions();
 const { isExporting, progress, cancelExport, resetExportProgress, exportData } = useExport({
@@ -198,7 +207,7 @@ const message = useMessage();
 const exportDialogVisible = ref(false);
 const rebindDialogVisible = ref(false);
 const rebindMetadata = computed(
-  () => sessionStore.workspaceRebindBySessionId[props.session.id] ?? null,
+  () => catalog.workspaceRebindBySessionId.value[props.session.id] ?? null,
 );
 
 async function connect() {
@@ -214,7 +223,7 @@ function clear() {
 }
 
 function togglePause() {
-  sessionStore.setCapturePaused(props.session.id, !props.session.capturePaused);
+  capture.setPaused(!props.session.capturePaused);
 }
 
 // Pro-terminal keyboard shortcuts: Ctrl/Cmd+L clears the buffer, Esc toggles
@@ -222,8 +231,8 @@ function togglePause() {
 useSessionShortcuts({
   onClear: clear,
   onTogglePause: togglePause,
-  isConnected: () => props.session.isConnected,
-  isActive: () => sessionStore.activeSessionId === props.session.id,
+  isConnected: () => runtime.isConnected.value,
+  isActive: () => catalog.activeSessionId.value === props.session.id,
 });
 
 // Single view-mode switcher for the display area: terminal (default, dense),
@@ -241,24 +250,22 @@ const EMPTY_WAVEFORM_STATE = Object.freeze<SessionWaveformState>({
   samples: Object.freeze([]),
   frameCursor: Object.freeze({ consumed: 0, lastFrameId: null }),
 });
-const waveformState = computed(
-  () => sessionStore.workspaceWaveformBySessionId[props.session.id] ?? EMPTY_WAVEFORM_STATE,
-);
+const waveformState = computed(() => waveform.state.value ?? EMPTY_WAVEFORM_STATE);
 
 function appendWaveformSamples(samples: readonly SessionWaveformSampleInput[]): void {
-  sessionStore.appendSessionWaveformSamples(props.session.id, samples);
+  waveform.appendSamples(props.session.id, samples);
 }
 
 function replaceWaveformSamples(samples: readonly SessionWaveformSampleInput[]): void {
-  sessionStore.replaceSessionWaveformSamples(props.session.id, samples);
+  waveform.replaceSamples(props.session.id, samples);
 }
 
 function setWaveformChannelVisibility(channelIndex: number, visible: boolean): void {
-  sessionStore.setSessionWaveformChannelVisible(props.session.id, channelIndex, visible);
+  waveform.setChannelVisible(props.session.id, channelIndex, visible);
 }
 
 function updateWaveformFrameCursor(cursor: SessionWaveformFrameCursor): void {
-  sessionStore.setSessionWaveformFrameCursor(props.session.id, cursor);
+  waveform.setFrameCursor(props.session.id, cursor);
 }
 
 function commitWaveformFrameIngest(ingest: {
@@ -266,21 +273,16 @@ function commitWaveformFrameIngest(ingest: {
   readonly samples: readonly SessionWaveformSampleInput[];
   readonly cursor: SessionWaveformFrameCursor;
 }): void {
-  sessionStore.commitSessionWaveformFrameIngest(
-    props.session.id,
-    ingest.mode,
-    ingest.samples,
-    ingest.cursor,
-  );
+  waveform.commitFrameIngest(props.session.id, ingest.mode, ingest.samples, ingest.cursor);
 }
 
 function clearWaveform(cursor: SessionWaveformFrameCursor): void {
-  sessionStore.resetSessionWaveform(props.session.id, cursor);
+  waveform.reset(props.session.id, cursor);
 }
 
 function showConflictingSession(sessionId: string): void {
-  if (sessionStore.sessions.some((session) => session.id === sessionId)) {
-    sessionStore.setActiveSession(sessionId);
+  if (catalog.sessions.value.some((session) => session.id === sessionId)) {
+    catalog.activate(sessionId);
   }
 }
 
@@ -323,19 +325,19 @@ async function handleSend(data: string, isHex: boolean) {
 }
 
 function updateSendDraft(value: string) {
-  sessionStore.setSendDraft(props.session.id, value);
+  sessionDocument.setSendDraft(props.session.id, value);
 }
 
 function clearHistory() {
-  sessionStore.clearSendHistory(props.session.id);
+  sessionDocument.clearSendHistory(props.session.id);
 }
 
 function addQuickCommand(command: { name: string; data: string; isHex: boolean }) {
-  sessionStore.addQuickCommand(props.session.id, command);
+  sessionDocument.addQuickCommand(props.session.id, command);
 }
 
 function removeQuickCommand(id: string) {
-  sessionStore.removeQuickCommand(props.session.id, id);
+  sessionDocument.removeQuickCommand(props.session.id, id);
 }
 
 function toggleAutoScroll() {
@@ -350,10 +352,26 @@ async function toggleAutoLog() {
   await runtime.toggleAutoLog();
 }
 
-async function handleExport(payload: { snapshot: ExportFrameSnapshot; choice: ExportChoice }) {
-  const result = await exportData(payload.snapshot, payload.choice, appStore.displayMode);
+async function handleExport(payload: {
+  snapshot: ExportFrameSnapshot;
+  choice: ExportChoice;
+  unfiltered: boolean;
+}) {
+  const result = await exportData(payload.snapshot, payload.choice, appStore.displayMode, {
+    unfiltered: payload.unfiltered,
+  });
   if (result.ok) {
     exportDialogVisible.value = false;
+    if (result.divergence) {
+      // DB-sourced exports read the durable project, which can differ from the
+      // paused-capture preview; the difference is surfaced, never silent.
+      message.warning(
+        t('message.exportDbDivergence', {
+          persisted: result.divergence.persistedFrames,
+          selection: result.divergence.selectionFrames,
+        }),
+      );
+    }
     message.success(t('message.exportSuccess'));
   } else if (result.cancelled) {
     exportDialogVisible.value = false;

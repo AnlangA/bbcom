@@ -4,8 +4,8 @@ import type {
   OperationRecord,
   RunAiRequest,
 } from '../../generated/ipc-contracts';
-import { cancelAiRequest, runAiRequest } from '../../lib/ipc';
-import { OperationRegistry } from '../application/operation-registry';
+import { cancelAiRequest, runAiRequest } from '../native';
+import { OperationRegistry } from '../application';
 
 export interface AiActivityBinding {
   readonly workspaceId: string;

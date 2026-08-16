@@ -19,10 +19,10 @@ import {
 import type {
   SerialPortAdapter,
   SerialWatchHandleAdapter,
-} from '../../src/lib/serial-port-adapter.ts';
+} from '../../src/features/serial/index.ts';
 import { createSessionRecord } from '../../src/lib/session-persistence.ts';
 import { PortLeaseRegistry } from '../../src/features/serial/application/port-lease-registry.ts';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 import SessionTabs from '../../src/components/session-tabs/SessionTabs.vue';
 import SessionToolbar from '../../src/components/session/SessionToolbar.vue';
 import type { HydratedWorkspaceSession } from '../../src/features/workspace/adapters/index.ts';
@@ -95,7 +95,7 @@ test('serial open failures have stable categories and never expose backend prose
 test('PORT_IN_USE blocks native open, displays its owner, and toolbar emits owner navigation', async () => {
   const leases = new PortLeaseRegistry({ platform: 'windows' });
   leases.acquire('COM8', 'owner-session', 'Scope owner');
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
   const contender = store.createSession('COM8', config);
   let portFactoryCalls = 0;
   const scope = effectScope();
@@ -125,7 +125,8 @@ test('PORT_IN_USE blocks native open, displays its owner, and toolbar emits owne
 });
 
 test('workspace rebind is atomic, explicit, stopped, and the next open freezes one new target', async () => {
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
+  const persistence = useSessionCoreStore();
   const restored = createSessionRecord('restored-session', '', config);
   const entry = hydratedEntry(restored, 'Restored board');
   store.replaceWorkspaceSessions([entry], restored.id);
@@ -133,7 +134,7 @@ test('workspace rebind is atomic, explicit, stopped, and the next open freezes o
   assert.equal(store.workspaceRebindBySessionId[restored.id]?.required, true);
   assert.equal(store.sessions[0].isConnected, false);
   const events: unknown[] = [];
-  const detach = store.subscribeWorkspaceChanges((event) => events.push(event));
+  const detach = persistence.subscribeWorkspaceChanges((event) => events.push(event));
   const rebound = store.completeWorkspaceRebind(restored.id, 'COM12', {
     ...config,
     baudRate: 57_600,
@@ -175,10 +176,11 @@ test('workspace rebind is atomic, explicit, stopped, and the next open freezes o
 });
 
 test('workspace facade replacement validates before commit and emits no observer events', () => {
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
+  const persistence = useSessionCoreStore();
   const originalId = store.createSession('COM1', config);
   const observed: unknown[] = [];
-  store.subscribeWorkspaceChanges((event) => observed.push(event));
+  persistence.subscribeWorkspaceChanges((event) => observed.push(event));
   const duplicate = hydratedEntry(createSessionRecord('duplicate', '', config), 'One');
 
   assert.throws(() => store.replaceWorkspaceSessions([duplicate, duplicate], 'duplicate'));
@@ -197,12 +199,13 @@ test('workspace facade replacement validates before commit and emits no observer
 });
 
 test('session, frame, capture, and catalog observers fire exactly once per successful mutation', () => {
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
+  const persistence = useSessionCoreStore();
   const events: Array<{ kind: string; sessionId?: string }> = [];
-  const detachThrowing = store.subscribeWorkspaceChanges(() => {
+  const detachThrowing = persistence.subscribeWorkspaceChanges(() => {
     throw new Error('observer failure must be isolated');
   });
-  store.subscribeWorkspaceChanges((event) => events.push(event));
+  persistence.subscribeWorkspaceChanges((event) => events.push(event));
 
   const sessionId = store.createSession('COM4', config);
   store.setSendDraft(sessionId, 'AT');
@@ -218,7 +221,7 @@ test('session, frame, capture, and catalog observers fire exactly once per succe
 });
 
 test('important deletion keeps a stopped undo snapshot and an ID collision never overwrites', async () => {
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
   const firstId = store.createSession('COM5', config);
   store.addFrame(firstId, { direction: 'RX', data: new Uint8Array([1, 2, 3]) });
   store.setConnected(firstId, true);
@@ -244,7 +247,7 @@ test('important deletion keeps a stopped undo snapshot and an ID collision never
 });
 
 test('SessionTabs links tabs to panels and presents a persistent undo action', async () => {
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
   const first = store.createSession('COM15', config);
   const wrapper = mount(SessionTabs);
   assert.equal(wrapper.get('[role="tab"]').attributes('aria-controls'), `session-panel-${first}`);

@@ -150,7 +150,7 @@ defineEmits<{
   padding: 5px 10px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-secondary);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
   flex-wrap: wrap;
   flex-shrink: 0;

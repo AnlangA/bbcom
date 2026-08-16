@@ -4,13 +4,9 @@ pub type Result<T> = std::result::Result<T, BrokerError>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrokerErrorCode {
-    AuthorizationKeyInvalid,
-    PublisherIdentityUnverified,
+    PluginContextInvalid,
     CapabilityUndeclared,
     PermissionDenied,
-    PersistentGrantForbidden,
-    ExtraConfirmationRequired,
-    AuthorizationStoreUnavailable,
     NetworkUnavailable,
     PanelInvalid,
     PanelLimitExceeded,
@@ -24,13 +20,9 @@ impl BrokerErrorCode {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::AuthorizationKeyInvalid => "PLUGIN_AUTHORIZATION_KEY_INVALID",
-            Self::PublisherIdentityUnverified => "PLUGIN_PUBLISHER_IDENTITY_UNVERIFIED",
+            Self::PluginContextInvalid => "PLUGIN_CONTEXT_INVALID",
             Self::CapabilityUndeclared => "PLUGIN_CAPABILITY_UNDECLARED",
             Self::PermissionDenied => "PLUGIN_PERMISSION_DENIED",
-            Self::PersistentGrantForbidden => "PLUGIN_PERSISTENT_GRANT_FORBIDDEN",
-            Self::ExtraConfirmationRequired => "PLUGIN_EXTRA_CONFIRMATION_REQUIRED",
-            Self::AuthorizationStoreUnavailable => "PLUGIN_AUTHORIZATION_STORE_UNAVAILABLE",
             Self::NetworkUnavailable => "PLUGIN_NETWORK_UNAVAILABLE",
             Self::PanelInvalid => "PLUGIN_PANEL_INVALID",
             Self::PanelLimitExceeded => "PLUGIN_PANEL_LIMIT_EXCEEDED",
@@ -44,13 +36,9 @@ impl BrokerErrorCode {
     #[must_use]
     pub const fn message_key(self) -> &'static str {
         match self {
-            Self::AuthorizationKeyInvalid => "plugin.error.authorizationKeyInvalid",
-            Self::PublisherIdentityUnverified => "plugin.error.publisherIdentityUnverified",
+            Self::PluginContextInvalid => "plugin.error.contextInvalid",
             Self::CapabilityUndeclared => "plugin.error.capabilityUndeclared",
             Self::PermissionDenied => "plugin.error.permissionDenied",
-            Self::PersistentGrantForbidden => "plugin.error.persistentGrantForbidden",
-            Self::ExtraConfirmationRequired => "plugin.error.extraConfirmationRequired",
-            Self::AuthorizationStoreUnavailable => "plugin.error.authorizationStoreUnavailable",
             Self::NetworkUnavailable => "plugin.error.networkUnavailable",
             Self::PanelInvalid => "plugin.error.panelInvalid",
             Self::PanelLimitExceeded => "plugin.error.panelLimitExceeded",
@@ -75,20 +63,12 @@ pub enum LimitKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum BrokerError {
-    #[error("plugin authorization key is invalid")]
-    AuthorizationKeyInvalid,
-    #[error("publisher identity is not an upstream-verified canonical key fingerprint")]
-    PublisherIdentityUnverified,
+    #[error("plugin context is invalid")]
+    PluginContextInvalid,
     #[error("plugin did not declare the requested capability")]
     CapabilityUndeclared,
     #[error("plugin capability is not authorized")]
     PermissionDenied,
-    #[error("this capability cannot receive a persistent grant")]
-    PersistentGrantForbidden,
-    #[error("the risk combination requires an explicit extra confirmation")]
-    ExtraConfirmationRequired,
-    #[error("the application-profile authorization store is unavailable")]
-    AuthorizationStoreUnavailable,
     #[error("plugin network execution is unavailable in protocol v1")]
     NetworkUnavailable,
     #[error("declarative panel is invalid")]
@@ -109,13 +89,9 @@ impl BrokerError {
     #[must_use]
     pub const fn code(self) -> BrokerErrorCode {
         match self {
-            Self::AuthorizationKeyInvalid => BrokerErrorCode::AuthorizationKeyInvalid,
-            Self::PublisherIdentityUnverified => BrokerErrorCode::PublisherIdentityUnverified,
+            Self::PluginContextInvalid => BrokerErrorCode::PluginContextInvalid,
             Self::CapabilityUndeclared => BrokerErrorCode::CapabilityUndeclared,
             Self::PermissionDenied => BrokerErrorCode::PermissionDenied,
-            Self::PersistentGrantForbidden => BrokerErrorCode::PersistentGrantForbidden,
-            Self::ExtraConfirmationRequired => BrokerErrorCode::ExtraConfirmationRequired,
-            Self::AuthorizationStoreUnavailable => BrokerErrorCode::AuthorizationStoreUnavailable,
             Self::NetworkUnavailable => BrokerErrorCode::NetworkUnavailable,
             Self::PanelInvalid => BrokerErrorCode::PanelInvalid,
             Self::PanelLimitExceeded(_) => BrokerErrorCode::PanelLimitExceeded,
@@ -139,13 +115,9 @@ mod tests {
     #[test]
     fn every_broker_denial_has_a_stable_public_code_and_message_key() {
         let errors = [
-            BrokerError::AuthorizationKeyInvalid,
-            BrokerError::PublisherIdentityUnverified,
+            BrokerError::PluginContextInvalid,
             BrokerError::CapabilityUndeclared,
             BrokerError::PermissionDenied,
-            BrokerError::PersistentGrantForbidden,
-            BrokerError::ExtraConfirmationRequired,
-            BrokerError::AuthorizationStoreUnavailable,
             BrokerError::NetworkUnavailable,
             BrokerError::PanelInvalid,
             BrokerError::PanelLimitExceeded(LimitKind::PanelNodes),

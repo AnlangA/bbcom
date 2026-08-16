@@ -44,6 +44,12 @@ impl StoreState {
         }
     }
 
+    /// Drains the most recently published panel (initialize return value or
+    /// an explicit publish) for embedders and tests.
+    pub fn take_published_panel(&mut self) -> Option<DeclarativePanel> {
+        self.published_panel.take()
+    }
+
     pub fn publish_returned_panel(&mut self, panel: DeclarativePanel) {
         self.published_panel = Some(panel);
     }

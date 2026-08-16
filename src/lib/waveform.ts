@@ -9,7 +9,7 @@
  */
 
 // RegExp constructor (not a /.../ literal) so this file also loads under Node's
-// --experimental-strip-types runner, whose parser mishandles regex literals in
+// --experimental-transform-types runner, whose parser mishandles regex literals in
 // some multi-function files (treats them as division).
 export {
   DEFAULT_WAVEFORM_VIEWPORT_MIN_MS,

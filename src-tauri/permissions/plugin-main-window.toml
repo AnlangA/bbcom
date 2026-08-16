@@ -3,11 +3,18 @@ identifier = "plugin-main-window-commands"
 description = "Allows the main bbcom window to use the validated plugin-center command boundary."
 commands.allow = [
   "plugin_center_snapshot",
+  "plugin_request_local_source_grant",
   "plugin_install",
+  "plugin_install_local",
+  "plugin_uninstall",
   "plugin_set_enabled",
-  "plugin_submit_authorization",
-  "plugin_dismiss_authorization",
+  "plugin_source_add",
+  "plugin_source_update",
+  "plugin_source_remove",
+  "plugin_source_refresh",
+  "plugin_set_watch_enabled",
   "plugin_resolve_serial_proposal",
   "plugin_emit_panel_event",
+  "plugin_serial_action_result",
   "plugin_cancel_operation",
 ]

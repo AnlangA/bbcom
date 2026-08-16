@@ -1,8 +1,13 @@
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
+import { settingsService } from './features/settings';
 import './styles/variables.css';
 import './styles/global.css';
 import './styles/packet-columns.css';
+
+// Hydrate theme/locale and every global default before the first component
+// mounts; the single settings service owns all later writes (A-02).
+settingsService.hydrate();
 
 const params = new URLSearchParams(window.location.search);
 const isAiWindow = params.get('window') === 'ai';
@@ -19,123 +24,117 @@ if (!isAiWindow) {
   const [
     application,
     serialApplication,
-    sessionRuntime,
     shutdown,
     workspace,
     migration,
     appStoreModule,
     serialStoreModule,
-    sessionStoreModule,
+    sessions,
   ] = await Promise.all([
     import('./features/application'),
-    import('./features/serial/application'),
-    import('./features/sessions/runtime/session-runtime-factory'),
+    import('./features/serial'),
     import('./features/shutdown'),
     import('./features/workspace'),
     import('./features/migration'),
     import('./stores/app'),
     import('./stores/serial'),
-    import('./stores/sessions'),
+    import('./features/sessions'),
   ]);
-  const { SESSION_APPLICATION_SERVICES_KEY } =
-    await import('./features/sessions/runtime/session-application-services');
+  const pluginsModule = await import('./features/plugins');
   const portLeaseRegistry = new serialApplication.PortLeaseRegistry();
   const notifications = new application.ApplicationNotificationRouter();
-  const applicationServices = application.createApplicationServices(
-    sessionRuntime.createSessionRuntimeRegistryOptions({
+  const runtimeStatusRegistry = new sessions.SessionRuntimeStatusRegistry();
+  const baseApplicationServices = application.createApplicationServices(
+    sessions.createSessionRuntimeRegistryOptions({
       pinia,
       notifications,
       portLeaseClient: portLeaseRegistry,
+      runtimeStatusRegistry,
     }),
     portLeaseRegistry,
     notifications,
   );
-  app.provide(SESSION_APPLICATION_SERVICES_KEY, applicationServices);
-  sessionStoreModule.enterWorkspaceSessionPersistenceMode();
-  const sessionStore = sessionStoreModule.useSessionStore(pinia);
+  const pluginSerialActionBridge = new pluginsModule.PluginSerialActionBridge((sessionId) =>
+    baseApplicationServices.runtimeRegistry.get(sessionId),
+  );
+  await pluginSerialActionBridge.start();
+  const applicationServices = Object.freeze({
+    ...baseApplicationServices,
+    runtimeStatusRegistry,
+    async shutdown(): Promise<void> {
+      pluginSerialActionBridge.stop();
+      await baseApplicationServices.shutdown();
+    },
+  });
+  app.provide(sessions.SESSION_APPLICATION_SERVICES_KEY, applicationServices);
+  // The plugin center renders in Settings once the native runtime is wired;
+  // the port itself fail-closes to "unavailable" outside Tauri.
+  const pluginCenterService = new pluginsModule.PluginCenterService(
+    new pluginsModule.TauriPluginCenterPort(),
+  );
+  app.provide(pluginsModule.PLUGIN_CENTER_KEY, pluginCenterService);
+  void pluginCenterService.start();
+  sessions.enterWorkspaceSessionPersistenceMode();
+  const sessionStore = sessions.useWorkspaceSessionPort();
+  const sessionMutationPolicy = sessions.useSessionMutationPolicy();
   const appStore = appStoreModule.useAppStore(pinia);
   const serialStore = serialStoreModule.useSerialStore(pinia);
   const workspacePort = new workspace.TauriWorkspacePort();
+  const workspaceUi = workspace.useWorkspaceUiStore(pinia);
   const workspaceCoordinator = new workspace.WorkspaceCoordinator(workspacePort, {
     operations: workspace.workspaceOperationLifecycleFor(applicationServices.operationRegistry),
   });
-  const workspaceRuntimeSnapshots = new Map<
-    string,
-    readonly {
-      readonly sessionId: string;
-      readonly session: (typeof sessionStore.sessions)[number];
-    }[]
-  >();
+  const runtimeContext: {
+    application: InstanceType<typeof workspace.WorkspaceApplicationService> | null;
+    adapter: InstanceType<typeof workspace.SessionStoreWorkspaceAdapter> | null;
+  } = { application: null, adapter: null };
+  const sessionParticipant = new workspace.SessionRuntimeWorkspaceParticipant({
+    registry: applicationServices.runtimeRegistry,
+    statuses: runtimeStatusRegistry,
+    prepareRuntimes: () => applicationServices.prepareShutdown(),
+    beginPersistenceDrain: (persistence) => {
+      if (!runtimeContext.adapter) throw new Error('workspace adapter is not initialized');
+      runtimeContext.adapter.beginPersistenceDrain(persistence);
+    },
+    endPersistenceDrain: (persistence) => {
+      if (!runtimeContext.adapter) throw new Error('workspace adapter is not initialized');
+      runtimeContext.adapter.endPersistenceDrain(persistence);
+    },
+    setMutationPermissions: (permissions) =>
+      sessionMutationPolicy.setWorkspaceMutationPermissions(permissions),
+    preflightRuntimeCapture: (sessionId, frame) =>
+      runtimeContext.application?.preflightCapturedFrame(sessionId, frame).accepted === true,
+  });
+  const pluginParticipant = new workspace.PluginRuntimeWorkspaceParticipant({
+    quiesce() {
+      pluginCenterService.cancelAction();
+    },
+    dispose() {},
+    restore() {
+      return pluginCenterService.refresh();
+    },
+    activateStopped() {
+      return pluginCenterService.refresh();
+    },
+    commit() {},
+  });
+  const transitions = new workspace.WorkspaceTransitionCoordinator([
+    sessionParticipant,
+    pluginParticipant,
+  ]);
   const workspaceApplication = new workspace.WorkspaceApplicationService(
     workspaceCoordinator,
     workspacePort,
     {
       replaceWorkspace(snapshot) {
         sessionStore.replaceWorkspaceSessions(snapshot.sessions, snapshot.activeSessionId);
-        appStore.applyWorkspaceLayout(snapshot.layout);
+        workspaceUi.apply(snapshot.layout);
       },
     },
     {
-      runtimeLifecycle: {
-        async quiesce({ transitionId, persistence }) {
-          if (!workspaceRuntimeSnapshots.has(transitionId)) {
-            workspaceRuntimeSnapshots.set(
-              transitionId,
-              applicationServices.runtimeRegistry.list().map(({ sessionId, session }) => ({
-                sessionId,
-                session,
-              })),
-            );
-          }
-          workspaceAdapter.beginPersistenceDrain(persistence);
-          sessionStore.setWorkspaceMutationPermissions({
-            userMutations: false,
-            runtimeCapture: true,
-            preflightRuntimeCapture: (sessionId, frame) =>
-              workspaceApplication.preflightCapturedFrame(sessionId, frame).accepted,
-          });
-          try {
-            await applicationServices.prepareShutdown();
-          } finally {
-            sessionStore.setWorkspaceMutationPermissions({
-              userMutations: false,
-              runtimeCapture: false,
-              preflightRuntimeCapture: (sessionId, frame) =>
-                workspaceApplication.preflightCapturedFrame(sessionId, frame).accepted,
-            });
-            workspaceAdapter.endPersistenceDrain(persistence);
-          }
-        },
-        async dispose({ transitionId }) {
-          const snapshot = workspaceRuntimeSnapshots.get(transitionId) ?? [];
-          await Promise.all(
-            snapshot.map(({ sessionId }) =>
-              applicationServices.runtimeRegistry.disposeSession(sessionId, 'reconcile'),
-            ),
-          );
-          await applicationServices.runtimeRegistry.reconcile([]);
-        },
-        async restore({ transitionId }) {
-          const snapshot = workspaceRuntimeSnapshots.get(transitionId) ?? [];
-          await applicationServices.runtimeRegistry.reconcile([]);
-          for (const { session } of snapshot) {
-            await applicationServices.runtimeRegistry.ensure(session);
-          }
-          workspaceRuntimeSnapshots.delete(transitionId);
-        },
-        async activateStopped({ transitionId }) {
-          // Workspace hydration is deliberately lazy: an inactive restored
-          // session has no runtime until the host selects it, and never starts
-          // serial/automation merely because a project was opened.
-          await applicationServices.runtimeRegistry.reconcile([]);
-          void transitionId;
-        },
-        commit({ transitionId }) {
-          workspaceRuntimeSnapshots.delete(transitionId);
-        },
-      },
+      runtimeLifecycle: transitions,
       onPersistenceFailure() {
-        sessionStore.setWorkspaceMutationPermissions({
+        sessionMutationPolicy.setWorkspaceMutationPermissions({
           userMutations: false,
           runtimeCapture: false,
         });
@@ -143,12 +142,14 @@ if (!isAiWindow) {
       },
     },
   );
+  runtimeContext.application = workspaceApplication;
   const workspaceAdapter = new workspace.SessionStoreWorkspaceAdapter(
     sessionStore,
     workspaceApplication,
   );
+  runtimeContext.adapter = workspaceAdapter;
   workspaceAdapter.start();
-  appStore.subscribeWorkspaceLayout((layout) => {
+  workspaceUi.subscribe((layout) => {
     if (!workspaceApplication.snapshot().acceptsSaves) return;
     const outcome = workspaceApplication.queueConfigMutation({
       kind: 'set-metadata',
@@ -157,7 +158,7 @@ if (!isAiWindow) {
     if (!outcome.accepted) workspaceApplication.rejectPersistence(outcome.messageKey);
   });
   workspaceApplication.subscribe((snapshot) => {
-    sessionStore.setWorkspaceMutationPermissions({
+    sessionMutationPolicy.setWorkspaceMutationPermissions({
       userMutations: snapshot.acceptsSaves,
       // During workspace quiesce, user changes are closed while final runtime
       // RX remains admissible through the explicit persistence drain.
@@ -186,7 +187,6 @@ if (!isAiWindow) {
   const tauriShutdown = new shutdown.TauriShutdownPort();
   const applicationShutdown = await shutdown.bootstrapApplicationShutdown({
     application: applicationServices,
-    sessionPersistence: sessionStore,
     appSettings: appStore,
     serialSettings: serialStore,
     workspacePersistence: workspaceApplication,

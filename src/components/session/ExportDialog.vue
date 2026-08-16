@@ -11,11 +11,21 @@
     <div class="export-form">
       <label class="export-field">
         <span>{{ t('export.dialog.format') }}</span>
-        <AppSelect v-model:value="format" :options="formatOptions" :disabled="isExporting" />
+        <AppSelect
+          v-model:value="format"
+          :options="formatOptions"
+          :disabled="isExporting"
+          :aria-label="t('export.dialog.format')"
+        />
       </label>
       <label class="export-field">
         <span>{{ t('export.dialog.direction') }}</span>
-        <AppSelect v-model:value="direction" :options="directionOptions" :disabled="isExporting" />
+        <AppSelect
+          v-model:value="direction"
+          :options="directionOptions"
+          :disabled="isExporting"
+          :aria-label="t('export.dialog.direction')"
+        />
       </label>
       <label class="export-field">
         <span>{{ t('export.dialog.range') }}</span>
@@ -23,6 +33,7 @@
           v-model:value="timePreset"
           :options="timePresetOptions"
           :disabled="isExporting"
+          :aria-label="t('export.dialog.range')"
         />
       </label>
       <div v-if="timePreset === 'custom'" class="custom-range">
@@ -129,7 +140,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   cancel: [];
-  confirm: [{ snapshot: ExportFrameSnapshot; choice: ExportChoice }];
+  confirm: [{ snapshot: ExportFrameSnapshot; choice: ExportChoice; unfiltered: boolean }];
 }>();
 
 const format = ref<ExportChoice>('txt');
@@ -247,6 +258,9 @@ function confirm(): void {
   emit('confirm', {
     snapshot: createExportFrameSnapshot(props.frames, currentSelection()),
     choice: format.value,
+    // Whole-session selections (no direction and no time filter) are eligible
+    // for the DB-sourced export path; filtered ones must stream renderer memory.
+    unfiltered: direction.value === 'all' && timePreset.value === 'all',
   });
 }
 </script>
