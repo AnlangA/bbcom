@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::Direction;
+use crate::{Direction, MAX_WORKSPACE_FRAME_BYTES, resolve_dual_data};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -140,6 +140,10 @@ pub struct WorkspaceHydratedFrame {
     #[ts(type = "number")]
     pub timestamp_ms: u64,
     pub data: Vec<u8>,
+    /// Base64 frame bytes. Hydrate responses carry payloads only over this
+    /// channel; `data` serializes as an empty array for wire-shape stability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_b64: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tx_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -254,7 +258,11 @@ pub struct WorkspaceSessionUpsertPayload {
     pub document: serde_json::Value,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// Frame payload appended to a capture over the dual `data`/`dataB64` IPC
+/// channels (see [`crate::DataFramePayload`]). The base64 channel is decoded
+/// and materialized into `data` during deserialization, so persistence and
+/// validators only ever observe plain bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(optional_fields)]
 pub struct WorkspaceFramePayload {
@@ -263,6 +271,8 @@ pub struct WorkspaceFramePayload {
     #[ts(type = "number")]
     pub timestamp_ms: u64,
     pub data: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_b64: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tx_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -271,6 +281,48 @@ pub struct WorkspaceFramePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "number")]
     pub omitted_bytes: Option<u64>,
+}
+
+impl<'de> Deserialize<'de> for WorkspaceFramePayload {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Raw {
+            id: String,
+            direction: Direction,
+            timestamp_ms: u64,
+            #[serde(default)]
+            data: Vec<u8>,
+            #[serde(default)]
+            data_b64: Option<String>,
+            #[serde(default)]
+            tx_status: Option<String>,
+            #[serde(default)]
+            requested_bytes: Option<u64>,
+            #[serde(default)]
+            omitted_bytes: Option<u64>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let data = resolve_dual_data(
+            &raw.data,
+            raw.data_b64.as_deref(),
+            MAX_WORKSPACE_FRAME_BYTES,
+        )
+        .map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            id: raw.id,
+            direction: raw.direction,
+            timestamp_ms: raw.timestamp_ms,
+            data,
+            data_b64: None,
+            tx_status: raw.tx_status,
+            requested_bytes: raw.requested_bytes,
+            omitted_bytes: raw.omitted_bytes,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -896,4 +948,88 @@ pub struct CompleteLegacyResetRequest {
 pub struct CompleteLegacyResetResponse {
     pub request_id: String,
     pub journal: LegacyResetJournal,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame_json(data_field: &str) -> String {
+        format!(r#"{{"id":"f1","direction":"TX","timestampMs":9,{data_field}}}"#)
+    }
+
+    #[test]
+    fn frame_payload_materializes_the_base64_channel_during_deserialization() {
+        let legacy: WorkspaceFramePayload =
+            serde_json::from_str(&frame_json(r#""data":[1,2,3]"#)).unwrap();
+        assert_eq!(legacy.data, vec![1, 2, 3]);
+        assert_eq!(legacy.data_b64, None);
+
+        let encoded: WorkspaceFramePayload =
+            serde_json::from_str(&frame_json(r#""dataB64":"AQID""#)).unwrap();
+        assert_eq!(encoded.data, vec![1, 2, 3]);
+        assert_eq!(encoded.data_b64, None);
+        // Round-tripping a materialized payload keeps the legacy shape.
+        assert_eq!(
+            serde_json::to_value(&encoded).unwrap(),
+            serde_json::json!({"id":"f1","direction":"TX","timestampMs":9,"data":[1,2,3]})
+        );
+
+        assert!(
+            serde_json::from_str::<WorkspaceFramePayload>(&frame_json(
+                r#""data":[1],"dataB64":"AQ=="#
+            ))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<WorkspaceFramePayload>(&frame_json(r#""dataB64":"!!""#))
+                .is_err()
+        );
+        let oversized = crate::encode_data_b64(&vec![7_u8; MAX_WORKSPACE_FRAME_BYTES + 1]);
+        assert!(
+            serde_json::from_str::<WorkspaceFramePayload>(&frame_json(&format!(
+                r#""dataB64":"{oversized}""#
+            )))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<WorkspaceFramePayload>(
+                r#"{"id":"f1","direction":"TX","timestampMs":9,"data":[1],"grantToken":"x"}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn hydrated_frame_serializes_bytes_only_over_the_base64_channel() {
+        let frame = WorkspaceHydratedFrame {
+            seq: 4,
+            id: "f1".to_owned(),
+            direction: Direction::Tx,
+            timestamp_ms: 9,
+            data: Vec::new(),
+            data_b64: Some(crate::encode_data_b64(&[1, 2, 3])),
+            tx_status: None,
+            requested_bytes: None,
+            omitted_bytes: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&frame).unwrap(),
+            serde_json::json!({
+                "seq": 4,
+                "id": "f1",
+                "direction": "TX",
+                "timestampMs": 9,
+                "data": [],
+                "dataB64": "AQID",
+            })
+        );
+        // The legacy number-array representation still deserializes.
+        let legacy: WorkspaceHydratedFrame = serde_json::from_str(
+            r#"{"seq":0,"id":"f1","direction":"TX","timestampMs":9,"data":[1,2,3]}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.data, vec![1, 2, 3]);
+        assert_eq!(legacy.data_b64, None);
+    }
 }

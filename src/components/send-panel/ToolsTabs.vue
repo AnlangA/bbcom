@@ -166,6 +166,16 @@
         </div>
         <div v-else class="tool-empty">{{ t('tools.empty') }}</div>
       </div>
+      <div
+        v-show="activeTab === 'checksum'"
+        :id="panelDomId('checksum')"
+        class="tool-pane"
+        role="tabpanel"
+        :aria-labelledby="tabDomId('checksum')"
+        tabindex="0"
+      >
+        <ChecksumPanel />
+      </div>
     </div>
   </div>
 </template>
@@ -178,11 +188,12 @@ import {
   History as HistoryIcon,
   ListVideo,
   Highlighter,
+  Hash,
   Trash2,
   X,
   Zap,
 } from '@lucide/vue';
-import { useSessionStore } from '../../stores/sessions';
+import { useSessionDocument } from '../../features/sessions';
 import { truncate } from '../../lib/format';
 import { t } from '../../lib/i18n';
 import {
@@ -217,8 +228,9 @@ const emit = defineEmits<{
 const MacroPanel = defineAsyncComponent(() => import('./MacroPanel.vue'));
 const TriggerPanel = defineAsyncComponent(() => import('./TriggerPanel.vue'));
 const HighlightPanel = defineAsyncComponent(() => import('./HighlightPanel.vue'));
+const ChecksumPanel = defineAsyncComponent(() => import('./ChecksumPanel.vue'));
 
-const sessionStore = useSessionStore();
+const sessionDocument = useSessionDocument(props.sessionId);
 
 const quickName = ref('');
 const toolsDomId = `tools-${useId().replace(/:/g, '')}`;
@@ -226,9 +238,7 @@ const toolsDomId = `tools-${useId().replace(/:/g, '')}`;
 // on history so a returning user immediately sees something useful.
 const activeTab = ref<ToolsTabId>('quick');
 
-const session = computed(() =>
-  props.sessionId ? sessionStore.sessions.find((s) => s.id === props.sessionId) : undefined,
-);
+const session = computed(() => sessionDocument.session.value ?? undefined);
 const counts = computed(() => activeToolCounts(session.value, props.quickCommands, props.history));
 
 const tabs = computed(() => [
@@ -261,6 +271,12 @@ const tabs = computed(() => [
     label: t('tools.tab.history'),
     icon: HistoryIcon,
     count: counts.value.history,
+  },
+  {
+    id: 'checksum' as const,
+    label: t('checksum.title'),
+    icon: Hash,
+    count: 0,
   },
 ]);
 
@@ -361,7 +377,7 @@ function resend(item: SendHistoryEntry) {
   border: 0;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0;
@@ -396,7 +412,7 @@ function resend(item: SendHistoryEntry) {
   background: var(--bg-tertiary);
   color: var(--text-secondary);
   border-radius: var(--radius-full);
-  font-size: 9px;
+  font-size: var(--font-size-sm);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -417,7 +433,7 @@ function resend(item: SendHistoryEntry) {
 
 .tool-empty {
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   padding: 10px 4px;
   text-align: center;
 }
@@ -448,7 +464,7 @@ function resend(item: SendHistoryEntry) {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-full);
   cursor: default;
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
   transition:
     border-color var(--transition-fast),
@@ -511,7 +527,7 @@ function resend(item: SendHistoryEntry) {
   background: transparent;
   border: 0;
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   cursor: pointer;
   padding: 2px 5px;
   border-radius: var(--radius-sm);
@@ -548,7 +564,7 @@ function resend(item: SendHistoryEntry) {
   border-radius: var(--radius-full);
   cursor: pointer;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
   white-space: nowrap;
   max-width: 240px;
@@ -565,7 +581,7 @@ function resend(item: SendHistoryEntry) {
 }
 
 .history-tag {
-  font-size: 9px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--text-muted);
   background: var(--bg-inset);

@@ -6,7 +6,6 @@ import {
 import {
   PLUGIN_PERMISSIONS,
   type InstalledPluginView,
-  type PluginAuthorizationReview,
   type PluginCatalogItem,
   type PluginCenterActionKind,
   type PluginCenterData,
@@ -17,10 +16,9 @@ import {
   type PluginFailure,
   type PluginPanelEvent,
   type PluginPermission,
-  type PluginPermissionDecision,
   type PluginPortOutcome,
   type PluginSerialProposal,
-  type SubmitPluginAuthorization,
+  type PluginSourceView,
 } from './types';
 
 const PERMISSIONS = new Set<string>(PLUGIN_PERMISSIONS);
@@ -31,9 +29,9 @@ const EMPTY_DATA: PluginCenterData = Object.freeze({
   revision: 0,
   catalog: Object.freeze([]),
   installed: Object.freeze([]),
-  authorizationReview: null,
   serialProposals: Object.freeze([]),
   panels: Object.freeze([]),
+  sources: Object.freeze([]),
 });
 
 interface NormalizedData {
@@ -90,8 +88,32 @@ export class PluginCenterService {
 
   install(catalogId: string): Promise<void> {
     const item = this.data.catalog.find((candidate) => candidate.catalogId === catalogId);
-    if (!item || item.installedVersion !== null) return this.rejectInvalidResponse();
-    return this.run('install', (signal) => this.port.install(catalogId, signal));
+    if (
+      !item ||
+      (item.installedVersion !== null && compareSemver(item.version, item.installedVersion) <= 0)
+    ) {
+      return this.rejectInvalidResponse();
+    }
+    return this.run(item.installedVersion === null ? 'install' : 'update', (signal) =>
+      this.port.install(catalogId, signal),
+    );
+  }
+
+  installLocal(sourceKind: 'local-package' | 'dev-directory' = 'local-package'): Promise<void> {
+    if (sourceKind !== 'local-package' && sourceKind !== 'dev-directory') {
+      return this.rejectInvalidResponse();
+    }
+    return this.run('install-local', async (signal) => {
+      const grantId = await this.port.requestLocalSourceGrant(sourceKind, signal);
+      if (!grantId) return failedPortOutcome('unavailable');
+      return this.port.installLocal(grantId, signal);
+    });
+  }
+
+  uninstall(pluginId: string): Promise<void> {
+    const installed = this.data.installed.some((candidate) => candidate.pluginId === pluginId);
+    if (!installed) return this.rejectInvalidResponse();
+    return this.run('uninstall', (signal) => this.port.uninstall(pluginId, signal));
   }
 
   setEnabled(pluginId: string, enabled: boolean): Promise<void> {
@@ -102,29 +124,59 @@ export class PluginCenterService {
     );
   }
 
-  submitAuthorization(input: SubmitPluginAuthorization): Promise<void> {
-    if (!this.validAuthorization(input)) return this.rejectInvalidResponse();
-    return this.run('authorize', (signal) => this.port.submitAuthorization(input, signal));
+  addSource(sourceId: string, url: string, enabled = true): Promise<void> {
+    if (!validSourceId(sourceId) || !validHttpsSourceUrl(url)) return this.rejectInvalidResponse();
+    if (this.data.sources.some((source) => source.sourceId === sourceId)) {
+      return this.rejectInvalidResponse();
+    }
+    return this.run('source-add', (signal) => this.port.addSource(sourceId, url, enabled, signal));
   }
 
-  dismissAuthorization(reviewId: string): Promise<void> {
-    if (this.data.authorizationReview?.reviewId !== reviewId) return this.rejectInvalidResponse();
-    return this.run('dismiss-authorization', (signal) =>
-      this.port.dismissAuthorization(reviewId, signal),
+  updateSource(sourceId: string, url: string, enabled: boolean): Promise<void> {
+    const source = this.data.sources.find((item) => item.sourceId === sourceId);
+    if (!source || source.kind !== 'https' || !validHttpsSourceUrl(url)) {
+      return this.rejectInvalidResponse();
+    }
+    return this.run('source-update', (signal) =>
+      this.port.updateSource(sourceId, url, enabled, signal),
+    );
+  }
+
+  removeSource(sourceId: string): Promise<void> {
+    if (!this.data.sources.some((source) => source.sourceId === sourceId)) {
+      return this.rejectInvalidResponse();
+    }
+    return this.run('source-remove', (signal) => this.port.removeSource(sourceId, signal));
+  }
+
+  refreshSource(sourceId: string): Promise<void> {
+    const source = this.data.sources.find((item) => item.sourceId === sourceId);
+    if (!source || source.kind !== 'https') return this.rejectInvalidResponse();
+    return this.run('source-refresh', (signal) => this.port.refreshSource(sourceId, signal));
+  }
+
+  setWatchEnabled(sourceId: string, enabled: boolean): Promise<void> {
+    const source = this.data.sources.find((item) => item.sourceId === sourceId);
+    if (!source || source.kind !== 'dev-directory' || source.watchEnabled === enabled) {
+      return this.rejectInvalidResponse();
+    }
+    return this.run('source-watch', (signal) =>
+      this.port.setWatchEnabled(sourceId, enabled, signal),
     );
   }
 
   resolveSerialProposal(proposalId: string, decision: 'approve' | 'reject'): Promise<void> {
-    if (!this.data.serialProposals.some((proposal) => proposal.proposalId === proposalId)) {
-      return this.rejectInvalidResponse();
-    }
+    const proposal = this.data.serialProposals.find((item) => item.proposalId === proposalId);
+    if (!proposal) return this.rejectInvalidResponse();
     return this.run('serial-proposal', (signal) =>
-      this.port.resolveSerialProposal(proposalId, decision, signal),
+      this.port.resolveSerialProposal(proposal, decision, signal),
     );
   }
 
   emitPanelEvent(event: PluginPanelEvent): Promise<void> {
-    const panel = this.data.panels.find((candidate) => candidate.pluginId === event.pluginId);
+    const panel = this.data.panels.find((candidate) =>
+      runtimeEquals(candidate.runtime, event.runtime),
+    );
     const field = panel?.fields.find((candidate) => candidate.id === event.fieldId);
     if (!field || !validPanelEventValue(field, event.value)) return this.rejectInvalidResponse();
     return this.run('panel-event', (signal) => this.port.emitPanelEvent(event, signal));
@@ -203,23 +255,6 @@ export class PluginCenterService {
     if (normalized.panelRejected) this.failure = Object.freeze({ code: 'invalid-panel' });
   }
 
-  private validAuthorization(input: SubmitPluginAuthorization): boolean {
-    const review = this.data.authorizationReview;
-    if (!review || input.reviewId !== review.reviewId) return false;
-    if (!samePermissionSet(input.decisions, review.persistentPermissions)) return false;
-    if (!sameStringSet(input.perRequestCapabilitiesAcknowledged, review.perRequestPermissions)) {
-      return false;
-    }
-    const grantsCapability =
-      input.decisions.some((decision) => decision.state === 'granted') ||
-      input.perRequestCapabilitiesAcknowledged.length > 0;
-    return !(
-      grantsCapability &&
-      review.extraConfirmationReasons.length > 0 &&
-      !input.extraConfirmationAcknowledged
-    );
-  }
-
   private rejectInvalidResponse(): Promise<void> {
     this.failure = Object.freeze({ code: 'invalid-response' });
     this.notify();
@@ -238,16 +273,27 @@ export class PluginCenterService {
   }
 }
 
+function compareSemver(left: string, right: string): number {
+  const leftCore = left.split(/[-+]/u, 1)[0]?.split('.').map(Number) ?? [];
+  const rightCore = right.split(/[-+]/u, 1)[0]?.split('.').map(Number) ?? [];
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (leftCore[index] ?? 0) - (rightCore[index] ?? 0);
+    if (difference !== 0) return Math.sign(difference);
+  }
+  return left.localeCompare(right);
+}
+
+function failedPortOutcome(code: PluginFailure['code']): PluginPortOutcome {
+  return { outcome: 'failed', failure: { code } };
+}
+
 function normalizeData(candidate: PluginCenterData): NormalizedData | null {
   if (!Number.isSafeInteger(candidate.revision) || candidate.revision < 0) return null;
   const catalog = normalizeList(candidate.catalog, normalizeCatalogItem);
   const installed = normalizeList(candidate.installed, normalizeInstalledPlugin);
-  const review = candidate.authorizationReview
-    ? normalizeAuthorizationReview(candidate.authorizationReview)
-    : null;
   const proposals = normalizeList(candidate.serialProposals, normalizeProposal);
-  if (!catalog || !installed || (candidate.authorizationReview && !review) || !proposals)
-    return null;
+  const sources = normalizeList(candidate.sources, normalizeSource);
+  if (!catalog || !installed || !proposals || !sources) return null;
   const panels: PluginDeclarativePanel[] = [];
   let panelRejected = false;
   for (const panel of candidate.panels) {
@@ -262,12 +308,30 @@ function normalizeData(candidate: PluginCenterData): NormalizedData | null {
       revision: candidate.revision,
       catalog: Object.freeze(catalog),
       installed: Object.freeze(installed),
-      authorizationReview: review,
       serialProposals: Object.freeze(proposals),
       panels: Object.freeze(panels),
+      sources: Object.freeze(sources),
     }),
     panelRejected,
   };
+}
+
+function normalizeSource(source: PluginSourceView): PluginSourceView | null {
+  if (
+    !validSourceId(source.sourceId) ||
+    !safeDisplayText(source.displayName, 128) ||
+    !['https', 'local-package', 'dev-directory'].includes(source.kind) ||
+    !['idle', 'healthy', 'error', 'disconnected'].includes(source.health) ||
+    (source.kind === 'https'
+      ? !source.url || !validHttpsSourceUrl(source.url)
+      : source.url !== null) ||
+    (source.kind !== 'dev-directory' && source.watchEnabled) ||
+    !validOptionalTimestamp(source.lastAttemptMs) ||
+    !validOptionalTimestamp(source.lastSuccessMs)
+  ) {
+    return null;
+  }
+  return Object.freeze({ ...source });
 }
 
 function normalizeCatalogItem(item: PluginCatalogItem): PluginCatalogItem | null {
@@ -278,7 +342,6 @@ function normalizeCatalogItem(item: PluginCatalogItem): PluginCatalogItem | null
     !safeDisplayText(item.description, 1024, true) ||
     !validVersion(item.version) ||
     !safeDisplayText(item.publisherName, 128) ||
-    typeof item.publisherVerified !== 'boolean' ||
     (item.installedVersion !== null && !validVersion(item.installedVersion))
   ) {
     return null;
@@ -292,39 +355,21 @@ function normalizeInstalledPlugin(plugin: InstalledPluginView): InstalledPluginV
     !safeDisplayText(plugin.displayName, 128) ||
     !validVersion(plugin.version) ||
     (plugin.pendingVersion !== null && !validVersion(plugin.pendingVersion)) ||
-    !plugin.requestedPermissions.every(isPermission)
+    !plugin.declaredCapabilities.every(isPermission) ||
+    !plugin.effectiveCapabilities.every(isPermission) ||
+    !plugin.unavailableCapabilities.every(
+      (capability) => capability === 'network' || isPermission(capability),
+    ) ||
+    (plugin.runtime !== null && !validRuntime(plugin.runtime, plugin.pluginId))
   ) {
     return null;
   }
   return Object.freeze({
     ...plugin,
-    requestedPermissions: Object.freeze([...new Set(plugin.requestedPermissions)]),
-  });
-}
-
-function normalizeAuthorizationReview(
-  review: PluginAuthorizationReview,
-): PluginAuthorizationReview | null {
-  if (
-    !validIdentity(review.reviewId) ||
-    !validIdentity(review.pluginId) ||
-    !safeDisplayText(review.displayName, 128) ||
-    !validVersion(review.version) ||
-    !review.persistentPermissions.every(isPermission) ||
-    !review.perRequestPermissions.every(isPermission) ||
-    review.persistentPermissions.includes('serial.write-proposal') ||
-    !review.unavailableCapabilities.every(
-      (capability) => capability === 'network' || isPermission(capability),
-    )
-  ) {
-    return null;
-  }
-  return Object.freeze({
-    ...review,
-    persistentPermissions: Object.freeze([...new Set(review.persistentPermissions)]),
-    perRequestPermissions: Object.freeze([...new Set(review.perRequestPermissions)]),
-    unavailableCapabilities: Object.freeze([...new Set(review.unavailableCapabilities)]),
-    extraConfirmationReasons: Object.freeze([...new Set(review.extraConfirmationReasons)]),
+    runtime: plugin.runtime ? Object.freeze({ ...plugin.runtime }) : null,
+    declaredCapabilities: Object.freeze([...new Set(plugin.declaredCapabilities)]),
+    effectiveCapabilities: Object.freeze([...new Set(plugin.effectiveCapabilities)]),
+    unavailableCapabilities: Object.freeze([...new Set(plugin.unavailableCapabilities)]),
   });
 }
 
@@ -332,6 +377,7 @@ function normalizeProposal(proposal: PluginSerialProposal): PluginSerialProposal
   if (
     !validIdentity(proposal.proposalId) ||
     !validIdentity(proposal.pluginId) ||
+    !validRuntime(proposal.runtime, proposal.pluginId) ||
     !safeDisplayText(proposal.pluginName, 128) ||
     !safeDisplayText(proposal.sessionLabel, 128) ||
     !safeDisplayText(proposal.displayLabel, 128) ||
@@ -344,12 +390,12 @@ function normalizeProposal(proposal: PluginSerialProposal): PluginSerialProposal
   ) {
     return null;
   }
-  return Object.freeze({ ...proposal });
+  return Object.freeze({ ...proposal, runtime: Object.freeze({ ...proposal.runtime }) });
 }
 
 function clonePanel(panel: PluginDeclarativePanel): PluginDeclarativePanel {
   return Object.freeze({
-    pluginId: panel.pluginId,
+    runtime: Object.freeze({ ...panel.runtime }),
     title: panel.title,
     fields: Object.freeze(
       panel.fields.map((field) =>
@@ -376,35 +422,44 @@ function normalizeList<T>(input: readonly T[], normalize: (item: T) => T | null)
 function identityOf(value: unknown): string | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
-  for (const key of ['catalogId', 'pluginId', 'proposalId']) {
+  const runtime = record.runtime as Record<string, unknown> | undefined;
+  if (
+    runtime &&
+    typeof runtime.pluginId === 'string' &&
+    typeof runtime.instanceId === 'number' &&
+    typeof runtime.generation === 'number'
+  ) {
+    return `runtime:${runtime.pluginId}:${runtime.instanceId}:${runtime.generation}`;
+  }
+  for (const key of ['catalogId', 'pluginId', 'proposalId', 'sourceId']) {
     if (typeof record[key] === 'string') return `${key}:${record[key]}`;
   }
   return null;
 }
 
-function samePermissionSet(
-  decisions: readonly PluginPermissionDecision[],
-  expected: readonly PluginPermission[],
-): boolean {
-  const permissions = decisions.map((decision) => decision.permission);
-  return (
-    decisions.every(
-      (decision) =>
-        isPermission(decision.permission) &&
-        (decision.state === 'granted' || decision.state === 'denied'),
-    ) && sameStringSet(permissions, expected)
-  );
+function validSourceId(value: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u.test(value) && value.length >= 2;
 }
 
-function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
-  const leftSet = new Set(left);
-  const rightSet = new Set(right);
-  return (
-    leftSet.size === left.length &&
-    rightSet.size === right.length &&
-    leftSet.size === rightSet.size &&
-    [...leftSet].every((value) => rightSet.has(value))
-  );
+function validHttpsSourceUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' &&
+      url.username === '' &&
+      url.password === '' &&
+      url.search === '' &&
+      url.hash === '' &&
+      url.hostname !== '' &&
+      !/^\[?[\d.:]+\]?$/u.test(url.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validOptionalTimestamp(value: number | null): boolean {
+  return value === null || (Number.isSafeInteger(value) && value >= 0);
 }
 
 function validIdentity(value: string): boolean {
@@ -413,6 +468,33 @@ function validIdentity(value: string): boolean {
 
 function validVersion(value: string): boolean {
   return VERSION_PATTERN.test(value) && safeDisplayText(value, 128);
+}
+
+function validRuntime(
+  runtime: PluginSerialProposal['runtime'],
+  expectedPluginId?: string,
+): boolean {
+  return (
+    validIdentity(runtime.workspaceId) &&
+    validIdentity(runtime.pluginId) &&
+    (!expectedPluginId || runtime.pluginId === expectedPluginId) &&
+    Number.isSafeInteger(runtime.instanceId) &&
+    runtime.instanceId > 0 &&
+    Number.isSafeInteger(runtime.generation) &&
+    runtime.generation > 0
+  );
+}
+
+function runtimeEquals(
+  left: PluginSerialProposal['runtime'],
+  right: PluginSerialProposal['runtime'],
+): boolean {
+  return (
+    left.workspaceId === right.workspaceId &&
+    left.pluginId === right.pluginId &&
+    left.instanceId === right.instanceId &&
+    left.generation === right.generation
+  );
 }
 
 function isPermission(value: string): value is PluginPermission {

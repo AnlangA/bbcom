@@ -1,15 +1,55 @@
 import type {
+  Direction,
   WorkspaceFramePayload,
   WorkspaceHydratedFrame,
   WorkspaceMutation,
 } from '../../../generated/ipc-contracts';
 import { IPC_LIMITS } from '../../../generated/ipc-contracts';
+import { base64ToBytes, bytesToBase64 } from '../../../lib/base64';
 import type { DataFrame } from '../../../types/serial';
 import {
   WorkspaceAdapterLimitError,
   WorkspaceAdapterValidationError,
 } from './workspace-adapter-errors';
 import { validateWorkspaceIdentifier } from './workspace-adapter-security';
+
+/**
+ * Frame payload as held while queued for autosave: `data` stays the raw
+ * capture buffer instead of a frozen boxed-number array (an 8x memory
+ * amplification per frame at high baud). It is widened to the base64 IPC
+ * channel only at the serialization boundary — see {@link toIpcFramePayload},
+ * the single place that materializes it.
+ */
+export interface WorkspaceQueuedFramePayload {
+  readonly id: string;
+  readonly direction: Direction;
+  readonly timestampMs: number;
+  readonly data: Uint8Array;
+  readonly txStatus?: string;
+  readonly requestedBytes?: number;
+  readonly omittedBytes?: number;
+}
+
+/**
+ * Widen one queued payload to the JSON IPC contract shape. Frame bytes cross
+ * the boundary as base64 (~4/3 wire size instead of the ~4x number-array
+ * expansion). Keep this the only conversion site — both directions of the
+ * byte channel are materialized here and in {@link hydrateWorkspaceFrame}.
+ */
+export function toIpcFramePayload(
+  payload: Readonly<WorkspaceQueuedFramePayload>,
+): WorkspaceFramePayload {
+  return {
+    id: payload.id,
+    direction: payload.direction,
+    timestampMs: payload.timestampMs,
+    data: [],
+    dataB64: bytesToBase64(payload.data),
+    ...(payload.txStatus !== undefined ? { txStatus: payload.txStatus } : {}),
+    ...(payload.requestedBytes !== undefined ? { requestedBytes: payload.requestedBytes } : {}),
+    ...(payload.omittedBytes !== undefined ? { omittedBytes: payload.omittedBytes } : {}),
+  };
+}
 
 export interface WorkspaceFrameBatchPolicy {
   readonly maxDelayMs: number;
@@ -60,7 +100,7 @@ export class WorkspaceFrameMutationBuilder {
   private workspaceFrameCount: number;
   private sessionFrameCount: number;
   private workspacePayloadBytes: number;
-  private pending: WorkspaceFramePayload[] = [];
+  private pending: WorkspaceQueuedFramePayload[] = [];
   private pendingBytes = 0;
   private pendingStartedAtMs: number | null = null;
 
@@ -170,7 +210,7 @@ export class WorkspaceFrameMutationBuilder {
     if (this.mutationSequence > 0xffff_ffff) {
       throw new WorkspaceAdapterLimitError('sequence', 0xffff_ffff, this.mutationSequence);
     }
-    const frames = this.pending;
+    const frames = this.pending.map(toIpcFramePayload);
     const startSeq = this.nextFrameSeq;
     this.nextFrameSeq += frames.length;
     this.pending = [];
@@ -203,7 +243,7 @@ export class WorkspaceFrameMutationBuilder {
 export function projectWorkspaceFrame(
   frame: DataFrame,
   maxFrameBytes: number = IPC_LIMITS.MAX_WORKSPACE_FRAME_BYTES,
-): WorkspaceFramePayload {
+): WorkspaceQueuedFramePayload {
   assertExactKeys(
     frame,
     [
@@ -243,11 +283,13 @@ export function projectWorkspaceFrame(
   if (frame.direction === 'RX' && (txStatus !== undefined || requestedBytes !== undefined)) {
     throw new WorkspaceAdapterValidationError('frame.txMetadata');
   }
+  // `data` shares the raw capture buffer while the payload sits in the bounded
+  // save queue; the boxed number array only materializes at the IPC boundary.
   return Object.freeze({
     id,
     direction: frame.direction,
     timestampMs,
-    data: Object.freeze(Array.from(frame.data)) as number[],
+    data: frame.data,
     ...(txStatus !== undefined ? { txStatus } : {}),
     ...(requestedBytes !== undefined ? { requestedBytes } : {}),
     ...(omittedBytes !== undefined ? { omittedBytes } : {}),
@@ -257,7 +299,17 @@ export function projectWorkspaceFrame(
 export function hydrateWorkspaceFrame(frame: WorkspaceHydratedFrame): DataFrame {
   assertExactKeys(
     frame,
-    ['seq', 'id', 'direction', 'timestampMs', 'data', 'txStatus', 'requestedBytes', 'omittedBytes'],
+    [
+      'seq',
+      'id',
+      'direction',
+      'timestampMs',
+      'data',
+      'dataB64',
+      'txStatus',
+      'requestedBytes',
+      'omittedBytes',
+    ],
     'frame',
   );
   const id = validateWorkspaceIdentifier(frame.id, 'frame.id');
@@ -265,10 +317,8 @@ export function hydrateWorkspaceFrame(frame: WorkspaceHydratedFrame): DataFrame 
     throw new WorkspaceAdapterValidationError('frame.direction');
   }
   const timestamp = validNonNegativeInteger(frame.timestampMs, 'frame.timestampMs');
-  if (!Array.isArray(frame.data) || frame.data.some((byte) => !isByte(byte))) {
-    throw new WorkspaceAdapterValidationError('frame.data');
-  }
-  assertLimit('frameBytes', IPC_LIMITS.MAX_WORKSPACE_FRAME_BYTES, frame.data.length);
+  const data = decodeHydratedFrameData(frame);
+  assertLimit('frameBytes', IPC_LIMITS.MAX_WORKSPACE_FRAME_BYTES, data.byteLength);
   const txStatus =
     frame.txStatus === undefined
       ? undefined
@@ -279,7 +329,7 @@ export function hydrateWorkspaceFrame(frame: WorkspaceHydratedFrame): DataFrame 
           })();
   const requestedBytes = optionalNonNegativeInteger(frame.requestedBytes, 'frame.requestedBytes');
   const omittedBytes = optionalNonNegativeInteger(frame.omittedBytes, 'frame.omittedBytes');
-  if (requestedBytes !== undefined && requestedBytes < frame.data.length) {
+  if (requestedBytes !== undefined && requestedBytes < data.byteLength) {
     throw new WorkspaceAdapterValidationError('frame.requestedBytes');
   }
   if (frame.direction === 'RX' && (txStatus !== undefined || requestedBytes !== undefined)) {
@@ -289,11 +339,36 @@ export function hydrateWorkspaceFrame(frame: WorkspaceHydratedFrame): DataFrame 
     id,
     direction: frame.direction,
     timestamp,
-    data: new Uint8Array(frame.data),
+    data,
     ...(txStatus !== undefined ? { txStatus } : {}),
     ...(requestedBytes !== undefined ? { requestedBytes } : {}),
     ...(omittedBytes !== undefined ? { omittedBytes } : {}),
   });
+}
+
+/**
+ * Materialize hydrated frame bytes. Hydrate responses carry payloads only over
+ * the base64 channel (`data` arrives as an empty array); the legacy
+ * number-array shape stays accepted so old responses round-trip.
+ */
+function decodeHydratedFrameData(frame: WorkspaceHydratedFrame): Uint8Array {
+  if (frame.dataB64 !== undefined) {
+    if (typeof frame.dataB64 !== 'string') {
+      throw new WorkspaceAdapterValidationError('frame.dataB64');
+    }
+    if (Array.isArray(frame.data) && frame.data.length > 0) {
+      throw new WorkspaceAdapterValidationError('frame.data');
+    }
+    try {
+      return base64ToBytes(frame.dataB64);
+    } catch {
+      throw new WorkspaceAdapterValidationError('frame.dataB64');
+    }
+  }
+  if (!Array.isArray(frame.data) || frame.data.some((byte) => !isByte(byte))) {
+    throw new WorkspaceAdapterValidationError('frame.data');
+  }
+  return Uint8Array.from(frame.data);
 }
 
 function normalizePolicy(

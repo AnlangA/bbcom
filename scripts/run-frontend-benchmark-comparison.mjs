@@ -61,7 +61,7 @@ function benchmarkEnvironment(outputPath) {
 function benchmarkCommand() {
   const nodeArgs = [
     '--test',
-    '--experimental-strip-types',
+    '--experimental-transform-types',
     '--import',
     './tests/frontend/register-loader.mjs',
     'tests/frontend/perf.bench.ts',

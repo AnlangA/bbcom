@@ -25,7 +25,7 @@ vi.mock('../../src/composables/useModbusMaster.ts', () => ({
 }));
 
 import { useSessionModbus } from '../../src/composables/useSessionModbus.ts';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 
 const config: PortConfig = {
   baudRate: 115200,
@@ -69,7 +69,7 @@ function makeMaster(): FakeMaster {
 
 function setup() {
   setActivePinia(createPinia());
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
   const id = store.createSession('COM1', config);
   const waveformSamples: Array<readonly { channel: number; value: number; timestamp?: number }[]> =
     [];
@@ -106,7 +106,7 @@ function setup() {
 }
 
 function addRegister(
-  store: ReturnType<typeof useSessionStore>,
+  store: ReturnType<typeof useSessionCoreStore>,
   sessionId: string,
   patch: Partial<ModbusRegister> = {},
 ): ModbusRegister {

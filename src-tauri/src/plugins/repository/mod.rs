@@ -1,4 +1,4 @@
-//! Native-only HTTP transport for the signed plugin repository trust core.
+//! Native-only HTTP transport for unsigned HTTPS plugin repositories.
 //!
 //! This module owns no update scheduler and never follows redirects. Every
 //! request performs a fresh DNS resolution, rejects any non-public result, and
@@ -9,7 +9,7 @@ use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
-use bbcom_plugin_trust::{FetchPort, FetchResponse};
+use bbcom_plugin_repository::{HttpsResponse, HttpsTransport, TransportError};
 use reqwest::Url;
 use reqwest::blocking::{Client, ClientBuilder};
 use reqwest::header::{ACCEPT_ENCODING, LOCATION};
@@ -27,10 +27,19 @@ impl NativeRepositoryFetchPort {
     }
 }
 
-impl FetchPort for NativeRepositoryFetchPort {
-    type Error = NativeRepositoryFetchError;
+impl HttpsTransport for NativeRepositoryFetchPort {
+    fn get(&self, url: &str, maximum_bytes: u64) -> Result<HttpsResponse, TransportError> {
+        self.get_native(url, maximum_bytes)
+            .map_err(|error| TransportError::new(error.to_string()))
+    }
+}
 
-    fn get(&mut self, url: &str, maximum_bytes: u64) -> Result<FetchResponse, Self::Error> {
+impl NativeRepositoryFetchPort {
+    fn get_native(
+        &self,
+        url: &str,
+        maximum_bytes: u64,
+    ) -> Result<HttpsResponse, NativeRepositoryFetchError> {
         let parsed = validate_url(url)?;
         let host = parsed
             .host_str()
@@ -56,11 +65,10 @@ impl FetchPort for NativeRepositoryFetchPort {
         reject_declared_length(response.content_length(), maximum_bytes)?;
         let body = read_bounded(&mut response, maximum_bytes, maximum_plus_one)?;
 
-        Ok(FetchResponse {
-            status,
-            location,
-            body,
-        })
+        let headers = location
+            .map(|value| vec![("location".to_owned(), value)])
+            .unwrap_or_default();
+        Ok(HttpsResponse::new(status, headers, body))
     }
 }
 

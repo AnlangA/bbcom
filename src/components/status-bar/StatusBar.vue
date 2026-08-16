@@ -13,24 +13,13 @@
           <span class="mini-label">RX</span>
           {{ formatBytes(session.rxBytes) }}
         </span>
-        <span
-          class="mini-stat"
-          :title="t('session.stats.totalFrames', { count: session.frames.length })"
-        >
-          <span class="mini-label">{{ t('session.stats.frames') }}</span>
-          {{ session.frames.length }}
-        </span>
       </div>
       <div class="status-group">
-        <div v-if="session.isConnected && dataRate" class="stat">
+        <div v-if="connected && dataRate" class="stat">
           <span class="stat-label">{{ t('status.rate') }}</span>
           <span class="stat-value rate">{{ dataRate }}</span>
         </div>
-        <div
-          v-if="session.isConnected && frameRate > 0"
-          class="stat"
-          :title="t('status.frameRate')"
-        >
+        <div v-if="connected && frameRate > 0" class="stat" :title="t('status.frameRate')">
           <span class="stat-label">{{ t('status.frameRate') }}</span>
           <span class="stat-value">{{ frameRate }}/s</span>
         </div>
@@ -53,9 +42,6 @@
           <span class="stat-value">{{ session.portConfig.baudRate }}</span>
         </div>
       </div>
-      <div class="stat status-indicator">
-        <span class="status-dot" :class="session.isConnected ? 'connected' : 'disconnected'"></span>
-      </div>
     </template>
     <span v-else class="no-session">{{ t('session.noActiveSession') }}</span>
   </div>
@@ -66,12 +52,15 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import type { SerialSession } from '../../types';
 import { formatBytes, formatDuration, formatRate } from '../../lib/format';
 import { t } from '../../lib/i18n';
+import { useSessionRuntimeStatuses } from '../../features/sessions';
 
 const props = defineProps<{
   session: SerialSession | null;
   /** Invalidates template reads from the session's raw frame arrays/counters. */
   framesVersion: number;
 }>();
+const { isConnected } = useSessionRuntimeStatuses();
+const connected = computed(() => Boolean(props.session && isConnected(props.session.id)));
 
 import { maxBufferFrames } from '../../lib/buffer-config';
 
@@ -86,7 +75,7 @@ const rxRate = ref(0);
 const frameRate = ref(0);
 
 watch(
-  () => props.session?.isConnected,
+  connected,
   (connected) => {
     if (timer) {
       clearInterval(timer);
@@ -176,7 +165,7 @@ const droppedDisplay = computed(() => {
 
 const connectionAnnouncement = computed(() => {
   if (!props.session) return t('session.noActiveSession');
-  return props.session.isConnected ? t('session.connected') : t('session.disconnected');
+  return connected.value ? t('session.connected') : t('session.disconnected');
 });
 </script>
 
@@ -283,32 +272,5 @@ const connectionAnnouncement = computed(() => {
   color: var(--text-secondary);
   font-style: italic;
   font-family: var(--font-sans);
-}
-
-.status-indicator {
-  margin-left: auto;
-  position: sticky;
-  right: 0;
-  padding-left: var(--space-sm);
-  background: var(--bg-secondary);
-}
-
-.status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  transition:
-    background var(--transition-normal),
-    box-shadow var(--transition-normal);
-}
-
-.status-dot.connected {
-  background: var(--color-success);
-  box-shadow: 0 0 0 3px var(--color-primary-subtle);
-}
-
-.status-dot.disconnected {
-  background: var(--text-dim);
-  box-shadow: 0 0 0 3px var(--ring-muted);
 }
 </style>

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach } from 'vitest';
+import { resetSettingsServiceForTests } from '../../src/features/settings/settings-service-instance.ts';
 
 let originalConsoleError: typeof console.error;
 let originalConsoleWarn: typeof console.warn;
@@ -10,6 +11,9 @@ beforeEach(() => {
   originalConsoleWarn = console.warn;
   unexpectedConsoleError = [];
   lifecycleWarnings = [];
+  // Stores hydrate from the process-wide settings service; drop its cached
+  // document so each test sees its own freshly installed storage mock.
+  resetSettingsServiceForTests();
 
   // Tests that intentionally exercise the logger replace these functions and
   // restore them before their assertion. All other console errors are product

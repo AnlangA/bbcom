@@ -14,8 +14,9 @@ import type {
   WorkspaceProjectViewModel,
 } from './types';
 import { WORKSPACE_PROJECT_EXTENSION } from './types';
-import { clampSidebarWidth, SIDEBAR_WIDTH_DEFAULT } from '../../lib/sidebar-layout';
+import { clampSidebarWidth } from '../../lib/sidebar-layout';
 import type { WorkspaceLayoutV1 } from './types';
+import { DEFAULT_WORKSPACE_LAYOUT } from './workspace-ui-store';
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MESSAGE_KEY_PATTERN = /^[a-z][a-z0-9_.-]{0,127}$/i;
@@ -146,10 +147,7 @@ export function sanitizeHeader(header: WorkspaceDocumentHeader): ActiveWorkspace
 }
 
 export function sanitizeWorkspaceLayout(value: unknown): WorkspaceLayoutV1 {
-  const fallback = Object.freeze({
-    version: 1 as const,
-    sidebar: Object.freeze({ width: SIDEBAR_WIDTH_DEFAULT, collapsed: false }),
-  });
+  const fallback = DEFAULT_WORKSPACE_LAYOUT;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fallback;
   if (Object.keys(value).length === 0) return fallback;
   const candidate = value as Record<string, unknown>;

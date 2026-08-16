@@ -70,8 +70,20 @@ test('flushSettings writes synchronously, cancels debounce, and rejects invalid 
     await Promise.resolve();
     assert.equal(app.flushSettings(), true);
     assert.equal(serial.flushSettings(), true);
-    assert.equal(JSON.parse(data.get('bbcom-v1:app-settings') as string).displayMode, 'UTF8');
-    assert.equal(JSON.parse(data.get('bbcom-v1:serial-settings') as string).selectedPort, 'COM8');
+    const persisted = JSON.parse(data.get('bbcom-v2:global-settings') as string);
+    assert.equal(persisted.displayMode, 'UTF8');
+    assert.equal(persisted.selectedPort, 'COM8');
+    assert.equal(
+      data.get('bbcom-v1:app-settings'),
+      JSON.stringify({
+        displayMode: 'NOT_A_MODE',
+        searchMode: '../HEX',
+        packetViewMode: 'ALL',
+        lineEnding: 'NUL',
+      }),
+      'the legacy v1 app key is never rewritten by a flush',
+    );
+    assert.ok(data.has('bbcom-v1:serial-settings'), 'the legacy v1 serial key survives');
 
     const writesAfterFlush = new Map(data);
     await vi.advanceTimersByTimeAsync(301);

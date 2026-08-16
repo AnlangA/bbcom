@@ -174,7 +174,7 @@ import { computed } from 'vue';
 import { NCheckbox, NInput, NInputNumber } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
 import { LineChart, RefreshCw, Send, Trash2 } from '@lucide/vue';
-import { useSessionStore } from '../../stores/sessions';
+import { useSessionDocument } from '../../features/sessions';
 import {
   formatModbusRegisterValue,
   isModbusDataCountEditable,
@@ -210,7 +210,7 @@ const emit = defineEmits<{
   updateValueDraft: [value: string | undefined];
 }>();
 
-const sessionStore = useSessionStore();
+const document = useSessionDocument(props.sessionId);
 
 const isBitReg = computed(() => isBitFc(props.reg.functionCode));
 const isReadReg = computed(() => isReadFc(props.reg.functionCode));
@@ -230,7 +230,7 @@ function dataQuantityMax(fc: ModbusFunctionCode, type: ModbusValueType): number 
 }
 
 function edit(patchValue: Partial<Omit<ModbusRegister, 'id'>>) {
-  sessionStore.updateModbusRegister(props.sessionId, props.reg.id, patchValue);
+  document.updateModbusRegister(props.sessionId, props.reg.id, patchValue);
 }
 function editAndClear(patchValue: Partial<Omit<ModbusRegister, 'id'>>) {
   emit('updateValueDraft', undefined);
@@ -259,12 +259,12 @@ function editQuantity(raw: number) {
   });
 }
 function setChannel(ch: number) {
-  sessionStore.updateModbusRegister(props.sessionId, props.reg.id, {
+  document.updateModbusRegister(props.sessionId, props.reg.id, {
     waveformChannel: ch < 0 ? null : ch,
   });
 }
 function togglePeriodic(field: 'periodicRead' | 'periodicWrite', value: boolean) {
-  sessionStore.updateModbusRegister(props.sessionId, props.reg.id, { [field]: value });
+  document.updateModbusRegister(props.sessionId, props.reg.id, { [field]: value });
 }
 function formatValue(reg: ModbusRegister): string {
   return formatModbusRegisterValue(reg);
@@ -285,7 +285,7 @@ function editValue(raw: string) {
   emit('updateValueDraft', raw);
   const values = parseModbusValueInput(raw);
   const value = values[0] ?? null;
-  sessionStore.updateModbusRegister(props.sessionId, props.reg.id, {
+  document.updateModbusRegister(props.sessionId, props.reg.id, {
     value,
     values: values.length > 1 ? values : null,
     valueTs: Date.now(),
@@ -310,7 +310,7 @@ function editValue(raw: string) {
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: var(--font-size-sm);
 }
 
 /* Send-success sweep across the row — same gradient + duration as the serial
@@ -405,7 +405,7 @@ function editValue(raw: string) {
   color: var(--text-dim);
   cursor: pointer;
   padding: 0;
-  font-size: 9px;
+  font-size: var(--font-size-sm);
   font-weight: 700;
   font-family: var(--font-sans);
   line-height: 1;

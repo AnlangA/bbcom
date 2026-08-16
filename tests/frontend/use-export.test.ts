@@ -12,8 +12,9 @@ import {
   summarizeExportFrames,
   useExport,
   type ExportSessionClient,
+  type WorkspaceDbExportSource,
 } from '../../src/composables/useExport.ts';
-import type { ExportFramePayload } from '../../src/lib/ipc.ts';
+import type { ExportFramePayload, ExportSource } from '../../src/features/native/index.ts';
 import type { DataFrame, DisplayMode } from '../../src/types.ts';
 import type { ExportFormat } from '../../src/lib/constants.ts';
 import { createExportFrameSnapshot } from '../../src/lib/export-filters.ts';
@@ -45,6 +46,7 @@ interface SessionCalls {
     targetGrant: string;
     expectedFrames: number;
     expectedRawBytes: number;
+    source?: ExportSource;
   }>;
   batches: Array<{ exportId: string; frames: ExportFramePayload[] }>;
   finishes: string[];
@@ -71,11 +73,17 @@ function sessionDeps(
   let totalFrames = 0;
   let totalRawBytes = 0;
   const sessionClient: ExportSessionClient = {
-    async begin(format, targetGrant, expectedFrames, expectedRawBytes) {
-      calls.begins.push({ format, targetGrant, expectedFrames, expectedRawBytes });
+    async begin(format, targetGrant, expectedFrames, expectedRawBytes, source) {
+      calls.begins.push({
+        format,
+        targetGrant,
+        expectedFrames,
+        expectedRawBytes,
+        ...(source ? { source } : {}),
+      });
       calls.order.push('begin');
       return overrides.begin
-        ? overrides.begin(format, targetGrant, expectedFrames, expectedRawBytes)
+        ? overrides.begin(format, targetGrant, expectedFrames, expectedRawBytes, source)
         : { exportId: '00000000000000000000000000000001' };
     },
     async append(exportId, frames) {
@@ -118,7 +126,7 @@ function sessionDeps(
 
 // ---- Bounded session protocol (production default) ----
 
-test('createExportBatches enforces frame-count and byte limits with plain-array data', () => {
+test('createExportBatches enforces frame-count and byte limits with byte-backed data', () => {
   const countLimited = Array.from({ length: EXPORT_BATCH_MAX_FRAMES + 1 }, (_, index) =>
     frame('RX', [index & 0xff], index),
   );
@@ -127,7 +135,11 @@ test('createExportBatches enforces frame-count and byte limits with plain-array 
     countBatches.map((batch) => batch.length),
     [EXPORT_BATCH_MAX_FRAMES, 1],
   );
-  assert.equal(Array.isArray(countBatches[0][0].data), true, 'wire data is an explicit number[]');
+  assert.equal(
+    countBatches[0][0].data instanceof Uint8Array,
+    true,
+    'batch data stays a zero-copy Uint8Array; the IPC wrapper widens it to base64',
+  );
 
   const byteLimited = [
     frame('RX', new Uint8Array(EXPORT_BATCH_MAX_BYTES), 1),
@@ -741,4 +753,169 @@ test('useExport: raw arrays stop before retaining a frame beyond the reference c
   assert.equal(result.ok, false);
   assert.match(result.ok ? '' : (result.error ?? ''), /more than/);
   assert.equal(targetRequests, 0);
+});
+
+// ---- DB-sourced (workspace-frames) mode ----
+
+function recordingDbSource(
+  selection: { workspaceId: string; toSeqExclusive: number } | null,
+): WorkspaceDbExportSource & { prepared: string[] } {
+  const prepared: string[] = [];
+  return {
+    prepared,
+    async prepare(sessionId) {
+      prepared.push(sessionId);
+      return selection;
+    },
+  };
+}
+
+function unfilteredSnapshot(frames: DataFrame[]) {
+  return createExportFrameSnapshot(frames, {
+    direction: 'all',
+    timePreset: 'all',
+    customStartMs: null,
+    customEndMs: null,
+  });
+}
+
+test('useExport: unfiltered exports flush first, begin with the DB source, and stream nothing', async () => {
+  const dbSource = recordingDbSource({ workspaceId: 'workspace-main', toSeqExclusive: 7 });
+  const order: string[] = [];
+  const appends: number[] = [];
+  const api = useExport({
+    sessionId: 'session-main',
+    dbSource,
+    requestTarget: async () => ({ token: 'grant-db', displayName: 'out.jsonl' }),
+    sessionClient: {
+      begin: async (_format, _grant, expectedFrames, _expectedRawBytes, source) => {
+        order.push('begin');
+        assert.deepEqual(source, {
+          kind: 'workspace-frames',
+          workspaceId: 'workspace-main',
+          sessionId: 'session-main',
+          toSeqExclusive: 7,
+        } satisfies ExportSource);
+        return { exportId: 'db-export', expectedFrames };
+      },
+      append: async (_exportId, frames) => {
+        order.push('append');
+        appends.push(frames.length);
+        return { totalFrames: frames.length, totalRawBytes: 0 };
+      },
+      finish: async () => {
+        order.push('finish');
+        return { frames: 3, rawBytes: 6, outputBytes: 9, durationMs: 1 };
+      },
+      abort: async () => {
+        order.push('abort');
+      },
+    },
+  });
+  const frames = [frame('RX', [1], 1), frame('TX', [2, 3], 2), frame('RX', [4], 3)];
+
+  const result = await api.exportData(unfilteredSnapshot(frames), 'jsonl', 'HEX', {
+    unfiltered: true,
+  });
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(dbSource.prepared, ['session-main']);
+  assert.deepEqual(
+    order,
+    ['begin', 'finish'],
+    'prepare must run before begin; no appends in DB mode',
+  );
+  assert.deepEqual(appends, []);
+  assert.equal(api.progress.value.completedFrames, 3);
+});
+
+test('useExport: filtered exports and unavailable DB sources stay in renderer mode', async () => {
+  const dbSource = recordingDbSource({ workspaceId: 'workspace-main', toSeqExclusive: 7 });
+  const sources: Array<ExportSource | undefined> = [];
+  const client = {
+    begin: async (
+      _format: ExportFormat,
+      _grant: string,
+      expectedFrames: number,
+      expectedRawBytes: number,
+      source?: ExportSource,
+    ) => {
+      sources.push(source);
+      return { exportId: 'renderer-export' };
+    },
+    append: async (_exportId: string, frames: readonly { data: Uint8Array }[]) => ({
+      totalFrames: frames.length,
+      totalRawBytes: frames.reduce((total, item) => total + item.data.length, 0),
+    }),
+    finish: async () => ({ frames: 1, rawBytes: 1, outputBytes: 1, durationMs: 1 }),
+    abort: async () => {},
+  } satisfies ExportSessionClient;
+
+  // A direction filter (or any filter) disqualifies DB mode even when the
+  // durable source is available.
+  const filtered = useExport({
+    sessionId: 'session-main',
+    dbSource,
+    requestTarget: async () => ({ token: 'grant', displayName: 'out.csv' }),
+    sessionClient: client,
+  });
+  const snapshot = createExportFrameSnapshot([frame('RX', [1], 1), frame('TX', [2], 2)], {
+    direction: 'TX',
+    timePreset: 'all',
+    customStartMs: null,
+    customEndMs: null,
+  });
+  await filtered.exportData(snapshot, 'csv', 'HEX', { unfiltered: false });
+  assert.equal(sources.at(-1), undefined);
+  assert.deepEqual(dbSource.prepared, [], 'filtered exports never consult the DB source');
+
+  // An unfiltered export whose source cannot resolve falls back to renderer memory.
+  const unavailable = recordingDbSource(null);
+  const fallback = useExport({
+    sessionId: 'session-main',
+    dbSource: unavailable,
+    requestTarget: async () => ({ token: 'grant', displayName: 'out.csv' }),
+    sessionClient: client,
+  });
+  await fallback.exportData(unfilteredSnapshot([frame('RX', [1], 1)]), 'csv', 'HEX', {
+    unfiltered: true,
+  });
+  assert.deepEqual(unavailable.prepared, ['session-main']);
+  assert.equal(sources.at(-1), undefined);
+
+  // Without the unfiltered flag the default is renderer mode.
+  await filtered.exportData(unfilteredSnapshot([frame('RX', [1], 1)]), 'csv', 'HEX');
+  assert.equal(sources.at(-1), undefined);
+});
+
+test('useExport: DB-mode begin totals divergence is surfaced, never silent', async () => {
+  const dbSource = recordingDbSource({ workspaceId: 'workspace-main', toSeqExclusive: 9 });
+  const api = useExport({
+    sessionId: 'session-main',
+    dbSource,
+    requestTarget: async () => ({ token: 'grant-db', displayName: 'out.jsonl' }),
+    sessionClient: {
+      // The durable source holds 5 frames; the paused-capture preview showed 3.
+      begin: async () => ({ exportId: 'db-export', expectedFrames: 5 }),
+      append: async () => {
+        throw new Error('renderer appends must not run in DB mode');
+      },
+      finish: async () => ({ frames: 5, rawBytes: 10, outputBytes: 20, durationMs: 2 }),
+      abort: async () => {},
+    },
+  });
+
+  const result = await api.exportData(
+    unfilteredSnapshot([frame('RX', [1], 1), frame('RX', [2], 2), frame('RX', [3], 3)]),
+    'jsonl',
+    'HEX',
+    { unfiltered: true },
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    divergence: { persistedFrames: 5, selectionFrames: 3 },
+  });
+  assert.equal(api.progress.value.totalFrames, 5, 'progress re-baselines to the durable total');
+  assert.equal(api.progress.value.completedFrames, 5);
 });

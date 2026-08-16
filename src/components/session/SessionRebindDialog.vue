@@ -30,7 +30,7 @@ import { NModal } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
 import { t } from '../../lib/i18n';
 import { useSerialStore } from '../../stores/serial';
-import { useSessionStore } from '../../stores/sessions';
+import { useSessionCatalog, useSessionRuntimeStatuses } from '../../features/sessions';
 import type { PortConfig } from '../../types';
 
 const props = defineProps<{
@@ -45,15 +45,16 @@ const emit = defineEmits<{
 }>();
 
 const serialStore = useSerialStore();
-const sessionStore = useSessionStore();
+const catalog = useSessionCatalog();
 const selectedPort = ref<string | null>(null);
 const failure = ref<string | null>(null);
+const { isConnected } = useSessionRuntimeStatuses();
 
 const usedPorts = computed(
   () =>
     new Set(
-      sessionStore.sessions
-        .filter((session) => session.id !== props.sessionId && session.isConnected)
+      catalog.sessions.value
+        .filter((session) => session.id !== props.sessionId && isConnected(session.id))
         .map((session) => session.portName),
     ),
 );
@@ -76,11 +77,7 @@ watch(
 
 function completeRebind(): boolean {
   if (!selectedPort.value) return false;
-  const result = sessionStore.completeWorkspaceRebind(
-    props.sessionId,
-    selectedPort.value,
-    props.portConfig,
-  );
+  const result = catalog.completeRebind(props.sessionId, selectedPort.value, props.portConfig);
   if (!result.ok) {
     failure.value =
       result.reason === 'invalid-port' ? t('error.invalid_input') : t('session.rebindRequired');

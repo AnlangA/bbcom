@@ -1,7 +1,7 @@
 import type { QuickCommand, SendHistoryEntry, SerialSession } from '../types';
 import { truncate } from './format';
 
-export type ToolsTabId = 'quick' | 'macros' | 'triggers' | 'highlights' | 'history';
+export type ToolsTabId = 'quick' | 'macros' | 'triggers' | 'highlights' | 'history' | 'checksum';
 
 export interface ToolsTabCounts {
   quick: number;
@@ -9,6 +9,7 @@ export interface ToolsTabCounts {
   triggers: number;
   highlights: number;
   history: number;
+  checksum: number;
 }
 
 export interface QuickCommandPayload {
@@ -28,6 +29,7 @@ export function activeToolCounts(
     triggers: session?.triggers.filter((trigger) => trigger.enabled).length ?? 0,
     highlights: session?.highlights.filter((highlight) => highlight.enabled).length ?? 0,
     history: history.length,
+    checksum: 0,
   };
 }
 

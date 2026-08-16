@@ -310,12 +310,12 @@ function onKeydown(event: KeyboardEvent): void {
 
 .legacy-reset-safety {
   padding: 10px 12px;
-  border-left: 3px solid var(--accent-color);
+  border-left: 3px solid var(--color-primary);
   background: var(--bg-tertiary);
 }
 
 .legacy-reset-error {
-  color: var(--danger-color, #ef4444);
+  color: var(--color-error);
 }
 
 .legacy-reset-message {
@@ -355,24 +355,24 @@ button {
 }
 
 button:focus-visible {
-  outline: 2px solid var(--accent-color);
+  outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
 
 button.primary {
-  border-color: var(--accent-color);
+  border-color: var(--color-primary);
   color: white;
-  background: var(--accent-color);
+  background: var(--color-primary);
 }
 
 button.danger,
 button.danger-secondary {
-  border-color: var(--danger-color, #ef4444);
+  border-color: var(--color-error);
 }
 
 button.danger {
   color: white;
-  background: var(--danger-color, #ef4444);
+  background: var(--color-error);
 }
 
 button.cancel {

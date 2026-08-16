@@ -1,10 +1,8 @@
-use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bbcom_plugin_contracts::{AuthorizationKey, Permission};
-
 use crate::{
-    HostHandle, HostLaunchRequest, ManualPackageRequest, PluginArtifact, PreparedInstallation,
+    HostHandle, HostLaunchRequest, HostPanel, ManualPackageRequest, PluginArtifact,
+    PreparedInstallation,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +43,23 @@ pub trait InstallationPort {
         &mut self,
         prepared: &PreparedInstallation,
     ) -> std::result::Result<(), InstallationFailure>;
+
+    /// Development-mode local install: stages a package from a user-selected
+    /// local directory. The native implementation enforces the manifest's
+    /// component digest but no repository or publisher-signature boundary.
+    fn prepare_local(
+        &mut self,
+        package_root: &std::path::Path,
+        current: Option<&PluginArtifact>,
+    ) -> std::result::Result<PreparedInstallation, InstallationFailure>;
+
+    /// Removes one plugin's durable installation (packages, history, and
+    /// staged private data). Stopping hosts and clearing grants or persisted
+    /// state stays the caller's responsibility.
+    fn remove_installed(
+        &mut self,
+        artifact: &PluginArtifact,
+    ) -> std::result::Result<(), InstallationFailure>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,46 +90,25 @@ pub trait HostLauncher {
 
     fn shutdown(&mut self, handle: &HostHandle) -> std::result::Result<(), HostFailure>;
 
+    fn take_published_panel(
+        &mut self,
+        _handle: &HostHandle,
+    ) -> std::result::Result<Option<HostPanel>, HostFailure> {
+        Ok(None)
+    }
+
+    fn invoke_panel_event(
+        &mut self,
+        _handle: &HostHandle,
+        _field_id: &str,
+        _value: &str,
+    ) -> std::result::Result<Option<HostPanel>, HostFailure> {
+        Err(HostFailure::Transport)
+    }
+
     /// Forcefully terminates an instance after graceful shutdown or protocol
     /// handling failed. This operation must be idempotent.
     fn terminate(&mut self, handle: &HostHandle);
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PluginAuthorizationGrant {
-    pub key: AuthorizationKey,
-    pub artifact_version: String,
-    pub reviewed_permissions: BTreeSet<Permission>,
-    pub revision: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AuthorizationFailure;
-
-/// Trusted profile-scoped authorization receipt store.
-///
-/// A receipt is written only by the G43 approval flow. `reviewed_permissions`
-/// includes acknowledged per-request-only capabilities, while their actual use
-/// remains subject to the broker's per-request confirmation.
-pub trait PluginAuthorizationStore {
-    fn current_grant(
-        &self,
-        key: &AuthorizationKey,
-        artifact_version: &str,
-    ) -> std::result::Result<Option<PluginAuthorizationGrant>, AuthorizationFailure>;
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RevocationFailure;
-
-/// Upstream-verified artifact revocation source.
-///
-/// G40 has no revocation primitive, so this explicit boundary is mandatory.
-/// A revoked artifact can never be committed, enabled, preflighted, or selected
-/// as a rollback target by this manager.
-pub trait ArtifactRevocationStore {
-    fn is_revoked(&self, artifact: &PluginArtifact)
-    -> std::result::Result<bool, RevocationFailure>;
 }
 
 pub trait Clock {

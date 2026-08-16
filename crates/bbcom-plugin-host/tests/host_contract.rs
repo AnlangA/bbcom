@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::fs;
 use std::io::{Cursor, Read, Write};
-use std::str::FromStr;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -14,7 +13,7 @@ use bbcom_plugin_contracts::generated::{
 };
 use bbcom_plugin_contracts::{
     HOST_PROCESS_MEMORY_LIMIT_BYTES, MAX_FRAME_BYTES, MAX_QUEUE_BYTES, PLUGIN_STATE_SCHEMA_VERSION,
-    PROTOCOL_MAJOR, PROTOCOL_MINOR, Permission, WIT_PACKAGE, encode_frame,
+    PROTOCOL_MAJOR, PROTOCOL_MINOR, Permission, WIT_PACKAGE, encode_frame, parse_permission,
 };
 use bbcom_plugin_host::transport::{BoundedFrameQueue, FrameReader, FrameWriter};
 use bbcom_plugin_host::{
@@ -170,6 +169,16 @@ impl PluginExecutor for MockExecutor {
         Ok(())
     }
 
+    fn handle_panel_event(
+        &mut self,
+        _event: bbcom_plugin_host::bindings::PanelEvent,
+    ) -> bbcom_plugin_host::error::Result<()> {
+        Ok(())
+    }
+
+    fn take_published_panel(&mut self) -> Option<bbcom_plugin_host::bindings::DeclarativePanel> {
+        None
+    }
     fn persisted_state(&self) -> (Vec<u8>, Option<Vec<u8>>) {
         (bbcom_plugin_contracts::empty_plugin_storage_payload(), None)
     }
@@ -397,6 +406,17 @@ struct BlockingExecutor {
 }
 
 impl PluginExecutor for BlockingExecutor {
+    fn handle_panel_event(
+        &mut self,
+        _event: bbcom_plugin_host::bindings::PanelEvent,
+    ) -> bbcom_plugin_host::error::Result<()> {
+        Ok(())
+    }
+
+    fn take_published_panel(&mut self) -> Option<bbcom_plugin_host::bindings::DeclarativePanel> {
+        None
+    }
+
     fn initialize_with_kind(&mut self, _kind: CallKind) -> bbcom_plugin_host::error::Result<()> {
         let (lock, condition) = &*self.state;
         let mut state = lock.lock().expect("blocking state");
@@ -699,10 +719,10 @@ fn process_limit_policy_requires_all_platform_controls() {
 #[test]
 fn permission_names_used_by_launch_and_handshake_are_strict() {
     assert_eq!(
-        Permission::from_str("serial.write-proposal").expect("permission"),
+        parse_permission("serial.write-proposal").expect("permission"),
         Permission::SerialWriteProposal
     );
-    assert!(Permission::from_str("network.http").is_err());
+    assert!(parse_permission("network.http").is_err());
     let permissions: BTreeSet<_> = [Permission::UiPanel, Permission::PluginStorage]
         .into_iter()
         .collect();

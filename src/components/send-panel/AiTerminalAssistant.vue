@@ -45,7 +45,6 @@
         :value="activeSession.terminalAiModel"
         :aria-label="t('ai.terminal.model')"
         :options="aiModelOptions"
-        :menu-props="aiModelMenuProps"
         @update:value="setTerminalModel"
       />
     </div>
@@ -83,7 +82,7 @@ import AppSelect from '../ui/AppSelect.vue';
 import { Copy, SendHorizontal, Terminal, WandSparkles } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
 import { getAiErrorMessage } from '../../lib/ai-error';
-import type { TerminalAiResponse } from '../../lib/ipc';
+import type { TerminalAiResponse } from '../../features/native';
 import { logger } from '../../lib/logger';
 import { t } from '../../lib/i18n';
 import type { AiModel, AiWindowSession } from '../../types';
@@ -91,7 +90,7 @@ import type {
   AiWindowRequestBinding,
   useAiWindowSession,
 } from '../../composables/useAiWindowSession';
-import { aiModelMenuProps, aiModelOptions, aiRiskLabel, aiRiskTagType } from '../ai/ai-options';
+import { aiModelOptions, aiRiskLabel, aiRiskTagType } from '../ai/ai-options';
 
 const props = defineProps<{
   session: AiWindowSession;
@@ -255,7 +254,7 @@ function setTerminalModel(model: AiModel) {
   align-items: center;
   gap: 6px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   font-weight: 700;
   white-space: nowrap;
 }
@@ -301,7 +300,7 @@ function setTerminalModel(model: AiModel) {
 
 .explanation {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 80px;
@@ -323,10 +322,5 @@ function setTerminalModel(model: AiModel) {
 .risk-caution {
   border-color: var(--accent-amber-border);
   background: var(--accent-amber-subtle);
-}
-
-:global(.ai-model-menu) {
-  max-height: 200px !important;
-  overflow-y: auto !important;
 }
 </style>

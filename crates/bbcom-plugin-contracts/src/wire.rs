@@ -64,6 +64,11 @@ pub fn validate_envelope(envelope: &Envelope) -> Result<()> {
             found: envelope.protocol_major,
         });
     }
+    if envelope.protocol_minor != crate::PROTOCOL_MINOR {
+        return Err(ContractError::InvalidField {
+            field: "protocolMinor",
+        });
+    }
     if envelope.request_id == 0 {
         return Err(ContractError::InvalidField { field: "requestId" });
     }

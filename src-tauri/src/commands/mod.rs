@@ -8,6 +8,7 @@ pub mod log;
 pub mod plugin;
 pub mod serial_drain;
 pub mod shutdown;
+pub(crate) mod streaming_sessions;
 pub mod window;
 pub mod workspace;
 

@@ -5,9 +5,11 @@
 //! path in memory and returns an opaque token. Export grants are one-shot;
 //! auto-log grants are reusable until revoked or expired.
 
+use crate::commands::streaming_sessions::{limit_error, validation_error};
 use crate::export::ExportFormat;
 use crate::models::errors::AppError;
 use crate::models::ipc_error::{IpcError, from_app_error};
+use crate::utils::window::require_main_window_label;
 pub use bbcom_contracts::{
     RequestSaveTargetRequest, RevokeFileGrantRequest, SaveTargetGrantResponse, SaveTargetPurpose,
 };
@@ -20,7 +22,6 @@ use tauri::{State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 
-const MAIN_WINDOW_LABEL: &str = "main";
 const MAX_ACTIVE_GRANTS: usize = 32;
 const MAX_SUGGESTED_NAME_BYTES: usize = 128;
 const EXPORT_GRANT_TTL: Duration = Duration::from_secs(10 * 60);
@@ -178,19 +179,36 @@ pub async fn request_save_target(
     request: RequestSaveTargetRequest,
 ) -> Result<Option<SaveTargetGrantResponse>, IpcError> {
     const OPERATION: &str = "request_save_target";
-    ensure_main_window(window.label()).map_err(|error| from_app_error(&error, OPERATION))?;
+    require_main_window_label(window.label(), OPERATION)?;
     validate_suggested_name(&request.suggested_name, request.purpose)
         .map_err(|error| from_app_error(&error, OPERATION))?;
 
-    let selected = window
-        .dialog()
-        .file()
-        .add_filter(
-            request.purpose.filter_name(),
-            &[request.purpose.extension()],
+    // The native save dialog parks the calling thread until the user picks a
+    // destination, so it must stay off the async executor.
+    let selected = tauri::async_runtime::spawn_blocking({
+        let window = window.clone();
+        let filter_name = request.purpose.filter_name();
+        let extension = request.purpose.extension();
+        let suggested_name = request.suggested_name.clone();
+        move || {
+            window
+                .dialog()
+                .file()
+                .add_filter(filter_name, &[extension])
+                .set_file_name(&suggested_name)
+                .blocking_save_file()
+        }
+    })
+    .await
+    .map_err(|_| {
+        from_app_error(
+            &AppError::IoError {
+                message: "save dialog task failed".to_string(),
+                kind: std::io::ErrorKind::Other,
+            },
+            OPERATION,
         )
-        .set_file_name(&request.suggested_name)
-        .blocking_save_file();
+    })?;
     let Some(selected) = selected else {
         return Ok(None);
     };
@@ -215,7 +233,7 @@ async fn revoke_file_grant_from_label(
     request: RevokeFileGrantRequest,
 ) -> Result<(), IpcError> {
     const OPERATION: &str = "revoke_file_grant";
-    ensure_main_window(label).map_err(|error| from_app_error(&error, OPERATION))?;
+    require_main_window_label(label, OPERATION)?;
     manager
         .revoke(&request.token)
         .await
@@ -383,35 +401,10 @@ fn validate_token(token: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-pub(crate) fn ensure_main_window(label: &str) -> Result<(), AppError> {
-    if label != MAIN_WINDOW_LABEL {
-        return Err(validation_error(
-            "window",
-            "this window is not allowed to request file access",
-        ));
-    }
-    Ok(())
-}
-
-fn validation_error(field: &str, message: impl Into<String>) -> AppError {
-    AppError::ValidationError {
-        message: message.into(),
-        field: field.to_string(),
-    }
-}
-
-fn limit_error(field: &str, limit: usize, actual: usize) -> AppError {
-    AppError::LimitError {
-        message: format!("{field} exceeds its limit"),
-        field: field.to_string(),
-        limit,
-        actual,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::window::MAIN_WINDOW_LABEL;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TARGET_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -611,8 +604,8 @@ mod tests {
                 ..
             })
         ));
-        assert!(ensure_main_window(MAIN_WINDOW_LABEL).is_ok());
-        assert!(ensure_main_window("ai-assistant").is_err());
+        assert!(require_main_window_label(MAIN_WINDOW_LABEL, "request_save_target").is_ok());
+        assert!(require_main_window_label("ai-assistant", "request_save_target").is_err());
     }
 
     #[test]

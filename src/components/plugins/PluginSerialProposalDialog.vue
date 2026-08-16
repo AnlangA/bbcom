@@ -1,8 +1,9 @@
 <template>
-  <AccessiblePluginDialog
+  <AppModal
+    :show="true"
     :title="t('plugins.serial.title')"
-    :close-label="t('common.cancel')"
-    :close-disabled="busy"
+    :busy="busy"
+    danger
     @close="emit('resolve', 'reject')"
   >
     <p>{{ t('plugins.serial.requested_by', { name: proposal.pluginName }) }}</p>
@@ -25,21 +26,21 @@
       <code>{{ proposal.hexPreview }}</code>
     </div>
     <p class="plugin-proposal__warning" role="alert">{{ t('plugins.serial.one_time_warning') }}</p>
-    <div class="plugin-proposal__actions">
+    <template #footer>
       <button type="button" :disabled="busy" @click="emit('resolve', 'reject')">
         {{ t('plugins.serial.reject') }}
       </button>
       <button type="button" class="danger" :disabled="busy" @click="emit('resolve', 'approve')">
         {{ t('plugins.serial.approve_once') }}
       </button>
-    </div>
-  </AccessiblePluginDialog>
+    </template>
+  </AppModal>
 </template>
 
 <script setup lang="ts">
 import { t } from '../../lib/i18n';
 import type { PluginSerialProposal } from '../../features/plugins';
-import AccessiblePluginDialog from './AccessiblePluginDialog.vue';
+import AppModal from '../ui/AppModal.vue';
 
 defineProps<{
   proposal: PluginSerialProposal;
@@ -76,23 +77,17 @@ const emit = defineEmits<{
   overflow-wrap: anywhere;
   border-radius: 0.35rem;
   padding: 0.65rem;
-  background: var(--input-bg, #0f172a);
+  background: var(--bg-inset);
 }
 
 .plugin-proposal__warning {
-  border-left: 3px solid var(--warning-color, #f59e0b);
+  border-left: 3px solid var(--color-warning);
   padding-left: 0.65rem;
-}
-
-.plugin-proposal__actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.6rem;
 }
 
 button {
   min-height: 2.25rem;
-  border: 1px solid var(--border-color, #475569);
+  border: 1px solid var(--border-color);
   border-radius: 0.35rem;
   padding: 0.35rem 0.85rem;
   background: transparent;
@@ -100,13 +95,13 @@ button {
 }
 
 button.danger {
-  border-color: var(--error-color, #ef4444);
-  background: var(--error-color, #b91c1c);
+  border-color: var(--color-error);
+  background: var(--color-error);
   color: white;
 }
 
 button:focus-visible {
-  outline: 3px solid var(--primary-color, #60a5fa);
+  outline: 3px solid var(--color-primary);
   outline-offset: 2px;
 }
 </style>

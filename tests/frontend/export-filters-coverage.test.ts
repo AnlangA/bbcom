@@ -11,11 +11,7 @@ import {
   resolveExportFilter,
   type ExportFilterSelection,
 } from '../../src/lib/export-filters.ts';
-import type { DataFrame } from '../../src/types.ts';
-
-function frame(id: string, direction: 'RX' | 'TX', timestamp: number, bytes: number[]): DataFrame {
-  return { id, direction, timestamp, data: new Uint8Array(bytes) };
-}
+import { frame } from './helpers/frames.ts';
 
 const all: ExportFilterSelection = {
   direction: 'all',

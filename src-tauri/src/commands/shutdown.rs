@@ -1,13 +1,13 @@
 use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
 
+use crate::utils::window::require_main_window_label;
 use bbcom_contracts::{
     AppErrorCode, IpcError, ShutdownCancellation, ShutdownConfirmation, ShutdownDecisionState,
     ShutdownDrainResult, ShutdownState,
 };
 use tauri::{AppHandle, State, WebviewWindow};
 
-const MAIN_WINDOW_LABEL: &str = "main";
 const SUBMIT_OPERATION: &str = "submit_shutdown_report";
 const CONFIRM_OPERATION: &str = "confirm_exit";
 const CANCEL_OPERATION: &str = "cancel_exit";
@@ -127,7 +127,7 @@ pub fn submit_shutdown_report(
     state: State<'_, ShutdownGate>,
     result: ShutdownDrainResult,
 ) -> Result<(), IpcError> {
-    require_main_window(&window, SUBMIT_OPERATION)?;
+    require_main_window_label(window.label(), SUBMIT_OPERATION)?;
     state.submit(result)
 }
 
@@ -137,29 +137,24 @@ pub fn cancel_exit(
     state: State<'_, ShutdownGate>,
     cancellation: ShutdownCancellation,
 ) -> Result<(), IpcError> {
-    require_main_window(&window, CANCEL_OPERATION)?;
+    require_main_window_label(window.label(), CANCEL_OPERATION)?;
     state.cancel(&cancellation)
 }
 
 #[tauri::command]
 pub fn confirm_exit(
-    window: WebviewWindow,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, ShutdownGate>,
     confirmation: ShutdownConfirmation,
 ) -> Result<(), IpcError> {
-    require_main_window(&window, CONFIRM_OPERATION)?;
+    require_main_window_label(window.label(), CONFIRM_OPERATION)?;
     state.confirm(&confirmation)?;
+    // The gate has completed: force-stop every plugin host before exit. A
+    // never-composed plugin runtime makes this a no-op.
+    crate::plugins::close_plugin_project(&app);
     app.exit(0);
     Ok(())
-}
-
-fn require_main_window(window: &WebviewWindow, operation: &'static str) -> Result<(), IpcError> {
-    if window.label() == MAIN_WINDOW_LABEL {
-        Ok(())
-    } else {
-        Err(IpcError::security_denied(operation))
-    }
 }
 
 fn validate_active_attempt(

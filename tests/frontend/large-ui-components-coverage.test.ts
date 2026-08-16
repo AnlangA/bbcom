@@ -21,9 +21,56 @@ const uiMocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../../src/stores/sessions', () => ({
-  useSessionStore: () => uiMocks.sessionStore,
+vi.mock('../../src/stores/session-core', () => ({
+  useSessionCoreStore: () => uiMocks.sessionStore,
 }));
+
+vi.mock('../../src/features/sessions', async () => {
+  const { computed } = await import('vue');
+  const store = () => uiMocks.sessionStore as ReturnType<typeof sessionStore>;
+  return {
+    useSessionCatalog: () => ({
+      sessions: computed(() => store().sessions),
+      activeSessionId: computed(() => store().activeSessionId),
+      activeSession: computed(
+        () =>
+          store().sessions.find(
+            (session: SerialSession) => session.id === store().activeSessionId,
+          ) ?? null,
+      ),
+      workspaceRebindBySessionId: computed(() => store().workspaceRebindBySessionId),
+      framesVersion: (sessionId: string) => store().getSessionFramesVersion(sessionId),
+      activate: (sessionId: string) => store().setActiveSession(sessionId),
+    }),
+    useSessionCapture: (sessionId: string) => ({
+      session: computed(
+        () => store().sessions.find((session: SerialSession) => session.id === sessionId) ?? null,
+      ),
+      framesVersion: computed(() => store().getSessionFramesVersion(sessionId)),
+      setPaused: (paused: boolean) => store().setCapturePaused(sessionId, paused),
+    }),
+    useSessionDocument: (sessionId: string) => ({
+      session: computed(
+        () => store().sessions.find((session: SerialSession) => session.id === sessionId) ?? null,
+      ),
+      ...store(),
+    }),
+    useSessionMutationPolicy: () => ({
+      userMutationsAllowed: computed(() => store().userMutationsAllowed),
+      runtimeCaptureAllowed: computed(() => store().runtimeCaptureAllowed),
+      persistenceReadOnly: computed(() => false),
+    }),
+    useSessionWaveform: (sessionId: string) => ({
+      state: computed(() => store().workspaceWaveformBySessionId[sessionId] ?? null),
+      appendSamples: store().appendSessionWaveformSamples,
+      replaceSamples: store().replaceSessionWaveformSamples,
+      setChannelVisible: store().setSessionWaveformChannelVisible,
+      setFrameCursor: store().setSessionWaveformFrameCursor,
+      commitFrameIngest: store().commitSessionWaveformFrameIngest,
+      reset: store().resetSessionWaveform,
+    }),
+  };
+});
 
 vi.mock('../../src/stores/app', () => ({
   useAppStore: () => uiMocks.appStore,

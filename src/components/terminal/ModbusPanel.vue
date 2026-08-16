@@ -96,7 +96,7 @@
 import { computed, onUnmounted, ref, shallowReactive } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useMessage } from 'naive-ui';
-import { useSessionStore } from '../../stores/sessions';
+import { useSessionDocument } from '../../features/sessions';
 import {
   encodeStream,
   parseStream,
@@ -156,7 +156,7 @@ const emit = defineEmits<{
   (e: 'plotInWaveform', reg: ModbusRegister): void;
 }>();
 
-const sessionStore = useSessionStore();
+const sessionDocument = useSessionDocument(props.sessionId);
 const message = useMessage();
 const fileInput = ref<HTMLInputElement | null>(null);
 const registerListRef = ref<HTMLDivElement | null>(null);
@@ -246,7 +246,7 @@ const channelOptions = computed(() => [
 const hasWriteRegs = computed(() => props.registers.some((r) => isModbusWriteFc(r.functionCode)));
 
 function patch(p: Partial<ModbusMasterConfig>) {
-  sessionStore.setModbusConfig(props.sessionId, p);
+  sessionDocument.setModbusConfig(props.sessionId, p);
 }
 
 /** Handler for ModbusAddRegisterForm's @add event. New rows default to periodic
@@ -264,7 +264,7 @@ interface AddRegisterDraft {
 function addRegisterFromDraft(d: AddRegisterDraft) {
   const fc = d.functionCode;
   const quantity = normalizeModbusDataQuantity(d.quantity, fc, d.type);
-  sessionStore.addModbusRegister(props.sessionId, {
+  sessionDocument.addModbusRegister(props.sessionId, {
     name: d.name.trim(),
     slaveAddress: d.slaveAddress,
     functionCode: d.functionCode,
@@ -298,7 +298,7 @@ async function handleSendRow(reg: ModbusRegister) {
 
 function remove(regId: string) {
   delete valueDrafts[regId];
-  sessionStore.removeModbusRegister(props.sessionId, regId);
+  sessionDocument.removeModbusRegister(props.sessionId, regId);
 }
 
 // --- .bbreg load / save ---
@@ -361,7 +361,7 @@ function onFilePicked(e: Event) {
         ...props.registers,
         ...defs.map((d) => ({ ...d, id: crypto.randomUUID() })),
       ];
-      sessionStore.setModbusRegisters(props.sessionId, merged);
+      sessionDocument.setModbusRegisters(props.sessionId, merged);
       message.success(t('waveform.exportedStream', { count: defs.length }));
     }
   };
@@ -388,7 +388,7 @@ function onFilePicked(e: Event) {
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: var(--font-size-sm);
 }
 
 .mb-colhead {
@@ -399,7 +399,7 @@ function onFilePicked(e: Event) {
   background: var(--bg-tertiary);
   color: var(--text-dim);
   text-transform: uppercase;
-  font-size: 9px;
+  font-size: var(--font-size-sm);
   letter-spacing: 0.5px;
   font-weight: 600;
   flex-shrink: 0;
@@ -425,7 +425,7 @@ function onFilePicked(e: Event) {
 
 .mb-empty {
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   padding: 24px 12px;
   text-align: center;
 }

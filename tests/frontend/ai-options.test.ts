@@ -5,10 +5,11 @@ import {
   aiRiskTagType,
   getLogContextModeOptions,
 } from '../../src/components/ai/ai-options.ts';
-import { setLocale } from '../../src/lib/i18n.ts';
+import { ensureLocaleLoaded, setLocale } from '../../src/lib/i18n.ts';
 
-test('AI risk labels are localized', () => {
+test('AI risk labels are localized', async () => {
   setLocale('en');
+  await ensureLocaleLoaded('en');
   assert.equal(aiRiskLabel('safe'), 'Safe');
   assert.equal(aiRiskLabel('caution'), 'Caution');
   assert.equal(aiRiskLabel('dangerous'), 'Dangerous');
@@ -19,8 +20,9 @@ test('AI risk labels are localized', () => {
   assert.equal(aiRiskLabel('dangerous'), '危险');
 });
 
-test('log context mode options are localized', () => {
+test('log context mode options are localized', async () => {
   setLocale('en');
+  await ensureLocaleLoaded('en');
   assert.deepEqual(
     getLogContextModeOptions().map((item) => item.label),
     ['Latest 10k chars', 'Latest N frames', 'Full log (50k cap)'],

@@ -27,6 +27,26 @@ fn create(temp: &TempDir) -> (std::path::PathBuf, WorkspaceService) {
     (path, service)
 }
 
+#[test]
+fn native_plugin_binding_intent_round_trips_without_document_revision_change() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_path, mut service) = create(&temp);
+    let before = service.header().unwrap().revision;
+    service
+        .set_plugin_expected_enabled("dev.bbcom.fixture", true)
+        .unwrap();
+    let bindings = service.plugin_bindings().unwrap();
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0].plugin_id, "dev.bbcom.fixture");
+    assert!(bindings[0].expected_enabled);
+    assert_eq!(service.header().unwrap().revision, before);
+
+    service
+        .set_plugin_expected_enabled("dev.bbcom.fixture", false)
+        .unwrap();
+    assert!(!service.plugin_bindings().unwrap()[0].expected_enabled);
+}
+
 fn mutation(
     sequence: u32,
     kind: WorkspaceMutationKind,
@@ -1708,9 +1728,13 @@ fn service_boundaries_and_idempotency_retention_fail_closed() {
     drop(service);
 
     let connection = Connection::open(&path).unwrap();
+    // Position the workspace one revision below a 64-boundary so the next
+    // commit triggers the ledger prune, then seed more ledger rows than the
+    // retained window. `expired` is inserted first and therefore owns the
+    // oldest rowid in the table.
     connection
         .execute(
-            "UPDATE workspace_meta SET revision = 4096 WHERE singleton = 1",
+            "UPDATE workspace_meta SET revision = 4159 WHERE singleton = 1",
             [],
         )
         .unwrap();
@@ -1723,13 +1747,28 @@ fn service_boundaries_and_idempotency_retention_fail_closed() {
             [],
         )
         .unwrap();
+    {
+        let mut filler = connection
+            .prepare(
+                "INSERT INTO committed_batches (
+                   client_batch_id, request_hash, base_revision, committed_revision,
+                   mutation_count, committed_at_ms
+                 ) VALUES (?1, zeroblob(32), ?2, ?2, 1, ?2)",
+            )
+            .unwrap();
+        for n in 2..=1025_i64 {
+            filler
+                .execute(rusqlite::params![format!("ledger-{n}"), n])
+                .unwrap();
+        }
+    }
     drop(connection);
 
     let mut service = WorkspaceService::open(&path).unwrap();
     service
         .apply_batch(batch(
             "retention",
-            4096,
+            4159,
             vec![mutation(
                 0,
                 WorkspaceMutationKind::SetMetadata,
@@ -1738,7 +1777,7 @@ fn service_boundaries_and_idempotency_retention_fail_closed() {
             )],
         ))
         .unwrap();
-    assert_eq!(service.summary().unwrap().revision, 4097);
+    assert_eq!(service.summary().unwrap().revision, 4160);
     drop(service);
     let connection = Connection::open(&path).unwrap();
     let expired_exists: bool = connection
@@ -1749,12 +1788,18 @@ fn service_boundaries_and_idempotency_retention_fail_closed() {
         )
         .unwrap();
     assert!(!expired_exists);
+    let retained_rows: i64 = connection
+        .query_row("SELECT count(*) FROM committed_batches", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(retained_rows, 1024);
     drop(connection);
 
     let mut read_only = WorkspaceService::open_read_only(&path).unwrap();
     assert!(read_only.is_read_only());
     assert_eq!(
-        read_only.flush(4097).unwrap().1,
+        read_only.flush(4160).unwrap().1,
         bbcom_contracts::WorkspaceSaveHealth::ReadOnly
     );
 }

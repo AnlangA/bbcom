@@ -19,7 +19,7 @@ import type {
 } from '../types';
 import { MAX_HISTORY } from '../types';
 import type { ParserConfig } from './protocol-parser';
-import { parseHex, toContinuousHex } from './format';
+import { parseHex } from './format';
 import { nowMillis } from './time';
 import { DEFAULT_RX_FRAME_GAP_MS, normalizeRxFrameGapMs } from './serial-framing';
 import {
@@ -31,7 +31,6 @@ import {
 } from './modbus';
 
 export const SESSION_STORAGE_KEY = 'bbcom-session-snapshots';
-export const SESSION_STORAGE_FUTURE_BACKUP_KEY = `${SESSION_STORAGE_KEY}-future-backup`;
 export const SESSION_STORAGE_VERSION = 2;
 /** Number of most-recently-used sessions whose capture tails are retained. */
 export const MAX_PERSISTED_SESSIONS = 8;
@@ -669,27 +668,5 @@ export function serializeSessionSnapshots(
         logAiFrameLimit: session.logAiFrameLimit,
       };
     }),
-  };
-}
-
-/**
- * Compatibility encoder used only when Worker/IndexedDB is unavailable. v2
- * IndexedDB stores structured-cloned Uint8Array payloads; the legacy fallback
- * remains JSON-safe so older/browser-test environments can still recover it.
- */
-export function sessionSnapshotsForLocalStorage(file: PersistedSessionsFile): unknown {
-  return {
-    ...file,
-    sessions: file.sessions.map((session) => ({
-      ...session,
-      frames: session.frames.map((frame) => ({
-        id: frame.id,
-        direction: frame.direction,
-        timestamp: frame.timestamp,
-        dataHex: toContinuousHex(frame.data),
-        ...(frame.txStatus ? { txStatus: frame.txStatus } : {}),
-        ...(frame.requestedBytes !== undefined ? { requestedBytes: frame.requestedBytes } : {}),
-      })),
-    })),
   };
 }

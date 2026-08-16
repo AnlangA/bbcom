@@ -34,3 +34,9 @@ tests/frontend/.perf-baseline.json
 
 # Coverage reports (machine-local)
 coverage/
+
+# Local agent session artifacts (plans, transcripts)
+.zcode/
+
+# Plugin guest workspaces (standalone, built per-plugin)
+plugins/*/target

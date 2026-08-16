@@ -38,6 +38,18 @@ export type SessionWaveformChangeEvent =
 
 export type SessionWaveformStateBySessionId = Readonly<Record<string, SessionWaveformState>>;
 
+/**
+ * Incremental view of one session's durable sample list for the O(1)
+ * group-retention check: the total sample count plus the sample count per
+ * group (`seq`). `retainLatestWaveformGroups` trims exactly when the distinct
+ * group count exceeds `SESSION_WAVEFORM_MAX_GROUPS`, so
+ * `samplesByGroup.size` decides that question without walking the list.
+ */
+interface WaveformRetentionCounters {
+  totalSamples: number;
+  samplesByGroup: Map<number, number>;
+}
+
 interface SessionWaveformControllerDependencies {
   readonly hasSession: (sessionId: string) => boolean;
   readonly canMutateUserState: () => boolean;
@@ -94,9 +106,90 @@ export function createSessionWaveformController(
 ): SessionWaveformController {
   let stateBySessionId: SessionWaveformStateBySessionId = Object.freeze({});
 
+  /**
+   * Largest assigned sample sequence per session, maintained incrementally on
+   * the hot append path so `buildWaveformAppend` never reduces over the whole
+   * bounded sample list. Kept in lockstep with `stateBySessionId` and rebuilt
+   * wholesale by every wholesale state replacement; `trackedMaxSequence`
+   * validates the pairing before trusting it.
+   */
+  let lastSequenceBySessionId = new Map<string, number>();
+
+  /**
+   * Group-retention counters per session, maintained incrementally on the hot
+   * append path (O(appended) per tick) so a no-overflow append can skip the
+   * O(total) Set+sort inside `retainLatestWaveformGroups`. Kept in lockstep
+   * with `stateBySessionId` exactly like `lastSequenceBySessionId`: rebuilt
+   * wholesale by every full-state replacement and validated by the same
+   * identity guard before being trusted (`trackedRetention`).
+   */
+  let retentionBySessionId = new Map<string, WaveformRetentionCounters>();
+
   function commitState(next: SessionWaveformStateBySessionId): void {
     stateBySessionId = Object.freeze({ ...next });
     dependencies.onStateChanged(stateBySessionId);
+  }
+
+  function trackedMaxSequence(sessionId: string, current: SessionWaveformState): number {
+    const tracked = lastSequenceBySessionId.get(sessionId);
+    if (tracked !== undefined && stateBySessionId[sessionId] === current) return tracked;
+    return sampleListMaxSequence(current.samples, -1);
+  }
+
+  function replaceLastSequenceIndex(state: SessionWaveformStateBySessionId): void {
+    const next = new Map<string, number>();
+    for (const [sessionId, waveform] of Object.entries(state)) {
+      next.set(sessionId, sampleListMaxSequence(waveform.samples, -1));
+    }
+    lastSequenceBySessionId = next;
+  }
+
+  function trackedRetention(
+    sessionId: string,
+    current: SessionWaveformState,
+  ): WaveformRetentionCounters {
+    const tracked = retentionBySessionId.get(sessionId);
+    if (tracked !== undefined && stateBySessionId[sessionId] === current) return tracked;
+    return countWaveformSamples(current.samples);
+  }
+
+  function replaceRetentionCounters(state: SessionWaveformStateBySessionId): void {
+    const next = new Map<string, WaveformRetentionCounters>();
+    for (const [sessionId, waveform] of Object.entries(state)) {
+      next.set(sessionId, countWaveformSamples(waveform.samples));
+    }
+    retentionBySessionId = next;
+  }
+
+  /**
+   * Merge one append tail under the group-retention bound. While the tracked
+   * counters show at most `SESSION_WAVEFORM_MAX_GROUPS` distinct groups, the
+   * merged list provably survives `retainLatestWaveformGroups` unchanged, so
+   * the O(total) Set+sort trim is skipped for `current.samples.concat(tail)`.
+   * Once the bound is exceeded the existing full trim runs once and the
+   * counters are rebuilt from its result, keeping the next append exact.
+   */
+  function appendSamplesWithRetention(
+    sessionId: string,
+    current: SessionWaveformState,
+    appended: readonly SessionWaveformSample[],
+  ): Readonly<{ samples: readonly SessionWaveformSample[]; overflowed: boolean }> {
+    const counters = trackedRetention(sessionId, current);
+    counters.totalSamples += appended.length;
+    for (const sample of appended) {
+      counters.samplesByGroup.set(sample.seq, (counters.samplesByGroup.get(sample.seq) ?? 0) + 1);
+    }
+    if (counters.samplesByGroup.size <= SESSION_WAVEFORM_MAX_GROUPS) {
+      retentionBySessionId.set(sessionId, counters);
+      return { samples: current.samples.concat(appended), overflowed: false };
+    }
+    const unboundedSamples = [...current.samples, ...appended];
+    const nextSamples = retainLatestWaveformGroups(unboundedSamples);
+    retentionBySessionId.set(sessionId, countWaveformSamples(nextSamples));
+    return {
+      samples: nextSamples,
+      overflowed: nextSamples.length !== unboundedSamples.length,
+    };
   }
 
   function updateSession(sessionId: string, state: SessionWaveformState): void {
@@ -113,7 +206,17 @@ export function createSessionWaveformController(
     );
   }
 
+  function replacePrepared(state: SessionWaveformStateBySessionId): void {
+    replaceLastSequenceIndex(state);
+    replaceRetentionCounters(state);
+    commitState(state);
+  }
+
   function replaceWithEmptySessions(sessionIds: readonly string[]): void {
+    lastSequenceBySessionId = new Map(sessionIds.map((sessionId) => [sessionId, -1]));
+    retentionBySessionId = new Map(
+      sessionIds.map((sessionId) => [sessionId, emptyRetentionCounters()]),
+    );
     commitState(
       Object.fromEntries(sessionIds.map((sessionId) => [sessionId, emptyWaveformState()])),
     );
@@ -121,6 +224,10 @@ export function createSessionWaveformController(
 
   function addEmptySessions(sessionIds: readonly string[]): void {
     if (sessionIds.length === 0) return;
+    for (const sessionId of sessionIds) {
+      lastSequenceBySessionId.set(sessionId, -1);
+      retentionBySessionId.set(sessionId, emptyRetentionCounters());
+    }
     commitState({
       ...stateBySessionId,
       ...Object.fromEntries(sessionIds.map((sessionId) => [sessionId, emptyWaveformState()])),
@@ -128,16 +235,23 @@ export function createSessionWaveformController(
   }
 
   function addEmptySession(sessionId: string): void {
+    lastSequenceBySessionId.set(sessionId, -1);
+    retentionBySessionId.set(sessionId, emptyRetentionCounters());
     updateSession(sessionId, emptyWaveformState());
   }
 
   function restoreSession(sessionId: string, state: SessionWaveformState): void {
-    updateSession(sessionId, cloneWaveformState(state));
+    const cloned = cloneWaveformState(state);
+    lastSequenceBySessionId.set(sessionId, sampleListMaxSequence(cloned.samples, -1));
+    retentionBySessionId.set(sessionId, countWaveformSamples(cloned.samples));
+    updateSession(sessionId, cloned);
   }
 
   function removeSession(sessionId: string): void {
     const next = { ...stateBySessionId };
     delete next[sessionId];
+    lastSequenceBySessionId.delete(sessionId);
+    retentionBySessionId.delete(sessionId);
     commitState(next);
   }
 
@@ -153,19 +267,19 @@ export function createSessionWaveformController(
       return false;
     }
     const current = stateBySessionId[sessionId] ?? emptyWaveformState();
-    const appended = buildWaveformAppend(current, inputs);
+    const maxSequence = trackedMaxSequence(sessionId, current);
+    const appended = buildWaveformAppend(current.channels, inputs, maxSequence);
     if (!appended) return false;
-    const unboundedSamples = [...current.samples, ...appended.samples];
-    const nextSamples = retainLatestWaveformGroups(unboundedSamples);
-    const overflowed = nextSamples.length !== unboundedSamples.length;
-    const next = freezeWaveformState({
+    const merged = appendSamplesWithRetention(sessionId, current, appended.samples);
+    const next = freezeAppendedWaveformState({
       channels: appended.channels,
-      samples: nextSamples,
+      samples: merged.samples,
       frameCursor: current.frameCursor,
     });
+    lastSequenceBySessionId.set(sessionId, sampleListMaxSequence(appended.samples, maxSequence));
     updateSession(sessionId, next);
     dependencies.onChange(
-      overflowed || appended.channelsChanged
+      merged.overflowed || appended.channelsChanged
         ? Object.freeze({
             kind: 'waveform-frame-ingested',
             sessionId,
@@ -195,13 +309,15 @@ export function createSessionWaveformController(
       samples: [],
       frameCursor: current.frameCursor,
     });
-    const rebuilt = inputs.length === 0 ? null : buildWaveformAppend(empty, inputs);
+    const rebuilt = inputs.length === 0 ? null : buildWaveformAppend(empty.channels, inputs, -1);
     if (inputs.length > 0 && !rebuilt) return false;
     const next = freezeWaveformState({
       channels: rebuilt?.channels ?? [],
       samples: retainLatestWaveformGroups(rebuilt?.samples ?? []),
       frameCursor: current.frameCursor,
     });
+    lastSequenceBySessionId.set(sessionId, sampleListMaxSequence(next.samples, -1));
+    retentionBySessionId.set(sessionId, countWaveformSamples(next.samples));
     updateSession(sessionId, next);
     dependencies.onChange(
       Object.freeze({
@@ -270,6 +386,8 @@ export function createSessionWaveformController(
       return true;
     }
     const next = freezeWaveformState({ channels: [], samples: [], frameCursor: cursor });
+    lastSequenceBySessionId.set(sessionId, -1);
+    retentionBySessionId.set(sessionId, emptyRetentionCounters());
     updateSession(sessionId, next);
     dependencies.onChange(
       Object.freeze({
@@ -302,7 +420,7 @@ export function createSessionWaveformController(
       return true;
     }
     const nextCursor = Object.freeze({ ...cursor });
-    updateSession(sessionId, freezeWaveformState({ ...current, frameCursor: nextCursor }));
+    updateSession(sessionId, freezeAppendedWaveformState({ ...current, frameCursor: nextCursor }));
     dependencies.onChange(
       Object.freeze({ kind: 'waveform-cursor-changed', sessionId, cursor: nextCursor }),
     );
@@ -342,29 +460,45 @@ export function createSessionWaveformController(
         samples: [],
         frameCursor: current.frameCursor,
       });
-      const rebuilt = inputs.length === 0 ? null : buildWaveformAppend(empty, inputs);
+      const rebuilt = inputs.length === 0 ? null : buildWaveformAppend(empty.channels, inputs, -1);
       if (inputs.length > 0 && !rebuilt) return false;
       nextChannels = rebuilt?.channels ?? [];
       nextSamples = retainLatestWaveformGroups(rebuilt?.samples ?? []);
       committedSamples = nextSamples;
     } else if (inputs.length > 0) {
-      const appended = buildWaveformAppend(current, inputs);
+      const maxSequence = trackedMaxSequence(sessionId, current);
+      const appended = buildWaveformAppend(current.channels, inputs, maxSequence);
       if (!appended) return false;
       nextChannels = appended.channels;
-      const unboundedSamples = [...current.samples, ...appended.samples];
-      nextSamples = retainLatestWaveformGroups(unboundedSamples);
+      const merged = appendSamplesWithRetention(sessionId, current, appended.samples);
+      nextSamples = merged.samples;
       committedSamples = appended.samples;
-      if (appended.channelsChanged || nextSamples.length !== unboundedSamples.length) {
+      lastSequenceBySessionId.set(sessionId, sampleListMaxSequence(appended.samples, maxSequence));
+      if (appended.channelsChanged || merged.overflowed) {
         persistedMode = 'replace';
         committedSamples = nextSamples;
       }
     }
 
-    const next = freezeWaveformState({
-      channels: nextChannels,
-      samples: nextSamples,
-      frameCursor: Object.freeze({ ...cursor }),
-    });
+    // Both append ticks (cursor-only and sample-bearing) reuse lists whose
+    // invariants hold by construction; only `replace` rebuilds from untrusted
+    // inputs and therefore needs the validating freeze.
+    const next =
+      mode === 'replace'
+        ? freezeWaveformState({
+            channels: nextChannels,
+            samples: nextSamples,
+            frameCursor: Object.freeze({ ...cursor }),
+          })
+        : freezeAppendedWaveformState({
+            channels: nextChannels,
+            samples: nextSamples,
+            frameCursor: Object.freeze({ ...cursor }),
+          });
+    if (mode === 'replace') {
+      lastSequenceBySessionId.set(sessionId, sampleListMaxSequence(next.samples, -1));
+      retentionBySessionId.set(sessionId, countWaveformSamples(next.samples));
+    }
     updateSession(sessionId, next);
     dependencies.onChange(
       Object.freeze({
@@ -383,7 +517,7 @@ export function createSessionWaveformController(
     snapshotSession: (sessionId: string) =>
       cloneWaveformState(stateBySessionId[sessionId] ?? emptyWaveformState()),
     prepareReplacement,
-    replacePrepared: commitState,
+    replacePrepared,
     replaceWithEmptySessions,
     addEmptySessions,
     addEmptySession,
@@ -412,6 +546,48 @@ function cloneWaveformState(state: SessionWaveformState): SessionWaveformState {
     ...state,
     samples: retainLatestWaveformGroups(state.samples),
   });
+}
+
+/**
+ * Append-path freeze. Cursor-only and append-tail commits reuse channel and
+ * sample lists that were either already validated by a previous full freeze or
+ * constructed by `buildWaveformAppend`, which validates every input and assigns
+ * strictly increasing sequence numbers above the current maximum. The merged
+ * list therefore stays sorted, key-unique and channel-valid BY CONSTRUCTION —
+ * re-walking up to SESSION_WAVEFORM_MAX_GROUPS x 8 samples on every streaming
+ * tick would only re-prove those invariants. Replace, reset and hydrate paths
+ * keep the full `freezeWaveformState` validation.
+ */
+function freezeAppendedWaveformState(state: SessionWaveformState): SessionWaveformState {
+  if (!isWaveformFrameCursor(state.frameCursor)) throw new Error('invalid waveform frame cursor');
+  return Object.freeze({
+    channels: state.channels,
+    samples: state.samples,
+    frameCursor: Object.freeze({ ...state.frameCursor }),
+  });
+}
+
+/** Largest sequence in an ascending-ordered sample list, or `fallback` if empty. */
+function sampleListMaxSequence(
+  samples: readonly SessionWaveformSample[],
+  fallback: number,
+): number {
+  return samples.length > 0 ? samples[samples.length - 1].seq : fallback;
+}
+
+function emptyRetentionCounters(): WaveformRetentionCounters {
+  return { totalSamples: 0, samplesByGroup: new Map() };
+}
+
+/** Rebuild the incremental retention counters from a durable sample list. */
+function countWaveformSamples(
+  samples: readonly SessionWaveformSample[],
+): WaveformRetentionCounters {
+  const samplesByGroup = new Map<number, number>();
+  for (const sample of samples) {
+    samplesByGroup.set(sample.seq, (samplesByGroup.get(sample.seq) ?? 0) + 1);
+  }
+  return { totalSamples: samples.length, samplesByGroup };
 }
 
 function freezeWaveformState(state: SessionWaveformState): SessionWaveformState {
@@ -464,9 +640,15 @@ function freezeWaveformState(state: SessionWaveformState): SessionWaveformState 
   });
 }
 
+/**
+ * Build the sample/channel tail for one append. `maxSequence` is the tracked
+ * largest sequence already in the state, so new groups receive strictly
+ * increasing numbers above it without reducing over the whole sample list.
+ */
 function buildWaveformAppend(
-  current: SessionWaveformState,
+  currentChannels: readonly SessionWaveformChannel[],
   inputs: readonly SessionWaveformSampleInput[],
+  maxSequence: number,
 ): Readonly<{
   channels: readonly SessionWaveformChannel[];
   samples: readonly SessionWaveformSample[];
@@ -490,17 +672,13 @@ function buildWaveformAppend(
     groups.add(input.group);
     inputKeys.add(key);
   }
-  const maxSequence = current.samples.reduce(
-    (maximum, sample) => Math.max(maximum, sample.seq),
-    -1,
-  );
   const sortedGroups = [...groups].sort((left, right) => left - right);
   if (maxSequence + sortedGroups.length > Number.MAX_SAFE_INTEGER) return null;
   const sequenceByGroup = new Map(
     sortedGroups.map((group, index) => [group, maxSequence + index + 1] as const),
   );
   const channelsByIndex = new Map(
-    current.channels.map((channel) => [channel.channelIndex, channel] as const),
+    currentChannels.map((channel) => [channel.channelIndex, channel] as const),
   );
   let channelsChanged = false;
   for (const input of inputs) {

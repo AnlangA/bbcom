@@ -14,7 +14,6 @@
           :value="session.logAiModel"
           :aria-label="t('ai.log.model')"
           :options="aiModelOptions"
-          :menu-props="aiModelMenuProps"
           @update:value="setLogModel"
         />
       </div>
@@ -126,7 +125,7 @@ import type { AiModel, AiWindowSession, LogAiContextMode } from '../../types';
 import type { useAiWindowSession } from '../../composables/useAiWindowSession';
 import { getAiErrorMessage } from '../../lib/ai-error';
 import { t } from '../../lib/i18n';
-import { aiModelMenuProps, aiModelOptions, getLogContextModeOptions } from './ai-options';
+import { aiModelOptions, getLogContextModeOptions } from './ai-options';
 
 interface LogAiResponse {
   answer: string;
@@ -280,7 +279,7 @@ function clearMessages() {
   align-items: center;
   gap: 6px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   font-weight: 700;
   white-space: nowrap;
 }

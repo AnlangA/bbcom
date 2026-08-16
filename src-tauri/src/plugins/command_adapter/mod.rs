@@ -3,41 +3,32 @@
 //! The adapter owns no repository, trust decision, path, serial port or host.
 //! One mutex serializes correlation maps, catalog reads and core transitions.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 
 use bbcom_contracts::{
-    AppErrorCode, InstalledPluginView, IpcError, PluginAuthorizationReview, PluginCatalogItem,
-    PluginCenterData, PluginCommandResponse, PluginDeclarativePanel, PluginFailure,
-    PluginFailureCode, PluginLifecycleStatus, PluginPanelField, PluginPanelFieldKind,
-    PluginPermission, PluginPermissionDecisionState, PluginRiskCombination, PluginSerialProposal,
-    PluginStatusReason, PluginUnavailableCapability,
+    AppErrorCode, InstalledPluginView, IpcError, PluginCatalogItem, PluginCenterData,
+    PluginCommandResponse, PluginDeclarativePanel, PluginFailure, PluginFailureCode,
+    PluginLifecycleStatus, PluginPanelField, PluginPanelFieldKind, PluginSerialProposal,
+    PluginStatusReason, PluginUnavailableCapability, RuntimeInstanceKey,
 };
-use bbcom_plugin_broker::{
-    AuthorizationState, ExtraConfirmationReason, PanelControlKind, PanelEvent, ProposalDecision,
-    ReviewCapability,
-};
+use bbcom_plugin_broker::{PanelControlKind, PanelEvent, ProposalDecision};
 use bbcom_plugin_contracts::Permission;
-use bbcom_plugin_manager::{Clock, ManualPackageRequest, PluginSnapshot, PluginStatus};
+use bbcom_plugin_manager::{
+    Clock, ManualPackageRequest, PluginSnapshot, PluginStatus, SystemClock,
+};
 
 use crate::commands::plugin::{PluginCommand, PluginCommandService as IpcPluginCommandService};
 
 use super::command_service::{
-    AuthorizationBrokerPort, AuthorizationReviewSnapshot, PanelBrokerPort, PluginCommandError,
-    PluginCommandErrorCode, PluginCommandService, PluginCommandSnapshot, PluginCommandUpstreamPort,
-    PluginLifecyclePort, PluginOperationFailure, PluginOperationSnapshot, PluginOperationStatus,
-    ProposalBrokerPort,
+    PluginCommandError, PluginCommandErrorCode, PluginCommandService, PluginCommandSnapshot,
+    PluginOperationFailure, PluginOperationSnapshot, PluginOperationStatus,
 };
 
 const OPERATION: &str = "plugin_command_adapter";
 // Keep adapter-side replay state bounded by the core operation registry bound.
-const MAX_ADAPTER_CORRELATIONS: usize = 1_024;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PublisherVerification {
-    Unverified,
-    VerifiedByNativeTrustStore,
-}
+const MAX_ACTIVE_ADAPTER_CORRELATIONS: usize = 128;
+const MAX_COMPLETED_ADAPTER_CORRELATIONS: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CatalogPluginRecord {
@@ -47,7 +38,6 @@ pub struct CatalogPluginRecord {
     pub description: String,
     pub version: String,
     pub publisher_name: String,
-    pub publisher_verification: PublisherVerification,
     pub install_request: ManualPackageRequest,
 }
 
@@ -69,10 +59,7 @@ pub enum CatalogViewFailure {
 
 /// Mandatory native source for data the lifecycle/broker core does not own.
 ///
-/// `VerifiedByNativeTrustStore` may be returned only after the repository trust
-/// store verified publisher identity. HTTPS, package SHA-256, manifest text or
-/// a publisher-shaped string are insufficient. No default implementation is
-/// provided.
+/// No default implementation is provided.
 pub trait CatalogViewPort: Send + 'static {
     fn catalog(&mut self) -> Result<Vec<CatalogPluginRecord>, CatalogViewFailure>;
     fn plugin_display(
@@ -90,27 +77,24 @@ pub trait PluginCommandCorePort: Send + 'static {
         request_id: String,
         request: ManualPackageRequest,
     ) -> Result<PluginOperationSnapshot, PluginCommandError>;
+    fn queue_install_local(
+        &mut self,
+        revision: u64,
+        request_id: String,
+        package_root: std::path::PathBuf,
+    ) -> Result<PluginOperationSnapshot, PluginCommandError>;
+    fn queue_uninstall(
+        &mut self,
+        revision: u64,
+        request_id: String,
+        plugin_id: String,
+    ) -> Result<PluginOperationSnapshot, PluginCommandError>;
     fn queue_set_enabled(
         &mut self,
         revision: u64,
         request_id: String,
         plugin_id: String,
         enabled: bool,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError>;
-    fn queue_authorization_decisions(
-        &mut self,
-        revision: u64,
-        request_id: String,
-        review_id: String,
-        decisions: Vec<(Permission, AuthorizationState)>,
-        per_request_acknowledged: BTreeSet<Permission>,
-        extra_confirmation_acknowledged: bool,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError>;
-    fn queue_dismiss_authorization(
-        &mut self,
-        revision: u64,
-        request_id: String,
-        review_id: String,
     ) -> Result<PluginOperationSnapshot, PluginCommandError>;
     fn queue_proposal_decision(
         &mut self,
@@ -138,14 +122,7 @@ pub trait PluginCommandCorePort: Send + 'static {
     ) -> Result<PluginOperationSnapshot, PluginCommandError>;
 }
 
-impl<L, U, AB, PB, DB> PluginCommandCorePort for PluginCommandService<L, U, AB, PB, DB>
-where
-    L: PluginLifecyclePort + Send + 'static,
-    U: PluginCommandUpstreamPort + Send + 'static,
-    AB: AuthorizationBrokerPort + Send + 'static,
-    PB: ProposalBrokerPort + Send + 'static,
-    DB: PanelBrokerPort + Send + 'static,
-{
+impl PluginCommandCorePort for PluginCommandService {
     fn snapshot(&self) -> PluginCommandSnapshot {
         PluginCommandService::snapshot(self)
     }
@@ -167,35 +144,6 @@ where
         enabled: bool,
     ) -> Result<PluginOperationSnapshot, PluginCommandError> {
         PluginCommandService::queue_set_enabled(self, revision, request_id, plugin_id, enabled)
-    }
-
-    fn queue_authorization_decisions(
-        &mut self,
-        revision: u64,
-        request_id: String,
-        review_id: String,
-        decisions: Vec<(Permission, AuthorizationState)>,
-        per_request_acknowledged: BTreeSet<Permission>,
-        extra_confirmation_acknowledged: bool,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-        PluginCommandService::queue_authorization_decisions(
-            self,
-            revision,
-            request_id,
-            review_id,
-            decisions,
-            per_request_acknowledged,
-            extra_confirmation_acknowledged,
-        )
-    }
-
-    fn queue_dismiss_authorization(
-        &mut self,
-        revision: u64,
-        request_id: String,
-        review_id: String,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-        PluginCommandService::queue_dismiss_authorization(self, revision, request_id, review_id)
     }
 
     fn queue_proposal_decision(
@@ -239,6 +187,24 @@ where
     ) -> Result<PluginOperationSnapshot, PluginCommandError> {
         PluginCommandService::cancel(self, revision, operation_id)
     }
+
+    fn queue_install_local(
+        &mut self,
+        revision: u64,
+        request_id: String,
+        package_root: std::path::PathBuf,
+    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
+        PluginCommandService::queue_install_local(self, revision, request_id, package_root)
+    }
+
+    fn queue_uninstall(
+        &mut self,
+        revision: u64,
+        request_id: String,
+        plugin_id: String,
+    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
+        PluginCommandService::queue_uninstall(self, revision, request_id, plugin_id)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -252,25 +218,23 @@ enum AdapterPayloadFingerprint {
     Install {
         catalog_id: String,
     },
+    InstallLocal {
+        package_root: String,
+    },
+    Uninstall {
+        plugin_id: String,
+    },
     SetEnabled {
         plugin_id: String,
         enabled: bool,
     },
-    SubmitAuthorization {
-        review_id: String,
-        decisions: Vec<(Permission, bool)>,
-        per_request_acknowledged: Vec<Permission>,
-        extra_confirmation_acknowledged: bool,
-    },
-    DismissAuthorization {
-        review_id: String,
-    },
     ResolveSerialProposal {
         proposal_id: String,
+        runtime: RuntimeInstanceKey,
         approve: bool,
     },
     EmitPanelEvent {
-        plugin_id: String,
+        runtime: RuntimeInstanceKey,
         field_id: String,
         value: String,
     },
@@ -289,7 +253,6 @@ enum AdapterCorrelationResolution {
         operation_id: String,
         terminal_response: Option<PluginCommandResponse>,
     },
-    StableTerminal(PluginCommandResponse),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -299,32 +262,34 @@ struct AdapterCorrelationRecord {
     resolution: AdapterCorrelationResolution,
 }
 
-struct AdapterState<K, V> {
-    core: K,
-    catalog: V,
+struct AdapterState {
+    core: Box<dyn PluginCommandCorePort>,
+    catalog: Box<dyn CatalogViewPort>,
     correlations: BTreeMap<String, AdapterCorrelationRecord>,
-    enabled_overrides: BTreeMap<String, bool>,
+    completed_correlations: VecDeque<String>,
 }
 
-pub struct NativePluginCommandAdapter<K, V, C> {
-    state: Mutex<AdapterState<K, V>>,
-    clock: C,
+/// Native IPC adapter over the single production command core. The core and
+/// catalog view are dyn ports: production wiring and the in-module tests share
+/// this one non-generic implementation instead of monomorphizing per port.
+pub struct NativePluginCommandAdapter {
+    state: Mutex<AdapterState>,
+    clock: SystemClock,
 }
 
-impl<K, V, C> NativePluginCommandAdapter<K, V, C>
-where
-    K: PluginCommandCorePort,
-    V: CatalogViewPort,
-    C: Clock + Send + Sync + 'static,
-{
+impl NativePluginCommandAdapter {
     #[must_use]
-    pub fn new(core: K, catalog: V, clock: C) -> Self {
+    pub fn new(
+        core: Box<dyn PluginCommandCorePort>,
+        catalog: Box<dyn CatalogViewPort>,
+        clock: SystemClock,
+    ) -> Self {
         Self {
             state: Mutex::new(AdapterState {
                 core,
                 catalog,
                 correlations: BTreeMap::new(),
-                enabled_overrides: BTreeMap::new(),
+                completed_correlations: VecDeque::new(),
             }),
             clock,
         }
@@ -332,7 +297,7 @@ where
 
     fn execute_locked(
         &self,
-        state: &mut AdapterState<K, V>,
+        state: &mut AdapterState,
         command: PluginCommand,
     ) -> Result<PluginCommandResponse, IpcError> {
         match command {
@@ -340,8 +305,7 @@ where
                 let snapshot = state.core.snapshot();
                 ensure_snapshot_revision(request.revision, snapshot.revision, &request.request_id)?;
                 completed(
-                    &mut state.catalog,
-                    &state.enabled_overrides,
+                    &mut *state.catalog,
                     request.request_id,
                     request.operation_id,
                     snapshot,
@@ -404,6 +368,97 @@ where
                     None,
                 )
             }
+            PluginCommand::InstallLocal {
+                request,
+                package_root,
+            } => {
+                let fingerprint = AdapterRequestFingerprint {
+                    revision: request.revision,
+                    payload: AdapterPayloadFingerprint::InstallLocal {
+                        package_root: package_root.to_string_lossy().into_owned(),
+                    },
+                };
+                if let Some(resolution) = correlate_new(
+                    state,
+                    &request.request_id,
+                    &request.operation_id,
+                    &fingerprint,
+                )? {
+                    return replay_resolution(
+                        state,
+                        request.request_id,
+                        request.operation_id,
+                        resolution,
+                        self.clock.now_millis(),
+                        None,
+                    );
+                }
+                let queued = state
+                    .core
+                    .queue_install_local(request.revision, request.request_id.clone(), package_root)
+                    .map_err(|error| core_error(error, &request.request_id))?;
+                register_operation(
+                    state,
+                    &request.request_id,
+                    &request.operation_id,
+                    fingerprint,
+                    &queued,
+                )?;
+                execute_registered_operation(
+                    state,
+                    request.request_id,
+                    request.operation_id,
+                    queued.operation_id,
+                    self.clock.now_millis(),
+                    None,
+                )
+            }
+            PluginCommand::Uninstall(request) => {
+                let fingerprint = AdapterRequestFingerprint {
+                    revision: request.revision,
+                    payload: AdapterPayloadFingerprint::Uninstall {
+                        plugin_id: request.plugin_id.clone(),
+                    },
+                };
+                if let Some(resolution) = correlate_new(
+                    state,
+                    &request.request_id,
+                    &request.operation_id,
+                    &fingerprint,
+                )? {
+                    return replay_resolution(
+                        state,
+                        request.request_id,
+                        request.operation_id,
+                        resolution,
+                        self.clock.now_millis(),
+                        None,
+                    );
+                }
+                let queued = state
+                    .core
+                    .queue_uninstall(
+                        request.revision,
+                        request.request_id.clone(),
+                        request.plugin_id.clone(),
+                    )
+                    .map_err(|error| core_error(error, &request.request_id))?;
+                register_operation(
+                    state,
+                    &request.request_id,
+                    &request.operation_id,
+                    fingerprint,
+                    &queued,
+                )?;
+                execute_registered_operation(
+                    state,
+                    request.request_id,
+                    request.operation_id,
+                    queued.operation_id,
+                    self.clock.now_millis(),
+                    None,
+                )
+            }
             PluginCommand::SetEnabled(request) => {
                 let fingerprint = AdapterRequestFingerprint {
                     revision: request.revision,
@@ -447,11 +502,6 @@ where
                     .core
                     .execute_operation(&queued.operation_id, self.clock.now_millis())
                     .map_err(|error| core_error(error, &request.request_id))?;
-                if terminal.status == PluginOperationStatus::Completed {
-                    state
-                        .enabled_overrides
-                        .insert(request.plugin_id, request.enabled);
-                }
                 finish_registered_operation(
                     state,
                     request.request_id,
@@ -460,170 +510,12 @@ where
                     None,
                 )
             }
-            PluginCommand::SubmitAuthorization(request) => {
-                let mut fingerprint_decisions = request
-                    .decisions
-                    .iter()
-                    .map(|decision| {
-                        (
-                            permission_from_ipc(decision.permission),
-                            matches!(decision.state, PluginPermissionDecisionState::Granted),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                fingerprint_decisions.sort_unstable();
-                let mut fingerprint_acknowledged = request
-                    .per_request_capabilities_acknowledged
-                    .iter()
-                    .copied()
-                    .map(permission_from_ipc)
-                    .collect::<Vec<_>>();
-                fingerprint_acknowledged.sort_unstable();
-                let fingerprint = AdapterRequestFingerprint {
-                    revision: request.revision,
-                    payload: AdapterPayloadFingerprint::SubmitAuthorization {
-                        review_id: request.review_id.clone(),
-                        decisions: fingerprint_decisions,
-                        per_request_acknowledged: fingerprint_acknowledged,
-                        extra_confirmation_acknowledged: request.extra_confirmation_acknowledged,
-                    },
-                };
-                if let Some(resolution) = correlate_new(
-                    state,
-                    &request.request_id,
-                    &request.operation_id,
-                    &fingerprint,
-                )? {
-                    return replay_resolution(
-                        state,
-                        request.request_id,
-                        request.operation_id,
-                        resolution,
-                        self.clock.now_millis(),
-                        Some(PluginFailureCode::AuthorizationFailed),
-                    );
-                }
-                let snapshot = state.core.snapshot();
-                let acknowledged: BTreeSet<_> = request
-                    .per_request_capabilities_acknowledged
-                    .iter()
-                    .copied()
-                    .map(permission_from_ipc)
-                    .collect();
-                let decisions = request
-                    .decisions
-                    .iter()
-                    .map(|decision| {
-                        (
-                            permission_from_ipc(decision.permission),
-                            match decision.state {
-                                PluginPermissionDecisionState::Granted => {
-                                    AuthorizationState::Granted
-                                }
-                                PluginPermissionDecisionState::Denied => AuthorizationState::Denied,
-                            },
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let submitted = decisions
-                    .iter()
-                    .map(|(permission, _)| *permission)
-                    .collect::<BTreeSet<_>>();
-                let review = snapshot
-                    .authorization_reviews
-                    .iter()
-                    .find(|review| review.review_id == request.review_id)
-                    .ok_or_else(|| permission_denied(&request.request_id))?;
-                if acknowledged != review.requires_per_request_approval
-                    || submitted.len() != decisions.len()
-                    || submitted != review.requires_persistent_approval
-                {
-                    return failed_without_mutation(
-                        state,
-                        request.request_id,
-                        request.operation_id,
-                        fingerprint,
-                        PluginFailureCode::AuthorizationFailed,
-                    );
-                }
-                let queued = state
-                    .core
-                    .queue_authorization_decisions(
-                        request.revision,
-                        request.request_id.clone(),
-                        request.review_id,
-                        decisions,
-                        acknowledged,
-                        request.extra_confirmation_acknowledged,
-                    )
-                    .map_err(|error| core_error(error, &request.request_id))?;
-                register_operation(
-                    state,
-                    &request.request_id,
-                    &request.operation_id,
-                    fingerprint,
-                    &queued,
-                )?;
-                execute_registered_operation(
-                    state,
-                    request.request_id,
-                    request.operation_id,
-                    queued.operation_id,
-                    self.clock.now_millis(),
-                    Some(PluginFailureCode::AuthorizationFailed),
-                )
-            }
-            PluginCommand::DismissAuthorization(request) => {
-                let fingerprint = AdapterRequestFingerprint {
-                    revision: request.revision,
-                    payload: AdapterPayloadFingerprint::DismissAuthorization {
-                        review_id: request.review_id.clone(),
-                    },
-                };
-                if let Some(resolution) = correlate_new(
-                    state,
-                    &request.request_id,
-                    &request.operation_id,
-                    &fingerprint,
-                )? {
-                    return replay_resolution(
-                        state,
-                        request.request_id,
-                        request.operation_id,
-                        resolution,
-                        self.clock.now_millis(),
-                        Some(PluginFailureCode::AuthorizationFailed),
-                    );
-                }
-                let queued = state
-                    .core
-                    .queue_dismiss_authorization(
-                        request.revision,
-                        request.request_id.clone(),
-                        request.review_id,
-                    )
-                    .map_err(|error| core_error(error, &request.request_id))?;
-                register_operation(
-                    state,
-                    &request.request_id,
-                    &request.operation_id,
-                    fingerprint,
-                    &queued,
-                )?;
-                execute_registered_operation(
-                    state,
-                    request.request_id,
-                    request.operation_id,
-                    queued.operation_id,
-                    self.clock.now_millis(),
-                    Some(PluginFailureCode::AuthorizationFailed),
-                )
-            }
             PluginCommand::ResolveSerialProposal(request) => {
                 let fingerprint = AdapterRequestFingerprint {
                     revision: request.revision,
                     payload: AdapterPayloadFingerprint::ResolveSerialProposal {
                         proposal_id: request.proposal_id.clone(),
+                        runtime: request.runtime.clone(),
                         approve: matches!(
                             request.decision,
                             bbcom_contracts::PluginSerialProposalDecision::Approve
@@ -645,6 +537,7 @@ where
                         None,
                     );
                 }
+                validate_runtime_instance(state, &request.runtime, &request.request_id)?;
                 let queued = state
                     .core
                     .queue_proposal_decision(
@@ -681,7 +574,7 @@ where
                 let fingerprint = AdapterRequestFingerprint {
                     revision: request.revision,
                     payload: AdapterPayloadFingerprint::EmitPanelEvent {
-                        plugin_id: request.event.plugin_id.clone(),
+                        runtime: request.event.runtime.clone(),
                         field_id: request.event.field_id.clone(),
                         value: request.event.value.clone(),
                     },
@@ -701,12 +594,13 @@ where
                         Some(PluginFailureCode::PanelEventRejected),
                     );
                 }
+                validate_runtime_instance(state, &request.event.runtime, &request.request_id)?;
                 let queued = state
                     .core
                     .queue_panel_event(
                         request.revision,
                         request.request_id.clone(),
-                        request.event.plugin_id.clone(),
+                        request.event.runtime.plugin_id.clone(),
                         PanelEvent {
                             field_id: request.event.field_id,
                             value: request.event.value,
@@ -773,12 +667,7 @@ where
     }
 }
 
-impl<K, V, C> IpcPluginCommandService for NativePluginCommandAdapter<K, V, C>
-where
-    K: PluginCommandCorePort,
-    V: CatalogViewPort,
-    C: Clock + Send + Sync + 'static,
-{
+impl IpcPluginCommandService for NativePluginCommandAdapter {
     fn execute(&self, command: PluginCommand) -> Result<PluginCommandResponse, IpcError> {
         let request_id = command_request_id(&command).to_owned();
         let mut state = self.state.lock().map_err(|_| {
@@ -799,17 +688,17 @@ fn command_request_id(command: &PluginCommand) -> &str {
     match command {
         PluginCommand::Snapshot(request) => &request.request_id,
         PluginCommand::Install(request) => &request.request_id,
+        PluginCommand::InstallLocal { request, .. } => &request.request_id,
+        PluginCommand::Uninstall(request) => &request.request_id,
         PluginCommand::SetEnabled(request) => &request.request_id,
-        PluginCommand::SubmitAuthorization(request) => &request.request_id,
-        PluginCommand::DismissAuthorization(request) => &request.request_id,
         PluginCommand::ResolveSerialProposal(request) => &request.request_id,
         PluginCommand::EmitPanelEvent(request) => &request.request_id,
         PluginCommand::CancelOperation(request) => &request.request_id,
     }
 }
 
-fn correlate_new<K: PluginCommandCorePort, V>(
-    state: &AdapterState<K, V>,
+fn correlate_new(
+    state: &AdapterState,
     request_id: &str,
     external_operation_id: &str,
     fingerprint: &AdapterRequestFingerprint,
@@ -829,13 +718,13 @@ fn correlate_new<K: PluginCommandCorePort, V>(
         return Err(operation_conflict(request_id));
     }
     ensure_correlation_capacity(state, request_id)?;
-    let snapshot = state.core_snapshot();
+    let snapshot = state.core.snapshot();
     ensure_exact_revision(fingerprint.revision, snapshot.revision, request_id)?;
     Ok(None)
 }
 
-fn correlate_cancel<K: PluginCommandCorePort, V>(
-    state: &AdapterState<K, V>,
+fn correlate_cancel(
+    state: &AdapterState,
     request_id: &str,
     external_operation_id: &str,
     fingerprint: &AdapterRequestFingerprint,
@@ -853,11 +742,20 @@ fn correlate_cancel<K: PluginCommandCorePort, V>(
     Ok(None)
 }
 
-fn ensure_correlation_capacity<K, V>(
-    state: &AdapterState<K, V>,
-    request_id: &str,
-) -> Result<(), IpcError> {
-    if state.correlations.len() < MAX_ADAPTER_CORRELATIONS {
+fn ensure_correlation_capacity(state: &AdapterState, request_id: &str) -> Result<(), IpcError> {
+    let active = state
+        .correlations
+        .values()
+        .filter(|record| match &record.resolution {
+            AdapterCorrelationResolution::CoreOperation {
+                terminal_response, ..
+            } => terminal_response.is_none(),
+        })
+        .count();
+    if active < MAX_ACTIVE_ADAPTER_CORRELATIONS
+        && state.correlations.len()
+            < MAX_ACTIVE_ADAPTER_CORRELATIONS + MAX_COMPLETED_ADAPTER_CORRELATIONS
+    {
         Ok(())
     } else {
         Err(IpcError::new(
@@ -868,24 +766,14 @@ fn ensure_correlation_capacity<K, V>(
         )
         .with_request_id(request_id)
         .with_size(
-            MAX_ADAPTER_CORRELATIONS,
+            MAX_ACTIVE_ADAPTER_CORRELATIONS + MAX_COMPLETED_ADAPTER_CORRELATIONS,
             state.correlations.len().saturating_add(1),
         ))
     }
 }
 
-trait SnapshotAccess {
-    fn core_snapshot(&self) -> PluginCommandSnapshot;
-}
-
-impl<K: PluginCommandCorePort, V> SnapshotAccess for AdapterState<K, V> {
-    fn core_snapshot(&self) -> PluginCommandSnapshot {
-        self.core.snapshot()
-    }
-}
-
-fn register_operation<K, V>(
-    state: &mut AdapterState<K, V>,
+fn register_operation(
+    state: &mut AdapterState,
     request_id: &str,
     external_operation_id: &str,
     fingerprint: AdapterRequestFingerprint,
@@ -900,8 +788,8 @@ fn register_operation<K, V>(
     )
 }
 
-fn register_core_operation<K, V>(
-    state: &mut AdapterState<K, V>,
+fn register_core_operation(
+    state: &mut AdapterState,
     request_id: &str,
     external_operation_id: &str,
     fingerprint: AdapterRequestFingerprint,
@@ -925,30 +813,8 @@ fn register_core_operation<K, V>(
     Ok(())
 }
 
-fn register_stable_terminal<K, V>(
-    state: &mut AdapterState<K, V>,
-    request_id: &str,
-    external_operation_id: &str,
-    fingerprint: AdapterRequestFingerprint,
-    response: PluginCommandResponse,
-) -> Result<(), IpcError> {
-    if state.correlations.contains_key(request_id) {
-        return Err(operation_conflict(request_id));
-    }
-    ensure_correlation_capacity(state, request_id)?;
-    state.correlations.insert(
-        request_id.to_owned(),
-        AdapterCorrelationRecord {
-            external_operation_id: external_operation_id.to_owned(),
-            fingerprint,
-            resolution: AdapterCorrelationResolution::StableTerminal(response),
-        },
-    );
-    Ok(())
-}
-
-fn core_operation_for_external<K, V>(
-    state: &AdapterState<K, V>,
+fn core_operation_for_external(
+    state: &AdapterState,
     external_operation_id: &str,
 ) -> Option<String> {
     state.correlations.values().find_map(|record| {
@@ -959,43 +825,54 @@ fn core_operation_for_external<K, V>(
             AdapterCorrelationResolution::CoreOperation { operation_id, .. } => {
                 Some(operation_id.clone())
             }
-            AdapterCorrelationResolution::StableTerminal(_) => None,
         }
     })
 }
 
-fn cache_terminal_response<K, V>(
-    state: &mut AdapterState<K, V>,
+fn cache_terminal_response(
+    state: &mut AdapterState,
     request_id: &str,
     external_operation_id: &str,
     response: &PluginCommandResponse,
 ) -> Result<(), IpcError> {
-    let record = state
-        .correlations
-        .get_mut(request_id)
-        .ok_or_else(|| operation_conflict(request_id))?;
-    if record.external_operation_id != external_operation_id {
-        return Err(operation_conflict(request_id));
-    }
-    match &mut record.resolution {
-        AdapterCorrelationResolution::CoreOperation {
-            terminal_response, ..
-        } => {
-            if let Some(existing) = terminal_response.as_ref()
-                && existing != response
-            {
-                return Err(operation_conflict(request_id));
-            }
-            *terminal_response = Some(response.clone());
-            Ok(())
+    let newly_terminal = {
+        let record = state
+            .correlations
+            .get_mut(request_id)
+            .ok_or_else(|| operation_conflict(request_id))?;
+        if record.external_operation_id != external_operation_id {
+            return Err(operation_conflict(request_id));
         }
-        AdapterCorrelationResolution::StableTerminal(existing) if existing == response => Ok(()),
-        AdapterCorrelationResolution::StableTerminal(_) => Err(operation_conflict(request_id)),
+        match &mut record.resolution {
+            AdapterCorrelationResolution::CoreOperation {
+                terminal_response, ..
+            } => {
+                if let Some(existing) = terminal_response.as_ref()
+                    && existing != response
+                {
+                    return Err(operation_conflict(request_id));
+                }
+                let newly_terminal = terminal_response.is_none();
+                *terminal_response = Some(response.clone());
+                newly_terminal
+            }
+        }
+    };
+    if newly_terminal {
+        state
+            .completed_correlations
+            .push_back(request_id.to_owned());
+        while state.completed_correlations.len() > MAX_COMPLETED_ADAPTER_CORRELATIONS {
+            if let Some(expired) = state.completed_correlations.pop_front() {
+                state.correlations.remove(&expired);
+            }
+        }
     }
+    Ok(())
 }
 
-fn execute_registered_operation<K: PluginCommandCorePort, V: CatalogViewPort>(
-    state: &mut AdapterState<K, V>,
+fn execute_registered_operation(
+    state: &mut AdapterState,
     request_id: String,
     external_operation_id: String,
     core_operation_id: String,
@@ -1015,8 +892,8 @@ fn execute_registered_operation<K: PluginCommandCorePort, V: CatalogViewPort>(
     )
 }
 
-fn finish_registered_operation<K: PluginCommandCorePort, V: CatalogViewPort>(
-    state: &mut AdapterState<K, V>,
+fn finish_registered_operation(
+    state: &mut AdapterState,
     request_id: String,
     external_operation_id: String,
     terminal: PluginOperationSnapshot,
@@ -1033,8 +910,8 @@ fn finish_registered_operation<K: PluginCommandCorePort, V: CatalogViewPort>(
     Ok(response)
 }
 
-fn replay_resolution<K: PluginCommandCorePort, V: CatalogViewPort>(
-    state: &mut AdapterState<K, V>,
+fn replay_resolution(
+    state: &mut AdapterState,
     request_id: String,
     external_operation_id: String,
     resolution: AdapterCorrelationResolution,
@@ -1042,7 +919,6 @@ fn replay_resolution<K: PluginCommandCorePort, V: CatalogViewPort>(
     forced_failure: Option<PluginFailureCode>,
 ) -> Result<PluginCommandResponse, IpcError> {
     match resolution {
-        AdapterCorrelationResolution::StableTerminal(response) => Ok(response),
         AdapterCorrelationResolution::CoreOperation {
             operation_id,
             terminal_response,
@@ -1070,15 +946,14 @@ fn replay_resolution<K: PluginCommandCorePort, V: CatalogViewPort>(
     }
 }
 
-fn replay_cancel_resolution<K: PluginCommandCorePort, V: CatalogViewPort>(
-    state: &mut AdapterState<K, V>,
+fn replay_cancel_resolution(
+    state: &mut AdapterState,
     request_id: String,
     external_operation_id: String,
     revision: u64,
     resolution: AdapterCorrelationResolution,
 ) -> Result<PluginCommandResponse, IpcError> {
     match resolution {
-        AdapterCorrelationResolution::StableTerminal(_) => Err(operation_conflict(&request_id)),
         AdapterCorrelationResolution::CoreOperation {
             operation_id,
             terminal_response,
@@ -1125,15 +1000,15 @@ fn response_matches_operation(
     )
 }
 
-fn terminal_response<K: PluginCommandCorePort, V: CatalogViewPort>(
-    state: &mut AdapterState<K, V>,
+fn terminal_response(
+    state: &mut AdapterState,
     request_id: String,
     external_operation_id: String,
     operation: PluginOperationSnapshot,
     forced_failure: Option<PluginFailureCode>,
 ) -> Result<PluginCommandResponse, IpcError> {
     let snapshot = state.core.snapshot();
-    let data = center_data(&mut state.catalog, &state.enabled_overrides, snapshot)
+    let data = center_data(&mut *state.catalog, snapshot)
         .map_err(|error| attach_request(error, &request_id))?;
     match operation.status {
         PluginOperationStatus::Completed => Ok(PluginCommandResponse::Completed {
@@ -1172,42 +1047,14 @@ fn terminal_response<K: PluginCommandCorePort, V: CatalogViewPort>(
     }
 }
 
-fn failed_without_mutation<K: PluginCommandCorePort, V: CatalogViewPort>(
-    state: &mut AdapterState<K, V>,
-    request_id: String,
-    operation_id: String,
-    fingerprint: AdapterRequestFingerprint,
-    code: PluginFailureCode,
-) -> Result<PluginCommandResponse, IpcError> {
-    let snapshot = state.core.snapshot();
-    let data = center_data(&mut state.catalog, &state.enabled_overrides, snapshot)
-        .map_err(|error| attach_request(error, &request_id))?;
-    let response = PluginCommandResponse::Failed {
-        request_id: request_id.clone(),
-        operation_id: operation_id.clone(),
-        revision: data.revision,
-        failure: PluginFailure { code },
-        data: Some(data),
-    };
-    register_stable_terminal(
-        state,
-        &request_id,
-        &operation_id,
-        fingerprint,
-        response.clone(),
-    )?;
-    Ok(response)
-}
-
-fn completed<V: CatalogViewPort>(
-    catalog: &mut V,
-    enabled_overrides: &BTreeMap<String, bool>,
+fn completed(
+    catalog: &mut dyn CatalogViewPort,
     request_id: String,
     operation_id: String,
     snapshot: PluginCommandSnapshot,
 ) -> Result<PluginCommandResponse, IpcError> {
-    let data = center_data(catalog, enabled_overrides, snapshot)
-        .map_err(|error| attach_request(error, &request_id))?;
+    let data =
+        center_data(catalog, snapshot).map_err(|error| attach_request(error, &request_id))?;
     Ok(PluginCommandResponse::Completed {
         request_id,
         operation_id,
@@ -1216,11 +1063,11 @@ fn completed<V: CatalogViewPort>(
     })
 }
 
-fn center_data<V: CatalogViewPort>(
-    catalog_port: &mut V,
-    enabled_overrides: &BTreeMap<String, bool>,
+fn center_data(
+    catalog_port: &mut dyn CatalogViewPort,
     snapshot: PluginCommandSnapshot,
 ) -> Result<PluginCenterData, IpcError> {
+    let workspace_id = snapshot.workspace_id.as_deref();
     let mut catalog_records = catalog_port
         .catalog()
         .map_err(|error| catalog_error(error, "snapshot"))?;
@@ -1244,23 +1091,14 @@ fn center_data<V: CatalogViewPort>(
             description: record.description,
             version: record.version,
             publisher_name: record.publisher_name,
-            publisher_verified: matches!(
-                record.publisher_verification,
-                PublisherVerification::VerifiedByNativeTrustStore
-            ),
             installed_version: installed_versions.get(&record.plugin_id).cloned(),
         });
     }
     let installed = snapshot
         .plugins
         .iter()
-        .map(|plugin| installed_view(catalog_port, enabled_overrides, plugin))
+        .map(|plugin| installed_view(catalog_port, workspace_id, plugin))
         .collect::<Result<Vec<_>, _>>()?;
-    let authorization_review = match snapshot.authorization_reviews.as_slice() {
-        [] => None,
-        [review] => Some(authorization_view(catalog_port, &snapshot.plugins, review)?),
-        _ => return Err(permission_denied("snapshot")),
-    };
     let serial_proposals = snapshot
         .proposals
         .iter()
@@ -1275,6 +1113,10 @@ fn center_data<V: CatalogViewPort>(
                 ));
             }
             Ok(PluginSerialProposal {
+                runtime: runtime_key(workspace_id, &snapshot.plugins, &proposal.plugin_id)
+                    .ok_or_else(|| {
+                        catalog_error(CatalogViewFailure::InconsistentIdentity, "snapshot")
+                    })?,
                 proposal_id: proposal.proposal_id.clone(),
                 plugin_id: proposal.plugin_id.clone(),
                 plugin_name: display.display_name,
@@ -1288,20 +1130,30 @@ fn center_data<V: CatalogViewPort>(
             })
         })
         .collect::<Result<Vec<_>, IpcError>>()?;
-    let panels = snapshot.panels.iter().map(panel_view).collect();
+    let panels = snapshot
+        .panels
+        .iter()
+        .map(|panel| {
+            let runtime = runtime_key(workspace_id, &snapshot.plugins, panel.plugin_id())
+                .ok_or_else(|| {
+                    catalog_error(CatalogViewFailure::InconsistentIdentity, "snapshot")
+                })?;
+            Ok(panel_view(panel, runtime))
+        })
+        .collect::<Result<Vec<_>, IpcError>>()?;
     Ok(PluginCenterData {
         revision: snapshot.revision,
         catalog,
         installed,
-        authorization_review,
         serial_proposals,
         panels,
+        sources: Vec::new(),
     })
 }
 
-fn installed_view<V: CatalogViewPort>(
-    catalog: &mut V,
-    enabled_overrides: &BTreeMap<String, bool>,
+fn installed_view(
+    catalog: &mut dyn CatalogViewPort,
+    workspace_id: Option<&str>,
     plugin: &PluginSnapshot,
 ) -> Result<InstalledPluginView, IpcError> {
     let display = catalog
@@ -1320,95 +1172,59 @@ fn installed_view<V: CatalogViewPort>(
         version: plugin.artifact.version.clone(),
         status,
         status_reason,
-        enabled: enabled_overrides
-            .get(&plugin.artifact.plugin_id)
-            .copied()
-            .unwrap_or(display.enabled),
+        enabled: plugin.expected_enabled,
         pending_version: plugin.pending_version.clone(),
-        requested_permissions: plugin
+        declared_capabilities: plugin
             .artifact
-            .requested_permissions
+            .declared_capabilities
             .iter()
             .copied()
-            .map(permission_to_ipc)
             .collect(),
+        effective_capabilities: plugin
+            .artifact
+            .effective_capabilities
+            .iter()
+            .copied()
+            .collect(),
+        unavailable_capabilities: plugin
+            .artifact
+            .unavailable_capabilities
+            .iter()
+            .copied()
+            .map(permission_to_unavailable)
+            .collect(),
+        runtime: runtime_key(
+            workspace_id,
+            std::slice::from_ref(plugin),
+            &plugin.artifact.plugin_id,
+        ),
     })
 }
 
-fn authorization_view<V: CatalogViewPort>(
-    catalog: &mut V,
+fn runtime_key(
+    workspace_id: Option<&str>,
     plugins: &[PluginSnapshot],
-    review: &AuthorizationReviewSnapshot,
-) -> Result<PluginAuthorizationReview, IpcError> {
-    if !plugins
+    plugin_id: &str,
+) -> Option<RuntimeInstanceKey> {
+    let workspace_id = workspace_id?;
+    let plugin = plugins
         .iter()
-        .any(|plugin| plugin.artifact.plugin_id == review.plugin_id)
-    {
-        return Err(permission_denied("snapshot"));
-    }
-    let display = catalog
-        .plugin_display(&review.plugin_id)
-        .map_err(|error| catalog_error(error, "snapshot"))?;
-    if display.plugin_id != review.plugin_id {
-        return Err(catalog_error(
-            CatalogViewFailure::InconsistentIdentity,
-            "snapshot",
-        ));
-    }
-    Ok(PluginAuthorizationReview {
-        review_id: review.review_id.clone(),
-        plugin_id: review.plugin_id.clone(),
-        display_name: display.display_name,
-        version: review.artifact_version.clone(),
-        persistent_permissions: review
-            .requires_persistent_approval
-            .iter()
-            .copied()
-            .map(permission_to_ipc)
-            .collect(),
-        per_request_permissions: review
-            .requires_per_request_approval
-            .iter()
-            .copied()
-            .map(permission_to_ipc)
-            .collect(),
-        unavailable_capabilities: review
-            .unavailable
-            .iter()
-            .copied()
-            .map(|capability| match capability {
-                ReviewCapability::Permission(permission) => permission_to_unavailable(permission),
-                ReviewCapability::Network => PluginUnavailableCapability::Network,
-            })
-            .collect(),
-        extra_confirmation_reasons: review
-            .extra_confirmation_reasons
-            .iter()
-            .copied()
-            .map(|reason| match reason {
-                ExtraConfirmationReason::CaptureWithNetwork => {
-                    PluginRiskCombination::CaptureWithNetwork
-                }
-                ExtraConfirmationReason::ConversationWithNetwork => {
-                    PluginRiskCombination::ConversationWithNetwork
-                }
-                ExtraConfirmationReason::CaptureWithExternalSink => {
-                    PluginRiskCombination::CaptureWithExternalSink
-                }
-                ExtraConfirmationReason::ConversationWithExternalSink => {
-                    PluginRiskCombination::ConversationWithExternalSink
-                }
-                ExtraConfirmationReason::SerialControlAndWriteProposal => {
-                    PluginRiskCombination::SerialControlAndWriteProposal
-                }
-            })
-            .collect(),
+        .find(|plugin| plugin.artifact.plugin_id == plugin_id)?;
+    let instance_id = plugin.running_instance_id?;
+    Some(RuntimeInstanceKey {
+        workspace_id: workspace_id.to_owned(),
+        plugin_id: plugin_id.to_owned(),
+        instance_id,
+        generation: plugin.generation,
     })
 }
 
-fn panel_view(panel: &bbcom_plugin_broker::HostedPanel) -> PluginDeclarativePanel {
+fn panel_view(
+    panel: &bbcom_plugin_broker::HostedPanel,
+    runtime: RuntimeInstanceKey,
+) -> PluginDeclarativePanel {
     PluginDeclarativePanel {
-        plugin_id: panel.plugin_id().to_owned(),
+        runtime,
         title: panel.panel().title.clone(),
         fields: panel
             .panel()
@@ -1434,23 +1250,6 @@ fn panel_view(panel: &bbcom_plugin_broker::HostedPanel) -> PluginDeclarativePane
 
 fn lifecycle_status(status: PluginStatus) -> (PluginLifecycleStatus, Option<PluginStatusReason>) {
     match status {
-        PluginStatus::ApprovalRequired(reason) => (
-            PluginLifecycleStatus::ApprovalRequired,
-            Some(match reason {
-                bbcom_plugin_manager::ApprovalReason::InitialInstall => {
-                    PluginStatusReason::InitialInstall
-                }
-                bbcom_plugin_manager::ApprovalReason::WorkspaceChanged => {
-                    PluginStatusReason::WorkspaceChanged
-                }
-                bbcom_plugin_manager::ApprovalReason::PermissionExpansion => {
-                    PluginStatusReason::PermissionExpansion
-                }
-                bbcom_plugin_manager::ApprovalReason::ArtifactChanged => {
-                    PluginStatusReason::ArtifactChanged
-                }
-            }),
-        ),
         PluginStatus::Disabled(reason) => (
             PluginLifecycleStatus::Disabled,
             Some(match reason {
@@ -1464,12 +1263,6 @@ fn lifecycle_status(status: PluginStatus) -> (PluginLifecycleStatus, Option<Plug
                 bbcom_plugin_manager::DisableReason::RollbackFailed => {
                     PluginStatusReason::RollbackFailed
                 }
-                bbcom_plugin_manager::DisableReason::RollbackBlockedRevoked => {
-                    PluginStatusReason::RollbackBlockedRevoked
-                }
-                bbcom_plugin_manager::DisableReason::ArtifactRevoked => {
-                    PluginStatusReason::ArtifactRevoked
-                }
             }),
         ),
         PluginStatus::Stopped => (PluginLifecycleStatus::Stopped, None),
@@ -1478,42 +1271,6 @@ fn lifecycle_status(status: PluginStatus) -> (PluginLifecycleStatus, Option<Plug
         PluginStatus::Updating => (PluginLifecycleStatus::Updating, None),
         PluginStatus::RollingBack => (PluginLifecycleStatus::RollingBack, None),
         PluginStatus::Failed => (PluginLifecycleStatus::Failed, None),
-    }
-}
-
-fn permission_to_ipc(permission: Permission) -> PluginPermission {
-    match permission {
-        Permission::UiPanel => PluginPermission::UiPanel,
-        Permission::PluginStorage => PluginPermission::PluginStorage,
-        Permission::SessionMetadataRead => PluginPermission::SessionMetadataRead,
-        Permission::SessionCaptureRead => PluginPermission::SessionCaptureRead,
-        Permission::ProjectSettingsReadWrite => PluginPermission::ProjectSettingsReadWrite,
-        Permission::SerialPortsRead => PluginPermission::SerialPortsRead,
-        Permission::SerialControl => PluginPermission::SerialControl,
-        Permission::SerialWriteProposal => PluginPermission::SerialWriteProposal,
-        Permission::AiConversationRead => PluginPermission::AiConversationRead,
-        Permission::AiRequest => PluginPermission::AiRequest,
-        Permission::FileOpenSave => PluginPermission::FileOpenSave,
-        Permission::Clipboard => PluginPermission::Clipboard,
-        Permission::Notification => PluginPermission::Notification,
-    }
-}
-
-fn permission_from_ipc(permission: PluginPermission) -> Permission {
-    match permission {
-        PluginPermission::UiPanel => Permission::UiPanel,
-        PluginPermission::PluginStorage => Permission::PluginStorage,
-        PluginPermission::SessionMetadataRead => Permission::SessionMetadataRead,
-        PluginPermission::SessionCaptureRead => Permission::SessionCaptureRead,
-        PluginPermission::ProjectSettingsReadWrite => Permission::ProjectSettingsReadWrite,
-        PluginPermission::SerialPortsRead => Permission::SerialPortsRead,
-        PluginPermission::SerialControl => Permission::SerialControl,
-        PluginPermission::SerialWriteProposal => Permission::SerialWriteProposal,
-        PluginPermission::AiConversationRead => Permission::AiConversationRead,
-        PluginPermission::AiRequest => Permission::AiRequest,
-        PluginPermission::FileOpenSave => Permission::FileOpenSave,
-        PluginPermission::Clipboard => Permission::Clipboard,
-        PluginPermission::Notification => Permission::Notification,
     }
 }
 
@@ -1566,14 +1323,34 @@ fn ensure_exact_revision(requested: u64, actual: u64, request_id: &str) -> Resul
     }
 }
 
+fn validate_runtime_instance(
+    state: &AdapterState,
+    runtime: &RuntimeInstanceKey,
+    request_id: &str,
+) -> Result<(), IpcError> {
+    let snapshot = state.core.snapshot();
+    let current = snapshot
+        .plugins
+        .iter()
+        .find(|plugin| plugin.artifact.plugin_id == runtime.plugin_id);
+    if snapshot.workspace_id.as_deref() == Some(runtime.workspace_id.as_str())
+        && current.is_some_and(|plugin| {
+            plugin.running_instance_id == Some(runtime.instance_id)
+                && plugin.generation == runtime.generation
+        })
+    {
+        Ok(())
+    } else {
+        Err(permission_denied(request_id))
+    }
+}
+
 fn failure_code(failure: Option<&PluginOperationFailure>) -> PluginFailureCode {
     let Some(failure) = failure else {
         return PluginFailureCode::Unavailable;
     };
     if failure.code.contains("INSTALL") {
         PluginFailureCode::InstallationFailed
-    } else if failure.code.contains("AUTHORIZATION") || failure.code.contains("PERMISSION") {
-        PluginFailureCode::AuthorizationFailed
     } else if failure.code.contains("PANEL") {
         PluginFailureCode::PanelEventRejected
     } else if failure.code == "PLUGIN_SERIAL_EXECUTION_UNAVAILABLE" {
@@ -1662,412 +1439,5 @@ fn attach_request(error: IpcError, request_id: &str) -> IpcError {
         Some(existing) if existing == request_id => error,
         Some(_) => operation_conflict(request_id),
         None => error.with_request_id(request_id),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use bbcom_contracts::{
-        InstallPluginRequest, PluginPermissionDecision, PluginSnapshotRequest,
-        SetPluginEnabledRequest, SubmitPluginAuthorizationRequest,
-    };
-    use bbcom_plugin_manager::{PluginArtifact, SystemClock};
-
-    struct Core {
-        snapshot: PluginCommandSnapshot,
-        next: u64,
-    }
-
-    impl PluginCommandCorePort for Core {
-        fn snapshot(&self) -> PluginCommandSnapshot {
-            self.snapshot.clone()
-        }
-
-        fn queue_install(
-            &mut self,
-            revision: u64,
-            request_id: String,
-            _request: ManualPackageRequest,
-        ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-            self.queue(revision, request_id)
-        }
-
-        fn queue_set_enabled(
-            &mut self,
-            revision: u64,
-            request_id: String,
-            _plugin_id: String,
-            _enabled: bool,
-        ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-            self.queue(revision, request_id)
-        }
-
-        fn queue_authorization_decisions(
-            &mut self,
-            revision: u64,
-            request_id: String,
-            _review_id: String,
-            _decisions: Vec<(Permission, AuthorizationState)>,
-            _per_request_acknowledged: BTreeSet<Permission>,
-            _ack: bool,
-        ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-            self.queue(revision, request_id)
-        }
-
-        fn queue_dismiss_authorization(
-            &mut self,
-            revision: u64,
-            request_id: String,
-            _review_id: String,
-        ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-            self.queue(revision, request_id)
-        }
-
-        fn queue_proposal_decision(
-            &mut self,
-            revision: u64,
-            request_id: String,
-            _proposal_id: String,
-            _decision: ProposalDecision,
-        ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-            self.queue(revision, request_id)
-        }
-
-        fn queue_panel_event(
-            &mut self,
-            revision: u64,
-            request_id: String,
-            _plugin_id: String,
-            _event: PanelEvent,
-        ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-            self.queue(revision, request_id)
-        }
-
-        fn execute_operation(
-            &mut self,
-            operation_id: &str,
-            _now_ms: u64,
-        ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-            self.snapshot.revision += 1;
-            Ok(PluginOperationSnapshot {
-                operation_id: operation_id.to_owned(),
-                client_request_id: "request".to_owned(),
-                kind: super::super::command_service::PluginOperationKind::Install,
-                status: PluginOperationStatus::Completed,
-                failure: None,
-            })
-        }
-
-        fn cancel_operation(
-            &mut self,
-            _revision: u64,
-            operation_id: &str,
-        ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-            Ok(PluginOperationSnapshot {
-                operation_id: operation_id.to_owned(),
-                client_request_id: "request".to_owned(),
-                kind: super::super::command_service::PluginOperationKind::Install,
-                status: PluginOperationStatus::Cancelled,
-                failure: None,
-            })
-        }
-    }
-
-    impl Core {
-        fn queue(
-            &mut self,
-            revision: u64,
-            request_id: String,
-        ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-            assert_eq!(revision, self.snapshot.revision);
-            let id = format!("core-{}", self.next);
-            self.next += 1;
-            Ok(PluginOperationSnapshot {
-                operation_id: id,
-                client_request_id: request_id,
-                kind: super::super::command_service::PluginOperationKind::Install,
-                status: PluginOperationStatus::Queued,
-                failure: None,
-            })
-        }
-    }
-
-    struct Catalog;
-
-    impl CatalogViewPort for Catalog {
-        fn catalog(&mut self) -> Result<Vec<CatalogPluginRecord>, CatalogViewFailure> {
-            Ok(fixture_catalog())
-        }
-
-        fn plugin_display(
-            &mut self,
-            plugin_id: &str,
-        ) -> Result<PluginDisplayRecord, CatalogViewFailure> {
-            Ok(fixture_display(plugin_id))
-        }
-
-        fn session_label(&mut self, _session_id: &str) -> Result<String, CatalogViewFailure> {
-            Ok("Session".to_owned())
-        }
-    }
-
-    struct CountingCatalog {
-        catalog_calls: Arc<AtomicUsize>,
-    }
-
-    impl CatalogViewPort for CountingCatalog {
-        fn catalog(&mut self) -> Result<Vec<CatalogPluginRecord>, CatalogViewFailure> {
-            self.catalog_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(fixture_catalog())
-        }
-
-        fn plugin_display(
-            &mut self,
-            plugin_id: &str,
-        ) -> Result<PluginDisplayRecord, CatalogViewFailure> {
-            Ok(fixture_display(plugin_id))
-        }
-
-        fn session_label(&mut self, _session_id: &str) -> Result<String, CatalogViewFailure> {
-            Ok("Session".to_owned())
-        }
-    }
-
-    fn fixture_catalog() -> Vec<CatalogPluginRecord> {
-        vec![CatalogPluginRecord {
-            catalog_id: "official:fixture".to_owned(),
-            plugin_id: "dev.bbcom.fixture".to_owned(),
-            display_name: "Fixture".to_owned(),
-            description: String::new(),
-            version: "1.0.0".to_owned(),
-            publisher_name: "Fixture Publisher".to_owned(),
-            publisher_verification: PublisherVerification::Unverified,
-            install_request: ManualPackageRequest::new("official", "dev.bbcom.fixture", "1.0.0")
-                .unwrap(),
-        }]
-    }
-
-    fn fixture_display(plugin_id: &str) -> PluginDisplayRecord {
-        PluginDisplayRecord {
-            plugin_id: plugin_id.to_owned(),
-            display_name: "Fixture".to_owned(),
-            enabled: false,
-        }
-    }
-
-    fn adapter() -> NativePluginCommandAdapter<Core, Catalog, SystemClock> {
-        adapter_with_catalog(Catalog)
-    }
-
-    fn adapter_with_catalog<V: CatalogViewPort>(
-        catalog: V,
-    ) -> NativePluginCommandAdapter<Core, V, SystemClock> {
-        NativePluginCommandAdapter::new(
-            Core {
-                snapshot: PluginCommandSnapshot {
-                    revision: 1,
-                    plugins: Vec::new(),
-                    operations: Vec::new(),
-                    authorization_reviews: Vec::new(),
-                    proposals: Vec::new(),
-                    panels: Vec::new(),
-                },
-                next: 1,
-            },
-            catalog,
-            SystemClock,
-        )
-    }
-
-    fn fixture_plugin(permissions: impl IntoIterator<Item = Permission>) -> PluginSnapshot {
-        PluginSnapshot {
-            artifact: PluginArtifact::new(
-                "dev.bbcom.fixture",
-                "1.0.0",
-                format!("publisher:sha256-{}", "a".repeat(64)),
-                permissions,
-            )
-            .unwrap(),
-            status: PluginStatus::Stopped,
-            pending_version: None,
-            running_instance_id: None,
-            crashes_in_window: 0,
-            last_error: None,
-        }
-    }
-
-    #[test]
-    fn snapshot_and_install_preserve_external_correlation() {
-        let adapter = adapter();
-        let snapshot = adapter
-            .execute(PluginCommand::Snapshot(PluginSnapshotRequest {
-                request_id: "request-snapshot".to_owned(),
-                revision: 0,
-                operation_id: "snapshot-operation".to_owned(),
-            }))
-            .unwrap();
-        assert_eq!(snapshot.request_id(), "request-snapshot");
-        assert_eq!(snapshot.operation_id(), "snapshot-operation");
-
-        let installed = adapter
-            .execute(PluginCommand::Install(InstallPluginRequest {
-                request_id: "request-install".to_owned(),
-                revision: 1,
-                operation_id: "external-operation".to_owned(),
-                catalog_id: "official:fixture".to_owned(),
-            }))
-            .unwrap();
-        assert_eq!(installed.request_id(), "request-install");
-        assert_eq!(installed.operation_id(), "external-operation");
-    }
-
-    #[test]
-    fn verified_publisher_is_never_inferred_and_stale_mutation_fails() {
-        let adapter = adapter();
-        let response = adapter
-            .execute(PluginCommand::Snapshot(PluginSnapshotRequest {
-                request_id: "request-snapshot".to_owned(),
-                revision: 0,
-                operation_id: "snapshot-operation".to_owned(),
-            }))
-            .unwrap();
-        assert!(!response.data().unwrap().catalog[0].publisher_verified);
-        let error = adapter
-            .execute(PluginCommand::SetEnabled(SetPluginEnabledRequest {
-                request_id: "request-enable".to_owned(),
-                revision: 0,
-                operation_id: "enable-operation".to_owned(),
-                plugin_id: "dev.bbcom.fixture".to_owned(),
-                enabled: true,
-            }))
-            .unwrap_err();
-        assert_eq!(error.code, AppErrorCode::RevisionConflict);
-        assert_eq!(error.request_id.as_deref(), Some("request-enable"));
-    }
-
-    #[test]
-    fn install_exact_replay_reuses_core_operation_without_catalog_read() {
-        let catalog_calls = Arc::new(AtomicUsize::new(0));
-        let adapter = adapter_with_catalog(CountingCatalog {
-            catalog_calls: Arc::clone(&catalog_calls),
-        });
-        let request = InstallPluginRequest {
-            request_id: "request-install".to_owned(),
-            revision: 1,
-            operation_id: "external-operation".to_owned(),
-            catalog_id: "official:fixture".to_owned(),
-        };
-
-        let first = adapter
-            .execute(PluginCommand::Install(request.clone()))
-            .unwrap();
-        assert_eq!(catalog_calls.load(Ordering::SeqCst), 2);
-
-        let replay = adapter
-            .execute(PluginCommand::Install(request.clone()))
-            .unwrap();
-        assert_eq!(replay, first);
-        assert_eq!(catalog_calls.load(Ordering::SeqCst), 2);
-        assert_eq!(adapter.state.lock().unwrap().core.next, 2);
-
-        let mut variant = request;
-        variant.catalog_id = "official:replacement".to_owned();
-        let error = adapter
-            .execute(PluginCommand::Install(variant))
-            .unwrap_err();
-        assert_eq!(error.code, AppErrorCode::Busy);
-        assert_eq!(error.message_key, "error.plugin_operation_conflict");
-        assert_eq!(catalog_calls.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn authorization_prevalidation_failure_is_canonical_and_stable() {
-        let catalog_calls = Arc::new(AtomicUsize::new(0));
-        let adapter = adapter_with_catalog(CountingCatalog {
-            catalog_calls: Arc::clone(&catalog_calls),
-        });
-        {
-            let mut state = adapter.state.lock().unwrap();
-            state
-                .core
-                .snapshot
-                .plugins
-                .push(fixture_plugin([Permission::UiPanel, Permission::Clipboard]));
-            state
-                .core
-                .snapshot
-                .authorization_reviews
-                .push(AuthorizationReviewSnapshot {
-                    review_id: "review-1".to_owned(),
-                    plugin_id: "dev.bbcom.fixture".to_owned(),
-                    artifact_version: "1.0.0".to_owned(),
-                    implicit: BTreeSet::new(),
-                    requires_persistent_approval: BTreeSet::from([Permission::UiPanel]),
-                    requires_per_request_approval: BTreeSet::new(),
-                    unavailable: BTreeSet::new(),
-                    extra_confirmation: false,
-                    extra_confirmation_reasons: BTreeSet::new(),
-                });
-        }
-        let request = SubmitPluginAuthorizationRequest {
-            request_id: "request-authorization".to_owned(),
-            revision: 1,
-            operation_id: "authorization-operation".to_owned(),
-            review_id: "review-1".to_owned(),
-            decisions: vec![
-                PluginPermissionDecision {
-                    permission: PluginPermission::UiPanel,
-                    state: PluginPermissionDecisionState::Granted,
-                },
-                PluginPermissionDecision {
-                    permission: PluginPermission::Clipboard,
-                    state: PluginPermissionDecisionState::Granted,
-                },
-            ],
-            per_request_capabilities_acknowledged: Vec::new(),
-            extra_confirmation_acknowledged: false,
-        };
-
-        let first = adapter
-            .execute(PluginCommand::SubmitAuthorization(request.clone()))
-            .unwrap();
-        assert!(matches!(
-            &first,
-            PluginCommandResponse::Failed {
-                failure: PluginFailure {
-                    code: PluginFailureCode::AuthorizationFailed
-                },
-                ..
-            }
-        ));
-        assert_eq!(catalog_calls.load(Ordering::SeqCst), 1);
-
-        {
-            let mut state = adapter.state.lock().unwrap();
-            state.core.snapshot.authorization_reviews[0].requires_persistent_approval =
-                BTreeSet::from([Permission::UiPanel, Permission::Clipboard]);
-        }
-        let mut reordered = request.clone();
-        reordered.decisions.reverse();
-        let replay = adapter
-            .execute(PluginCommand::SubmitAuthorization(reordered))
-            .unwrap();
-        assert_eq!(replay, first);
-        assert_eq!(catalog_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(adapter.state.lock().unwrap().core.next, 1);
-
-        let mut variant = request;
-        variant.decisions[1].state = PluginPermissionDecisionState::Denied;
-        let error = adapter
-            .execute(PluginCommand::SubmitAuthorization(variant))
-            .unwrap_err();
-        assert_eq!(error.code, AppErrorCode::Busy);
-        assert_eq!(error.message_key, "error.plugin_operation_conflict");
-        assert_eq!(catalog_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(adapter.state.lock().unwrap().core.next, 1);
     }
 }

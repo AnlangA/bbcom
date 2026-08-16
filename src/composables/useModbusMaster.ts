@@ -30,7 +30,7 @@ import {
   type ModbusReplayWriteTarget,
 } from '../lib/modbus';
 import type { ModbusStreamRecord } from '../lib/modbus';
-import { useSessionStore } from '../stores/sessions';
+import { useSessionDocument } from '../features/sessions/session-ports';
 import type {
   ModbusMasterConfig,
   ModbusRegister,
@@ -96,7 +96,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
   // Hold the options that may be swapped after construction (waveform sink).
   const opts = { ...options };
   // Acquire the store inside setup so it binds to the active Pinia instance.
-  const sessionStore = useSessionStore();
+  const document = useSessionDocument(sessionId);
 
   const running = ref(false);
   const status = ref<ModbusMasterStatus>({ kind: 'idle' });
@@ -288,7 +288,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     emitBatchStatusEvents(result.statuses);
 
     if (result.valueUpdates.length > 0) {
-      sessionStore.setModbusRegisterValues(sessionId, result.valueUpdates);
+      document.setModbusRegisterValues(sessionId, result.valueUpdates);
     }
     if (result.samples.length > 0) {
       opts.onSamples?.(result.samples);
@@ -332,7 +332,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     // Mirror the loaded value into the table (runtime-only) so the UI shows
     // what is being pushed, then batch-send exactly like sendAll.
     const now = Date.now();
-    sessionStore.setModbusRegisterValues(
+    document.setModbusRegisterValues(
       sessionId,
       targets.map((t) => ({ id: t.reg.id, value: t.value, values: null, valueTs: now })),
     );
@@ -409,7 +409,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
       }
       const mapped = mapModbusReadResponse(batch, response, Date.now());
       if (mapped.valueUpdates.length === 0) return null;
-      sessionStore.setModbusRegisterValues(sessionId, mapped.valueUpdates);
+      document.setModbusRegisterValues(sessionId, mapped.valueUpdates);
       return mapped.valueUpdates[0].value;
     });
   }
@@ -465,7 +465,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
 
   async function runReplayItem(item: ModbusReplayWriteTarget): Promise<void> {
     // Write the value; skip on failure (timeout/no-ack) but keep replaying.
-    sessionStore.updateModbusRegister(sessionId, item.reg.id, {
+    document.updateModbusRegister(sessionId, item.reg.id, {
       value: item.value,
       values: null,
       valueTs: Date.now(),

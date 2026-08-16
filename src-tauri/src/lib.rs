@@ -26,15 +26,30 @@ pub fn run() {
         .manage(secure_settings::SecureSettingsState::default())
         .manage(commands::ai::request_manager::AiRequestManager::default())
         .manage(commands::shutdown::ShutdownGate::default())
+        .manage(commands::plugin::PluginLocalGrantState::default())
         .manage(commands::legacy_backup::LegacyBackupManager::default())
         .setup(|app| {
             let app_data_root = app.path().app_data_dir()?;
             let workspace_root = app_data_root.join("projects-v1");
             app.manage(commands::workspace::WorkspaceManager::open(workspace_root)?);
-            app.manage(plugins::NativePluginSecurityStore::open(&app_data_root)?);
+            let plugin_sources = Arc::new(
+                plugins::NativePluginSourceRegistry::open(
+                    app_data_root.join("plugin-sources-v2.json"),
+                )
+                .map_err(|_| std::io::Error::other("plugin source registry unavailable"))?,
+            );
+            app.manage(Arc::clone(&plugin_sources));
+            plugins::spawn_automatic_source_checks(plugin_sources);
+            // Fail-closed default first: if production composition below
+            // fails, every plugin command stays unavailable.
             app.manage(commands::plugin::PluginCommandState::new(Arc::new(
                 commands::plugin::UnavailablePluginCommandService,
             )));
+            plugins::install_managed_defaults(app.handle());
+            // A missing active workspace (fresh install) composes later when
+            // the first workspace is created or opened.
+            plugins::ensure_plugin_runtime(app.handle());
+            plugins::spawn_dev_directory_watchers(app.handle().clone());
             app.manage(commands::legacy_reset::LegacyResetManager::open(
                 app_data_root.join("reset-v1"),
             )?);
@@ -161,13 +176,20 @@ pub fn run() {
             commands::workspace::export_project,
             commands::workspace::cancel_workspace_operation,
             commands::plugin::plugin_center_snapshot,
+            commands::plugin::plugin_request_local_source_grant,
             commands::plugin::plugin_install,
             commands::plugin::plugin_set_enabled,
-            commands::plugin::plugin_submit_authorization,
-            commands::plugin::plugin_dismiss_authorization,
+            commands::plugin::plugin_source_add,
+            commands::plugin::plugin_source_update,
+            commands::plugin::plugin_source_remove,
+            commands::plugin::plugin_source_refresh,
+            commands::plugin::plugin_set_watch_enabled,
             commands::plugin::plugin_resolve_serial_proposal,
             commands::plugin::plugin_emit_panel_event,
             commands::plugin::plugin_cancel_operation,
+            commands::plugin::plugin_install_local,
+            commands::plugin::plugin_uninstall,
+            commands::plugin::plugin_serial_action_result,
         ])
         .run(tauri::generate_context!());
 

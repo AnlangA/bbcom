@@ -7,7 +7,6 @@ members = [
   "crates/bbcom-plugin-host",
   "crates/bbcom-plugin-manager",
   "crates/bbcom-plugin-repository",
-  "crates/bbcom-plugin-trust",
   "crates/bbcom-workspace",
   "crates/xtask",
 ]

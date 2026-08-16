@@ -88,13 +88,13 @@ function emitToggle(field: PluginPanelField, event: Event): void {
 }
 
 function emitEvent(field: PluginPanelField, value: string): void {
-  emit('event', { pluginId: props.panel.pluginId, fieldId: field.id, value });
+  emit('event', { runtime: props.panel.runtime, fieldId: field.id, value });
 }
 </script>
 
 <style scoped>
 .plugin-hosted-panel {
-  border: 1px solid var(--border-color, #475569);
+  border: 1px solid var(--border-color);
   border-radius: 0.5rem;
   padding: 0.85rem;
 }
@@ -124,10 +124,10 @@ input,
 select,
 button {
   min-height: 2.25rem;
-  border: 1px solid var(--border-color, #475569);
+  border: 1px solid var(--border-color);
   border-radius: 0.35rem;
   padding: 0.35rem 0.55rem;
-  background: var(--input-bg, #0f172a);
+  background: var(--bg-inset);
   color: inherit;
 }
 
@@ -140,7 +140,7 @@ input[type='checkbox'] {
 input:focus-visible,
 select:focus-visible,
 button:focus-visible {
-  outline: 3px solid var(--primary-color, #60a5fa);
+  outline: 3px solid var(--color-primary);
   outline-offset: 2px;
 }
 </style>

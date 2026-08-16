@@ -7,9 +7,9 @@ import { useSerialConnection } from '../../src/composables/useSerialConnection.t
 import type {
   SerialPortAdapter,
   SerialWatchHandleAdapter,
-} from '../../src/lib/serial-port-adapter.ts';
+} from '../../src/features/serial/index.ts';
 import type { SerialTimerScheduler } from '../../src/lib/serial-rx-scheduler.ts';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 import type { PortConfig } from '../../src/types/serial.ts';
 import {
   PortLeaseRegistry,
@@ -139,7 +139,7 @@ function createConnection(
   } = {},
 ) {
   setActivePinia(createPinia());
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
   const sessionId = store.createSession('COM1', config);
   const scope = effectScope();
   const connection = scope.run(() =>
@@ -853,7 +853,7 @@ test('a newer start supersedes an opening candidate and reconnect exhaustion rep
 
 test('construction retains native dependencies until an explicit leased connection attempt', () => {
   setActivePinia(createPinia());
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
   const sessionId = store.createSession('COM-default', config);
   const scope = effectScope();
   const connection = scope.run(() =>

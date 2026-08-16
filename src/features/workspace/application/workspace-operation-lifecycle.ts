@@ -1,5 +1,5 @@
 import type { AppErrorCode, IpcError } from '../../../generated/ipc-contracts';
-import type { OperationRegistry } from '../../application/operation-registry';
+import type { OperationRegistry } from '../../application';
 import type { WorkspaceActionFailure, WorkspaceOperationLifecyclePort } from '../types';
 
 const adapters = new WeakMap<OperationRegistry, WorkspaceOperationRegistryLifecycle>();

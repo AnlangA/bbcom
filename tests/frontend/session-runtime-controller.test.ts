@@ -57,7 +57,7 @@ import {
   useSessionRuntimeController,
   type SessionRuntimeController,
 } from '../../src/features/sessions/runtime/session-runtime-controller.ts';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 
 const config: PortConfig = {
   baudRate: 115200,
@@ -199,7 +199,7 @@ function sessionById(session: SerialSession[], id: string): SerialSession {
 
 function setup() {
   setActivePinia(createPinia());
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
   const id = store.createSession('COM1', config);
   const serial = makeSerial();
   mocked.serial = serial;

@@ -74,6 +74,9 @@ jobs:
           toolchain: 1.97.0
           targets: ${{ matrix.target }}
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
       - name: Install locked frontend and packaging tools
         run: pnpm install --frozen-lockfile
 

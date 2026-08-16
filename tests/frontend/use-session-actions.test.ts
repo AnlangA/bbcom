@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 import { useSerialStore } from '../../src/stores/serial.ts';
 import { useAppStore } from '../../src/stores/app.ts';
 import { useSessionActions } from '../../src/composables/useSessionActions.ts';
@@ -63,7 +63,7 @@ function withLocalStorageMock<T>(fn: () => Promise<T> | T): Promise<T> | T {
 
 function setup() {
   setActivePinia(createPinia());
-  const sessions = useSessionStore();
+  const sessions = useSessionCoreStore();
   const serial = useSerialStore();
   const app = useAppStore();
   const actions = useSessionActions();

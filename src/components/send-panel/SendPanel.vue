@@ -102,8 +102,8 @@ import { encodeUtf8, isValidHex as checkValidHex, normalizeHex, parseHex } from 
 import { checksumAlgoOptionsWithNone } from '../../lib/checksum-constants';
 import { MAX_INPUT_SIZE } from '../../types';
 import { useAppStore } from '../../stores/app';
-import { useSessionStore } from '../../stores/sessions';
-import { calculateChecksum } from '../../lib/ipc';
+import { useSessionCatalog } from '../../features/sessions';
+import { calculateChecksum } from '../../features/native';
 import { t } from '../../lib/i18n';
 import type { ChecksumType, LineEnding, QuickCommand, SendHistoryEntry } from '../../types';
 import type { SessionRuntimeMacroController } from '../../features/sessions/runtime/session-runtime-controller';
@@ -130,7 +130,7 @@ const emit = defineEmits<{
 }>();
 
 const appStore = useAppStore();
-const sessionStore = useSessionStore();
+const catalog = useSessionCatalog();
 const message = useMessage();
 const isHex = computed({
   get: () => appStore.sendAsHex,
@@ -199,8 +199,8 @@ watch(
   () => appStore.aiCommandSeq,
   () => {
     if (!appStore.aiCommandDraft) return;
-    if (props.sessionId && props.sessionId !== sessionStore.activeSessionId) return;
-    if (!sessionStore.activeSession) {
+    if (props.sessionId && props.sessionId !== catalog.activeSessionId.value) return;
+    if (!catalog.activeSession.value) {
       appStore.setPendingAiCommand(appStore.aiCommandDraft);
       return;
     }
@@ -366,7 +366,7 @@ function formatHexInput() {
 }
 
 .byte-count {
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
   font-family: var(--font-mono);
   padding: 2px 6px;

@@ -1,6 +1,7 @@
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import {
+  ensureLocaleLoaded,
   extraLocaleKeys,
   locale,
   missingLocaleKeys,
@@ -8,6 +9,10 @@ import {
   supportedLocales,
   t,
 } from '../../src/lib/i18n.ts';
+
+// Only the default locale (zh) is bundled synchronously; every test that
+// asserts English strings awaits the lazy catalog first.
+await ensureLocaleLoaded('en');
 
 test('t resolves a key in the active (zh) locale', () => {
   setLocale('zh');
@@ -76,4 +81,25 @@ test('every zh key has an English counterpart (no missing en translations)', () 
 
 test('zh catalog covers every English source key', () => {
   assert.deepEqual(missingLocaleKeys('zh'), []);
+});
+
+test('default (zh) catalog is sync while the en catalog loads lazily', async () => {
+  // Re-import the module with a fresh registry so this test observes the
+  // pre-load state even though the tests above already loaded `en`.
+  vi.resetModules();
+  const fresh = await import('../../src/lib/i18n.ts');
+
+  // Default locale resolves immediately, with no loader awaited.
+  fresh.setLocale('zh');
+  assert.equal(fresh.t('session.connect'), '连接');
+
+  // Before the lazy chunk lands, English lookups deterministically return the
+  // key itself (the import promise cannot settle before this sync assert).
+  fresh.setLocale('en');
+  assert.equal(fresh.t('session.connect'), 'session.connect');
+
+  // Once loaded, English resolves normally and the loader promise is shared.
+  await fresh.ensureLocaleLoaded('en');
+  await fresh.ensureLocaleLoaded('en');
+  assert.equal(fresh.t('session.connect'), 'Connect');
 });

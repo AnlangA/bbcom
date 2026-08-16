@@ -347,7 +347,7 @@ const sourceTooltip = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-weight: 600;
@@ -368,7 +368,7 @@ const sourceTooltip = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   font-family: var(--font-mono);
 }
 
@@ -405,7 +405,7 @@ const sourceTooltip = computed(() => {
 
 .legend-empty {
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
 }
 
 .wf-actions {
@@ -428,7 +428,7 @@ const sourceTooltip = computed(() => {
   color: var(--text-dim);
   cursor: pointer;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   font-weight: 700;
   line-height: 1;
 }
@@ -493,7 +493,7 @@ const sourceTooltip = computed(() => {
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-tertiary);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   flex-wrap: wrap;
   flex-shrink: 0;
 }
@@ -505,11 +505,11 @@ const sourceTooltip = computed(() => {
   padding: 2px 6px;
   border-radius: var(--radius-sm);
   background: var(--bg-inset);
-  border-left: 2px solid var(--stat-color, var(--text-dim));
+  border-left: 2px solid var(--text-muted);
 }
 
 .stat-name {
-  color: var(--stat-color, var(--text-dim));
+  color: var(--text-muted);
   font-weight: 700;
 }
 

@@ -1,23 +1,10 @@
 <template>
-  <n-modal
-    :show="show"
-    preset="card"
-    :title="t('settings.title')"
-    :bordered="false"
-    :auto-focus="true"
-    :trap-focus="true"
-    :style="{ width: '520px', maxWidth: '92vw' }"
-    :mask-closable="true"
-    @update:show="onUpdateShow"
-    @after-enter="focusInitialControl"
-    @after-leave="restoreTriggerFocus"
-  >
-    <div ref="settingsBodyRef" class="settings-body">
-      <section class="settings-section">
-        <div class="section-head">
-          <span class="section-title">{{ t('settings.appearance') }}</span>
-          <span class="section-desc">{{ t('settings.appearance.desc') }}</span>
-        </div>
+  <AppModal :show="show" :title="t('settings.title')" width="min(520px, 92vw)" @close="close">
+    <div class="settings-body">
+      <SettingsSection
+        :title="t('settings.appearance')"
+        :description="t('settings.appearance.desc')"
+      >
         <div class="section-row">
           <n-switch
             :value="appStore.theme === 'light'"
@@ -38,13 +25,12 @@
           />
           <span class="row-label">{{ t('settings.language') }}</span>
         </div>
-      </section>
+      </SettingsSection>
 
-      <section class="settings-section">
-        <div class="section-head">
-          <span class="section-title">{{ t('settings.captureBuffer') }}</span>
-          <span class="section-desc">{{ t('settings.captureBuffer.desc') }}</span>
-        </div>
+      <SettingsSection
+        :title="t('settings.captureBuffer')"
+        :description="t('settings.captureBuffer.desc')"
+      >
         <div class="section-row">
           <n-input-number
             :value="appStore.maxBufferFrames"
@@ -62,28 +48,24 @@
             t('settings.resetDefault')
           }}</n-button>
         </div>
-      </section>
+      </SettingsSection>
 
-      <section class="settings-section">
-        <div class="section-head">
-          <span class="section-title">{{ t('settings.connection') }}</span>
-          <span class="section-desc">{{ t('settings.connection.desc') }}</span>
-        </div>
+      <SettingsSection
+        :title="t('settings.connection')"
+        :description="t('settings.connection.desc')"
+      >
         <div class="section-row">
           <n-switch
-            :checked="appStore.autoReconnect"
+            :value="appStore.autoReconnect"
             size="small"
             :aria-label="t('settings.autoReconnect')"
-            @update:checked="setAutoReconnect"
+            @update:value="setAutoReconnect"
           />
           <span class="row-label">{{ t('settings.autoReconnect') }}</span>
         </div>
-      </section>
+      </SettingsSection>
 
-      <section class="settings-section">
-        <div class="section-head">
-          <span class="section-title">{{ t('settings.about') }}</span>
-        </div>
+      <SettingsSection :title="t('settings.about')">
         <dl class="about-grid">
           <div class="about-row">
             <dt>{{ t('settings.app') }}</dt>
@@ -110,11 +92,7 @@
             </dd>
           </div>
         </dl>
-      </section>
-
-      <!-- The panel renders nothing unless application bootstrap provides a
-           fully constructed PluginCenterService after its platform gate. -->
-      <PluginCenterPanel />
+      </SettingsSection>
     </div>
     <template #footer>
       <div class="settings-footer">
@@ -129,57 +107,30 @@
         <n-button size="small" type="primary" @click="close">{{ t('settings.done') }}</n-button>
       </div>
     </template>
-  </n-modal>
+  </AppModal>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
-import { NModal, NInputNumber, NButton, NSwitch } from 'naive-ui';
+import { computed, ref } from 'vue';
+import { NInputNumber, NButton, NSwitch } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
-import { PluginCenterPanel } from '../plugins';
+import AppModal from '../ui/AppModal.vue';
+import SettingsSection from '../ui/SettingsSection.vue';
 import { useAppStore } from '../../stores/app';
 import { APP_VERSION } from '../../lib/version';
 import { supportedLocales, t, type Locale } from '../../lib/i18n';
 import { MAX_FRAMES } from '../../types';
 
-const props = defineProps<{ show: boolean }>();
+defineProps<{ show: boolean }>();
 
 const emit = defineEmits<{ (e: 'update:show', value: boolean): void }>();
 
 const appStore = useAppStore();
 const localeOptions = computed(() => supportedLocales());
-const settingsBodyRef = ref<HTMLElement | null>(null);
 const saveAnnouncementRevision = ref(0);
-let previouslyFocused: HTMLElement | null = null;
-
-watch(
-  () => props.show,
-  (show) => {
-    if (show && document.activeElement instanceof HTMLElement) {
-      previouslyFocused = document.activeElement;
-    }
-  },
-);
 
 function announceSaved(): void {
   saveAnnouncementRevision.value += 1;
-}
-
-function focusInitialControl(): void {
-  const firstControl = settingsBodyRef.value?.querySelector<HTMLElement>(
-    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-  );
-  firstControl?.focus();
-}
-
-function restoreTriggerFocus(): void {
-  const target = previouslyFocused;
-  previouslyFocused = null;
-  if (target?.isConnected) void nextTick(() => target.focus());
-}
-
-function onUpdateShow(value: boolean) {
-  emit('update:show', value);
 }
 
 function onBufferChange(value: number | null) {
@@ -218,30 +169,6 @@ function close() {
   flex-direction: column;
   gap: var(--space-lg);
   padding: var(--space-sm) var(--space-xs);
-}
-
-.settings-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-}
-
-.section-head {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2xs);
-}
-
-.section-title {
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-}
-
-.section-desc {
-  font-size: var(--font-size-sm);
-  color: var(--text-muted);
-  line-height: var(--line-height-normal);
 }
 
 .section-row {

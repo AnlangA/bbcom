@@ -9,6 +9,7 @@ import {
 } from './format';
 import { findFrameHighlight, type HighlightSearchAccessors } from './highlights';
 import { splitLogDisplayLines } from './log-line-breaks';
+import { MERGED_FRAME_LINE_COUNT, type MergedFrameLineCountHook } from './merged-frame-rope';
 
 export const PACKET_COPY_LIMITS = {
   maxBytes: 2 * 1024 * 1024,
@@ -89,6 +90,22 @@ export function packetLineBreakCount(data: Uint8Array): number {
 }
 
 /**
+ * Rope-built MERGED frames carry a symbol-keyed memo hook (see
+ * `merged-frame-rope`), so estimate passes reuse one display line count per
+ * run and content version instead of re-decoding and re-splitting the 64 KiB
+ * tail on every streaming pulse. Plain captured frames have no hook and keep
+ * computing directly.
+ */
+interface MergedLineCountCarrier {
+  [MERGED_FRAME_LINE_COUNT]?: MergedFrameLineCountHook;
+}
+
+function countLogDisplayLines(frame: DataFrame): number {
+  const lines = splitLogDisplayLines(formatUtf8(frame.data));
+  return lines.length - (lines.length > 1 && lines.at(-1) === '' ? 1 : 0);
+}
+
+/**
  * Exact virtual row height when explicit line endings and recognized log
  * record prefixes are preserved. A terminal CR/LF sequence is the current
  * line's delimiter, not a request for an additional empty display line.
@@ -110,8 +127,10 @@ export function packetRowHeight(
   if (!preserveLineBreaks || displayMode === 'HEX') {
     return PACKET_ROW_HEIGHT;
   }
-  const lines = splitLogDisplayLines(formatUtf8(frame.data));
-  const lineCount = lines.length - (lines.length > 1 && lines.at(-1) === '' ? 1 : 0);
+  const lineCountFor = (frame as MergedLineCountCarrier)[MERGED_FRAME_LINE_COUNT];
+  const lineCount = lineCountFor
+    ? lineCountFor(() => countLogDisplayLines(frame))
+    : countLogDisplayLines(frame);
   return PACKET_ROW_HEIGHT + (lineCount - 1) * PACKET_ROW_LINE_HEIGHT;
 }
 

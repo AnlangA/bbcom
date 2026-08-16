@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
-use std::str::FromStr;
 use std::time::Instant;
 
 use bbcom_plugin_contracts::{
     HANDSHAKE_TIMEOUT_MS, PROTOCOL_MAJOR, PROTOCOL_MINOR, Permission, WIT_PACKAGE,
     generated::{Envelope, PluginHello, envelope},
+    parse_permission,
 };
 
 use crate::{HostError, Result};
@@ -87,7 +87,7 @@ impl HandshakeMachine {
         }
         let mut granted = BTreeSet::new();
         for value in &hello.granted_capabilities {
-            let permission = Permission::from_str(value).map_err(HostError::from)?;
+            let permission = parse_permission(value).map_err(HostError::from)?;
             if !granted.insert(permission) {
                 return Err(HostError::InvalidHandshake);
             }

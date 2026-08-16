@@ -21,10 +21,11 @@ use tauri::{State, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::utils::window::require_main_window_label;
+
 use super::legacy_backup::LegacyBackupManager;
 use super::workspace::WorkspaceManager;
 
-const MAIN_WINDOW_LABEL: &str = "main";
 const JOURNAL_FORMAT: &str = "bbcom-native-reset-journal-v1";
 const JOURNAL_FILE: &str = "journal.json";
 const RESET_WORKSPACE_NAME: &str = "bbcom 0.7.3 reset";
@@ -142,7 +143,7 @@ pub fn get_legacy_reset_journal(
     request: GetLegacyResetJournalRequest,
 ) -> Result<GetLegacyResetJournalResponse, IpcError> {
     const OPERATION: &str = "get_legacy_reset_journal";
-    ensure_main_window(&window, OPERATION)?;
+    require_main_window_label(window.label(), OPERATION)?;
     validate_opaque_id(&request.request_id, "requestId", OPERATION)?;
     Ok(GetLegacyResetJournalResponse {
         request_id: request.request_id,
@@ -157,7 +158,7 @@ pub async fn begin_legacy_discard(
     request: BeginLegacyDiscardRequest,
 ) -> Result<BeginLegacyDiscardResponse, IpcError> {
     const OPERATION: &str = "begin_legacy_discard";
-    ensure_main_window(&window, OPERATION)?;
+    require_main_window_label(window.label(), OPERATION)?;
     validate_opaque_id(&request.request_id, "requestId", OPERATION)?;
     let _operation = manager.operation.lock().await;
     if manager.snapshot(OPERATION)?.phase != LegacyResetJournalPhase::Required {
@@ -198,7 +199,7 @@ pub async fn prepare_legacy_reset(
     request: PrepareLegacyResetRequest,
 ) -> Result<PrepareLegacyResetResponse, IpcError> {
     const OPERATION: &str = "prepare_legacy_reset";
-    ensure_main_window(&window, OPERATION)?;
+    require_main_window_label(window.label(), OPERATION)?;
     validate_opaque_id(&request.request_id, "requestId", OPERATION)?;
     let _operation = reset.operation.lock().await;
     let mut journal = reset.snapshot(OPERATION)?;
@@ -279,7 +280,7 @@ pub async fn complete_legacy_reset(
     request: CompleteLegacyResetRequest,
 ) -> Result<CompleteLegacyResetResponse, IpcError> {
     const OPERATION: &str = "complete_legacy_reset";
-    ensure_main_window(&window, OPERATION)?;
+    require_main_window_label(window.label(), OPERATION)?;
     validate_opaque_id(&request.request_id, "requestId", OPERATION)?;
     validate_opaque_id(&request.workspace_id, "workspaceId", OPERATION)?;
     let _operation = reset.operation.lock().await;
@@ -563,14 +564,6 @@ fn validate_opaque_id(
         Err(IpcError::invalid_input(operation, field))
     } else {
         Ok(())
-    }
-}
-
-fn ensure_main_window(window: &WebviewWindow, operation: &'static str) -> Result<(), IpcError> {
-    if window.label() == MAIN_WINDOW_LABEL {
-        Ok(())
-    } else {
-        Err(IpcError::security_denied(operation))
     }
 }
 

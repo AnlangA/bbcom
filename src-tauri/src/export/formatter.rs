@@ -32,7 +32,8 @@ pub(crate) fn append_frames(
                 buf.push(b'\n');
             }
             ExportFormat::TxtHex => {
-                let timestamp = timestamp::format_timestamp(frame.timestamp);
+                let mut timestamp = String::with_capacity(24);
+                timestamp::format_timestamp_ms_into(frame.timestamp as u64, &mut timestamp);
                 let direction = dir_label(&frame.direction);
                 // Same hex-editor dump layout as the auto-log hex format:
                 // 16 bytes per line, full prefix repeated on every line.
@@ -50,7 +51,8 @@ pub(crate) fn append_frames(
                 }
             }
             ExportFormat::TxtAscii => {
-                let timestamp = timestamp::format_timestamp(frame.timestamp);
+                let mut timestamp = String::with_capacity(24);
+                timestamp::format_timestamp_ms_into(frame.timestamp as u64, &mut timestamp);
                 let direction = dir_label(&frame.direction);
                 let infer_record_boundaries = matches!(&frame.direction, &Direction::Rx);
                 visit_readable_log_lines(&frame.data, infer_record_boundaries, |line| {
@@ -59,13 +61,10 @@ pub(crate) fn append_frames(
                 })?;
             }
             ExportFormat::Csv => {
-                write!(
-                    buf,
-                    "{},{},\"",
-                    timestamp::format_timestamp(frame.timestamp),
-                    dir_label(&frame.direction),
-                )
-                .map_err(|e| encode_error(e, format, path))?;
+                let mut timestamp = String::with_capacity(24);
+                timestamp::format_timestamp_ms_into(frame.timestamp as u64, &mut timestamp);
+                write!(buf, "{},{},\"", timestamp, dir_label(&frame.direction),)
+                    .map_err(|e| encode_error(e, format, path))?;
                 hex::append_hex(buf, &frame.data);
                 buf.extend_from_slice(b"\"\n");
             }
@@ -102,12 +101,14 @@ mod tests {
                 direction: Direction::Tx,
                 timestamp: 0.0,
                 data: vec![0x41, 0x42],
+                data_b64: None,
             },
             DataFrame {
                 id: "2".to_string(),
                 direction: Direction::Rx,
                 timestamp: 1.0,
                 data: vec![0x43, 0x44],
+                data_b64: None,
             },
         ]
     }
@@ -136,6 +137,7 @@ mod tests {
             direction: Direction::Rx,
             timestamp: 0.0,
             data: vec![0x30_u8; 20],
+            data_b64: None,
         }];
         let mut output = Vec::new();
         append_frames(
@@ -174,6 +176,7 @@ mod tests {
             direction: Direction::Rx,
             timestamp: 1.0,
             data: b"I: firstI: second\x1b[0m".to_vec(),
+            data_b64: None,
         }];
         let mut output = Vec::new();
         append_frames(

@@ -199,7 +199,7 @@ const transportOptions = computed(() => [
   padding: 6px 10px 4px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-secondary);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
   flex-wrap: wrap;
   flex-shrink: 0;
@@ -247,7 +247,7 @@ const transportOptions = computed(() => [
 }
 
 .mb-field-label {
-  font-size: 9px;
+  font-size: var(--font-size-sm);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-dim);
@@ -269,7 +269,7 @@ const transportOptions = computed(() => [
 
 .mb-status {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   color: var(--text-dim);
   padding: 2px 6px;
   border-radius: var(--radius-sm);

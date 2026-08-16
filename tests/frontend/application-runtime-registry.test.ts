@@ -4,6 +4,7 @@ import {
   ApplicationRuntimeCreationSupersededError,
   ApplicationRuntimeRegistry,
   ApplicationRuntimeRegistryShutdownError,
+  DuplicateApplicationRuntimeError,
   type RuntimeDisposalContext,
 } from '../../src/features/application/application-runtime-registry.ts';
 
@@ -143,4 +144,138 @@ test('shutdown interrupts pending residency, disposes it once, and closes the re
     () => registry.ensure({ id: 'session-new', label: 'new' }),
     ApplicationRuntimeRegistryShutdownError,
   );
+});
+
+test('create, ensure, and reconcile validate identities and refresh resident metadata', async () => {
+  const updates: string[] = [];
+  const registry = new ApplicationRuntimeRegistry<TestSession, TestRuntime>({
+    createRuntime: (session) => ({ id: `runtime-${session.id}` }),
+    updateRuntime: (_runtime, session) => updates.push(session.label),
+    disposeRuntime: () => undefined,
+  });
+  const detach = registry.subscribe(() => {
+    throw new Error('observer failure is isolated');
+  });
+
+  const runtime = await registry.create({ id: 'session-create', label: 'first' });
+  assert.equal(runtime.id, 'runtime-session-create');
+  assert.deepEqual(
+    registry.list().map((entry) => entry.sessionId),
+    ['session-create'],
+  );
+  await assert.rejects(
+    registry.create({ id: 'session-create', label: 'duplicate' }),
+    DuplicateApplicationRuntimeError,
+  );
+  assert.strictEqual(await registry.ensure({ id: 'session-create', label: 'ensured' }), runtime);
+  await registry.reconcile([{ id: 'session-create', label: 'reconciled' }]);
+  assert.deepEqual(updates, ['ensured', 'reconciled']);
+  await assert.rejects(
+    registry.reconcile([
+      { id: 'duplicate', label: 'one' },
+      { id: 'duplicate', label: 'two' },
+    ]),
+    /duplicate session identity/,
+  );
+  assert.throws(() => registry.ensure({ id: '   ', label: 'invalid' }), /must not be empty/);
+  await registry.disposeSession('not-resident');
+  detach();
+});
+
+test('prepareShutdown shares in-flight preparation and aggregates failures', async () => {
+  const preparation = deferred<void>();
+  let preparationCalls = 0;
+  const registry = new ApplicationRuntimeRegistry<TestSession, TestRuntime>({
+    createRuntime: (session) => ({ id: `runtime-${session.id}` }),
+    prepareRuntime: () => {
+      preparationCalls += 1;
+      return preparation.promise;
+    },
+    disposeRuntime: () => undefined,
+  });
+  await registry.ensure({ id: 'session-prepare', label: 'prepare' });
+
+  const first = registry.prepareShutdown();
+  const second = registry.prepareShutdown();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(preparationCalls, 1);
+  preparation.reject(new Error('prepare failed'));
+  await assert.rejects(first, AggregateError);
+  await assert.rejects(second, AggregateError);
+
+  const noPrepare = new ApplicationRuntimeRegistry<TestSession, TestRuntime>({
+    createRuntime: () => ({ id: 'unused' }),
+    disposeRuntime: () => undefined,
+  });
+  await noPrepare.prepareShutdown();
+});
+
+test('resident shutdown publishes removal and aggregates disposal errors', async () => {
+  const sizes: number[] = [];
+  const registry = new ApplicationRuntimeRegistry<TestSession, TestRuntime>({
+    createRuntime: (session) => ({ id: `runtime-${session.id}` }),
+    disposeRuntime: async () => {
+      throw new Error('dispose failed');
+    },
+  });
+  registry.subscribe((entries) => sizes.push(entries.length));
+  await registry.ensure({ id: 'session-resident', label: 'resident' });
+  await assert.rejects(registry.shutdown(), AggregateError);
+  assert.deepEqual(sizes, [0, 1, 0]);
+  assert.equal(registry.isShutdown, true);
+});
+
+test('pending duplicate creation rejects and pending disposal propagates a real cleanup failure', async () => {
+  const creation = deferred<TestRuntime>();
+  const registry = new ApplicationRuntimeRegistry<TestSession, TestRuntime>({
+    createRuntime: () => creation.promise,
+    disposeRuntime: async () => {
+      throw new Error('pending cleanup failed');
+    },
+  });
+  const pending = registry.create({ id: 'session-pending', label: 'pending' });
+  await assert.rejects(
+    registry.create({ id: 'session-pending', label: 'duplicate pending' }),
+    DuplicateApplicationRuntimeError,
+  );
+  const disposal = registry.disposeSession('session-pending');
+  creation.resolve({ id: 'runtime-pending' });
+  await assert.rejects(pending, /pending cleanup failed/);
+  await assert.rejects(disposal, /pending cleanup failed/);
+
+  const resident = new ApplicationRuntimeRegistry<TestSession, TestRuntime>({
+    createRuntime: () => ({ id: 'runtime-resident' }),
+    disposeRuntime: () => undefined,
+  });
+  await resident.ensure({ id: 'session-removed-by-reconcile', label: 'resident' });
+  await resident.reconcile([]);
+  assert.equal(resident.size, 0);
+});
+
+test('a new runtime can replace one whose shutdown preparation is still settling', async () => {
+  const firstPreparation = deferred<void>();
+  const secondPreparation = deferred<void>();
+  let runtimeSequence = 0;
+  const prepared: string[] = [];
+  const registry = new ApplicationRuntimeRegistry<TestSession, TestRuntime>({
+    createRuntime: () => ({ id: `runtime-${++runtimeSequence}` }),
+    prepareRuntime: (runtime) => {
+      prepared.push(runtime.id);
+      return runtime.id === 'runtime-1' ? firstPreparation.promise : secondPreparation.promise;
+    },
+    disposeRuntime: () => undefined,
+  });
+  await registry.ensure({ id: 'session-reused', label: 'first' });
+  const first = registry.prepareShutdown();
+  await Promise.resolve();
+  await registry.disposeSession('session-reused');
+  await registry.ensure({ id: 'session-reused', label: 'second' });
+  const second = registry.prepareShutdown();
+  await Promise.resolve();
+  assert.deepEqual(prepared, ['runtime-1', 'runtime-2']);
+
+  firstPreparation.resolve();
+  secondPreparation.resolve();
+  await Promise.all([first, second]);
 });

@@ -2,7 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { computed } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 import type { PortConfig } from '../../src/types/index.ts';
 
 interface LocalStorageLike {
@@ -70,7 +70,7 @@ function withLocalStorageMock<T>(
 test('frames: computed reading session.frames.length updates after addFrame', () => {
   withLocalStorageMock(() => {
     setActivePinia(createPinia());
-    const store = useSessionStore();
+    const store = useSessionCoreStore();
     const id = store.createSession('COM1', cfg);
 
     const session = () => store.sessions.find((s) => s.id === id)!;
@@ -92,7 +92,7 @@ test('frames: computed reading session.frames.length updates after addFrame', ()
 test('frames: a watchEffect that reads frames.length re-runs after addFrame', () => {
   withLocalStorageMock(() => {
     setActivePinia(createPinia());
-    const store = useSessionStore();
+    const store = useSessionCoreStore();
     const id = store.createSession('COM1', cfg);
 
     // The authoritative consumer pattern: a computed that reads frames.length.
@@ -122,9 +122,9 @@ test('frames: a watchEffect that reads frames.length re-runs after addFrame', ()
 });
 
 test('per-session frame version ignores persisted config, draft, macro, and AI mutations', () => {
-  withLocalStorageMock((storage) => {
+  withLocalStorageMock(() => {
     setActivePinia(createPinia());
-    const store = useSessionStore();
+    const store = useSessionCoreStore();
     const id = store.createSession('COM1', cfg);
     const macroName = computed(() => store.sessions[0]?.macros[0]?.name ?? '');
     let frameEvaluations = 0;
@@ -161,21 +161,15 @@ test('per-session frame version ignores persisted config, draft, macro, and AI m
     assert.equal(frameCount.value, 0);
     assert.equal(frameEvaluations, 1, 'persisted mutations do not invalidate frame consumers');
 
-    store.flushPersistedSessions();
-    const raw = storage.get('bbcom-session-snapshots');
-    assert.ok(raw, 'non-frame mutations still schedule and flush persistence');
-    const saved = JSON.parse(raw) as {
-      sessions: Array<{ sendDraft: string; macros: Array<{ name: string }> }>;
-    };
-    assert.equal(saved.sessions[0]?.sendDraft, 'AT+GMR');
-    assert.equal(saved.sessions[0]?.macros[0]?.name, 'Startup');
+    // Non-frame mutations never invalidate frame consumers; durability is
+    // workspace-owned now, so there is no localStorage snapshot to inspect.
   });
 });
 
 test('per-session frame version advances only for live or paused frame-buffer mutations', () => {
   withLocalStorageMock(() => {
     setActivePinia(createPinia());
-    const store = useSessionStore();
+    const store = useSessionCoreStore();
     const id = store.createSession('COM1', cfg);
 
     assert.equal(store.getSessionFramesVersion(id), 0);
@@ -218,15 +212,13 @@ test('per-session frame version advances only for live or paused frame-buffer mu
       4,
       'clearing already-empty buffers is not a frame mutation',
     );
-
-    store.flushPersistedSessions();
   });
 });
 
 test('per-session frame versions isolate resident views from other sessions', () => {
   withLocalStorageMock(() => {
     setActivePinia(createPinia());
-    const store = useSessionStore();
+    const store = useSessionCoreStore();
     const firstId = store.createSession('COM1', cfg);
     const secondId = store.createSession('COM2', cfg);
     let firstVersionEvaluations = 0;

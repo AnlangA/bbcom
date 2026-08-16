@@ -49,7 +49,7 @@ body {
 }
 
 ::selection {
-  background: rgba(61, 220, 151, 0.28);
+  background: var(--color-primary-muted);
 }
 
 button:focus-visible,

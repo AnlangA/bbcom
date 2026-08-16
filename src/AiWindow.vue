@@ -11,8 +11,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, onErrorCaptured, ref, watch } from 'vue';
 import { NConfigProvider, NMessageProvider } from 'naive-ui';
-import { emit } from '@tauri-apps/api/event';
-import { resizeAiWindow } from './lib/ipc';
+import { emitNativeEvent, resizeAiWindow } from './features/native';
 import AiPanel from './components/ai/AiPanel.vue';
 import { useAiWindowAuthority } from './features/ai-activity';
 import { useAppStore } from './stores/app';
@@ -66,7 +65,7 @@ async function resizeToContent() {
 }
 
 onMounted(async () => {
-  await emit('ai-window-state', { visible: true });
+  await emitNativeEvent('ai-window-state', { visible: true });
   await nextTick();
   observer = new ResizeObserver(scheduleResize);
   if (contentEl.value) observer.observe(contentEl.value);
@@ -76,7 +75,7 @@ onMounted(async () => {
 onUnmounted(() => {
   observer?.disconnect();
   if (resizeTimer) clearTimeout(resizeTimer);
-  emit('ai-window-state', { visible: false });
+  void emitNativeEvent('ai-window-state', { visible: false });
 });
 </script>
 

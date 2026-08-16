@@ -25,6 +25,7 @@ pub fn render_typescript() -> String {
     declaration!(ChecksumRequest);
     declaration!(ChecksumResponse);
     declaration!(ExportFormat);
+    declaration!(ExportSource);
     declaration!(BeginExportRequest);
     declaration!(AppendExportBatchRequest);
     declaration!(ExportSessionRequest);
@@ -63,13 +64,13 @@ pub fn render_typescript() -> String {
     declaration!(PluginPermission);
     declaration!(PluginLifecycleStatus);
     declaration!(PluginStatusReason);
-    declaration!(PluginRiskCombination);
     declaration!(PluginUnavailableCapability);
     declaration!(PluginCatalogItem);
+    declaration!(PluginSourceKind);
+    declaration!(PluginSourceHealth);
+    declaration!(PluginSourceView);
+    declaration!(RuntimeInstanceKey);
     declaration!(InstalledPluginView);
-    declaration!(PluginAuthorizationReview);
-    declaration!(PluginPermissionDecisionState);
-    declaration!(PluginPermissionDecision);
     declaration!(PluginSerialProposal);
     declaration!(PluginPanelFieldKind);
     declaration!(PluginPanelField);
@@ -81,11 +82,21 @@ pub fn render_typescript() -> String {
     declaration!(PluginCommandResponse);
     declaration!(PluginSnapshotRequest);
     declaration!(InstallPluginRequest);
+    declaration!(InstallLocalPluginRequest);
+    declaration!(PluginLocalSourceKind);
+    declaration!(RequestPluginLocalSourceGrantRequest);
+    declaration!(PluginLocalSourceGrantResponse);
+    declaration!(UninstallPluginRequest);
     declaration!(SetPluginEnabledRequest);
-    declaration!(SubmitPluginAuthorizationRequest);
-    declaration!(DismissPluginAuthorizationRequest);
+    declaration!(AddPluginSourceRequest);
+    declaration!(UpdatePluginSourceRequest);
+    declaration!(RemovePluginSourceRequest);
+    declaration!(RefreshPluginSourceRequest);
+    declaration!(SetPluginWatchEnabledRequest);
     declaration!(PluginSerialProposalDecision);
     declaration!(ResolvePluginSerialProposalRequest);
+    declaration!(PluginSerialAction);
+    declaration!(PluginSerialActionResultRequest);
     declaration!(EmitPluginPanelEventRequest);
     declaration!(CancelPluginOperationRequest);
     declaration!(SerialSendOutcome);
@@ -195,7 +206,15 @@ pub fn render_typescript() -> String {
     output.push_str("export type ExportFramePayload = DataFramePayload;\n");
     output.push_str("export type SaveTargetGrant = SaveTargetGrantResponse;\n\n");
     append_limits(&mut output);
-    output
+    // ts-rs 12 wraps long member lists leaving a trailing space before the
+    // newline. Strip per-line trailing whitespace so the rendered module is
+    // lint-clean and matches the committed generated file byte for byte.
+    let mut rendered = String::with_capacity(output.len());
+    for line in output.lines() {
+        rendered.push_str(line.trim_end());
+        rendered.push('\n');
+    }
+    rendered
 }
 
 fn append_declaration<T: TS>(output: &mut String, config: &Config) {

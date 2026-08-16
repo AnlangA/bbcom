@@ -4,7 +4,7 @@ import { test } from 'vitest';
 
 import { SessionStoreWorkspaceAdapter } from '../../src/features/workspace/session-store-workspace-adapter.ts';
 import type { WorkspaceApplicationService } from '../../src/features/workspace/application/index.ts';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 import type { PortConfig } from '../../src/types/index.ts';
 
 const config: PortConfig = {
@@ -20,17 +20,20 @@ const config: PortConfig = {
 
 test('workspace adapter converts a synchronous projection failure into one fail-closed rejection', () => {
   setActivePinia(createPinia());
-  const store = useSessionStore();
+  const store = useSessionCoreStore();
   const sessionId = store.createSession('COM-projection-failure', config);
   assert.ok(sessionId);
   const rejected: string[] = [];
+  // Permission revocation lives on the persistence facade since the store
+  // split; capture it up front so the failure callback cannot lose access.
+  const persistence = useSessionCoreStore();
   const application = {
     subscribe: () => () => undefined,
     rejectPersistence(messageKey: string) {
       rejected.push(messageKey);
       // Mirrors the production onPersistenceFailure boundary: quiesce is
       // asynchronous, but permission revocation is synchronous and fail closed.
-      store.setWorkspaceMutationPermissions({ userMutations: false, runtimeCapture: false });
+      persistence.setWorkspaceMutationPermissions({ userMutations: false, runtimeCapture: false });
     },
   } as unknown as WorkspaceApplicationService;
   const adapter = new SessionStoreWorkspaceAdapter(store, application);

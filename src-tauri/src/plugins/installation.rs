@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 use bbcom_plugin_manager::{
     ArtifactSlot, HostFailure, InstallationFailure, InstallationPort, ManualPackageRequest,
-    PluginArtifact, PreparationKind, PreparationToken, PreparedInstallation,
+    PluginArtifact, PluginArtifactSource, PluginSourceKind, PreparationKind, PreparationToken,
+    PreparedInstallation,
 };
 use bbcom_plugin_repository::{
-    DownloadedPackage, PluginInstaller, PreparedInstallationKind, PreparedPluginInstallation,
+    DownloadedPackage, LOCAL_INSTALL_ORIGIN, PluginInstaller, PreparedInstallationKind,
+    PreparedPluginInstallation,
 };
 
 use super::{ArtifactPathResolver, ResolvedPluginArtifact};
@@ -49,6 +51,15 @@ pub trait RepositoryStagingBackend {
     ) -> Result<PluginArtifact, Self::Error>;
 
     fn discard(&mut self, prepared: &PreparedRepositoryArtifact) -> Result<(), Self::Error>;
+    /// Development-mode local staging (see the manager port doc).
+    fn prepare_local(
+        &mut self,
+        package_root: &std::path::Path,
+        current: Option<&PluginArtifact>,
+    ) -> Result<PreparedRepositoryArtifact, Self::Error>;
+
+    /// Durable installation removal (see the manager port doc).
+    fn remove_installed(&mut self, artifact: &PluginArtifact) -> Result<(), Self::Error>;
 }
 
 /// Supplies a package only after the repository index, HTTPS origin, declared
@@ -89,6 +100,35 @@ impl std::error::Error for NativeRepositoryError {}
 pub struct NativeRepositoryStagingBackend<S> {
     installer: Arc<PluginInstaller>,
     source: S,
+}
+
+impl<S> NativeRepositoryStagingBackend<S> {
+    /// Every durable active installation mapped to manager artifacts with
+    /// permissions re-read from each active package's manifest.
+    pub fn active_installed_artifacts(&self) -> Vec<PluginArtifact> {
+        self.installer
+            .active_installations()
+            .iter()
+            .filter_map(|active| {
+                let permissions = manifest_permissions(&active.package_directory).ok()?;
+                map_active_artifact(active, &permissions).ok()
+            })
+            .collect()
+    }
+}
+
+fn manifest_permissions(
+    package_directory: &std::path::Path,
+) -> std::result::Result<
+    std::collections::BTreeSet<bbcom_plugin_contracts::Permission>,
+    NativeRepositoryError,
+> {
+    let manifest_path = package_directory.join("plugin.toml");
+    let text =
+        std::fs::read_to_string(manifest_path).map_err(|_| NativeRepositoryError::PackageSource)?;
+    let manifest = bbcom_plugin_contracts::PluginManifest::parse(&text)
+        .map_err(|_| NativeRepositoryError::Descriptor)?;
+    Ok(manifest.permissions().into_iter().flatten().collect())
 }
 
 impl<S> NativeRepositoryStagingBackend<S> {
@@ -139,10 +179,7 @@ impl<S: VerifiedPackageProvider> RepositoryStagingBackend for NativeRepositorySt
             PreparedInstallationKind::InitialInstall
         };
         if prepared.kind() != expected
-            || current.is_some_and(|artifact| {
-                artifact.plugin_id != prepared.plugin_id()
-                    || artifact.publisher_identity != prepared.publisher_identity()
-            })
+            || current.is_some_and(|artifact| artifact.plugin_id != prepared.plugin_id())
         {
             let _ = self.installer.discard_prepared(&prepared);
             return Err(NativeRepositoryError::Descriptor);
@@ -181,6 +218,33 @@ impl<S: VerifiedPackageProvider> RepositoryStagingBackend for NativeRepositorySt
         let repository_prepared = self.resolve_exact(prepared)?;
         self.installer
             .discard_prepared(&repository_prepared)
+            .map_err(|_| NativeRepositoryError::Repository)
+    }
+
+    fn prepare_local(
+        &mut self,
+        package_root: &std::path::Path,
+        current: Option<&PluginArtifact>,
+    ) -> Result<PreparedRepositoryArtifact, Self::Error> {
+        let prepared = self
+            .installer
+            .prepare_local_install(package_root)
+            .map_err(|_| NativeRepositoryError::PackageSource)?;
+        let expected = if current.is_some() {
+            PreparedInstallationKind::ManualUpgrade
+        } else {
+            PreparedInstallationKind::InitialInstall
+        };
+        if prepared.kind() != expected {
+            let _ = self.installer.discard_prepared(&prepared);
+            return Err(NativeRepositoryError::Descriptor);
+        }
+        map_repository_prepared(&prepared)
+    }
+
+    fn remove_installed(&mut self, artifact: &PluginArtifact) -> Result<(), Self::Error> {
+        self.installer
+            .remove_installation(&artifact.plugin_id)
             .map_err(|_| NativeRepositoryError::Repository)
     }
 }
@@ -253,7 +317,12 @@ fn map_repository_prepared(
     let artifact = PluginArtifact::new(
         prepared.plugin_id(),
         prepared.version(),
-        prepared.publisher_identity(),
+        prepared.package_sha256(),
+        prepared.component_sha256(),
+        PluginArtifactSource {
+            source_id: prepared.repository_origin().to_owned(),
+            kind: source_kind(prepared.repository_origin()),
+        },
         prepared.requested_permissions().iter().copied(),
     )
     .map_err(|_| NativeRepositoryError::Descriptor)?;
@@ -276,7 +345,12 @@ fn map_active_artifact(
     PluginArtifact::new(
         &active.plugin_id,
         &active.version,
-        &active.publisher_identity,
+        &active.package_sha256,
+        &active.component_sha256,
+        PluginArtifactSource {
+            source_id: active.repository_origin.clone(),
+            kind: source_kind(&active.repository_origin),
+        },
         permissions.iter().copied(),
     )
     .map_err(|_| NativeRepositoryError::Descriptor)
@@ -371,7 +445,6 @@ impl<B: RepositoryStagingBackend> InstallationPort for RepositoryInstallationPor
         if staged.kind != PreparationKind::Rollback
             || staged.artifact.plugin_id != current.plugin_id
             || staged.artifact.version == current.version
-            || staged.artifact.publisher_identity != current.publisher_identity
         {
             let _ = self.backend.discard(&staged);
             return Err(InstallationFailure);
@@ -412,6 +485,48 @@ impl<B: RepositoryStagingBackend> InstallationPort for RepositoryInstallationPor
         Ok(activated)
     }
 
+    fn prepare_local(
+        &mut self,
+        package_root: &std::path::Path,
+        current: Option<&PluginArtifact>,
+    ) -> Result<PreparedInstallation, InstallationFailure> {
+        let staged = self
+            .backend
+            .prepare_local(package_root, current)
+            .map_err(|_| InstallationFailure)?;
+        let expected_kind = if current.is_some() {
+            PreparationKind::ManualUpgrade
+        } else {
+            PreparationKind::InitialInstall
+        };
+        if self.prepared.contains_key(&staged.token) {
+            return Err(InstallationFailure);
+        }
+        if staged.kind != expected_kind {
+            let _ = self.backend.discard(&staged);
+            return Err(InstallationFailure);
+        }
+        let descriptor = match PreparedInstallation::new(
+            staged.token.clone(),
+            staged.artifact.clone(),
+            staged.kind,
+        ) {
+            Ok(descriptor) => descriptor,
+            Err(_) => {
+                let _ = self.backend.discard(&staged);
+                return Err(InstallationFailure);
+            }
+        };
+        self.prepared.insert(staged.token.clone(), staged);
+        Ok(descriptor)
+    }
+
+    fn remove_installed(&mut self, artifact: &PluginArtifact) -> Result<(), InstallationFailure> {
+        self.backend
+            .remove_installed(artifact)
+            .map_err(|_| InstallationFailure)
+    }
+
     fn discard(&mut self, prepared: &PreparedInstallation) -> Result<(), InstallationFailure> {
         let staged = self
             .prepared
@@ -427,6 +542,14 @@ impl<B: RepositoryStagingBackend> InstallationPort for RepositoryInstallationPor
     }
 }
 
+fn source_kind(origin: &str) -> PluginSourceKind {
+    if origin == LOCAL_INSTALL_ORIGIN {
+        PluginSourceKind::LocalPackage
+    } else {
+        PluginSourceKind::Https
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -439,7 +562,12 @@ mod tests {
         PluginArtifact::new(
             "dev.bbcom.coverage",
             version,
-            format!("publisher:sha256-{}", "a".repeat(64)),
+            "a".repeat(64),
+            "b".repeat(64),
+            PluginArtifactSource {
+                source_id: "test".to_owned(),
+                kind: PluginSourceKind::Https,
+            },
             [Permission::SessionMetadataRead],
         )
         .unwrap()
@@ -494,6 +622,21 @@ mod tests {
         fn discard(&mut self, prepared: &PreparedRepositoryArtifact) -> Result<(), Self::Error> {
             self.discarded.push(prepared.token.as_str().to_owned());
             Ok(())
+        }
+
+        fn prepare_local(
+            &mut self,
+            _package_root: &std::path::Path,
+            _current: Option<&PluginArtifact>,
+        ) -> std::result::Result<PreparedRepositoryArtifact, Self::Error> {
+            Err(())
+        }
+
+        fn remove_installed(
+            &mut self,
+            _artifact: &PluginArtifact,
+        ) -> std::result::Result<(), Self::Error> {
+            Err(())
         }
     }
 

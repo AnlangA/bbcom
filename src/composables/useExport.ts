@@ -14,16 +14,18 @@ import {
   requestSaveTarget,
   revokeFileGrant,
   type ExportAppendStats,
-  type ExportFramePayload,
   type ExportFinishStats,
+  type ExportFrameBytes,
+  type ExportSource,
   type SaveTargetPurpose,
-} from '../lib/ipc';
+} from '../features/native';
 import { resolveExportFormat, type ExportChoice, type ExportFormat } from '../lib/constants';
 import { t } from '../lib/i18n';
 import type { IpcError } from '../generated/ipc-contracts';
 import type { OperationRegistry } from '../features/application/operation-registry';
 import { SESSION_APPLICATION_SERVICES_KEY } from '../features/sessions/runtime/session-application-services';
 import { WORKSPACE_APPLICATION_KEY } from '../features/workspace/application';
+import type { WorkspaceApplicationService } from '../features/workspace/application';
 
 const EXT_MAP: Record<ExportChoice, string> = {
   txt: 'txt',
@@ -33,7 +35,15 @@ const EXT_MAP: Record<ExportChoice, string> = {
 };
 
 /** `ok:true` on success; `ok:false` with no `error` when the user cancelled the save dialog. */
-export type ExportResult = { ok: true } | { ok: false; error?: string; cancelled?: true };
+export type ExportResult =
+  | {
+      ok: true;
+      /** DB-mode only: the durable source exported a different frame count
+       *  than the in-memory selection (paused-capture buffering). Surfaced by
+       *  the caller — never dropped silently. */
+      divergence?: { persistedFrames: number; selectionFrames: number };
+    }
+  | { ok: false; error?: string; cancelled?: true };
 
 export const EXPORT_BATCH_MAX_FRAMES = 256;
 export const EXPORT_BATCH_MAX_BYTES = 512 * 1024;
@@ -54,14 +64,31 @@ export interface ExportProgress {
   durationMs: number;
 }
 
+/** Durable whole-session export selection resolved after the save queue flush. */
+export interface WorkspaceDbExportSelection {
+  readonly workspaceId: string;
+  /** Exclusive seq ceiling: the renderer's next append sequence after flush. */
+  readonly toSeqExclusive: number;
+}
+
+/**
+ * Flush-first seam for DB-sourced exports. `prepare` must flush the workspace
+ * save queue (so every frame below the ceiling is durable) and then resolve
+ * the export selection, or return null to keep the renderer-memory mode.
+ */
+export interface WorkspaceDbExportSource {
+  prepare(sessionId: string): Promise<WorkspaceDbExportSelection | null>;
+}
+
 export interface ExportSessionClient {
   begin(
     format: ExportFormat,
     targetGrant: string,
     expectedFrames: number,
     expectedRawBytes: number,
-  ): Promise<{ exportId: string }>;
-  append(exportId: string, frames: ExportFramePayload[]): Promise<ExportAppendStats>;
+    source?: ExportSource,
+  ): Promise<{ exportId: string; expectedFrames?: number }>;
+  append(exportId: string, frames: readonly ExportFrameBytes[]): Promise<ExportAppendStats>;
   finish(exportId: string): Promise<ExportFinishStats>;
   abort(exportId: string): Promise<void>;
 }
@@ -90,6 +117,17 @@ export interface UseExportDeps {
   workspaceId?: string;
   sessionId?: string;
   operationIdFactory?: () => string;
+  /** Injectable DB-source seam (flush-first + seq ceiling). The default is
+   *  derived from the injected workspace application context when it exposes
+   *  a capture seq ceiling; null keeps renderer-memory mode. */
+  dbSource?: WorkspaceDbExportSource;
+}
+
+/** Options for one export invocation. */
+export interface ExportDataOptions {
+  /** True only when the dialog applied no direction and no time filter, i.e.
+   *  the selection is the whole session and a DB-sourced export is eligible. */
+  unfiltered?: boolean;
 }
 
 const DEFAULT_SESSION_CLIENT: ExportSessionClient = {
@@ -129,6 +167,7 @@ export function useExport(deps: UseExportDeps = {}) {
     sourceInput: ExportFrameInput,
     choice: ExportChoice,
     displayMode: DisplayMode,
+    options: ExportDataOptions = {},
   ): Promise<ExportResult> {
     isExporting.value = true;
     cancelRequested = false;
@@ -185,7 +224,25 @@ export function useExport(deps: UseExportDeps = {}) {
         return { ok: false, cancelled: true };
       }
 
-      const stats = await exportWithSession(
+      // DB mode is eligible only for a whole-session export (no direction and
+      // no time filter) whose session lives in the active workspace. `prepare`
+      // owns the flush-first obligation: everything below the returned seq
+      // ceiling is durable before the backend begin reads it.
+      let exportSource: ExportSource | undefined;
+      if (options.unfiltered === true && deps.sessionId) {
+        const dbSource = deps.dbSource ?? defaultWorkspaceDbExportSource(workspace?.application);
+        const selection = await dbSource?.prepare(deps.sessionId);
+        if (selection) {
+          exportSource = {
+            kind: 'workspace-frames',
+            workspaceId: selection.workspaceId,
+            sessionId: deps.sessionId,
+            toSeqExclusive: selection.toSeqExclusive,
+          };
+        }
+      }
+
+      const { stats, divergence } = await exportWithSession(
         source.iterate(),
         format,
         targetGrant,
@@ -210,17 +267,19 @@ export function useExport(deps: UseExportDeps = {}) {
         (_exportId, abort) => {
           abortNative = abort;
         },
+        exportSource,
       );
       progress.value = {
         ...progress.value,
         phase: 'completed',
+        totalFrames: divergence ? stats.frames : progress.value.totalFrames,
         completedFrames: stats.frames,
         completedRawBytes: stats.rawBytes,
         outputBytes: stats.outputBytes,
         durationMs: stats.durationMs,
       };
       completeRegisteredOperation(operations, activeOperationId);
-      return { ok: true };
+      return divergence ? { ok: true, divergence } : { ok: true };
     } catch (e) {
       if (e instanceof ExportCancelledError) {
         progress.value.phase = 'cancelled';
@@ -320,8 +379,8 @@ export function savePurposeForFormat(format: ExportFormat): SaveTargetPurpose {
 
 /** Lazily convert frames into bounded IPC payloads so only one batch is
  * materialized at a time. The limits mirror the Rust session validator. */
-export function* createExportBatches(frames: Iterable<DataFrame>): Generator<ExportFramePayload[]> {
-  let batch: ExportFramePayload[] = [];
+export function* createExportBatches(frames: Iterable<DataFrame>): Generator<ExportFrameBytes[]> {
+  let batch: ExportFrameBytes[] = [];
   let batchBytes = 0;
 
   for (const frame of frames) {
@@ -356,19 +415,26 @@ export function* createExportBatches(frames: Iterable<DataFrame>): Generator<Exp
   if (batch.length > 0) yield batch;
 }
 
-function toExportFramePayload(frame: DataFrame): ExportFramePayload {
+function toExportFramePayload(frame: DataFrame): ExportFrameBytes {
   return {
     id: frame.id,
     direction: frame.direction,
     timestamp: frame.timestamp,
-    // Tauri's JSON command boundary deserializes Rust `Vec<u8>` from a plain
-    // number array.  This is intentionally only one bounded IPC batch at a
-    // time, never a full-capture conversion or duplicate frame array.
-    data: Array.from(frame.data),
+    // Bytes stay on the raw capture buffer; the typed IPC wrapper widens them
+    // to the base64 channel. This is intentionally only one bounded IPC batch
+    // at a time, never a full-capture conversion or duplicate frame array.
+    data: frame.data,
   };
 }
 
 class ExportCancelledError extends Error {}
+
+/** One completed export: final stats plus any persisted/selection divergence
+ *  the backend-source mode surfaced at begin time. */
+interface ExportWithSessionResult {
+  stats: ExportFinishStats;
+  divergence?: { persistedFrames: number; selectionFrames: number };
+}
 
 async function exportWithSession(
   frames: Iterable<DataFrame>,
@@ -380,8 +446,16 @@ async function exportWithSession(
   onProgress: (stats: ExportAppendStats) => void,
   onFinishing: () => void,
   onStarted: (exportId: string, abort: () => Promise<void>) => void = () => undefined,
-): Promise<ExportFinishStats> {
-  const { exportId } = await client.begin(format, targetGrant, expected.frames, expected.rawBytes);
+  exportSource?: ExportSource,
+): Promise<ExportWithSessionResult> {
+  const begin = await client.begin(
+    format,
+    targetGrant,
+    expected.frames,
+    expected.rawBytes,
+    exportSource,
+  );
+  const exportId = begin.exportId;
   let abortTask: Promise<void> | null = null;
   const abort = (): Promise<void> => {
     abortTask ??= Promise.resolve().then(() => client.abort(exportId));
@@ -390,21 +464,81 @@ async function exportWithSession(
   onStarted(exportId, abort);
   let finished = false;
   try {
+    if (exportSource) {
+      // Backend-source mode: the backend paged the durable frames in during
+      // begin, so nothing is streamed from renderer memory. Appends for this
+      // export id are rejected by the backend by design.
+      const persisted = begin.expectedFrames ?? expected.frames;
+      onProgress({ totalFrames: persisted, totalRawBytes: expected.rawBytes });
+      if (persisted !== expected.frames) {
+        return {
+          stats: await finish(),
+          divergence: { persistedFrames: persisted, selectionFrames: expected.frames },
+        };
+      }
+      return { stats: await finish() };
+    }
     for (const batch of createExportBatches(frames)) {
       if (isCancelled()) throw new ExportCancelledError('export cancelled');
       onProgress(await client.append(exportId, batch));
     }
     if (isCancelled()) throw new ExportCancelledError('export cancelled');
-    onFinishing();
-    const stats = await client.finish(exportId);
-    finished = true;
-    return stats;
+    return { stats: await finish() };
   } finally {
     if (!finished) {
       // Preserve the original batching/IPC error if cleanup itself fails.
       await abort().catch(() => undefined);
     }
   }
+
+  async function finish(): Promise<ExportFinishStats> {
+    if (isCancelled()) throw new ExportCancelledError('export cancelled');
+    onFinishing();
+    const stats = await client.finish(exportId);
+    finished = true;
+    return stats;
+  }
+}
+
+/**
+ * Default DB-source seam over the injected workspace application: whole-session
+ * eligibility (the session belongs to the active workspace), the durable seq
+ * ceiling, and the flush-first barrier. Returns null (renderer-memory mode)
+ * when the application context is absent, the session is foreign, the seq
+ * ceiling is unavailable, or the flush did not complete.
+ */
+function defaultWorkspaceDbExportSource(
+  application: WorkspaceApplicationService | null | undefined,
+): WorkspaceDbExportSource | null {
+  if (!application) return null;
+  return {
+    async prepare(sessionId: string): Promise<WorkspaceDbExportSelection | null> {
+      const current = application.snapshot().currentWorkspace;
+      if (!current || !current.sessionIds.includes(sessionId)) return null;
+      const toSeqExclusive = readCaptureSeqCeiling(application, sessionId);
+      if (toSeqExclusive === null || !Number.isSafeInteger(toSeqExclusive)) return null;
+      // Flush first so every frame below the ceiling is durable before the
+      // backend reads it; a failed flush keeps the renderer-memory export.
+      const outcome = await application.flush();
+      if (outcome.outcome !== 'completed') return null;
+      return { workspaceId: current.workspaceId, toSeqExclusive };
+    },
+  };
+}
+
+/** The workspace application owns the per-session append sequence (seq
+ *  ceiling). Until it exposes that capture accounting publicly, DB mode only
+ *  activates when the capability is present; otherwise renderer mode runs. */
+function readCaptureSeqCeiling(
+  application: WorkspaceApplicationService,
+  sessionId: string,
+): number | null {
+  const provider = application as WorkspaceApplicationService & {
+    captureSeqCeiling?: (sessionId: string) => number | null;
+  };
+  return typeof provider.captureSeqCeiling === 'function'
+    ? provider.captureSeqCeiling(sessionId)
+    : null;
 }
 
 let fallbackOperationSequence = 0;

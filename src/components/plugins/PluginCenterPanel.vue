@@ -5,12 +5,22 @@
       <button type="button" :disabled="busy" @click="refresh">{{ t('common.refresh') }}</button>
     </header>
 
-    <p class="plugin-center__trust-warning">
-      {{ t('plugins.integrity_warning') }}
-    </p>
     <p v-if="snapshot.failure" class="plugin-center__error" role="alert">
       {{ t(`plugins.error.${snapshot.failure.code}`) }}
-      <button type="button" @click="service.clearFailure()">{{ t('common.dismiss') }}</button>
+      <IconActionButton :label="t('common.dismiss')" @click="service.clearFailure()">
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.4"
+          stroke-linecap="round"
+          aria-hidden="true"
+        >
+          <path d="M18 6 6 18M6 6l12 12" />
+        </svg>
+      </IconActionButton>
     </p>
     <p class="sr-only" role="status" aria-live="polite">{{ statusAnnouncement }}</p>
 
@@ -38,9 +48,7 @@
       :aria-labelledby="`${headingId}-installed`"
       tabindex="0"
     >
-      <p v-if="snapshot.installed.length === 0" class="plugin-center__empty">
-        {{ t('plugins.installed.empty') }}
-      </p>
+      <EmptyState v-if="snapshot.installed.length === 0" :title="t('plugins.installed.empty')" />
       <ul v-else class="plugin-center__list">
         <li v-for="plugin in snapshot.installed" :key="plugin.pluginId">
           <div>
@@ -48,13 +56,23 @@
             <small>{{ t('plugins.version', { version: plugin.version }) }}</small>
           </div>
           <span>{{ t(`plugins.status.${plugin.status}`) }}</span>
-          <button
-            type="button"
-            :disabled="busy || lifecycleBusy(plugin.status)"
-            @click="setEnabled(plugin.pluginId, !plugin.enabled)"
-          >
-            {{ t(plugin.enabled ? 'plugins.disable' : 'plugins.enable') }}
-          </button>
+          <div class="plugin-center__row-actions">
+            <button
+              type="button"
+              :disabled="busy || lifecycleBusy(plugin.status)"
+              @click="setEnabled(plugin.pluginId, !plugin.enabled)"
+            >
+              {{ t(plugin.enabled ? 'plugins.disable' : 'plugins.enable') }}
+            </button>
+            <button
+              type="button"
+              class="plugin-center__uninstall"
+              :disabled="busy || lifecycleBusy(plugin.status)"
+              @click="requestUninstall(plugin)"
+            >
+              {{ t('plugins.uninstall') }}
+            </button>
+          </div>
         </li>
       </ul>
     </div>
@@ -66,34 +84,121 @@
       :aria-labelledby="`${headingId}-catalog`"
       tabindex="0"
     >
-      <p v-if="snapshot.catalog.length === 0" class="plugin-center__empty">
-        {{ t('plugins.catalog.empty') }}
-      </p>
+      <EmptyState v-if="snapshot.catalog.length === 0" :title="t('plugins.catalog.empty')" />
       <ul v-else class="plugin-center__list">
         <li v-for="item in snapshot.catalog" :key="item.catalogId">
           <div>
             <strong>{{ item.displayName }}</strong>
             <small>{{ item.description }}</small>
             <small>
-              {{ item.publisherName }} ·
-              {{
-                t(
-                  item.publisherVerified
-                    ? 'plugins.publisher.verified'
-                    : 'plugins.publisher.unverified',
-                )
-              }}
+              {{ item.publisherName }}
             </small>
           </div>
           <button
             type="button"
-            :disabled="busy || item.installedVersion !== null"
+            :disabled="busy || !catalogActionAvailable(item.version, item.installedVersion)"
             @click="install(item.catalogId)"
           >
-            {{ t(item.installedVersion === null ? 'plugins.install' : 'plugins.installed') }}
+            {{ t(catalogActionLabel(item.version, item.installedVersion)) }}
           </button>
         </li>
       </ul>
+    </div>
+
+    <div
+      v-else-if="activeTab === 'sources'"
+      :id="`${headingId}-sources-panel`"
+      role="tabpanel"
+      :aria-labelledby="`${headingId}-sources`"
+      tabindex="0"
+      class="plugin-center__sources"
+    >
+      <p class="plugin-center__trust-warning">
+        {{ t('plugins.integrity_warning') }}
+      </p>
+      <div class="plugin-center__local-install">
+        <button type="button" :disabled="busy" @click="installLocal">
+          {{ t('plugins.local_install.install') }}
+        </button>
+        <button type="button" :disabled="busy" @click="installDevDirectory">
+          {{ t('plugins.dev_install.install') }}
+        </button>
+      </div>
+      <EmptyState
+        v-if="snapshot.sources.length === 0 && !editingSource"
+        :title="t('plugins.sources.empty')"
+      />
+      <div v-else class="plugin-center__source-list">
+        <ActionListItem
+          v-for="source in snapshot.sources"
+          :key="source.sourceId"
+          :title="source.displayName"
+          :description="source.url ?? t(`plugins.source.kind.${source.kind}`)"
+          :meta="t(`plugins.source.health.${source.health}`)"
+        >
+          <template #actions>
+            <label class="plugin-center__source-toggle">
+              <input
+                type="checkbox"
+                :checked="source.enabled"
+                :disabled="busy"
+                :aria-label="t('plugins.source.enabled')"
+                @change="toggleSource(source, $event)"
+              />
+            </label>
+            <IconActionButton
+              v-if="source.kind === 'https'"
+              :label="t('common.refresh')"
+              :disabled="busy"
+              @click="service.refreshSource(source.sourceId)"
+            >
+              <RefreshCw class="icon-sm" />
+            </IconActionButton>
+            <IconActionButton
+              v-if="source.kind === 'https'"
+              :label="t('common.edit')"
+              :disabled="busy"
+              @click="startEditSource(source)"
+            >
+              <Pencil class="icon-sm" />
+            </IconActionButton>
+            <IconActionButton
+              :label="t('common.delete')"
+              :disabled="busy"
+              tone="danger"
+              @click="requestRemoveSource(source)"
+            >
+              <Trash2 class="icon-sm" />
+            </IconActionButton>
+          </template>
+        </ActionListItem>
+      </div>
+      <div v-if="editingSource" class="plugin-center__source-form">
+        <input
+          v-model.trim="sourceDraft.sourceId"
+          type="text"
+          :disabled="editingSourceId !== null"
+          :placeholder="t('plugins.source.id')"
+          :aria-label="t('plugins.source.id')"
+        />
+        <input
+          v-model.trim="sourceDraft.url"
+          type="url"
+          inputmode="url"
+          autocomplete="off"
+          :placeholder="t('plugins.source.url')"
+          :aria-label="t('plugins.source.url')"
+        />
+        <InlineEditorActions
+          :can-save="sourceDraft.sourceId.length >= 2 && sourceDraft.url.startsWith('https://')"
+          :busy="busy"
+          @save="saveSource"
+          @cancel="cancelSourceEdit"
+        />
+      </div>
+      <button v-else type="button" :disabled="busy" @click="startAddSource">
+        {{ t('plugins.source.add') }}
+      </button>
     </div>
 
     <div
@@ -104,13 +209,11 @@
       tabindex="0"
       class="plugin-center__panels"
     >
-      <p v-if="snapshot.panels.length === 0" class="plugin-center__empty">
-        {{ t('plugins.panels.empty') }}
-      </p>
+      <EmptyState v-if="snapshot.panels.length === 0" :title="t('plugins.panels.empty')" />
       <PluginDeclarativePanel
         v-for="panel in snapshot.panels"
         v-else
-        :key="panel.pluginId"
+        :key="`${panel.runtime.pluginId}:${panel.runtime.instanceId}:${panel.runtime.generation}`"
         :panel="panel"
         :busy="busy"
         @event="emitPanelEvent"
@@ -120,49 +223,55 @@
     <button v-if="busy" type="button" class="plugin-center__cancel" @click="service.cancelAction()">
       {{ t(snapshot.action?.status === 'cancelling' ? 'common.cancelling' : 'common.cancel') }}
     </button>
-
-    <PluginAuthorizationDialog
-      v-if="snapshot.authorizationReview"
-      :key="snapshot.authorizationReview.reviewId"
-      :review="snapshot.authorizationReview"
-      :busy="busy"
-      @submit="authorize"
-      @dismiss="dismissAuthorization"
-    />
-    <PluginSerialProposalDialog
-      v-if="activeProposal"
-      :proposal="activeProposal"
-      :busy="busy"
-      @resolve="resolveProposal"
-    />
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, useId } from 'vue';
+import { computed, getCurrentInstance, onMounted, onUnmounted, reactive, ref, useId } from 'vue';
+import { useDialog } from 'naive-ui';
+import { Pencil, RefreshCw, Trash2 } from '@lucide/vue';
 import { t } from '../../lib/i18n';
+import EmptyState from '../ui/EmptyState.vue';
+import IconActionButton from '../ui/IconActionButton.vue';
+import ActionListItem from '../ui/ActionListItem.vue';
+import InlineEditorActions from '../ui/InlineEditorActions.vue';
+import { logger } from '../../lib/logger';
 import {
   useOptionalPluginCenter,
+  type InstalledPluginView,
   type PluginCenterSnapshot,
   type PluginLifecycleStatus,
   type PluginPanelEvent,
-  type SubmitPluginAuthorization,
+  type PluginSourceView,
 } from '../../features/plugins';
-import PluginAuthorizationDialog from './PluginAuthorizationDialog.vue';
 import PluginDeclarativePanel from './PluginDeclarativePanel.vue';
-import PluginSerialProposalDialog from './PluginSerialProposalDialog.vue';
 
-type PluginTab = 'installed' | 'catalog' | 'panels';
+type PluginTab = 'installed' | 'catalog' | 'sources' | 'panels';
 
 const service = useOptionalPluginCenter();
 const headingId = `plugin-center-${useId()}`;
-const tabs: readonly PluginTab[] = ['installed', 'catalog', 'panels'];
+const tabs: readonly PluginTab[] = ['installed', 'catalog', 'sources', 'panels'];
 const activeTab = ref<PluginTab>('installed');
 const snapshot = ref<PluginCenterSnapshot>(service?.snapshot() ?? emptySnapshot());
 let detach: (() => void) | null = null;
+const editingSource = ref(false);
+const editingSourceId = ref<string | null>(null);
+const sourceDraft = reactive({ sourceId: '', url: '' });
+
+// The dialog provider is mounted by App.vue; the settings modal can still be
+// rendered without it (embedded windows, component tests). Uninstall then stays
+// unavailable instead of destroying a plugin without its confirmation step.
+const dialog = getCurrentInstance() ? resolveDialog() : null;
+
+function resolveDialog(): ReturnType<typeof useDialog> | null {
+  try {
+    return useDialog();
+  } catch {
+    return null;
+  }
+}
 
 const busy = computed(() => snapshot.value.action !== null);
-const activeProposal = computed(() => snapshot.value.serialProposals[0] ?? null);
 const statusAnnouncement = computed(() => {
   if (snapshot.value.action) return t(`plugins.action.${snapshot.value.action.status}`);
   if (snapshot.value.failure) return t(`plugins.error.${snapshot.value.failure.code}`);
@@ -174,7 +283,6 @@ onMounted(() => {
   detach = service.subscribe((next) => {
     snapshot.value = next;
   });
-  void service.start();
 });
 
 onUnmounted(() => detach?.());
@@ -183,26 +291,103 @@ function refresh(): void {
   void service?.refresh();
 }
 
+function installLocal(): void {
+  void service?.installLocal('local-package');
+}
+
+function installDevDirectory(): void {
+  void service?.installLocal('dev-directory');
+}
+
+function startAddSource(): void {
+  editingSourceId.value = null;
+  sourceDraft.sourceId = '';
+  sourceDraft.url = 'https://';
+  editingSource.value = true;
+}
+
+function startEditSource(source: PluginSourceView): void {
+  editingSourceId.value = source.sourceId;
+  sourceDraft.sourceId = source.sourceId;
+  sourceDraft.url = source.url ?? '';
+  editingSource.value = true;
+}
+
+function cancelSourceEdit(): void {
+  editingSource.value = false;
+  editingSourceId.value = null;
+}
+
+function saveSource(): void {
+  const action = editingSourceId.value
+    ? service?.updateSource(editingSourceId.value, sourceDraft.url, true)
+    : service?.addSource(sourceDraft.sourceId, sourceDraft.url, true);
+  void action?.then(cancelSourceEdit);
+}
+
+function toggleSource(source: PluginSourceView, event: Event): void {
+  const enabled = (event.target as HTMLInputElement).checked;
+  if (source.kind === 'https' && source.url) {
+    void service?.updateSource(source.sourceId, source.url, enabled);
+  } else if (source.kind === 'dev-directory') {
+    void service?.setWatchEnabled(source.sourceId, enabled);
+  }
+}
+
+function requestRemoveSource(source: PluginSourceView): void {
+  if (!dialog) return;
+  dialog.warning({
+    title: t('plugins.source.remove'),
+    content: source.displayName,
+    positiveText: t('common.delete'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => void service?.removeSource(source.sourceId),
+  });
+}
+
 function install(catalogId: string): void {
   void service?.install(catalogId);
 }
 
+function catalogActionAvailable(version: string, installedVersion: string | null): boolean {
+  return installedVersion === null || compareSemver(version, installedVersion) > 0;
+}
+
+function catalogActionLabel(version: string, installedVersion: string | null): string {
+  if (installedVersion === null) return 'plugins.install';
+  return catalogActionAvailable(version, installedVersion)
+    ? 'plugins.update'
+    : 'plugins.up_to_date';
+}
+
+function compareSemver(left: string, right: string): number {
+  const leftParts = left.split(/[-+]/u, 1)[0]?.split('.').map(Number) ?? [];
+  const rightParts = right.split(/[-+]/u, 1)[0]?.split('.').map(Number) ?? [];
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) return Math.sign(difference);
+  }
+  return left.localeCompare(right);
+}
+
+function requestUninstall(plugin: InstalledPluginView): void {
+  if (!dialog) {
+    logger.warn('plugin uninstall confirmation is unavailable without a dialog provider');
+    return;
+  }
+  dialog.warning({
+    title: t('plugins.uninstall_confirm.title'),
+    content: t('plugins.uninstall_confirm.content', { name: plugin.displayName }),
+    positiveText: t('plugins.uninstall'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      void service?.uninstall(plugin.pluginId);
+    },
+  });
+}
+
 function setEnabled(pluginId: string, enabled: boolean): void {
   void service?.setEnabled(pluginId, enabled);
-}
-
-function authorize(input: SubmitPluginAuthorization): void {
-  void service?.submitAuthorization(input);
-}
-
-function dismissAuthorization(): void {
-  const review = snapshot.value.authorizationReview;
-  if (review) void service?.dismissAuthorization(review.reviewId);
-}
-
-function resolveProposal(decision: 'approve' | 'reject'): void {
-  const proposal = activeProposal.value;
-  if (proposal) void service?.resolveSerialProposal(proposal.proposalId, decision);
 }
 
 function emitPanelEvent(event: PluginPanelEvent): void {
@@ -211,9 +396,10 @@ function emitPanelEvent(event: PluginPanelEvent): void {
 
 function moveTab(current: PluginTab, event: KeyboardEvent): void {
   const direction = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
-  if (!direction) return;
+  const directIndex = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
+  if (!direction && directIndex === null) return;
   event.preventDefault();
-  const nextIndex = (tabs.indexOf(current) + direction + tabs.length) % tabs.length;
+  const nextIndex = directIndex ?? (tabs.indexOf(current) + direction + tabs.length) % tabs.length;
   const next = tabs[nextIndex];
   if (!next) return;
   activeTab.value = next;
@@ -229,9 +415,9 @@ function emptySnapshot(): PluginCenterSnapshot {
     revision: 0,
     catalog: Object.freeze([]),
     installed: Object.freeze([]),
-    authorizationReview: null,
     serialProposals: Object.freeze([]),
     panels: Object.freeze([]),
+    sources: Object.freeze([]),
     started: false,
     action: null,
     failure: null,
@@ -260,22 +446,22 @@ function emptySnapshot(): PluginCenterSnapshot {
 .plugin-center__trust-warning,
 .plugin-center__error {
   margin: 0;
-  border-left: 3px solid var(--warning-color, #f59e0b);
+  border-left: 3px solid var(--color-warning);
   padding-left: 0.65rem;
 }
 
 .plugin-center__error {
-  border-left-color: var(--error-color, #ef4444);
+  border-left-color: var(--color-error);
 }
 
 .plugin-center__tabs {
   display: flex;
   gap: 0.25rem;
-  border-bottom: 1px solid var(--border-color, #475569);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .plugin-center__tabs button[aria-selected='true'] {
-  border-bottom-color: var(--primary-color, #60a5fa);
+  border-bottom-color: var(--color-primary);
   font-weight: 700;
 }
 
@@ -292,7 +478,7 @@ function emptySnapshot(): PluginCenterSnapshot {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  border: 1px solid var(--border-color, #475569);
+  border: 1px solid var(--border-color);
   border-radius: 0.4rem;
   padding: 0.65rem;
 }
@@ -303,7 +489,38 @@ function emptySnapshot(): PluginCenterSnapshot {
 }
 
 .plugin-center__list small {
-  color: var(--muted-color, #94a3b8);
+  color: var(--text-muted);
+}
+
+.plugin-center__row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.plugin-center__uninstall {
+  border-left-color: var(--color-error);
+}
+
+.plugin-center__local-install {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.plugin-center__local-install label {
+  flex-shrink: 0;
+}
+
+.plugin-center__local-install input {
+  flex: 1;
+  min-height: 2.25rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.35rem;
+  padding: 0.35rem 0.65rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
 }
 
 .plugin-center__panels {
@@ -311,14 +528,44 @@ function emptySnapshot(): PluginCenterSnapshot {
   gap: 0.75rem;
 }
 
+.plugin-center__sources,
+.plugin-center__source-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.plugin-center__source-form {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.3fr) minmax(240px, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.plugin-center__source-form input {
+  min-height: 2.25rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.65rem;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.plugin-center__source-toggle {
+  display: inline-flex;
+  min-width: 28px;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+}
+
 .plugin-center__empty {
-  color: var(--muted-color, #94a3b8);
+  color: var(--text-muted);
   text-align: center;
 }
 
 button {
   min-height: 2.25rem;
-  border: 1px solid var(--border-color, #475569);
+  border: 1px solid var(--border-color);
   border-radius: 0.35rem;
   padding: 0.35rem 0.65rem;
   background: transparent;
@@ -326,8 +573,9 @@ button {
 }
 
 button:focus-visible,
+.plugin-center__local-install input:focus-visible,
 [role='tabpanel']:focus-visible {
-  outline: 3px solid var(--primary-color, #60a5fa);
+  outline: 3px solid var(--color-primary);
   outline-offset: 2px;
 }
 

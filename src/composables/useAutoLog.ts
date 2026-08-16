@@ -1,4 +1,4 @@
-import { useSessionStore } from '../stores/sessions';
+import { useSessionCatalog, useSessionDocument } from '../features/sessions/session-ports';
 import { useAppStore } from '../stores/app';
 import {
   invokeAbortAutoLog,
@@ -11,9 +11,10 @@ import {
   type AutoLogFormat,
   type ExportFramePayload,
   type SaveTargetGrant,
-} from '../lib/ipc';
+} from '../features/native';
+import { bytesToBase64 } from '../lib/base64';
 import { logger } from '../lib/logger';
-import type { DataFrame, DisplayMode } from '../types';
+import type { DataFrame, DisplayMode, SerialSession } from '../types';
 
 export const AUTO_LOG_DEBOUNCE_MS = 100;
 export const AUTO_LOG_IMMEDIATE_FLUSH_BYTES = 64 * 1024;
@@ -60,7 +61,10 @@ export interface AutoLogSessionClient {
   abort(logId: string): Promise<void>;
 }
 
-type SessionStore = ReturnType<typeof useSessionStore>;
+interface SessionStore {
+  readonly sessions: readonly SerialSession[];
+  setAutoLogTarget(sessionId: string, displayName: string | null): void;
+}
 type RevokeTarget = (token: string) => Promise<void>;
 type ShutdownMode = 'none' | 'graceful' | 'abort';
 
@@ -246,11 +250,15 @@ function notifyAutoLogFailure(sessionId: string, reason: AutoLogFailureReason): 
 }
 
 function toPayload(frame: DataFrame): ExportFramePayload {
+  // Same dual-channel wire shape as the export wrapper: the legacy `data`
+  // number array stays empty and bytes cross IPC base64-encoded (~4/3 wire
+  // expansion instead of ~4x per byte).
   return {
     id: frame.id,
     direction: frame.direction,
     timestamp: frame.timestamp,
-    data: Array.from(frame.data),
+    data: [],
+    dataB64: bytesToBase64(frame.data),
   };
 }
 
@@ -406,7 +414,15 @@ function createState(
 }
 
 export function useAutoLog(deps: UseAutoLogDeps = {}) {
-  const sessionStore = useSessionStore();
+  const catalog = useSessionCatalog();
+  const sessionStore: SessionStore = {
+    get sessions() {
+      return catalog.sessions.value;
+    },
+    setAutoLogTarget(sessionId, displayName) {
+      useSessionDocument(sessionId).setAutoLogTarget(sessionId, displayName);
+    },
+  };
   const appStore = useAppStore();
   const client = deps.sessionClient ?? DEFAULT_SESSION_CLIENT;
   const requestTarget =

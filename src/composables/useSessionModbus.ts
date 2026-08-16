@@ -1,5 +1,5 @@
 import { computed, ref, type Ref } from 'vue';
-import { useSessionStore } from '../stores/sessions';
+import { useSessionDocument } from '../features/sessions/session-ports';
 import { useModbusMaster } from './useModbusMaster';
 import { parseStream, type ModbusStreamRecord } from '../lib/modbus';
 import {
@@ -60,7 +60,7 @@ export function useSessionModbus({
   showWaveform,
   notifications = NOOP_NOTIFICATIONS,
 }: UseSessionModbusOptions) {
-  const sessionStore = useSessionStore();
+  const document = useSessionDocument(session.value.id);
 
   const configRef = computed(() => session.value.modbusConfig);
   const registersRef = computed(() => session.value.modbusRegisters);
@@ -101,7 +101,7 @@ export function useSessionModbus({
 
   function toggleWaveformSourceMode() {
     const next = session.value.waveformSourceMode === 'register' ? 'text' : 'register';
-    sessionStore.setWaveformSourceMode(session.value.id, next);
+    document.setWaveformSourceMode(session.value.id, next);
   }
 
   async function readAll() {
@@ -194,9 +194,9 @@ export function useSessionModbus({
       // Assign the next free channel (0..7).
       ch = findAvailableModbusWaveformChannel(session.value.modbusRegisters);
       if (ch === null) return; // all channels taken
-      sessionStore.updateModbusRegister(session.value.id, reg.id, { waveformChannel: ch });
+      document.updateModbusRegister(session.value.id, reg.id, { waveformChannel: ch });
     }
-    sessionStore.setWaveformSourceMode(session.value.id, 'register');
+    document.setWaveformSourceMode(session.value.id, 'register');
     showWaveform();
   }
 

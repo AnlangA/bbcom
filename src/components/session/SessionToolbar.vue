@@ -82,13 +82,6 @@
         >
           {{ connectionConflict.ownerSessionName }}
         </button>
-        <span
-          v-if="totalDroppedBytes > 0"
-          class="drop-hint"
-          :title="t('session.dropped.title', { count: totalDroppedBytes })"
-        >
-          {{ t('session.dropped', { bytes: formatBytes(totalDroppedBytes) }) }}
-        </span>
       </div>
     </div>
 
@@ -120,6 +113,7 @@
             :type="viewMode === 'terminal' ? 'primary' : 'default'"
             :title="t('toolbar.terminal')"
             :aria-label="t('toolbar.terminal')"
+            :aria-pressed="viewMode === 'terminal'"
             @click="$emit('update:viewMode', 'terminal')"
           >
             <template #icon>
@@ -133,6 +127,7 @@
             :type="viewMode === 'waveform' ? 'primary' : 'default'"
             :title="t('toolbar.waveform.title')"
             :aria-label="t('toolbar.waveform')"
+            :aria-pressed="viewMode === 'waveform'"
             @click="$emit('update:viewMode', 'waveform')"
           >
             <template #icon>
@@ -146,6 +141,7 @@
             :type="viewMode === 'parser' ? 'primary' : 'default'"
             :title="t('toolbar.parser.title')"
             :aria-label="t('toolbar.parser')"
+            :aria-pressed="viewMode === 'parser'"
             @click="$emit('update:viewMode', 'parser')"
           >
             <template #icon>
@@ -159,6 +155,7 @@
             :type="viewMode === 'modbus' ? 'primary' : 'default'"
             :title="t('modbus.title')"
             :aria-label="t('modbus.title')"
+            :aria-pressed="viewMode === 'modbus'"
             @click="$emit('update:viewMode', 'modbus')"
           >
             <template #icon>
@@ -178,6 +175,7 @@
             :type="appStore.autoScroll ? 'primary' : 'default'"
             :title="t('toolbar.autoScroll')"
             :aria-label="t('toolbar.autoScroll')"
+            :aria-pressed="appStore.autoScroll"
             @click="$emit('toggle-auto-scroll')"
           >
             <template #icon>
@@ -191,6 +189,7 @@
             :type="appStore.ansiColorEnabled ? 'primary' : 'default'"
             :title="t('toolbar.ansiColor.render')"
             :aria-label="t('toolbar.ansiColor')"
+            :aria-pressed="appStore.ansiColorEnabled"
             @click="appStore.toggleAnsiColor"
           >
             <template #icon>
@@ -204,6 +203,7 @@
             :type="appStore.preserveLogLineBreaks ? 'primary' : 'default'"
             :title="t('toolbar.logLineBreaks.title')"
             :aria-label="t('toolbar.logLineBreaks')"
+            :aria-pressed="appStore.preserveLogLineBreaks"
             @click="appStore.toggleLogLineBreaks"
           >
             <template #icon>
@@ -217,6 +217,7 @@
             :type="appStore.showTimestamp ? 'primary' : 'default'"
             :title="t('toolbar.timestamp')"
             :aria-label="t('toolbar.timestamp')"
+            :aria-pressed="appStore.showTimestamp"
             @click="$emit('toggle-timestamp')"
           >
             <template #icon>
@@ -234,6 +235,7 @@
                 : t('toolbar.autoLog.off')
             "
             :aria-label="t('toolbar.autoLog')"
+            :aria-pressed="session.autoLogEnabled"
             @click="$emit('toggle-auto-log')"
           >
             <template #icon>
@@ -282,7 +284,6 @@ import {
   WrapText,
 } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
-import { formatBytes } from '../../lib/format';
 import { t } from '../../lib/i18n';
 import type { DisplayMode, SerialSession } from '../../types';
 import type { PortLeaseConflict } from '../../generated/ipc-contracts';
@@ -299,7 +300,6 @@ defineProps<{
   error: string | null;
   connectionConflict?: Readonly<PortLeaseConflict>;
   needsRebind?: boolean;
-  totalDroppedBytes: number;
   sendingBreak: boolean;
   isExporting: boolean;
   viewMode: SessionViewMode;

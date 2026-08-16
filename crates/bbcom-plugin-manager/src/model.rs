@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use bbcom_plugin_contracts::{AuthorizationKey, Permission};
+use bbcom_plugin_contracts::{Permission, Sha256Digest, capability_plan};
 use semver::Version;
 
 use crate::{ManagerErrorCode, Result};
@@ -9,22 +9,47 @@ use crate::{ManagerErrorCode, Result};
 pub struct PluginArtifact {
     pub plugin_id: String,
     pub version: String,
-    pub publisher_identity: String,
-    pub requested_permissions: BTreeSet<Permission>,
+    pub package_sha256: String,
+    pub component_sha256: String,
+    pub source: PluginArtifactSource,
+    pub declared_capabilities: BTreeSet<Permission>,
+    pub effective_capabilities: BTreeSet<Permission>,
+    pub unavailable_capabilities: BTreeSet<Permission>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginSourceKind {
+    LocalPackage,
+    DevDirectory,
+    Https,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginArtifactSource {
+    pub source_id: String,
+    pub kind: PluginSourceKind,
 }
 
 impl PluginArtifact {
     pub fn new(
         plugin_id: impl Into<String>,
         version: impl Into<String>,
-        publisher_identity: impl Into<String>,
-        requested_permissions: impl IntoIterator<Item = Permission>,
+        package_sha256: impl Into<String>,
+        component_sha256: impl Into<String>,
+        source: PluginArtifactSource,
+        declared_capabilities: impl IntoIterator<Item = Permission>,
     ) -> Result<Self> {
+        let declared_capabilities: BTreeSet<_> = declared_capabilities.into_iter().collect();
+        let plan = capability_plan(&declared_capabilities.iter().copied().collect::<Vec<_>>());
         let artifact = Self {
             plugin_id: plugin_id.into(),
             version: version.into(),
-            publisher_identity: publisher_identity.into(),
-            requested_permissions: requested_permissions.into_iter().collect(),
+            package_sha256: package_sha256.into(),
+            component_sha256: component_sha256.into(),
+            source,
+            declared_capabilities,
+            effective_capabilities: plan.effective,
+            unavailable_capabilities: plan.unavailable,
         };
         artifact.validate()?;
         Ok(artifact)
@@ -33,7 +58,9 @@ impl PluginArtifact {
     pub(crate) fn validate(&self) -> Result<()> {
         if !valid_plugin_id(&self.plugin_id)
             || Version::parse(&self.version).is_err()
-            || !valid_publisher_identity(&self.publisher_identity)
+            || Sha256Digest::parse_hex(&self.package_sha256, "packageSha256").is_err()
+            || Sha256Digest::parse_hex(&self.component_sha256, "componentSha256").is_err()
+            || !valid_source_id(&self.source.source_id)
         {
             return Err(ManagerErrorCode::InvalidPluginArtifact.into());
         }
@@ -42,18 +69,6 @@ impl PluginArtifact {
 
     pub(crate) fn version(&self) -> Result<Version> {
         Version::parse(&self.version).map_err(|_| ManagerErrorCode::InvalidPluginArtifact.into())
-    }
-
-    pub fn authorization_key(&self, workspace_id: &str) -> Result<AuthorizationKey> {
-        let key = AuthorizationKey {
-            plugin_id: self.plugin_id.clone(),
-            publisher_identity: self.publisher_identity.clone(),
-            plugin_major: self.version()?.major,
-            workspace_id: workspace_id.to_owned(),
-        };
-        bbcom_plugin_broker::validate_authorization_key(&key)
-            .map_err(|_| ManagerErrorCode::AuthorizationInvalid)?;
-        Ok(key)
     }
 }
 
@@ -119,15 +134,6 @@ pub struct PreparedInstallation {
     pub kind: PreparationKind,
 }
 
-/// Exact artifact awaiting authorization. A preparation token distinguishes a
-/// staged upgrade from both the active artifact and any later staging attempt
-/// for the same version.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuthorizationTarget {
-    pub artifact: PluginArtifact,
-    pub preparation_token: Option<PreparationToken>,
-}
-
 impl PreparedInstallation {
     pub fn new(
         token: PreparationToken,
@@ -184,6 +190,38 @@ impl HostHandle {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostPanelFieldKind {
+    Text,
+    Number,
+    Toggle,
+    Select,
+    Button,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostPanelField {
+    pub id: String,
+    pub label: String,
+    pub kind: HostPanelFieldKind,
+    pub value: String,
+    pub options: Vec<String>,
+    pub disabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostPanel {
+    pub title: String,
+    pub fields: Vec<HostPanelField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostPublishedPanel {
+    pub plugin_id: String,
+    pub instance_id: u64,
+    pub panel: HostPanel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CrashKind {
     ProcessCrash,
     MemoryLimit,
@@ -198,26 +236,15 @@ pub enum HostReport {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ApprovalReason {
-    InitialInstall,
-    WorkspaceChanged,
-    PermissionExpansion,
-    ArtifactChanged,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DisableReason {
     User,
     CrashLoopRolledBack,
     CrashLoopNoRollback,
     RollbackFailed,
-    RollbackBlockedRevoked,
-    ArtifactRevoked,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginStatus {
-    ApprovalRequired(ApprovalReason),
     Disabled(DisableReason),
     Stopped,
     Starting,
@@ -229,7 +256,6 @@ pub enum PluginStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginStatusCode {
-    ApprovalRequired,
     Disabled,
     Stopped,
     Starting,
@@ -243,7 +269,6 @@ impl PluginStatus {
     #[must_use]
     pub const fn code(self) -> PluginStatusCode {
         match self {
-            Self::ApprovalRequired(_) => PluginStatusCode::ApprovalRequired,
             Self::Disabled(_) => PluginStatusCode::Disabled,
             Self::Stopped => PluginStatusCode::Stopped,
             Self::Starting => PluginStatusCode::Starting,
@@ -259,7 +284,6 @@ impl PluginStatusCode {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::ApprovalRequired => "approval-required",
             Self::Disabled => "disabled",
             Self::Stopped => "stopped",
             Self::Starting => "starting",
@@ -267,18 +291,6 @@ impl PluginStatusCode {
             Self::Updating => "updating",
             Self::RollingBack => "rolling-back",
             Self::Failed => "failed",
-        }
-    }
-}
-
-impl ApprovalReason {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::InitialInstall => "initial-install",
-            Self::WorkspaceChanged => "workspace-changed",
-            Self::PermissionExpansion => "permission-expansion",
-            Self::ArtifactChanged => "artifact-changed",
         }
     }
 }
@@ -291,8 +303,6 @@ impl DisableReason {
             Self::CrashLoopRolledBack => "crash-loop-rolled-back",
             Self::CrashLoopNoRollback => "crash-loop-no-rollback",
             Self::RollbackFailed => "rollback-failed",
-            Self::RollbackBlockedRevoked => "rollback-blocked-revoked",
-            Self::ArtifactRevoked => "artifact-revoked",
         }
     }
 }
@@ -300,11 +310,44 @@ impl DisableReason {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginSnapshot {
     pub artifact: PluginArtifact,
+    /// Desired runtime state in the active workspace. Installation is global;
+    /// this flag is deliberately workspace-scoped and remains true when a
+    /// launch fails so the UI can distinguish intent from lifecycle outcome.
+    pub expected_enabled: bool,
     pub status: PluginStatus,
     pub pending_version: Option<String>,
     pub running_instance_id: Option<u64>,
+    pub generation: u64,
     pub crashes_in_window: usize,
     pub last_error: Option<ManagerErrorCode>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspacePluginBinding {
+    pub plugin_id: String,
+    pub expected_enabled: bool,
+    pub version_requirement: String,
+}
+
+impl WorkspacePluginBinding {
+    pub fn new(
+        plugin_id: impl Into<String>,
+        expected_enabled: bool,
+        version_requirement: impl Into<String>,
+    ) -> Result<Self> {
+        let binding = Self {
+            plugin_id: plugin_id.into(),
+            expected_enabled,
+            version_requirement: version_requirement.into(),
+        };
+        if !valid_plugin_id(&binding.plugin_id)
+            || binding.version_requirement.is_empty()
+            || binding.version_requirement.len() > 128
+        {
+            return Err(ManagerErrorCode::ProjectStateInvalid.into());
+        }
+        Ok(binding)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -351,14 +394,12 @@ fn valid_plugin_id(value: &str) -> bool {
         })
 }
 
-fn valid_publisher_identity(value: &str) -> bool {
-    let Some(fingerprint) = value.strip_prefix("publisher:sha256-") else {
-        return false;
-    };
-    fingerprint.len() == 64
-        && fingerprint
+fn valid_source_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
             .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 #[cfg(test)]
@@ -367,8 +408,15 @@ mod tests {
 
     const WORKSPACE_ID: &str = "8e7b84cf-35f4-45cd-baf0-55d94ebf0213";
 
-    fn publisher() -> String {
-        format!("publisher:sha256-{}", "ab".repeat(32))
+    fn source() -> PluginArtifactSource {
+        PluginArtifactSource {
+            source_id: "official".to_owned(),
+            kind: PluginSourceKind::Https,
+        }
+    }
+
+    fn sha(byte: char) -> String {
+        byte.to_string().repeat(64)
     }
 
     #[test]
@@ -376,18 +424,25 @@ mod tests {
         let artifact = PluginArtifact::new(
             "dev.bbcom.fixture",
             "1.2.3",
-            publisher(),
+            sha('a'),
+            sha('b'),
+            source(),
             [Permission::SessionMetadataRead],
         )
         .unwrap();
         assert_eq!(artifact.version().unwrap(), Version::new(1, 2, 3));
-        let key = artifact.authorization_key(WORKSPACE_ID).unwrap();
-        assert_eq!(key.plugin_major, 1);
-        assert_eq!(key.workspace_id, WORKSPACE_ID);
-        assert!(PluginArtifact::new("invalid", "1.0.0", publisher(), []).is_err());
-        assert!(PluginArtifact::new("dev.fixture", "latest", publisher(), []).is_err());
-        assert!(PluginArtifact::new("dev.fixture", "1.0.0", "publisher:name", []).is_err());
-        assert!(artifact.authorization_key("not-a-workspace").is_err());
+        assert!(
+            artifact
+                .effective_capabilities
+                .contains(&Permission::SessionMetadataRead)
+        );
+        assert!(PluginArtifact::new("invalid", "1.0.0", sha('a'), sha('b'), source(), []).is_err());
+        assert!(
+            PluginArtifact::new("dev.fixture", "latest", sha('a'), sha('b'), source(), []).is_err()
+        );
+        assert!(
+            PluginArtifact::new("dev.fixture", "1.0.0", "bad", sha('b'), source(), []).is_err()
+        );
 
         assert!(ManualPackageRequest::new("official", "dev.bbcom.fixture", "2.0.0").is_ok());
         assert!(ManualPackageRequest::new("", "dev.bbcom.fixture", "2.0.0").is_err());
@@ -411,7 +466,6 @@ mod tests {
     #[test]
     fn lifecycle_status_vocabulary_is_complete_and_stable() {
         let statuses = [
-            PluginStatus::ApprovalRequired(ApprovalReason::InitialInstall),
             PluginStatus::Disabled(DisableReason::User),
             PluginStatus::Stopped,
             PluginStatus::Starting,
@@ -424,20 +478,10 @@ mod tests {
             assert!(!status.code().as_str().is_empty());
         }
         for reason in [
-            ApprovalReason::InitialInstall,
-            ApprovalReason::WorkspaceChanged,
-            ApprovalReason::PermissionExpansion,
-            ApprovalReason::ArtifactChanged,
-        ] {
-            assert!(!reason.as_str().is_empty());
-        }
-        for reason in [
             DisableReason::User,
             DisableReason::CrashLoopRolledBack,
             DisableReason::CrashLoopNoRollback,
             DisableReason::RollbackFailed,
-            DisableReason::RollbackBlockedRevoked,
-            DisableReason::ArtifactRevoked,
         ] {
             assert!(!reason.as_str().is_empty());
         }

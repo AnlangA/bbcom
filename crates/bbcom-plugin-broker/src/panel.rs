@@ -1,11 +1,6 @@
 use std::collections::BTreeSet;
 
-use bbcom_plugin_contracts::AuthorizationKey;
-
-use crate::{
-    AuditEvent, AuditOperation, AuditSink, BrokerError, LimitKind, Result,
-    validate_authorization_key,
-};
+use crate::{AuditEvent, AuditOperation, AuditSink, BrokerError, LimitKind, Result};
 
 pub const MAX_PANEL_NODES: usize = 256;
 pub const MAX_PANEL_DEPTH: usize = 1;
@@ -99,11 +94,11 @@ impl<'a, A: AuditSink> DeclarativePanelBroker<'a, A> {
         Self { audit }
     }
 
-    pub fn publish(&self, key: &AuthorizationKey, panel: DeclarativePanel) -> Result<HostedPanel> {
-        validate_authorization_key(key)?;
+    pub fn publish(&self, plugin_id: &str, panel: DeclarativePanel) -> Result<HostedPanel> {
+        validate_plugin_id(plugin_id)?;
         let result = validate_panel(&panel);
         self.audit.record(AuditEvent {
-            plugin_id: key.plugin_id.clone(),
+            plugin_id: plugin_id.to_owned(),
             operation: AuditOperation::PanelPublish,
             error_code: result.as_ref().err().copied().map(BrokerError::code),
             byte_count: result
@@ -111,7 +106,7 @@ impl<'a, A: AuditSink> DeclarativePanelBroker<'a, A> {
                 .map_or(0, |validation| validation.text_bytes as u64),
         });
         Ok(HostedPanel {
-            plugin_id: key.plugin_id.clone(),
+            plugin_id: plugin_id.to_owned(),
             panel,
             validation: result?,
         })
@@ -130,6 +125,20 @@ impl<'a, A: AuditSink> DeclarativePanelBroker<'a, A> {
             plugin_id: hosted.plugin_id.clone(),
             event,
         })
+    }
+}
+
+fn validate_plugin_id(value: &str) -> Result<()> {
+    if value.len() < 3
+        || value.len() > 128
+        || !value.contains('.')
+        || value.bytes().any(|byte| {
+            !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
+        })
+    {
+        Err(BrokerError::PluginContextInvalid)
+    } else {
+        Ok(())
     }
 }
 

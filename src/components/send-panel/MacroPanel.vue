@@ -2,45 +2,45 @@
   <div class="macro-panel">
     <!-- Saved macros -->
     <div v-if="macros.length > 0" class="macro-list">
-      <div
+      <ActionListItem
         v-for="macro in macros"
         :key="macro.id"
         class="macro-item"
         :class="{ running: runningMacroId === macro.id }"
+        :title="macro.name"
+        :description="macroSummary(macro)"
+        :meta="t('macro.steps', { count: macro.steps.length })"
       >
-        <div class="macro-head" :title="macroSummary(macro)">
-          <span class="macro-name">{{ macro.name }}</span>
-          <span class="macro-meta">{{ t('macro.steps', { count: macro.steps.length }) }}</span>
-          <button
+        <template #actions>
+          <IconActionButton
             class="macro-run"
-            type="button"
+            :label="runningMacroId === macro.id ? t('macro.running') : t('macro.run')"
             :disabled="disabled || (runningMacroId === macro.id && runningMacroId !== null)"
-            :title="runningMacroId === macro.id ? t('macro.running') : t('macro.run')"
+            tone="primary"
             @click="runMacro(macro)"
           >
             <Play v-if="runningMacroId !== macro.id" class="icon-sm" />
             <Square v-else class="icon-sm" />
-          </button>
-          <button
+          </IconActionButton>
+          <IconActionButton
             class="macro-edit"
-            type="button"
             :disabled="runningMacroId !== null"
-            :title="t('common.edit')"
+            :label="t('common.edit')"
             @click="startEdit(macro)"
           >
             <Pencil class="icon-sm" />
-          </button>
-          <button
+          </IconActionButton>
+          <IconActionButton
             class="macro-remove"
-            type="button"
             :disabled="runningMacroId !== null"
-            :title="t('common.delete')"
+            :label="t('common.delete')"
+            tone="danger"
             @click="remove(macro.id)"
           >
             <X class="icon-sm" />
-          </button>
-        </div>
-      </div>
+          </IconActionButton>
+        </template>
+      </ActionListItem>
     </div>
     <div class="macro-library-actions">
       <button
@@ -109,24 +109,26 @@
           >
             <template #suffix>ms</template>
           </n-input-number>
-          <button
+          <IconActionButton
             class="step-remove"
-            type="button"
-            :title="t('macro.deleteStep')"
+            :label="t('macro.deleteStep')"
+            tone="danger"
             @click="removeStep(i)"
           >
             <X class="icon-sm" />
-          </button>
+          </IconActionButton>
         </div>
         <div v-if="draft.steps.length === 0" class="step-empty">
           {{ t('macro.emptySteps') }}
         </div>
       </div>
       <div class="macro-form-actions">
-        <n-button size="tiny" @click="cancelEdit">{{ t('common.cancel') }}</n-button>
-        <n-button size="tiny" type="primary" :disabled="!canSave" @click="save">
-          {{ editingId ? t('common.update') : t('common.save') }}
-        </n-button>
+        <InlineEditorActions
+          :can-save="canSave"
+          :save-text="editingId ? t('common.update') : t('common.save')"
+          @save="save"
+          @cancel="cancelEdit"
+        />
       </div>
     </div>
     <button v-else class="macro-add" type="button" :disabled="disabled" @click="startCreate">
@@ -140,7 +142,10 @@
 import { ref, computed, shallowReactive } from 'vue';
 import { NInput, NButton, NCheckbox, NInputNumber, useMessage } from 'naive-ui';
 import { Download, Pencil, Play, Plus, Square, Upload, X } from '@lucide/vue';
-import { useSessionStore } from '../../stores/sessions';
+import ActionListItem from '../ui/ActionListItem.vue';
+import IconActionButton from '../ui/IconActionButton.vue';
+import InlineEditorActions from '../ui/InlineEditorActions.vue';
+import { useSessionDocument } from '../../features/sessions';
 import type { MacroRunResult } from '../../composables/useMacroRunner';
 import {
   canSaveMacroDraft,
@@ -162,12 +167,10 @@ const props = defineProps<{
   disabled?: boolean;
 }>();
 
-const sessionStore = useSessionStore();
+const sessionDocument = useSessionDocument(props.sessionId);
 const message = useMessage();
 
-const macros = computed(
-  () => sessionStore.sessions.find((s) => s.id === props.sessionId)?.macros ?? [],
-);
+const macros = computed(() => sessionDocument.session.value?.macros ?? []);
 
 // --- runner ---
 const runner = props.runner;
@@ -245,10 +248,10 @@ function save() {
   const payload = macroSavePayload(draft);
   if (!payload) return;
   if (editingId.value) {
-    sessionStore.updateMacro(props.sessionId, editingId.value, payload);
+    sessionDocument.updateMacro(props.sessionId, editingId.value, payload);
     message.success(t('macro.updated'));
   } else {
-    sessionStore.addMacro(props.sessionId, payload);
+    sessionDocument.addMacro(props.sessionId, payload);
     message.success(t('macro.saved'));
   }
   editing.value = false;
@@ -256,7 +259,7 @@ function save() {
 }
 
 function remove(id: string) {
-  sessionStore.removeMacro(props.sessionId, id);
+  sessionDocument.removeMacro(props.sessionId, id);
 }
 
 // --- cross-session library import/export ---
@@ -318,7 +321,7 @@ async function onFilePicked(e: Event) {
     const imported = importMacros(text);
     let added = 0;
     for (const m of imported) {
-      sessionStore.addMacro(props.sessionId, { name: m.name, steps: m.steps });
+      sessionDocument.addMacro(props.sessionId, { name: m.name, steps: m.steps });
       added += 1;
     }
     message.success(t('macro.imported', { count: added }));
@@ -359,7 +362,7 @@ async function onFilePicked(e: Event) {
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  font-size: 11px;
+  font-size: var(--font-size-sm);
 }
 
 .macro-name {
@@ -378,7 +381,7 @@ async function onFilePicked(e: Event) {
 
 .macro-meta {
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   flex-shrink: 0;
 }
 
@@ -434,7 +437,7 @@ async function onFilePicked(e: Event) {
   align-items: center;
   gap: 4px;
   padding: 3px 8px;
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
   background: var(--bg-tertiary);
   border: 1px solid var(--border-subtle);
@@ -492,7 +495,7 @@ async function onFilePicked(e: Event) {
 .step-idx {
   width: 16px;
   text-align: center;
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   color: var(--text-dim);
   font-family: var(--font-mono);
   flex-shrink: 0;
@@ -519,7 +522,7 @@ async function onFilePicked(e: Event) {
 
 .step-empty {
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   padding: 6px 4px;
   text-align: center;
 }
@@ -538,7 +541,7 @@ async function onFilePicked(e: Event) {
   border: 1px dashed var(--border-color);
   border-radius: var(--radius-md);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   cursor: pointer;
   padding: 5px 10px;
   width: 100%;

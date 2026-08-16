@@ -1,41 +1,37 @@
 <template>
   <div class="highlight-panel">
     <div v-if="highlights.length > 0" class="highlight-list">
-      <div v-for="rule in highlights" :key="rule.id" class="highlight-item">
-        <label class="highlight-enable">
+      <ActionListItem
+        v-for="rule in highlights"
+        :key="rule.id"
+        :title="rule.name"
+        :description="summary(rule)"
+      >
+        <template #actions>
+          <span class="highlight-swatch" :class="`highlight-${rule.color}`"></span>
           <n-checkbox
             :checked="rule.enabled"
             size="small"
             :aria-label="rule.name"
             @update:checked="(value: boolean) => toggleEnabled(rule.id, value)"
           />
-        </label>
-        <div class="highlight-swatch" :class="`highlight-${rule.color}`"></div>
-        <div class="highlight-info" :title="summary(rule)">
-          <span class="highlight-name">{{ rule.name }}</span>
-          <span class="highlight-detail">
-            <span class="tag">{{ rule.direction }}</span>
-            <span class="tag">{{ rule.matchMode === 'hex' ? 'HEX' : 'TXT' }}</span>
-            <code class="pat">{{ rule.pattern }}</code>
-          </span>
-        </div>
-        <button
-          class="highlight-edit"
-          type="button"
-          :title="t('common.edit')"
-          @click="startEdit(rule)"
-        >
-          <Pencil class="icon-sm" />
-        </button>
-        <button
-          class="highlight-remove"
-          type="button"
-          :title="t('common.delete')"
-          @click="remove(rule.id)"
-        >
-          <X class="icon-sm" />
-        </button>
-      </div>
+          <IconActionButton
+            class="highlight-edit"
+            :label="t('common.edit')"
+            @click="startEdit(rule)"
+          >
+            <Pencil class="icon-sm" />
+          </IconActionButton>
+          <IconActionButton
+            class="highlight-remove"
+            :label="t('common.delete')"
+            tone="danger"
+            @click="remove(rule.id)"
+          >
+            <X class="icon-sm" />
+          </IconActionButton>
+        </template>
+      </ActionListItem>
     </div>
     <div v-else-if="!editing" class="highlight-empty">{{ t('highlight.empty') }}</div>
 
@@ -94,10 +90,12 @@
         />
       </div>
       <div class="form-actions">
-        <n-button size="tiny" @click="cancelEdit">{{ t('common.cancel') }}</n-button>
-        <n-button size="tiny" type="primary" :disabled="!canSave" @click="save">
-          {{ editingId ? t('common.update') : t('common.save') }}
-        </n-button>
+        <InlineEditorActions
+          :can-save="canSave"
+          :save-text="editingId ? t('common.update') : t('common.save')"
+          @save="save"
+          @cancel="cancelEdit"
+        />
       </div>
     </div>
 
@@ -112,8 +110,11 @@
 import { computed, ref, shallowReactive } from 'vue';
 import { NButton, NButtonGroup, NCheckbox, NInput } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
+import ActionListItem from '../ui/ActionListItem.vue';
+import InlineEditorActions from '../ui/InlineEditorActions.vue';
+import IconActionButton from '../ui/IconActionButton.vue';
 import { Pencil, Plus, X } from '@lucide/vue';
-import { useSessionStore } from '../../stores/sessions';
+import { useSessionDocument } from '../../features/sessions';
 import { HIGHLIGHT_COLORS } from '../../lib/highlights';
 import { t } from '../../lib/i18n';
 import {
@@ -129,10 +130,8 @@ const props = defineProps<{
   sessionId: string;
 }>();
 
-const sessionStore = useSessionStore();
-const highlights = computed(
-  () => sessionStore.sessions.find((s) => s.id === props.sessionId)?.highlights ?? [],
-);
+const document = useSessionDocument(props.sessionId);
+const highlights = computed(() => document.session.value?.highlights ?? []);
 
 const editing = ref(false);
 const editingId = ref<string | null>(null);
@@ -174,20 +173,20 @@ function save() {
   const payload = highlightSavePayload(draft);
   if (!payload) return;
   if (editingId.value) {
-    sessionStore.updateHighlight(props.sessionId, editingId.value, payload);
+    document.updateHighlight(props.sessionId, editingId.value, payload);
   } else {
-    sessionStore.addHighlight(props.sessionId, payload);
+    document.addHighlight(props.sessionId, payload);
   }
   editing.value = false;
   editingId.value = null;
 }
 
 function toggleEnabled(id: string, enabled: boolean) {
-  sessionStore.updateHighlight(props.sessionId, id, { enabled });
+  document.updateHighlight(props.sessionId, id, { enabled });
 }
 
 function remove(id: string) {
-  sessionStore.removeHighlight(props.sessionId, id);
+  document.removeHighlight(props.sessionId, id);
 }
 
 function summary(rule: HighlightRule): string {
@@ -245,7 +244,7 @@ function summary(rule: HighlightRule): string {
 }
 
 .highlight-name {
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--text-secondary);
   overflow: hidden;
@@ -255,13 +254,13 @@ function summary(rule: HighlightRule): string {
 
 .highlight-detail {
   gap: 4px;
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   color: var(--text-dim);
   overflow: hidden;
 }
 
 .tag {
-  font-size: 8px;
+  font-size: var(--font-size-sm);
   font-weight: 700;
   color: var(--text-muted);
   background: var(--bg-inset);
@@ -308,7 +307,7 @@ function summary(rule: HighlightRule): string {
 .highlight-empty {
   margin-bottom: 8px;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
 }
 
 .highlight-form {
@@ -328,7 +327,7 @@ function summary(rule: HighlightRule): string {
 
 .field-label {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   font-weight: 700;
   white-space: nowrap;
 }
@@ -347,7 +346,7 @@ function summary(rule: HighlightRule): string {
   border-radius: var(--radius-md);
   background: var(--bg-tertiary);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   cursor: pointer;
   transition:
     border-color var(--transition-fast),

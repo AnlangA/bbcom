@@ -20,6 +20,7 @@ import {
   hydrateWorkspaceSession,
   projectWorkspaceSessionMutations,
   stageWorkspaceHydration,
+  toIpcFramePayload,
   type WorkspaceHydrationPort,
 } from '../../src/features/workspace/adapters/index.ts';
 
@@ -534,6 +535,12 @@ test('frame builder flushes on time/count/bytes and rejects limits before mutati
     mutationOf(boundary.mutations, 'append-frames').payload.frames.map((item) => item.id),
     ['f1'],
   );
+  // The single conversion site emits the base64 IPC channel, never a boxed
+  // number array.
+  const emitted = mutationOf(boundary.mutations, 'append-frames').payload.frames[0];
+  assert.deepEqual(emitted.data, []);
+  assert.equal(typeof emitted.dataB64, 'string');
+  assert.equal(emitted.dataB64.length, 4, 'three payload bytes encode to one base64 group');
   const count = builder.append(frame('f3', 2), 102);
   assert.deepEqual(
     mutationOf(count.mutations, 'append-frames').payload.frames.map((item) => item.id),
@@ -588,6 +595,45 @@ test('frame builder flushes on time/count/bytes and rejects limits before mutati
   assert.deepEqual(
     mutationOf(full.flush(), 'append-frames').payload.frames.map((item) => item.id),
     ['last-frame'],
+  );
+});
+
+test('frame adapter round-trips bytes over the base64 IPC channel', () => {
+  const payload = toIpcFramePayload({
+    id: 'frame-b64',
+    direction: 'TX',
+    timestampMs: 42,
+    data: new Uint8Array([0, 1, 2, 254, 255]),
+    txStatus: 'complete',
+    requestedBytes: 5,
+  });
+  assert.deepEqual(payload.data, []);
+  assert.equal(payload.dataB64, 'AAEC/v8=');
+  assert.equal(payload.txStatus, 'complete');
+
+  const hydrated = hydrateWorkspaceFrame({
+    seq: 0,
+    id: 'frame-b64',
+    direction: 'TX',
+    timestampMs: 42,
+    data: [],
+    dataB64: payload.dataB64,
+    txStatus: 'complete',
+    requestedBytes: 5,
+  });
+  assert.deepEqual(Array.from(hydrated.data), [0, 1, 2, 254, 255]);
+
+  assert.throws(
+    () =>
+      hydrateWorkspaceFrame({
+        seq: 0,
+        id: 'frame-both',
+        direction: 'RX',
+        timestampMs: 1,
+        data: [1],
+        dataB64: 'AQ==',
+      }),
+    WorkspaceAdapterValidationError,
   );
 });
 

@@ -7,6 +7,7 @@ rust-version = "1.97"
 publish = false
 
 [dependencies]
+bbcom-contracts = { path = "../bbcom-contracts" }
 prost = "=0.14.4"
 semver = { version = "=1.0.27", features = ["serde"] }
 serde = { version = "=1.0.228", features = ["derive"] }

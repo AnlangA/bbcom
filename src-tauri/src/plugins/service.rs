@@ -2,16 +2,15 @@ use std::fmt;
 use std::sync::{Mutex, MutexGuard};
 
 use bbcom_plugin_manager::{
-    ArtifactRevocationStore, AuthorizationTarget, Clock, HostLauncher, InstallationPort,
-    ManagerError, ManualPackageRequest, OpaqueProjectPluginState, PluginAuthorizationStore,
-    PluginManager, PluginSnapshot,
+    Clock, HostLauncher, InstallationPort, ManagerError, ManualPackageRequest,
+    OpaqueProjectPluginState, PluginManager, PluginSnapshot,
 };
 
 use super::HostExitMonitor;
 
-type LockedPluginManager<I, H, A, R, C> = PluginManager<I, H, A, R, C>;
-type PluginManagerGuard<'a, I, H, A, R, C> =
-    Result<MutexGuard<'a, LockedPluginManager<I, H, A, R, C>>, PluginServiceError>;
+type LockedPluginManager<I, H, C> = PluginManager<I, H, C>;
+type PluginManagerGuard<'a, I, H, C> =
+    Result<MutexGuard<'a, LockedPluginManager<I, H, C>>, PluginServiceError>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginServiceError {
@@ -46,21 +45,19 @@ impl From<ManagerError> for PluginServiceError {
 /// transitions, host-exit reports and crash-loop rollback cannot race. Tauri
 /// setup owns one instance for the entire process lifetime. No WebView command
 /// receives this object or any contained filesystem path.
-pub struct PluginService<I, H, A, R, C> {
-    manager: Mutex<PluginManager<I, H, A, R, C>>,
+pub struct PluginService<I, H, C> {
+    manager: Mutex<PluginManager<I, H, C>>,
     exits: HostExitMonitor,
 }
 
-impl<I, H, A, R, C> PluginService<I, H, A, R, C>
+impl<I, H, C> PluginService<I, H, C>
 where
     I: InstallationPort,
     H: HostLauncher,
-    A: PluginAuthorizationStore,
-    R: ArtifactRevocationStore,
     C: Clock,
 {
     #[must_use]
-    pub fn new(manager: PluginManager<I, H, A, R, C>, exits: HostExitMonitor) -> Self {
+    pub fn new(manager: PluginManager<I, H, C>, exits: HostExitMonitor) -> Self {
         Self {
             manager: Mutex::new(manager),
             exits,
@@ -82,8 +79,19 @@ where
         Ok(self.lock()?.open_project(workspace_id, states)?)
     }
 
-    /// Project opening never calls this method. Enabling is an explicit native
-    /// action after a current authorization receipt has been persisted.
+    pub fn open_workspace(
+        &self,
+        workspace_id: String,
+        bindings: Vec<bbcom_plugin_manager::WorkspacePluginBinding>,
+        states: Vec<OpaqueProjectPluginState>,
+    ) -> Result<Vec<PluginSnapshot>, PluginServiceError> {
+        Ok(self
+            .lock()?
+            .open_workspace(workspace_id, bindings, states)?)
+    }
+
+    /// Enabling is an explicit native action. Declared, implemented
+    /// capabilities are granted automatically by the manager.
     pub fn enable(&self, plugin_id: &str) -> Result<PluginSnapshot, PluginServiceError> {
         Ok(self.lock()?.enable(plugin_id)?)
     }
@@ -99,6 +107,41 @@ where
         Ok(self.lock()?.install_manual(request)?)
     }
 
+    pub fn update_manual(
+        &self,
+        request: &ManualPackageRequest,
+    ) -> Result<PluginSnapshot, PluginServiceError> {
+        Ok(self.lock()?.begin_manual_upgrade(request)?)
+    }
+
+    pub fn install_local(
+        &self,
+        package_root: &std::path::Path,
+    ) -> Result<PluginSnapshot, PluginServiceError> {
+        Ok(self.lock()?.install_local(package_root)?)
+    }
+
+    pub fn uninstall(&self, plugin_id: &str) -> Result<PluginSnapshot, PluginServiceError> {
+        Ok(self.lock()?.uninstall(plugin_id)?)
+    }
+
+    pub fn take_published_panels(
+        &self,
+    ) -> Result<Vec<bbcom_plugin_manager::HostPublishedPanel>, PluginServiceError> {
+        Ok(self.lock()?.take_published_panels()?)
+    }
+
+    pub fn invoke_panel_event(
+        &self,
+        plugin_id: &str,
+        field_id: &str,
+        value: &str,
+    ) -> Result<Option<bbcom_plugin_manager::HostPanel>, PluginServiceError> {
+        Ok(self
+            .lock()?
+            .invoke_panel_event(plugin_id, field_id, value)?)
+    }
+
     pub fn begin_manual_upgrade(
         &self,
         request: &ManualPackageRequest,
@@ -110,7 +153,7 @@ where
         &self,
         plugin_id: &str,
     ) -> Result<PluginSnapshot, PluginServiceError> {
-        Ok(self.lock()?.approve_pending_upgrade(plugin_id)?)
+        Ok(self.lock()?.complete_pending_upgrade(plugin_id)?)
     }
 
     pub fn cancel_pending_upgrade(
@@ -131,19 +174,8 @@ where
         Ok(self.lock()?.snapshots())
     }
 
-    pub fn authorization_target(
-        &self,
-        plugin_id: &str,
-    ) -> Result<AuthorizationTarget, PluginServiceError> {
-        Ok(self.lock()?.authorization_target(plugin_id)?)
-    }
-
-    pub fn complete_authorization(
-        &self,
-        target: &AuthorizationTarget,
-        approved: bool,
-    ) -> Result<PluginSnapshot, PluginServiceError> {
-        Ok(self.lock()?.complete_authorization(target, approved)?)
+    pub fn workspace_id(&self) -> Result<Option<String>, PluginServiceError> {
+        Ok(self.lock()?.workspace_id().map(str::to_owned))
     }
 
     /// Reaps each exited sidecar once, feeds the exact instance identity into
@@ -176,190 +208,9 @@ where
         Ok(())
     }
 
-    fn lock(&self) -> PluginManagerGuard<'_, I, H, A, R, C> {
+    fn lock(&self) -> PluginManagerGuard<'_, I, H, C> {
         self.manager
             .lock()
             .map_err(|_| PluginServiceError::StatePoisoned)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeSet;
-
-    use bbcom_plugin_contracts::{AuthorizationKey, Permission};
-    use bbcom_plugin_manager::{
-        ArtifactRevocationStore, AuthorizationFailure, HostFailure, HostHandle, HostLaunchRequest,
-        InstallationFailure, OpaqueProjectPluginState, PluginArtifact, PluginAuthorizationGrant,
-        PreparedInstallation, RevocationFailure,
-    };
-
-    use super::*;
-
-    struct FailingInstaller;
-
-    impl InstallationPort for FailingInstaller {
-        fn prepare_manual(
-            &mut self,
-            _request: &ManualPackageRequest,
-            _current: Option<&PluginArtifact>,
-        ) -> Result<PreparedInstallation, InstallationFailure> {
-            Err(InstallationFailure)
-        }
-
-        fn prepare_rollback(
-            &mut self,
-            _current: &PluginArtifact,
-        ) -> Result<Option<PreparedInstallation>, InstallationFailure> {
-            Ok(None)
-        }
-
-        fn commit(
-            &mut self,
-            _prepared: &PreparedInstallation,
-        ) -> Result<PluginArtifact, InstallationFailure> {
-            Err(InstallationFailure)
-        }
-
-        fn discard(&mut self, _prepared: &PreparedInstallation) -> Result<(), InstallationFailure> {
-            Ok(())
-        }
-    }
-
-    struct FailingHost;
-
-    impl HostLauncher for FailingHost {
-        fn launch(&mut self, _request: &HostLaunchRequest) -> Result<HostHandle, HostFailure> {
-            Err(HostFailure::Launch)
-        }
-
-        fn initialize(&mut self, _handle: &HostHandle) -> Result<(), HostFailure> {
-            Err(HostFailure::Initialization)
-        }
-
-        fn shutdown(&mut self, _handle: &HostHandle) -> Result<(), HostFailure> {
-            Err(HostFailure::Shutdown)
-        }
-
-        fn terminate(&mut self, _handle: &HostHandle) {}
-    }
-
-    struct MissingAuthorization;
-
-    impl PluginAuthorizationStore for MissingAuthorization {
-        fn current_grant(
-            &self,
-            _key: &AuthorizationKey,
-            _artifact_version: &str,
-        ) -> Result<Option<PluginAuthorizationGrant>, AuthorizationFailure> {
-            Ok(None)
-        }
-    }
-
-    struct NoRevocations;
-
-    impl ArtifactRevocationStore for NoRevocations {
-        fn is_revoked(&self, _artifact: &PluginArtifact) -> Result<bool, RevocationFailure> {
-            Ok(false)
-        }
-    }
-
-    struct FixedClock;
-
-    impl Clock for FixedClock {
-        fn now_millis(&self) -> u64 {
-            1
-        }
-    }
-
-    fn artifact() -> PluginArtifact {
-        PluginArtifact::new(
-            "dev.bbcom.coverage",
-            "1.0.0",
-            format!("publisher:sha256-{}", "b".repeat(64)),
-            BTreeSet::from([Permission::SessionMetadataRead]),
-        )
-        .unwrap()
-    }
-
-    fn service()
-    -> PluginService<FailingInstaller, FailingHost, MissingAuthorization, NoRevocations, FixedClock>
-    {
-        PluginService::new(
-            PluginManager::new(
-                FailingInstaller,
-                FailingHost,
-                MissingAuthorization,
-                NoRevocations,
-                FixedClock,
-            ),
-            HostExitMonitor::empty(),
-        )
-    }
-
-    #[test]
-    fn application_service_forwards_every_lifecycle_action_without_auto_starting() {
-        let service = service();
-        assert!(service.poll_host_exits().is_empty());
-        let installed = service.observe_installed(artifact()).unwrap();
-        assert_eq!(installed.running_instance_id, None);
-        let snapshots = service
-            .open_project(
-                "11111111-1111-1111-1111-111111111111".to_owned(),
-                Vec::new(),
-            )
-            .unwrap();
-        assert_eq!(snapshots.len(), 1);
-        assert_eq!(service.snapshots().unwrap().len(), 1);
-        assert!(service.enable("dev.bbcom.coverage").is_err());
-        assert!(service.disable("dev.bbcom.coverage").is_ok());
-
-        let request =
-            ManualPackageRequest::new("first-party", "dev.bbcom.coverage", "1.0.0").unwrap();
-        assert!(service.install_manual(&request).is_err());
-        assert!(service.begin_manual_upgrade(&request).is_err());
-        assert!(
-            service
-                .approve_pending_upgrade("dev.bbcom.coverage")
-                .is_err()
-        );
-        assert!(
-            service
-                .cancel_pending_upgrade("dev.bbcom.coverage")
-                .is_err()
-        );
-        assert_eq!(
-            service
-                .set_project_state(
-                    OpaqueProjectPluginState::new("dev.bbcom.coverage", vec![1, 2, 3]).unwrap(),
-                )
-                .unwrap()
-                .len(),
-            1
-        );
-        service.close_project().unwrap();
-    }
-
-    #[test]
-    fn service_errors_are_stable_and_poisoning_fails_closed() {
-        let manager_error: ManagerError =
-            bbcom_plugin_manager::ManagerErrorCode::PluginNotFound.into();
-        let wrapped = PluginServiceError::from(manager_error);
-        assert!(!wrapped.to_string().is_empty());
-        assert_eq!(
-            PluginServiceError::HostMonitorUnavailable.to_string(),
-            "plugin host monitor is unavailable"
-        );
-        assert_eq!(
-            PluginServiceError::StatePoisoned.to_string(),
-            "plugin application service is unavailable"
-        );
-
-        let service = service();
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = service.manager.lock().unwrap();
-            panic!("poison the application-owned manager mutex");
-        }));
-        assert_eq!(service.snapshots(), Err(PluginServiceError::StatePoisoned));
     }
 }

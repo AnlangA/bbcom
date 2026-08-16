@@ -1,5 +1,5 @@
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 1;
+pub const PROTOCOL_MINOR: u32 = 2;
 pub const WIT_PACKAGE: &str = "bbcom:plugin@1.0.0";
 
 pub const FRAME_LENGTH_PREFIX_BYTES: usize = 4;

@@ -5,7 +5,12 @@ describe('plugin declarative panel contract', () => {
   test('accepts only the flat trusted-control whitelist', () => {
     expect(
       validateDeclarativePanel({
-        pluginId: 'example.plugin',
+        runtime: {
+          workspaceId: 'workspace-1',
+          pluginId: 'example.plugin',
+          instanceId: 1,
+          generation: 1,
+        },
         title: 'Example',
         fields: [
           {
@@ -24,7 +29,12 @@ describe('plugin declarative panel contract', () => {
   test('rejects markup, URLs and invalid event values', () => {
     expect(
       validateDeclarativePanel({
-        pluginId: 'example.plugin',
+        runtime: {
+          workspaceId: 'workspace-1',
+          pluginId: 'example.plugin',
+          instanceId: 1,
+          generation: 1,
+        },
         title: 'Unsafe',
         fields: [
           {

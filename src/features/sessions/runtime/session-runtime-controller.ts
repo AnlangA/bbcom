@@ -1,6 +1,6 @@
 import { computed, onScopeDispose, readonly, ref, shallowRef, watch, type Ref } from 'vue';
 import { useAppStore } from '../../../stores/app';
-import { useSessionStore } from '../../../stores/sessions';
+import { useSessionCapture, useSessionDocument } from '../session-ports';
 import {
   serialConnectionFailureMessage,
   type SerialStopResult,
@@ -10,9 +10,8 @@ import { useSessionModbus } from '../../../composables/useSessionModbus';
 import { useTriggers } from '../../../composables/useTriggers';
 import { useAutoLog } from '../../../composables/useAutoLog';
 import { useMacroRunner } from '../../../composables/useMacroRunner';
-import { AsyncSendLoop } from '../../serial/application/async-send-loop';
-import type { PortLeaseClient } from '../../serial/application/port-lease-registry';
-import type { ApplicationNotificationPort } from '../../application/application-notifications';
+import { AsyncSendLoop, type PortLeaseClient } from '../../serial';
+import type { ApplicationNotificationPort } from '../../application';
 import { formatBytes } from '../../../lib/format';
 import { t } from '../../../lib/i18n';
 import { logger } from '../../../lib/logger';
@@ -26,6 +25,7 @@ import type {
 } from '../../../types';
 import type { SerialConnectionFailure } from '../../../composables/useSerialConnection';
 import { SessionProtocolRuntime } from './session-protocol-runtime';
+import { SessionRuntimeStatusRegistry } from './session-runtime-status';
 
 let nextRuntimeInstanceId = 0;
 
@@ -80,6 +80,7 @@ export type SessionRuntimeViewMode = 'terminal' | 'waveform' | 'parser' | 'modbu
 export interface SessionRuntimeControllerDependencies {
   readonly notifications: ApplicationNotificationPort;
   readonly portLeaseClient: PortLeaseClient;
+  readonly runtimeStatusRegistry?: SessionRuntimeStatusRegistry;
 }
 
 /**
@@ -123,9 +124,12 @@ export function useSessionRuntimeController(
   dependencies: SessionRuntimeControllerDependencies,
 ): SessionRuntimeController {
   const instanceId = `${session.value.id}:${++nextRuntimeInstanceId}`;
-  const sessionStore = useSessionStore();
+  const capture = useSessionCapture(session.value.id);
+  const sessionDocument = useSessionDocument(session.value.id);
   const appStore = useAppStore();
   const notifications = dependencies.notifications;
+  const runtimeStatusRegistry =
+    dependencies.runtimeStatusRegistry ?? new SessionRuntimeStatusRegistry();
   const autoLog = useAutoLog();
 
   const triggersRef = computed(() => session.value.triggers);
@@ -148,7 +152,7 @@ export function useSessionRuntimeController(
       },
       onOverflow: (total) => {
         notifications.warning(t('serial.error.rxOverflow', { bytes: formatBytes(total) }));
-        sessionStore.updateDroppedBytes(session.value.id, total);
+        capture.updateDroppedBytes(total);
       },
       autoReconnect: () => appStore.autoReconnect,
       onReconnecting: () => {
@@ -167,6 +171,37 @@ export function useSessionRuntimeController(
     serial.connectionFailure.value
       ? serialConnectionFailureMessage(serial.connectionFailure.value)
       : serial.error.value,
+  );
+  const serialClosing = serial.isClosing ?? ref(false);
+  const stopRuntimeStatusProjection = watch(
+    [
+      serial.isConnecting,
+      serial.isConnected,
+      serialClosing,
+      serial.reconnecting,
+      serial.connectionFailure,
+      serial.error,
+      serial.totalDroppedBytes,
+    ],
+    ([isConnecting, isConnected, isClosing, reconnecting, failure, error, droppedBytes]) => {
+      const phase = isClosing
+        ? 'closing'
+        : reconnecting
+          ? 'reconnecting'
+          : isConnecting
+            ? 'connecting'
+            : isConnected
+              ? 'connected'
+              : failure || error
+                ? 'failed'
+                : 'stopped';
+      runtimeStatusRegistry.publish(session.value.id, {
+        phase,
+        droppedBytes,
+        failure: failure?.error.code ?? error,
+      });
+    },
+    { immediate: true, flush: 'sync' },
   );
 
   // Protocol parsing is deliberately attached to the native raw-byte stream,
@@ -215,7 +250,7 @@ export function useSessionRuntimeController(
     },
     { immediate: true, flush: 'sync' },
   );
-  const removeParserFrameClearObserver = sessionStore.onFramesCleared(session.value.id, () => {
+  const removeParserFrameClearObserver = capture.onCleared(() => {
     protocolRuntime.clear();
     parserUiPublisher.cancel();
     publishParserSnapshot();
@@ -301,7 +336,7 @@ export function useSessionRuntimeController(
     if (disposed) return false;
     const result = await serial.send(data, isHex);
     const completed = result.outcome === 'complete';
-    if (completed) sessionStore.addSendHistory(session.value.id, { data, isHex });
+    if (completed) sessionDocument.addSendHistory(session.value.id, { data, isHex });
     return completed;
   }
 
@@ -395,6 +430,8 @@ export function useSessionRuntimeController(
         removeParserRawObserver();
         removeParserFrameClearObserver();
         stopParserConfigWatch();
+        stopRuntimeStatusProjection();
+        runtimeStatusRegistry.stop(session.value.id);
         stopConnectionWatch?.();
         stopConnectionWatch = null;
         parserUiPublisher.cancel();

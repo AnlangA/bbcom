@@ -5,7 +5,7 @@ import {
 } from './application-runtime-registry';
 import { ApplicationNotificationRouter } from './application-notifications';
 import { OperationRegistry } from './operation-registry';
-import type { PortLeaseRegistry } from '../serial/application/port-lease-registry';
+import type { PortLeaseRegistry } from '../serial';
 
 export interface ApplicationServices<TSession extends ApplicationSessionIdentity, TRuntime> {
   readonly runtimeRegistry: ApplicationRuntimeRegistry<TSession, TRuntime>;

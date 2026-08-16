@@ -27,7 +27,11 @@ pub(crate) fn configure_connection(connection: &Connection, writable: bool) -> R
         if !journal_mode.eq_ignore_ascii_case("wal") {
             connection.pragma_update(None, "journal_mode", "WAL")?;
         }
-        connection.pragma_update(None, "synchronous", "FULL")?;
+        // Paired with WAL above: NORMAL lets SQLite skip the commit-time fsync
+        // of the database file (the WAL is still synced). A power loss may
+        // lose the last committed transaction, but the database cannot be
+        // corrupted — the standard durability trade-off for a WAL journal.
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.pragma_update(None, "wal_autocheckpoint", 4096_i64)?;
         connection.pragma_update(None, "journal_size_limit", 16_i64 * 1024 * 1024)?;
         let page_size: i64 = connection.pragma_query_value(None, "page_size", |row| row.get(0))?;

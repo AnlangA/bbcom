@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::utils::window::require_main_window_label;
 use bbcom_contracts::{
     AppErrorCode, BeginLegacyBackupRequest, BeginLegacyBackupResponse, IpcError,
     VerifyLegacyBackupRequest, VerifyLegacyBackupResponse,
@@ -21,7 +22,6 @@ use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use zeroize::Zeroize;
 
-const MAIN_WINDOW_LABEL: &str = "main";
 const MAX_ACTIVE_BACKUP_GRANTS: usize = 8;
 const BACKUP_GRANT_TTL: Duration = Duration::from_secs(30 * 60);
 const MAX_PASSPHRASE_CHARS: usize = 1_024;
@@ -153,7 +153,7 @@ pub async fn begin_legacy_backup(
     request: BeginLegacyBackupRequest,
 ) -> Result<BeginLegacyBackupResponse, IpcError> {
     const OPERATION: &str = "begin_legacy_backup";
-    ensure_main_window(&window, OPERATION)?;
+    require_main_window_label(window.label(), OPERATION)?;
     let BeginLegacyBackupRequest {
         request_id,
         suggested_name,
@@ -179,29 +179,52 @@ pub async fn begin_legacy_backup(
     let passphrase = AgeScryptPassphraseStreams::new(passphrase)
         .map_err(|error| map_container_error(error, OPERATION))?;
 
-    let selected = window
-        .dialog()
-        .file()
-        .add_filter("bbcom encrypted legacy backup", &["age"])
-        .set_file_name(&suggested_name)
-        .blocking_save_file()
-        .ok_or_else(|| cancelled(OPERATION))?;
-    let mut path = selected
-        .into_path()
-        .map_err(|_| IpcError::invalid_input(OPERATION, "destination"))?;
-    if path.extension().is_none() {
-        path.set_extension("age");
-    }
-    validate_target_path(&path, OPERATION)?;
-    let display_name = display_name(&path, OPERATION)?;
+    // The native save dialog parks the calling thread until the user picks a
+    // destination, so it must stay off the async executor.
+    let dialog_result = tauri::async_runtime::spawn_blocking({
+        let window = window.clone();
+        let suggested_name = suggested_name.clone();
+        move || -> Result<(PathBuf, String), IpcError> {
+            let selected = window
+                .dialog()
+                .file()
+                .add_filter("bbcom encrypted legacy backup", &["age"])
+                .set_file_name(&suggested_name)
+                .blocking_save_file()
+                .ok_or_else(|| cancelled(OPERATION))?;
+            let mut path = selected
+                .into_path()
+                .map_err(|_| IpcError::invalid_input(OPERATION, "destination"))?;
+            if path.extension().is_none() {
+                path.set_extension("age");
+            }
+            validate_target_path(&path, OPERATION)?;
+            let display_name = display_name(&path, OPERATION)?;
+            Ok((path, display_name))
+        }
+    })
+    .await
+    .map_err(|_| io_failure(OPERATION, true))??;
+    let (path, display_name) = dialog_result;
     let backup_id = manager.reserve(path.clone(), OPERATION).await?;
 
     let destination = LegacyBackupFile::from_native_path(path);
-    if let Err(error) =
+    // The age scrypt encryption is CPU- and disk-bound; run it on the
+    // blocking pool so the executor keeps serving IPC while it runs.
+    let write_result = tauri::async_runtime::spawn_blocking(move || {
         write_encrypted_legacy_backup(&destination, &content, &passphrase, &NeverCancel)
-    {
-        manager.revoke(&backup_id).await;
-        return Err(map_container_error(error, OPERATION));
+    })
+    .await;
+    match write_result {
+        Ok(Ok(_written_bytes)) => {}
+        Ok(Err(error)) => {
+            manager.revoke(&backup_id).await;
+            return Err(map_container_error(error, OPERATION));
+        }
+        Err(_) => {
+            manager.revoke(&backup_id).await;
+            return Err(io_failure(OPERATION, true));
+        }
     }
     if let Err(error) = manager.mark_ready(&backup_id, OPERATION).await {
         manager.revoke(&backup_id).await;
@@ -222,7 +245,7 @@ pub async fn verify_legacy_backup(
     request: VerifyLegacyBackupRequest,
 ) -> Result<VerifyLegacyBackupResponse, IpcError> {
     const OPERATION: &str = "verify_legacy_backup";
-    ensure_main_window(&window, OPERATION)?;
+    require_main_window_label(window.label(), OPERATION)?;
     let VerifyLegacyBackupRequest {
         request_id,
         backup_id,
@@ -256,14 +279,6 @@ pub async fn verify_legacy_backup(
 
 fn cleanup_expired(grants: &mut HashMap<String, BackupGrant>) {
     grants.retain(|_, grant| grant.issued_at.elapsed() <= BACKUP_GRANT_TTL);
-}
-
-fn ensure_main_window(window: &WebviewWindow, operation: &'static str) -> Result<(), IpcError> {
-    if window.label() == MAIN_WINDOW_LABEL {
-        Ok(())
-    } else {
-        Err(IpcError::security_denied(operation))
-    }
 }
 
 fn validate_passphrase(value: &str, operation: &'static str) -> Result<(), IpcError> {

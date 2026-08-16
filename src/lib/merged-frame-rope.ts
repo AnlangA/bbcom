@@ -10,6 +10,16 @@ export { MAX_MERGED_VISIBLE_BYTES };
 
 type MarkRawFrame = <T extends object>(value: T) => T;
 
+/**
+ * Memo hook that rope-built MERGED frames expose to generic row-measuring
+ * code (`packetRowHeight`): it caches the display line count per run and
+ * content version. Symbol-keyed so the merged-frame cache stays invisible to
+ * the plain `DataFrame` shape consumed elsewhere.
+ */
+export const MERGED_FRAME_LINE_COUNT: unique symbol = Symbol('bbcom.mergedFrameLineCount');
+
+export type MergedFrameLineCountHook = (compute: () => number) => number;
+
 interface RopeRun {
   frame: DataFrame;
   chunks: Uint8Array[];
@@ -17,6 +27,22 @@ interface RopeRun {
   contentVersion: number;
   detached: boolean;
 }
+
+/** One LRU node: a run's materialized display tail at a content version. */
+interface RopeTailCacheEntry {
+  run: RopeRun;
+  contentVersion: number;
+  tail: Uint8Array;
+}
+
+/** Memoized display line count for one run at a content version. */
+interface RopeLineCountEntry {
+  contentVersion: number;
+  count: number;
+}
+
+/** Display tails are 64 KiB buffers, so only a bounded window stays warm. */
+const TAIL_CACHE_CAPACITY = 8;
 
 const identityMarkRaw: MarkRawFrame = <T extends object>(value: T): T => value;
 
@@ -33,9 +59,20 @@ export class MergedFrameRopeIndex {
   private readonly runByFrame = new WeakMap<DataFrame, RopeRun>();
   private readonly displayFrames: DataFrame[] = [];
   private readonly markRawFrame: MarkRawFrame;
-  private cachedTailRun: RopeRun | null = null;
-  private cachedTailVersion = -1;
-  private cachedTail = new Uint8Array(0);
+  /**
+   * Bounded LRU of materialized display tails, most recently used first.
+   * Virtual measure passes over the MERGED view revisit many historical runs
+   * per streaming pulse, so the original single-entry cache re-copied a fresh
+   * 64 KiB tail on every revisit; eight entries keep a visible window warm
+   * while capping duplicated tail bytes at 8 x 64 KiB.
+   */
+  private readonly tailCache: RopeTailCacheEntry[] = [];
+  /**
+   * Display line counts cost one number per run, so every run—including
+   * unmeasured historical rows revisited across pulses—stays memoized. The
+   * WeakMap drops entries with their runs after clear()/rebuild.
+   */
+  private readonly lineCounts = new WeakMap<RopeRun, RopeLineCountEntry>();
 
   constructor(markRawFrame: MarkRawFrame = identityMarkRaw) {
     this.markRawFrame = markRawFrame;
@@ -58,7 +95,7 @@ export class MergedFrameRopeIndex {
     }
     this.runs.length = 0;
     this.displayFrames.length = 0;
-    this.clearTailCache();
+    this.tailCache.length = 0;
   }
 
   rebuild(source: readonly DataFrame[]): void {
@@ -80,7 +117,12 @@ export class MergedFrameRopeIndex {
       last.chunks.push(sourceFrame.data);
       last.totalBytes += sourceFrame.data.byteLength;
       last.contentVersion += 1;
-      if (this.cachedTailRun === last) this.clearTailCache();
+      // The live tail run is the only mutable run: drop its cached tail
+      // eagerly so the stale 64 KiB copy is freed at growth, not at reuse.
+      // The common high-baud append path has never materialized a display
+      // tail. Avoid an LRU scan/function call on every source frame in that
+      // case; invalidation is needed only after a consumer has read `data`.
+      if (this.tailCache.length > 0) this.dropTailCacheEntry(last);
       return;
     }
 
@@ -105,6 +147,7 @@ export class MergedFrameRopeIndex {
       get omittedBytes(): number {
         return Math.max(0, run.totalBytes - MAX_MERGED_VISIBLE_BYTES);
       },
+      [MERGED_FRAME_LINE_COUNT]: (compute: () => number): number => this.lineCountFor(run, compute),
     } as DataFrame;
     const frame = this.markRawFrame(display);
     run.frame = frame;
@@ -143,11 +186,32 @@ export class MergedFrameRopeIndex {
     return run && !run.detached ? run.chunks : null;
   }
 
+  /**
+   * Memoized display line count for a merged row. `compute` runs at most once
+   * per (run, content version); appending to the live tail run bumps that
+   * run's version, so a growing row invalidates its own memo while immutable
+   * historical runs stay cached forever. Frames not owned by this rope simply
+   * compute every call.
+   */
+  runDisplayLineCount(frame: DataFrame, compute: () => number): number {
+    const run = this.runByFrame.get(frame);
+    return run ? this.lineCountFor(run, compute) : compute();
+  }
+
+  private lineCountFor(run: RopeRun, compute: () => number): number {
+    const cached = this.lineCounts.get(run);
+    if (cached && cached.contentVersion === run.contentVersion) {
+      return cached.count;
+    }
+    const count = compute();
+    this.lineCounts.set(run, { contentVersion: run.contentVersion, count });
+    return count;
+  }
+
   private tailFor(run: RopeRun): Uint8Array {
     if (run.detached || run.totalBytes === 0) return new Uint8Array(0);
-    if (this.cachedTailRun === run && this.cachedTailVersion === run.contentVersion) {
-      return this.cachedTail;
-    }
+    const cached = this.freshTailEntry(run);
+    if (cached) return cached.tail;
 
     const tailLength = Math.min(run.totalBytes, MAX_MERGED_VISIBLE_BYTES);
     const tail = new Uint8Array(tailLength);
@@ -159,18 +223,32 @@ export class MergedFrameRopeIndex {
       tail.set(chunk.subarray(chunk.byteLength - copyLength), destinationEnd);
     }
 
-    // Keep at most one display-tail copy. A terminal can have many historical
-    // direction runs, so caching a tail on every descriptor would recreate a
-    // large duplicate buffer under sustained capture.
-    this.cachedTailRun = run;
-    this.cachedTailVersion = run.contentVersion;
-    this.cachedTail = tail;
+    this.rememberTail(run, tail);
     return tail;
   }
 
-  private clearTailCache(): void {
-    this.cachedTailRun = null;
-    this.cachedTailVersion = -1;
-    this.cachedTail = new Uint8Array(0);
+  /** The run's cached tail at its current content version, LRU-refreshed. */
+  private freshTailEntry(run: RopeRun): RopeTailCacheEntry | null {
+    for (let index = 0; index < this.tailCache.length; index += 1) {
+      const entry = this.tailCache[index];
+      if (entry.run !== run) continue;
+      this.tailCache.splice(index, 1);
+      if (entry.contentVersion !== run.contentVersion) return null;
+      this.tailCache.unshift(entry);
+      return entry;
+    }
+    return null;
+  }
+
+  private rememberTail(run: RopeRun, tail: Uint8Array): void {
+    this.tailCache.unshift({ run, contentVersion: run.contentVersion, tail });
+    if (this.tailCache.length > TAIL_CACHE_CAPACITY) {
+      this.tailCache.length = TAIL_CACHE_CAPACITY;
+    }
+  }
+
+  private dropTailCacheEntry(run: RopeRun): void {
+    const index = this.tailCache.findIndex((entry) => entry.run === run);
+    if (index >= 0) this.tailCache.splice(index, 1);
   }
 }

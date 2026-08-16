@@ -8,11 +8,11 @@
           class="tab-item"
           :class="{
             active: session.id === activeId,
-            connected: session.isConnected,
+            connected: isConnected(session.id),
             dragging: dragIndex === index,
             'drag-over': dragOverIndex === index,
           }"
-          :draggable="sessionStore.userMutationsAllowed"
+          :draggable="mutationPolicy.userMutationsAllowed.value"
           @click="switchSession(session.id)"
           @dragstart="onDragStart(index, $event)"
           @dragover.prevent="onDragOver(index)"
@@ -29,16 +29,16 @@
             :aria-selected="session.id === activeId"
             :aria-controls="`session-panel-${session.id}`"
             :tabindex="session.id === activeId ? 0 : -1"
-            :aria-disabled="!sessionStore.userMutationsAllowed"
+            :aria-disabled="!mutationPolicy.userMutationsAllowed.value"
             @keydown="onTabKeydown(index, $event)"
           >
-            <span class="tab-status-dot" :class="{ connected: session.isConnected }"></span>
+            <span class="tab-status-dot" :class="{ connected: isConnected(session.id) }"></span>
             <span class="tab-port">{{ session.portName }}</span>
           </button>
           <button
             class="tab-close"
             type="button"
-            :disabled="!sessionStore.userMutationsAllowed"
+            :disabled="!mutationPolicy.userMutationsAllowed.value"
             @click.stop="closeSession(session.id)"
             :title="t('session.close')"
           >
@@ -49,7 +49,7 @@
       <button
         class="tab-add"
         type="button"
-        :disabled="!sessionStore.userMutationsAllowed"
+        :disabled="!mutationPolicy.userMutationsAllowed.value"
         @click="createSession"
         :title="t('session.newWithShortcut')"
       >
@@ -61,7 +61,7 @@
       <button
         type="button"
         class="undo-action"
-        :disabled="!sessionStore.userMutationsAllowed"
+        :disabled="!mutationPolicy.userMutationsAllowed.value"
         @click="undoDelete"
       >
         {{ t('session.undoDelete') }}
@@ -70,34 +70,44 @@
         {{ t(undoFailure === 'limit' ? 'session.undoDeleteLimit' : 'session.undoDeleteConflict') }}
       </span>
     </div>
+    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+      {{ reorderAnnouncement }}
+    </span>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { Plus, X } from '@lucide/vue';
-import { useSessionStore } from '../../stores/sessions';
 import { useSessionActions } from '../../composables/useSessionActions';
 import { t } from '../../lib/i18n';
 import type { SerialSession } from '../../types';
+import {
+  useSessionCatalog,
+  useSessionMutationPolicy,
+  useSessionRuntimeStatuses,
+} from '../../features/sessions';
 
 const emit = defineEmits<{
   (e: 'create'): void;
 }>();
 
-const sessionStore = useSessionStore();
+const catalog = useSessionCatalog();
+const mutationPolicy = useSessionMutationPolicy();
 const { requestCloseSession } = useSessionActions();
+const { isConnected } = useSessionRuntimeStatuses();
 
-const activeId = computed(() => sessionStore.activeSessionId ?? '');
-const sessions = computed(() => sessionStore.sessions);
-const lastDeletedSession = computed(() => sessionStore.lastDeletedSession);
+const activeId = computed(() => catalog.activeSessionId.value ?? '');
+const sessions = computed(() => catalog.sessions.value);
+const lastDeletedSession = computed(() => catalog.lastDeletedSession.value);
 
 const dragIndex = ref<number | null>(null);
 const dragOverIndex = ref<number | null>(null);
 const undoFailure = ref<'conflict' | 'limit' | null>(null);
+const reorderAnnouncement = ref('');
 
 function onDragStart(index: number, e: DragEvent) {
-  if (!sessionStore.userMutationsAllowed) return;
+  if (!mutationPolicy.userMutationsAllowed.value) return;
   dragIndex.value = index;
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = 'move';
@@ -114,9 +124,9 @@ function onDragLeave() {
 }
 
 function onDrop(toIndex: number) {
-  if (!sessionStore.userMutationsAllowed) return;
+  if (!mutationPolicy.userMutationsAllowed.value) return;
   if (dragIndex.value !== null && dragIndex.value !== toIndex) {
-    sessionStore.reorderSessions(dragIndex.value, toIndex);
+    catalog.reorder(dragIndex.value, toIndex);
   }
 }
 
@@ -126,14 +136,14 @@ function onDragEnd() {
 }
 
 function closeSession(id: string) {
-  if (!sessionStore.userMutationsAllowed) return;
+  if (!mutationPolicy.userMutationsAllowed.value) return;
   undoFailure.value = null;
   requestCloseSession(id);
 }
 
 function undoDelete(): void {
-  if (!sessionStore.userMutationsAllowed) return;
-  const result = sessionStore.undoLastRemovedSession();
+  if (!mutationPolicy.userMutationsAllowed.value) return;
+  const result = catalog.undo();
   undoFailure.value = result.ok
     ? null
     : result.reason === 'id-conflict'
@@ -143,16 +153,31 @@ function undoDelete(): void {
         : null;
 }
 function switchSession(id: string) {
-  sessionStore.setActiveSession(id);
+  catalog.activate(id);
 }
 
 function createSession(): void {
-  if (!sessionStore.userMutationsAllowed) return;
+  if (!mutationPolicy.userMutationsAllowed.value) return;
   emit('create');
 }
 
 function onTabKeydown(index: number, event: KeyboardEvent) {
   if (sessions.value.length === 0) return;
+  if (event.altKey && event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+    if (!mutationPolicy.userMutationsAllowed.value) return;
+    const target = event.key === 'ArrowLeft' ? index - 1 : index + 1;
+    if (target < 0 || target >= sessions.value.length) return;
+    event.preventDefault();
+    const session = sessions.value[index];
+    if (!session) return;
+    catalog.reorder(index, target);
+    reorderAnnouncement.value = t('session.reordered', {
+      name: session.portName,
+      position: target + 1,
+    });
+    requestAnimationFrame(() => document.getElementById(`session-tab-${session.id}`)?.focus());
+    return;
+  }
   let nextIndex: number;
   if (event.key === 'ArrowRight') nextIndex = (index + 1) % sessions.value.length;
   else if (event.key === 'ArrowLeft') {
@@ -169,8 +194,8 @@ function onTabKeydown(index: number, event: KeyboardEvent) {
 
 function tabTooltip(session: SerialSession): string {
   // Track only this session's raw frame-buffer invalidation signal.
-  void sessionStore.getSessionFramesVersion(session.id);
-  const status = session.isConnected ? t('session.connected') : t('session.disconnected');
+  void catalog.framesVersion(session.id);
+  const status = isConnected(session.id) ? t('session.connected') : t('session.disconnected');
   const baud = session.portConfig.baudRate;
   const frames = session.frames.length;
   return `${session.portName} | ${baud} bps | ${frames} ${t('status.frames')} | ${status}`;
@@ -286,17 +311,6 @@ function tabTooltip(session: SerialSession): string {
   box-shadow: inset 0 2px 0 var(--color-primary);
 }
 
-.tab-item.connected {
-  border-left: 2px solid var(--accent-green);
-  background-image: linear-gradient(90deg, var(--accent-green-subtle), transparent 80px);
-}
-
-.tab-item.connected.active {
-  background-image:
-    linear-gradient(90deg, var(--accent-green-subtle), transparent 80px),
-    linear-gradient(180deg, var(--bg-primary), var(--bg-primary));
-}
-
 .tab-item.dragging {
   opacity: 0.5;
 }
@@ -308,7 +322,7 @@ function tabTooltip(session: SerialSession): string {
 .tab-port {
   font-family: var(--font-mono);
   font-weight: 500;
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   overflow: hidden;
   text-overflow: ellipsis;
 }

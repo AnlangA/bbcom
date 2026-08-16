@@ -7,23 +7,31 @@ export type IpcError = { code: AppErrorCode, messageKey: string, retryable: bool
 
 export type Direction = "TX" | "RX";
 
-export type DataFramePayload = { id: string, direction: Direction, timestamp: number, data: Array<number>, };
+export type DataFramePayload = { id: string, direction: Direction, timestamp: number, data: Array<number>, dataB64?: string, };
 
 export type ChecksumType = "CHECKSUM" | "CRC8" | "CRC16" | "CRC16_MODBUS" | "CRC32";
 
-export type ChecksumRequest = { data: Array<number>, algorithm: ChecksumType, };
+export type ChecksumRequest = { data: Array<number>, dataB64?: string, algorithm: ChecksumType, };
 
 export type ChecksumResponse = { result: string, };
 
 export type ExportFormat = "txt-hex" | "txt-ascii" | "csv" | "jsonl" | "bin";
 
-export type BeginExportRequest = { format: ExportFormat, token: string, expectedFrames: number, expectedRawBytes: number, };
+export type ExportSource = { "kind": "workspace-frames", workspaceId: string, sessionId: string, toSeqExclusive: number, };
+
+export type BeginExportRequest = { format: ExportFormat, token: string, expectedFrames: number, expectedRawBytes: number, source?: ExportSource, };
 
 export type AppendExportBatchRequest = { exportId: string, frames: Array<DataFramePayload>, };
 
 export type ExportSessionRequest = { exportId: string, };
 
-export type BeginExportResponse = { exportId: string, };
+export type BeginExportResponse = { exportId: string,
+/**
+ * Backend-source mode only: the frame total the backend committed to
+ * enforce at finish, read from the durable source. Absent for
+ * renderer-source exports (the renderer already knows its own total).
+ */
+expectedFrames?: number, };
 
 export type ExportAppendStats = { totalFrames: number, totalRawBytes: number, };
 
@@ -89,37 +97,37 @@ export type CancelOperationRequest = { operationId: string, };
 
 export type PluginPermission = "ui.panel" | "plugin.storage" | "session.metadata.read" | "session.capture.read" | "project.settings.read-write" | "serial.ports.read" | "serial.control" | "serial.write-proposal" | "ai.conversation.read" | "ai.request" | "file.open-save" | "clipboard" | "notification";
 
-export type PluginLifecycleStatus = "approval-required" | "disabled" | "stopped" | "starting" | "running" | "updating" | "rolling-back" | "failed";
+export type PluginLifecycleStatus = "disabled" | "stopped" | "starting" | "running" | "updating" | "rolling-back" | "failed";
 
-export type PluginStatusReason = "initial-install" | "workspace-changed" | "permission-expansion" | "artifact-changed" | "user" | "crash-loop-rolled-back" | "crash-loop-no-rollback" | "rollback-failed" | "rollback-blocked-revoked" | "artifact-revoked";
-
-export type PluginRiskCombination = "capture-with-network" | "conversation-with-network" | "capture-with-external-sink" | "conversation-with-external-sink" | "serial-control-and-write-proposal";
+export type PluginStatusReason = "user" | "crash-loop-rolled-back" | "crash-loop-no-rollback" | "rollback-failed" | "rollback-blocked-revoked" | "artifact-revoked";
 
 export type PluginUnavailableCapability = "ui.panel" | "plugin.storage" | "session.metadata.read" | "session.capture.read" | "project.settings.read-write" | "serial.ports.read" | "serial.control" | "serial.write-proposal" | "ai.conversation.read" | "ai.request" | "file.open-save" | "clipboard" | "notification" | "network";
 
-export type PluginCatalogItem = { catalogId: string, pluginId: string, displayName: string, description: string, version: string, publisherName: string, publisherVerified: boolean, installedVersion: string | null, };
+export type PluginCatalogItem = { catalogId: string, pluginId: string, displayName: string, description: string, version: string, publisherName: string, installedVersion: string | null, };
 
-export type InstalledPluginView = { pluginId: string, displayName: string, version: string, status: PluginLifecycleStatus, statusReason: PluginStatusReason | null, enabled: boolean, pendingVersion: string | null, requestedPermissions: Array<PluginPermission>, };
+export type PluginSourceKind = "https" | "local-package" | "dev-directory";
 
-export type PluginAuthorizationReview = { reviewId: string, pluginId: string, displayName: string, version: string, persistentPermissions: Array<PluginPermission>, perRequestPermissions: Array<PluginPermission>, unavailableCapabilities: Array<PluginUnavailableCapability>, extraConfirmationReasons: Array<PluginRiskCombination>, };
+export type PluginSourceHealth = "idle" | "healthy" | "error" | "disconnected";
 
-export type PluginPermissionDecisionState = "granted" | "denied";
+export type PluginSourceView = { sourceId: string, kind: PluginSourceKind, displayName: string, url: string | null, enabled: boolean, watchEnabled: boolean, health: PluginSourceHealth, lastAttemptMs: number | null, lastSuccessMs: number | null, etag: string | null, lastModified: string | null, };
 
-export type PluginPermissionDecision = { permission: PluginPermission, state: PluginPermissionDecisionState, };
+export type RuntimeInstanceKey = { workspaceId: string, pluginId: string, instanceId: number, generation: number, };
 
-export type PluginSerialProposal = { proposalId: string, pluginId: string, pluginName: string, sessionLabel: string, displayLabel: string, byteCount: number, hexPreview: string, expiresAtMs: number, };
+export type InstalledPluginView = { pluginId: string, displayName: string, version: string, status: PluginLifecycleStatus, statusReason: PluginStatusReason | null, enabled: boolean, pendingVersion: string | null, declaredCapabilities: Array<PluginPermission>, effectiveCapabilities: Array<PluginPermission>, unavailableCapabilities: Array<PluginUnavailableCapability>, runtime: RuntimeInstanceKey | null, };
+
+export type PluginSerialProposal = { runtime: RuntimeInstanceKey, proposalId: string, pluginId: string, pluginName: string, sessionLabel: string, displayLabel: string, byteCount: number, hexPreview: string, expiresAtMs: number, };
 
 export type PluginPanelFieldKind = "text" | "number" | "toggle" | "select" | "button";
 
 export type PluginPanelField = { id: string, label: string, kind: PluginPanelFieldKind, value: string, options: Array<string>, disabled: boolean, };
 
-export type PluginDeclarativePanel = { pluginId: string, title: string, fields: Array<PluginPanelField>, };
+export type PluginDeclarativePanel = { runtime: RuntimeInstanceKey, title: string, fields: Array<PluginPanelField>, };
 
-export type PluginPanelEvent = { pluginId: string, fieldId: string, value: string, };
+export type PluginPanelEvent = { runtime: RuntimeInstanceKey, fieldId: string, value: string, };
 
-export type PluginCenterData = { revision: number, catalog: Array<PluginCatalogItem>, installed: Array<InstalledPluginView>, authorizationReview: PluginAuthorizationReview | null, serialProposals: Array<PluginSerialProposal>, panels: Array<PluginDeclarativePanel>, };
+export type PluginCenterData = { revision: number, catalog: Array<PluginCatalogItem>, installed: Array<InstalledPluginView>, serialProposals: Array<PluginSerialProposal>, panels: Array<PluginDeclarativePanel>, sources: Array<PluginSourceView>, };
 
-export type PluginFailureCode = "unavailable" | "invalid-response" | "invalid-panel" | "operation-conflict" | "installation-failed" | "authorization-failed" | "host-failed" | "proposal-expired" | "proposal-context-changed" | "proposal-consumed" | "panel-event-rejected" | "cancel-failed";
+export type PluginFailureCode = "unavailable" | "invalid-response" | "invalid-panel" | "invalid-input" | "operation-conflict" | "installation-failed" | "host-failed" | "proposal-expired" | "proposal-context-changed" | "proposal-consumed" | "panel-event-rejected" | "cancel-failed";
 
 export type PluginFailure = { code: PluginFailureCode, };
 
@@ -129,15 +137,35 @@ export type PluginSnapshotRequest = { requestId: string, revision: number, opera
 
 export type InstallPluginRequest = { requestId: string, revision: number, operationId: string, catalogId: string, };
 
+export type InstallLocalPluginRequest = { requestId: string, revision: number, operationId: string, grantId: string, };
+
+export type PluginLocalSourceKind = "local-package" | "dev-directory";
+
+export type RequestPluginLocalSourceGrantRequest = { requestId: string, sourceKind: PluginLocalSourceKind, };
+
+export type PluginLocalSourceGrantResponse = { requestId: string, grantId: string, displayName: string, sourceKind: PluginLocalSourceKind, };
+
+export type UninstallPluginRequest = { requestId: string, revision: number, operationId: string, pluginId: string, };
+
 export type SetPluginEnabledRequest = { requestId: string, revision: number, operationId: string, pluginId: string, enabled: boolean, };
 
-export type SubmitPluginAuthorizationRequest = { requestId: string, revision: number, operationId: string, reviewId: string, decisions: Array<PluginPermissionDecision>, perRequestCapabilitiesAcknowledged: Array<PluginPermission>, extraConfirmationAcknowledged: boolean, };
+export type AddPluginSourceRequest = { requestId: string, revision: number, operationId: string, sourceId: string, url: string, enabled: boolean, };
 
-export type DismissPluginAuthorizationRequest = { requestId: string, revision: number, operationId: string, reviewId: string, };
+export type UpdatePluginSourceRequest = { requestId: string, revision: number, operationId: string, sourceId: string, url: string, enabled: boolean, };
+
+export type RemovePluginSourceRequest = { requestId: string, revision: number, operationId: string, sourceId: string, };
+
+export type RefreshPluginSourceRequest = { requestId: string, revision: number, operationId: string, sourceId: string, };
+
+export type SetPluginWatchEnabledRequest = { requestId: string, revision: number, operationId: string, sourceId: string, enabled: boolean, };
 
 export type PluginSerialProposalDecision = "approve" | "reject";
 
-export type ResolvePluginSerialProposalRequest = { requestId: string, revision: number, operationId: string, proposalId: string, decision: PluginSerialProposalDecision, };
+export type ResolvePluginSerialProposalRequest = { requestId: string, revision: number, operationId: string, proposalId: string, runtime: RuntimeInstanceKey, decision: PluginSerialProposalDecision, };
+
+export type PluginSerialAction = { correlationId: string, proposalId: string, operationId: string, sessionId: string, runtime: RuntimeInstanceKey, bytes: Array<number>, };
+
+export type PluginSerialActionResultRequest = { correlationId: string, runtime: RuntimeInstanceKey, outcome: SerialSendOutcome, requestedBytes: number, sentBytes: number, };
 
 export type EmitPluginPanelEventRequest = { requestId: string, revision: number, operationId: string, event: PluginPanelEvent, };
 
@@ -214,7 +242,12 @@ export type HydrateWorkspaceSessionsResponse = { requestId: string, workspaceId:
 
 export type HydrateWorkspaceFramesRequest = { requestId: string, workspaceId: string, sessionId: string, fromSeq: number, limit: number, };
 
-export type WorkspaceHydratedFrame = { seq: number, id: string, direction: Direction, timestampMs: number, data: Array<number>, txStatus?: string, requestedBytes?: number, omittedBytes?: number, };
+export type WorkspaceHydratedFrame = { seq: number, id: string, direction: Direction, timestampMs: number, data: Array<number>,
+/**
+ * Base64 frame bytes. Hydrate responses carry payloads only over this
+ * channel; `data` serializes as an empty array for wire-shape stability.
+ */
+dataB64?: string, txStatus?: string, requestedBytes?: number, omittedBytes?: number, };
 
 export type HydrateWorkspaceFramesResponse = { requestId: string, workspaceId: string, sessionId: string, revision: number, frames: Array<WorkspaceHydratedFrame>, nextSeq?: number, };
 
@@ -230,7 +263,7 @@ export type WorkspaceSessionKind = "live" | "offline";
 
 export type WorkspaceSessionUpsertPayload = { name: string, sortOrder: number, kind: WorkspaceSessionKind, lastPortHint?: WorkspacePortHint, portConfig: Record<string, unknown>, document: Record<string, unknown>, };
 
-export type WorkspaceFramePayload = { id: string, direction: Direction, timestampMs: number, data: Array<number>, txStatus?: string, requestedBytes?: number, omittedBytes?: number, };
+export type WorkspaceFramePayload = { id: string, direction: Direction, timestampMs: number, data: Array<number>, dataB64?: string, txStatus?: string, requestedBytes?: number, omittedBytes?: number, };
 
 export type WorkspaceAppendFramesPayload = { startSeq: number, frames: Array<WorkspaceFramePayload>, };
 

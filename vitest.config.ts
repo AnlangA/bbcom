@@ -35,7 +35,7 @@ export default defineConfig({
     include: ['tests/frontend/**/*.test.ts'],
     exclude: ['tests/frontend/perf.bench.ts'],
     setupFiles: ['tests/frontend/vitest.setup.ts'],
-    fileParallelism: false,
+    fileParallelism: true,
     pool: 'forks',
     dangerouslyIgnoreUnhandledErrors: false,
     coverage: {
@@ -62,7 +62,6 @@ export default defineConfig({
         'src/types/serial.ts',
         'src/types/session.ts',
         'src/types/waveform.ts',
-        'src/lib/session-state-worker-protocol.ts',
       ],
       thresholds: {
         lines: 85,

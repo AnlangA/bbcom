@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSessionStore } from '../../src/stores/sessions.ts';
+import { useSessionCoreStore } from '../../src/stores/session-core.ts';
 import type { PortConfig } from '../../src/types/index.ts';
 
 interface LocalStorageLike {
@@ -40,16 +40,17 @@ async function withLocalStorageMock(run: () => Promise<void>): Promise<void> {
 test('tab switches retain runtimes while closing awaits exactly that session cleanup', async () => {
   await withLocalStorageMock(async () => {
     setActivePinia(createPinia());
-    const store = useSessionStore();
+    const store = useSessionCoreStore();
+    const persistence = useSessionCoreStore();
     const firstId = store.createSession('COM1', config);
     const secondId = store.createSession('COM2', config);
     let firstCleanupCount = 0;
     let secondCleanupCount = 0;
 
-    store.registerCleanup(firstId, async () => {
+    persistence.registerCleanup(firstId, async () => {
       firstCleanupCount += 1;
     });
-    store.registerCleanup(secondId, async () => {
+    persistence.registerCleanup(secondId, async () => {
       secondCleanupCount += 1;
     });
 

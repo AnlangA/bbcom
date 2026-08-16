@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 use bbcom_plugin_contracts::generated::{
     CompleteShutdownRequest, Envelope, GetStateChunkRequest, HostHello, InitializeRequest,
-    OpaqueStateKind, PutStateChunkRequest, ShutdownRequest, StateSnapshotDescriptor, envelope,
+    InvokeRequest, OpaqueStateKind, PutStateChunkRequest, ShutdownRequest, StateSnapshotDescriptor,
+    envelope,
 };
 use bbcom_plugin_contracts::{
     HANDSHAKE_TIMEOUT_MS, HOST_PROCESS_MEMORY_LIMIT_BYTES, MAX_PLUGIN_PERSISTED_STATE_BYTES,
@@ -24,7 +25,7 @@ use bbcom_plugin_contracts::{
 use bbcom_plugin_host::transport::{FrameReader, FrameWriter};
 use bbcom_plugin_manager::{
     ArtifactSlot, CrashKind, HostFailure, HostHandle, HostLaunchMode, HostLaunchRequest,
-    HostLauncher, HostReport,
+    HostLauncher, HostPanel, HostPanelField, HostPanelFieldKind, HostReport,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -339,6 +340,25 @@ struct HostProcess {
     next_request_id: u64,
     state_key: PluginStatePersistenceKey,
     initial_state: PluginPersistedState,
+    published_panel: Option<HostPanel>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HostPanelJson {
+    title: String,
+    fields: Vec<HostPanelFieldJson>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HostPanelFieldJson {
+    id: String,
+    label: String,
+    kind: String,
+    value: String,
+    options: Vec<String>,
+    disabled: bool,
 }
 
 #[derive(Default)]
@@ -353,13 +373,6 @@ pub struct HostExitMonitor {
 }
 
 impl HostExitMonitor {
-    #[cfg(test)]
-    pub(super) fn empty() -> Self {
-        Self {
-            processes: Arc::new(Mutex::new(HostProcesses::default())),
-        }
-    }
-
     /// Polls native children once. The application runtime owns scheduling and
     /// feeds returned reports into `PluginManager::report_host_exit`.
     pub fn poll(&self) -> Result<Vec<HostCrashEvent>, HostMonitorError> {
@@ -734,6 +747,7 @@ where
             next_request_id: 1,
             state_key,
             initial_state,
+            published_panel: None,
         };
         let granted_capabilities = request
             .granted_permissions
@@ -818,6 +832,7 @@ where
         )?;
         let descriptor = match response.payload {
             Some(envelope::Payload::InitializeResponse(response)) => {
+                process.published_panel = parse_panel_json(&response.panel_json)?;
                 response.state.ok_or(HostFailure::Initialization)?
             }
             _ => return Err(HostFailure::Initialization),
@@ -875,6 +890,46 @@ where
         Ok(())
     }
 
+    fn take_published_panel(
+        &mut self,
+        handle: &HostHandle,
+    ) -> Result<Option<HostPanel>, HostFailure> {
+        let mut processes = self.processes.lock().map_err(|_| HostFailure::Launch)?;
+        Ok(exact_process(&mut processes, handle)?
+            .published_panel
+            .take())
+    }
+
+    fn invoke_panel_event(
+        &mut self,
+        handle: &HostHandle,
+        field_id: &str,
+        value: &str,
+    ) -> Result<Option<HostPanel>, HostFailure> {
+        let mut processes = self.processes.lock().map_err(|_| HostFailure::Launch)?;
+        let process = exact_process(&mut processes, handle)?;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "fieldId": field_id,
+            "value": value,
+        }))
+        .map_err(|_| HostFailure::Transport)?;
+        let response = Self::process_request(
+            process,
+            envelope::Payload::InvokeRequest(InvokeRequest {
+                method: "panel-event".to_owned(),
+                body,
+                long_running: false,
+            }),
+            REQUEST_TIMEOUT,
+        )?;
+        let panel = match response.payload {
+            Some(envelope::Payload::InvokeResponse(response)) => parse_panel_json(&response.body)?,
+            _ => return Err(HostFailure::Transport),
+        };
+        process.published_panel = panel.clone();
+        Ok(panel)
+    }
+
     fn terminate(&mut self, handle: &HostHandle) {
         let Ok(mut processes) = self.processes.lock() else {
             return;
@@ -896,6 +951,40 @@ fn receive_response(
         }
         Err(RecvTimeoutError::Timeout) => Err(HostFailure::Transport),
     }
+}
+
+fn parse_panel_json(bytes: &[u8]) -> Result<Option<HostPanel>, HostFailure> {
+    if bytes.is_empty() || bytes == b"null" {
+        return Ok(None);
+    }
+    let panel: HostPanelJson =
+        serde_json::from_slice(bytes).map_err(|_| HostFailure::Initialization)?;
+    let fields = panel
+        .fields
+        .into_iter()
+        .map(|field| {
+            let kind = match field.kind.as_str() {
+                "text" => HostPanelFieldKind::Text,
+                "number" => HostPanelFieldKind::Number,
+                "toggle" => HostPanelFieldKind::Toggle,
+                "select" => HostPanelFieldKind::Select,
+                "button" => HostPanelFieldKind::Button,
+                _ => return Err(HostFailure::Initialization),
+            };
+            Ok(HostPanelField {
+                id: field.id,
+                label: field.label,
+                kind,
+                value: field.value,
+                options: field.options,
+                disabled: field.disabled,
+            })
+        })
+        .collect::<Result<Vec<_>, HostFailure>>()?;
+    Ok(Some(HostPanel {
+        title: panel.title,
+        fields,
+    }))
 }
 
 fn exact_process<'a>(

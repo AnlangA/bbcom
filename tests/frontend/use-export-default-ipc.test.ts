@@ -7,6 +7,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 
 import { useExport } from '../../src/composables/useExport.ts';
 import type { DataFrame } from '../../src/types.ts';
+import { createInvokeHandler, unexpectedCommand } from './helpers/invoke-mock.ts';
 
 function frame(): DataFrame {
   return { id: 'f1', direction: 'RX', timestamp: 1, data: new Uint8Array([0xaa]) };
@@ -17,20 +18,17 @@ afterEach(() => {
 });
 
 test('useExport defaults stream through only the opaque file-grant IPC protocol', async () => {
-  invoke.mockImplementation(async (command: string) => {
-    switch (command) {
-      case 'request_save_target':
-        return { token: 'opaque-grant', displayName: 'capture.bin' };
-      case 'begin_export':
-        return { exportId: 'export-id' };
-      case 'append_export_batch':
-        return { totalFrames: 1, totalRawBytes: 1 };
-      case 'finish_export':
-        return { frames: 1, rawBytes: 1, outputBytes: 1, durationMs: 3 };
-      default:
-        throw new Error(`unexpected command ${command}`);
-    }
-  });
+  invoke.mockImplementation(
+    createInvokeHandler({
+      responses: {
+        request_save_target: { token: 'opaque-grant', displayName: 'capture.bin' },
+        begin_export: { exportId: 'export-id' },
+        append_export_batch: { totalFrames: 1, totalRawBytes: 1 },
+        finish_export: { frames: 1, rawBytes: 1, outputBytes: 1, durationMs: 3 },
+      },
+      fallback: unexpectedCommand,
+    }),
+  );
   const api = useExport();
 
   assert.deepEqual(await api.exportData([frame()], 'bin', 'HEX'), { ok: true });
@@ -50,7 +48,7 @@ test('useExport defaults stream through only the opaque file-grant IPC protocol'
       {
         request: {
           exportId: 'export-id',
-          frames: [{ id: 'f1', direction: 'RX', timestamp: 1, data: [0xaa] }],
+          frames: [{ id: 'f1', direction: 'RX', timestamp: 1, data: [], dataB64: 'qg==' }],
         },
       },
     ],
@@ -63,11 +61,12 @@ test('useExport defaults revoke a newly granted target if cancellation wins the 
   const target = new Promise<{ token: string; displayName: string }>((resolve) => {
     resolveTarget = resolve;
   });
-  invoke.mockImplementation(async (command: string) => {
-    if (command === 'request_save_target') return target;
-    if (command === 'revoke_file_grant') return undefined;
-    throw new Error(`unexpected command ${command}`);
-  });
+  invoke.mockImplementation(
+    createInvokeHandler({
+      responses: { request_save_target: target, revoke_file_grant: undefined },
+      fallback: unexpectedCommand,
+    }),
+  );
   const api = useExport();
   const pending = api.exportData([frame()], 'bin', 'HEX');
   api.cancelExport();

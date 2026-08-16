@@ -16,16 +16,9 @@ import {
   scrollTopForVirtualIndex,
 } from '../../src/lib/packet-list.ts';
 import { encodeUtf8, formatHex, formatTimestamp, formatUtf8 } from '../../src/lib/format.ts';
+import { MERGED_FRAME_LINE_COUNT, MergedFrameRopeIndex } from '../../src/lib/merged-frame-rope.ts';
 import type { DataFrame, HighlightRule } from '../../src/types/index.ts';
-
-function frame(
-  id: string,
-  direction: DataFrame['direction'],
-  data: Uint8Array,
-  timestamp = 1234,
-): DataFrame {
-  return { id, direction, data, timestamp };
-}
+import { frame } from './helpers/frames.ts';
 
 test('derives packet list display labels and columns', () => {
   assert.equal(packetColumns(true), '50px 160px 1fr 50px');
@@ -68,6 +61,46 @@ test('sizes HEXASCII dump rows from the fixed 16-bytes-per-line layout', () => {
     packetRowHeight(frame('three-lines', 'RX', new Uint8Array(33)), 'HEXASCII', true),
     72,
   );
+});
+
+test('packetRowHeight consults the merged frame line-count memo hook only on the text path', () => {
+  let computeCalls = 0;
+  const hooked = {
+    id: 'hooked',
+    direction: 'RX',
+    timestamp: 1,
+    data: encodeUtf8('one\ntwo\nthree'),
+    [MERGED_FRAME_LINE_COUNT]: (compute: () => number): number => {
+      computeCalls += 1;
+      return compute();
+    },
+  } as DataFrame;
+
+  assert.equal(packetRowHeight(hooked, 'UTF8', true), 28 + 2 * 22);
+  assert.equal(packetRowHeight(hooked, 'UTF8', false), 28);
+  assert.equal(packetRowHeight(hooked, 'HEX', true), 28);
+  assert.equal(
+    packetRowHeight(hooked, 'HEXASCII', true),
+    28 + (Math.ceil(hooked.data.byteLength / 16) - 1) * 22,
+  );
+  assert.equal(computeCalls, 1, 'only preserve-line-breaks text sizing goes through the hook');
+});
+
+test('merged rope frames keep exact memoized heights and re-measure after growth', () => {
+  const rope = new MergedFrameRopeIndex();
+  rope.append(frame('m1', 'RX', encodeUtf8('a\nb\nc')));
+  const display = rope.frames[0];
+  assert.ok(display);
+
+  // Repeated measure passes return the same cached height (memoization is
+  // asserted at the rope level via the counting-spy test).
+  assert.equal(packetRowHeight(display, 'UTF8', true), 28 + 2 * 22);
+  assert.equal(packetRowHeight(display, 'UTF8', true), 28 + 2 * 22);
+
+  // Growth of the live tail run invalidates the memo: the tail now decodes
+  // to four display lines ("a", "b", "cd", "e").
+  rope.append(frame('m2', 'RX', encodeUtf8('d\ne')));
+  assert.equal(packetRowHeight(display, 'UTF8', true), 28 + 3 * 22);
 });
 
 test('buildPacketRows maps virtual rows with formatted data and highlight metadata', () => {

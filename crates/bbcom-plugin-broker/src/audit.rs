@@ -4,8 +4,6 @@ use crate::BrokerErrorCode;
 /// content, tokens, filesystem paths, publisher metadata, or device handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuditOperation {
-    AuthorizationCheck,
-    AuthorizationDecision,
     PanelPublish,
     PanelEvent,
     SerialProposalCreate,

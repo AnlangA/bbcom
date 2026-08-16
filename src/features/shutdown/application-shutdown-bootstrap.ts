@@ -25,10 +25,6 @@ export interface ApplicationQuiescePort {
   prepareShutdown(): Promise<void>;
 }
 
-export interface SessionPersistenceShutdownPort {
-  flushFinalPersistence(): Promise<'completed' | 'timeout'>;
-}
-
 export interface SettingsShutdownPort {
   /** Returns false when the synchronous physical write could not be completed. */
   flushSettings(): boolean;
@@ -40,7 +36,6 @@ export interface WorkspacePersistenceShutdownPort {
 
 export interface ApplicationShutdownBootstrapOptions {
   readonly application: ApplicationQuiescePort;
-  readonly sessionPersistence: SessionPersistenceShutdownPort;
   readonly appSettings: SettingsShutdownPort;
   readonly serialSettings: SettingsShutdownPort;
   readonly workspacePersistence?: WorkspacePersistenceShutdownPort;
@@ -62,9 +57,10 @@ export interface ApplicationShutdownController {
 }
 
 /**
- * Build the renderer close coordinator and register the three fixed phase-gate
+ * Build the renderer close coordinator and register the fixed phase-gate
  * participants. Constructing it is side-effect free; `start` owns the native
- * event subscription.
+ * event subscription. The legacy session-snapshot barrier was removed (A-03):
+ * the workspace save barrier is the session/document durability owner.
  */
 export function createApplicationShutdownController(
   options: ApplicationShutdownBootstrapOptions,
@@ -81,16 +77,6 @@ export function createApplicationShutdownController(
     priority: 500,
     timeoutMs: 2_500,
     drain: () => options.application.prepareShutdown(),
-  });
-  coordinator.register({
-    name: 'session-persistence',
-    priority: 200,
-    timeoutMs: 2_000,
-    repeatableBarrier: true,
-    drain: async () => {
-      const result = await options.sessionPersistence.flushFinalPersistence();
-      if (result !== 'completed') throw new Error('session persistence did not complete');
-    },
   });
   if (options.workspacePersistence) {
     coordinator.register({

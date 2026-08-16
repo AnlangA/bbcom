@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Full local quality gate (coverage, browser E2E, benchmark comparison) before
+# publishing commits. Install with `pnpm run hooks:install`; the pre-commit
+# hook runs the fast gate only.
+set -euo pipefail
+
+repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  printf '%s\n' 'bbcom pre-push: unable to locate the Git worktree.' >&2
+  exit 1
+}
+
+cd "$repository_root"
+exec pnpm run precommit:full

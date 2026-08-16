@@ -1,8 +1,25 @@
 export { WorkspaceApplicationService } from './workspace-application-service';
+export { WorkspaceActivationEngine } from './activation';
+export { WorkspaceSaveCoordinator } from './workspace-save-coordinator';
+export {
+  CaptureAccountingStore,
+  type CaptureAccountingRegistration,
+  type CaptureSessionTotals,
+  type CaptureWorkspaceTotals,
+} from '../../application';
 export {
   WorkspaceOperationRegistryLifecycle,
   workspaceOperationLifecycleFor,
 } from './workspace-operation-lifecycle';
+export {
+  PluginRuntimeWorkspaceParticipant,
+  SessionRuntimeWorkspaceParticipant,
+  WorkspaceTransitionCoordinator,
+  type PluginRuntimeWorkspacePort,
+  type SessionRuntimeWorkspaceParticipantOptions,
+  type SessionRuntimeStatusTransitionPort,
+  type WorkspaceTransitionParticipant,
+} from './workspace-transition-coordinator';
 export {
   WORKSPACE_APPLICATION_KEY,
   useOptionalWorkspaceApplication,

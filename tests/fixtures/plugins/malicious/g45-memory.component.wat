@@ -6,9 +6,16 @@
     (field "disabled" bool)))
   (type $panel (record
     (field "title" string) (field "fields" (list $panel-field))))
-  (type $panel-result (result $panel (error string)))
   (type $panel-event (record
     (field "field-id" string) (field "value" string)))
+  (instance $types (export "bbcom:plugin/types@1.0.0")
+    (export "field-kind" (type $field-kind))
+    (export "panel-field" (type $panel-field))
+    (export "declarative-panel" (type $panel))
+    (export "panel-event" (type $panel-event)))
+  (alias export $types "declarative-panel" (type $declarative-panel-named))
+  (alias export $types "panel-event" (type $panel-event-named))
+  (type $panel-result (result $declarative-panel-named (error string)))
   (core module $guest
     (memory (export "memory") 2)
     (func (export "realloc") (param i32 i32 i32 i32) (result i32) i32.const 4096)
@@ -29,7 +36,7 @@
     (canon lift (core func $initialize)
       string-encoding=utf8 (memory $memory) (realloc $realloc)))
   (func (export "handle-panel-event")
-    (param "event" $panel-event) (result $panel-result)
+    (param "event" $panel-event-named) (result $panel-result)
     (canon lift (core func $handle-panel-event)
       string-encoding=utf8 (memory $memory) (realloc $realloc)))
   (func (export "shutdown") (canon lift (core func $shutdown))))

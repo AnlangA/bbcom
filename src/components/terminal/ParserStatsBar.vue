@@ -77,7 +77,7 @@ defineEmits<{
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-tertiary);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--font-size-sm);
   flex-wrap: wrap;
   flex-shrink: 0;
 }
@@ -91,7 +91,7 @@ defineEmits<{
 
 .stat-label {
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--font-size-sm);
   text-transform: uppercase;
 }
 

@@ -56,6 +56,9 @@ jobs:
         with:
           toolchain: 1.97.0
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -74,13 +77,17 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      - name: Install pinned Rust license tool
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2
+        with:
+          tool: cargo-license@0.7.0
+
       - name: Generate third-party license inventories
         shell: bash
         run: |
           mkdir -p release-metadata
           pnpm licenses list --prod --json > release-metadata/frontend-licenses.json
           node -e "const x=require('./release-metadata/frontend-licenses.json'); if (x.error) process.exit(1)"
-          cargo install cargo-license --version 0.7.0 --locked
           cargo license --manifest-path src-tauri/Cargo.toml --json \
             > release-metadata/rust-licenses.json
 
@@ -151,6 +158,9 @@ jobs:
         with:
           toolchain: 1.97.0
           targets: ${{ matrix.target }}
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile

@@ -28,12 +28,6 @@ test('ready close drains fixed participants, submits a report, and explicitly co
         calls.push('application-quiesce');
       },
     },
-    sessionPersistence: {
-      flushFinalPersistence: async () => {
-        calls.push('session-persistence');
-        return 'completed';
-      },
-    },
     appSettings: {
       flushSettings: () => {
         calls.push('app-settings');
@@ -72,12 +66,7 @@ test('ready close drains fixed participants, submits a report, and explicitly co
   await confirmed;
   await flushMicrotasks();
 
-  assert.deepEqual(calls, [
-    'application-quiesce',
-    'session-persistence',
-    'app-settings',
-    'serial-settings',
-  ]);
+  assert.deepEqual(calls, ['application-quiesce', 'app-settings', 'serial-settings']);
   assert.equal(reports.length, 1);
   assert.equal(confirmations.length, 1, 'ready never exits without explicit confirm_exit');
   assert.equal(controller.snapshot().coordinator.state, 'confirmed');
@@ -127,8 +116,7 @@ test('failed drain stays in UI decision state and cancel leaves registries reusa
         await Promise.all([operationRegistry.interruptActive(), runtimeRegistry.prepareShutdown()]);
       },
     },
-    sessionPersistence: { flushFinalPersistence: async () => 'timeout' },
-    appSettings: { flushSettings: () => true },
+    appSettings: { flushSettings: () => false },
     serialSettings: { flushSettings: () => true },
     protocol,
     closeRequests: {
@@ -219,8 +207,7 @@ test('force is exposed only for a failed decision and publishes the forced confi
   });
   const controller = createApplicationShutdownController({
     application: { prepareShutdown: async () => undefined },
-    sessionPersistence: { flushFinalPersistence: async () => 'timeout' },
-    appSettings: { flushSettings: () => true },
+    appSettings: { flushSettings: () => false },
     serialSettings: { flushSettings: () => true },
     protocol: {
       submitShutdownReport: (result) => {
@@ -255,7 +242,6 @@ test('a rejected ready report remains visible and retryPublication completes the
   });
   const controller = createApplicationShutdownController({
     application: { prepareShutdown: async () => undefined },
-    sessionPersistence: { flushFinalPersistence: async () => 'completed' },
     appSettings: { flushSettings: () => true },
     serialSettings: { flushSettings: () => true },
     protocol: {
@@ -298,4 +284,127 @@ test('Tauri close listener is a no-op in the browser renderer', async () => {
   const handler = () => assert.fail('browser mode has no native close event');
   const detach = await new TauriShutdownPort().listen(handler);
   detach();
+});
+
+test('workspace persistence drains as a same-priority barrier alongside settings and gates exit on failure', async () => {
+  const calls: string[] = [];
+  let onClose: ((request: ShutdownCloseRequest) => void) | null = null;
+  let resolveFailedReport: (() => void) | null = null;
+  const failedReport = new Promise<void>((resolve) => {
+    resolveFailedReport = resolve;
+  });
+
+  const readyController = createApplicationShutdownController({
+    application: { prepareShutdown: async () => undefined },
+    workspacePersistence: {
+      flush: async () => {
+        calls.push('workspace-persistence');
+        return { outcome: 'completed' };
+      },
+    },
+    appSettings: {
+      flushSettings: () => {
+        calls.push('app-settings');
+        return true;
+      },
+    },
+    serialSettings: {
+      flushSettings: () => {
+        calls.push('serial-settings');
+        return true;
+      },
+    },
+    protocol: {
+      submitShutdownReport: () => undefined,
+      confirmExit: () => undefined,
+      cancelExit: () => undefined,
+    },
+    closeRequests: {
+      listen: async (handler) => {
+        onClose = handler;
+        return () => {
+          onClose = null;
+        };
+      },
+    },
+  });
+  await readyController.start();
+  assert.ok(onClose);
+  const confirmedState = new Promise<void>((resolve) => {
+    const unsubscribe = readyController.subscribe((snapshot) => {
+      if (snapshot.coordinator.state === 'confirmed') {
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+  (onClose as (request: ShutdownCloseRequest) => void)({
+    attemptId: 'attempt-workspace-ready',
+  });
+  await confirmedState;
+  assert.deepEqual(calls, ['workspace-persistence', 'app-settings', 'serial-settings']);
+  readyController.stop();
+
+  calls.length = 0;
+  const failedController = createApplicationShutdownController({
+    application: { prepareShutdown: async () => undefined },
+    workspacePersistence: {
+      flush: async () => {
+        calls.push('workspace-persistence');
+        return { outcome: 'cancelled' };
+      },
+    },
+    appSettings: {
+      flushSettings: () => {
+        calls.push('app-settings');
+        return true;
+      },
+    },
+    serialSettings: {
+      flushSettings: () => {
+        calls.push('serial-settings');
+        return true;
+      },
+    },
+    protocol: {
+      submitShutdownReport: (result) => {
+        if (result.state === 'failed') resolveFailedReport?.();
+      },
+      confirmExit: () => assert.fail('a cancelled workspace flush must not confirm exit'),
+      cancelExit: () => undefined,
+    },
+    closeRequests: {
+      listen: async (handler) => {
+        handler({ attemptId: 'attempt-workspace-failed' });
+        return () => undefined;
+      },
+    },
+  });
+  await failedController.start();
+  await failedReport;
+  assert.equal(failedController.snapshot().coordinator.state, 'failed');
+  assert.deepEqual(calls, ['workspace-persistence', 'app-settings', 'serial-settings']);
+  failedController.stop();
+});
+
+test('the workspace persistence participant is simply absent when not provided', async () => {
+  const participants: unknown[] = [];
+  const coordinator = {
+    register: (participant: unknown) => participants.push(participant),
+    subscribe: () => undefined,
+  };
+  createApplicationShutdownController({
+    application: { prepareShutdown: async () => undefined },
+    appSettings: { flushSettings: () => true },
+    serialSettings: { flushSettings: () => true },
+    protocol: {
+      submitShutdownReport: () => undefined,
+      confirmExit: () => undefined,
+      cancelExit: () => undefined,
+    },
+    closeRequests: { listen: async () => () => undefined },
+    coordinator: coordinator as unknown as ShutdownCoordinator,
+  });
+  const names = participants.map((participant) => (participant as { name: string }).name);
+  assert.deepEqual(names, ['application-quiesce', 'settings']);
 });

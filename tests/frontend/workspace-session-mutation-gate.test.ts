@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
-import { useSessionStore, type WorkspaceSessionChangeEvent } from '../../src/stores/sessions.ts';
+import {
+  useSessionCoreStore,
+  type WorkspaceSessionChangeEvent,
+} from '../../src/stores/session-core.ts';
 import { createSessionCaptureController } from '../../src/features/sessions/capture/session-capture-controller.ts';
 import { createSessionRecord } from '../../src/lib/session-persistence.ts';
 import type { PortConfig } from '../../src/types/index.ts';
@@ -21,11 +24,12 @@ const config: PortConfig = {
 
 function createStore() {
   setActivePinia(createPinia());
-  return useSessionStore();
+  return useSessionCoreStore();
 }
 
 test('workspace mutation gate rejects persisted user changes before touching memory', async () => {
   const store = createStore();
+  const persistence = useSessionCoreStore();
   const firstId = store.createSession('COM1', config);
   const secondId = store.createSession('COM2', config);
   assert.ok(firstId);
@@ -44,8 +48,8 @@ test('workspace mutation gate rejects persisted user changes before touching mem
     },
   };
   const events: WorkspaceSessionChangeEvent[] = [];
-  const detach = store.subscribeWorkspaceChanges((event) => events.push(event));
-  store.setWorkspaceMutationPermissions({ userMutations: false, runtimeCapture: true });
+  const detach = persistence.subscribeWorkspaceChanges((event) => events.push(event));
+  persistence.setWorkspaceMutationPermissions({ userMutations: false, runtimeCapture: true });
 
   assert.equal(store.createSession('COM3', config), null);
   assert.equal(await store.removeSession(firstId), null);
@@ -90,12 +94,12 @@ test('workspace mutation gate rejects persisted user changes before touching mem
   store.setConnected(firstId, false);
   assert.equal(store.sessions[0].isConnected, false, 'runtime disconnect bypasses the user gate');
 
-  store.setWorkspaceMutationPermissions({ userMutations: false, runtimeCapture: false });
+  persistence.setWorkspaceMutationPermissions({ userMutations: false, runtimeCapture: false });
   const frameCount = store.sessions[0].frames.length;
   assert.equal(store.addFrame(firstId, { direction: 'RX', data: new Uint8Array([4]) }), undefined);
   assert.equal(store.sessions[0].frames.length, frameCount);
 
-  store.setWorkspaceMutationPermissions({
+  persistence.setWorkspaceMutationPermissions({
     userMutations: true,
     runtimeCapture: true,
     preflightRuntimeCapture: () => false,
@@ -107,10 +111,11 @@ test('workspace mutation gate rejects persisted user changes before touching mem
 
 test('undo emits a restoration event distinct from ordinary catalog changes', async () => {
   const store = createStore();
+  const persistence = useSessionCoreStore();
   const sessionId = store.createSession('COM-undo', config);
   assert.ok(sessionId);
   const events: WorkspaceSessionChangeEvent[] = [];
-  const detach = store.subscribeWorkspaceChanges((event) => events.push(event));
+  const detach = persistence.subscribeWorkspaceChanges((event) => events.push(event));
 
   await store.removeSession(sessionId);
   const result = store.undoLastRemovedSession();
@@ -123,10 +128,11 @@ test('undo emits a restoration event distinct from ordinary catalog changes', as
 
 test('AI history emits append and clear deltas instead of a destructive session rewrite', () => {
   const store = createStore();
+  const persistence = useSessionCoreStore();
   const sessionId = store.createSession('COM-ai', config);
   assert.ok(sessionId);
   const events: WorkspaceSessionChangeEvent[] = [];
-  store.subscribeWorkspaceChanges((event) => events.push(event));
+  persistence.subscribeWorkspaceChanges((event) => events.push(event));
 
   store.addLogAiMessage(sessionId, { role: 'user', content: 'first' });
   store.addLogAiMessage(sessionId, { role: 'assistant', content: 'second' });
@@ -141,6 +147,8 @@ test('AI history emits append and clear deltas instead of a destructive session 
 
 test('workspace waveform hydrate, append, replace, and cursor are session-owned', () => {
   const store = createStore();
+  const persistence = useSessionCoreStore();
+  const waveform = useSessionCoreStore();
   const session = createSessionRecord('waveform-session', '', config, {
     frames: [
       {
@@ -167,18 +175,18 @@ test('workspace waveform hydrate, append, replace, and cursor are session-owned'
     },
   };
   const events: WorkspaceSessionChangeEvent[] = [];
-  store.subscribeWorkspaceChanges((event) => events.push(event));
+  persistence.subscribeWorkspaceChanges((event) => events.push(event));
 
   store.replaceWorkspaceSessions([entry], 'waveform-session');
   assert.deepEqual(events, [], 'hydrate is a replacement boundary, not a new mutation');
-  assert.deepEqual(store.workspaceWaveformBySessionId['waveform-session'], {
+  assert.deepEqual(waveform.workspaceWaveformBySessionId['waveform-session'], {
     channels: [{ channelIndex: 0, config: { color: '#123456', visible: true } }],
     samples: [{ channelIndex: 0, seq: 7, timestampMs: 40, value: 1.5 }],
     frameCursor: { consumed: 1, lastFrameId: 'persisted-frame' },
   });
 
   assert.equal(
-    store.appendSessionWaveformSamples('waveform-session', [
+    waveform.appendSessionWaveformSamples('waveform-session', [
       { channelIndex: 0, group: 0, timestampMs: 60, value: 2 },
       { channelIndex: 1, group: 0, timestampMs: 60, value: 3 },
     ]),
@@ -189,33 +197,33 @@ test('workspace waveform hydrate, append, replace, and cursor are session-owned'
     'waveform-frame-ingested',
     'new channels and their samples persist in one replacement transaction',
   );
-  assert.deepEqual(store.workspaceWaveformBySessionId['waveform-session']?.samples.slice(-2), [
+  assert.deepEqual(waveform.workspaceWaveformBySessionId['waveform-session']?.samples.slice(-2), [
     { channelIndex: 0, seq: 8, timestampMs: 60, value: 2 },
     { channelIndex: 1, seq: 8, timestampMs: 60, value: 3 },
   ]);
 
   assert.equal(
-    store.appendSessionWaveformSamples('waveform-session', [
+    waveform.appendSessionWaveformSamples('waveform-session', [
       { channelIndex: 1, group: 0, timestampMs: 70, value: 4 },
     ]),
     true,
   );
   assert.equal(events.at(-1)?.kind, 'waveform-samples-appended');
   assert.equal(
-    store.setSessionWaveformFrameCursor('waveform-session', {
+    waveform.setSessionWaveformFrameCursor('waveform-session', {
       consumed: 2,
       lastFrameId: 'new-frame',
     }),
     true,
   );
-  assert.deepEqual(store.workspaceWaveformBySessionId['waveform-session']?.frameCursor, {
+  assert.deepEqual(waveform.workspaceWaveformBySessionId['waveform-session']?.frameCursor, {
     consumed: 2,
     lastFrameId: 'new-frame',
   });
 
   const eventCount = events.length;
   assert.equal(
-    store.commitSessionWaveformFrameIngest(
+    waveform.commitSessionWaveformFrameIngest(
       'waveform-session',
       'append',
       [{ channelIndex: 1, group: 0, timestampMs: 80, value: 5 }],
@@ -235,18 +243,19 @@ test('workspace waveform hydrate, append, replace, and cursor are session-owned'
     });
   }
 
-  const samplesBeforeVisibility = store.workspaceWaveformBySessionId['waveform-session']?.samples;
-  assert.equal(store.setSessionWaveformChannelVisible('waveform-session', 0, false), true);
+  const samplesBeforeVisibility =
+    waveform.workspaceWaveformBySessionId['waveform-session']?.samples;
+  assert.equal(waveform.setSessionWaveformChannelVisible('waveform-session', 0, false), true);
   assert.equal(events.at(-1)?.kind, 'waveform-channel-config-changed');
   assert.deepEqual(
-    store.workspaceWaveformBySessionId['waveform-session']?.samples,
+    waveform.workspaceWaveformBySessionId['waveform-session']?.samples,
     samplesBeforeVisibility,
     'display configuration must not replace or delete durable sample rows',
   );
 
   const resetEventCount = events.length;
   assert.equal(
-    store.resetSessionWaveform('waveform-session', {
+    waveform.resetSessionWaveform('waveform-session', {
       consumed: 3,
       lastFrameId: 'atomic-frame',
     }),
@@ -277,13 +286,15 @@ test('workspace waveform hydrate, append, replace, and cursor are session-owned'
 
 test('workspace waveform retains exactly the latest 600 complete sample groups', () => {
   const store = createStore();
+  const persistence = useSessionCoreStore();
+  const waveform = useSessionCoreStore();
   const sessionId = store.createSession('COM-waveform-bound', config);
   assert.ok(sessionId);
   const events: WorkspaceSessionChangeEvent[] = [];
-  store.subscribeWorkspaceChanges((event) => events.push(event));
+  persistence.subscribeWorkspaceChanges((event) => events.push(event));
 
   assert.equal(
-    store.appendSessionWaveformSamples(
+    waveform.appendSessionWaveformSamples(
       sessionId,
       Array.from({ length: 601 }, (_, group) => ({
         channelIndex: group % 2,
@@ -295,9 +306,9 @@ test('workspace waveform retains exactly the latest 600 complete sample groups',
     true,
   );
 
-  const waveform = store.workspaceWaveformBySessionId[sessionId];
-  assert.equal(new Set(waveform?.samples.map((sample) => sample.seq)).size, 600);
-  assert.equal(waveform?.samples[0]?.seq, 1);
+  const state = waveform.workspaceWaveformBySessionId[sessionId];
+  assert.equal(new Set(state?.samples.map((sample) => sample.seq)).size, 600);
+  assert.equal(state?.samples[0]?.seq, 1);
   const event = events.at(-1);
   assert.equal(event?.kind, 'waveform-frame-ingested');
   if (event?.kind === 'waveform-frame-ingested') {
@@ -307,9 +318,76 @@ test('workspace waveform retains exactly the latest 600 complete sample groups',
   }
 });
 
+test('workspace waveform trims incrementally accumulated groups and stays exact after the trim', () => {
+  const store = createStore();
+  const persistence = useSessionCoreStore();
+  const waveform = useSessionCoreStore();
+  const sessionId = store.createSession('COM-waveform-incremental', config);
+  assert.ok(sessionId);
+  const events: WorkspaceSessionChangeEvent[] = [];
+  persistence.subscribeWorkspaceChanges((event) => events.push(event));
+
+  // Fill to exactly the 600-group bound across many register-style ticks
+  // (one new group per tick) so every append lands on the incremental
+  // no-overflow fast path first.
+  for (let tick = 0; tick < 600; tick += 1) {
+    assert.equal(
+      waveform.appendSessionWaveformSamples(sessionId, [
+        { channelIndex: tick % 2, group: 0, timestampMs: tick, value: tick },
+      ]),
+      true,
+    );
+  }
+  let state = waveform.workspaceWaveformBySessionId[sessionId];
+  assert.equal(state?.samples.length, 600);
+  assert.equal(new Set(state?.samples.map((sample) => sample.seq)).size, 600);
+  assert.equal(events.at(-1)?.kind, 'waveform-samples-appended');
+
+  // The 601st group overflows the bound: the oldest group is dropped, the
+  // newest group stays complete, and the append publishes a replacement.
+  assert.equal(
+    waveform.appendSessionWaveformSamples(sessionId, [
+      { channelIndex: 0, group: 0, timestampMs: 601, value: 601 },
+      { channelIndex: 1, group: 0, timestampMs: 601, value: 602 },
+    ]),
+    true,
+  );
+  state = waveform.workspaceWaveformBySessionId[sessionId];
+  assert.equal(new Set(state?.samples.map((sample) => sample.seq)).size, 600);
+  assert.equal(state?.samples.length, 601, 'the newest group is complete');
+  assert.equal(state?.samples[0]?.seq, 1, 'the oldest group was dropped after overflow');
+  assert.deepEqual(state?.samples.slice(-2), [
+    { channelIndex: 0, seq: 600, timestampMs: 601, value: 601 },
+    { channelIndex: 1, seq: 600, timestampMs: 601, value: 602 },
+  ]);
+  assert.equal(events.at(-1)?.kind, 'waveform-frame-ingested');
+
+  // After the trim the retention counters must be rebuilt exactly right:
+  // subsequent single-group appends keep sliding the 600-group window.
+  for (let tick = 602; tick < 610; tick += 1) {
+    assert.equal(
+      waveform.appendSessionWaveformSamples(sessionId, [
+        { channelIndex: 0, group: 0, timestampMs: tick, value: tick },
+      ]),
+      true,
+    );
+  }
+  state = waveform.workspaceWaveformBySessionId[sessionId];
+  assert.equal(new Set(state?.samples.map((sample) => sample.seq)).size, 600);
+  assert.equal(state?.samples.length, 601);
+  assert.equal(state?.samples[0]?.seq, 9, 'the window keeps sliding one group per tick');
+  assert.deepEqual(state?.samples.at(-1), {
+    channelIndex: 0,
+    seq: 608,
+    timestampMs: 609,
+    value: 609,
+  });
+});
+
 test('create and undo are rejected before memory mutation when workspace limits fail preflight', async () => {
   const store = createStore();
-  store.setWorkspaceMutationPermissions({
+  const persistence = useSessionCoreStore();
+  persistence.setWorkspaceMutationPermissions({
     userMutations: true,
     runtimeCapture: true,
     preflightSessionRegistration: () => true,
@@ -318,7 +396,7 @@ test('create and undo are rejected before memory mutation when workspace limits 
   assert.ok(sessionId);
   await store.removeSession(sessionId);
 
-  store.setWorkspaceMutationPermissions({
+  persistence.setWorkspaceMutationPermissions({
     userMutations: true,
     runtimeCapture: true,
     preflightSessionRegistration: () => false,

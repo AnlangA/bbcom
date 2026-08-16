@@ -89,33 +89,76 @@ test('activeToolCounts counts active tools by their tab badge semantics', () => 
       triggers: 1,
       highlights: 1,
       history: 2,
+      checksum: 0,
     },
   );
 });
 
 test('defaultToolsTab keeps user-selected tabs and otherwise follows tool priority', () => {
   assert.equal(
-    defaultToolsTab('history', { quick: 0, macros: 1, triggers: 1, highlights: 1, history: 1 }),
+    defaultToolsTab('history', {
+      quick: 0,
+      macros: 1,
+      triggers: 1,
+      highlights: 1,
+      history: 1,
+      checksum: 0,
+    }),
     'history',
   );
   assert.equal(
-    defaultToolsTab('quick', { quick: 1, macros: 1, triggers: 1, highlights: 1, history: 1 }),
+    defaultToolsTab('quick', {
+      quick: 1,
+      macros: 1,
+      triggers: 1,
+      highlights: 1,
+      history: 1,
+      checksum: 0,
+    }),
     'quick',
   );
   assert.equal(
-    defaultToolsTab('quick', { quick: 0, macros: 1, triggers: 1, highlights: 1, history: 1 }),
+    defaultToolsTab('quick', {
+      quick: 0,
+      macros: 1,
+      triggers: 1,
+      highlights: 1,
+      history: 1,
+      checksum: 0,
+    }),
     'macros',
   );
   assert.equal(
-    defaultToolsTab('quick', { quick: 0, macros: 0, triggers: 1, highlights: 1, history: 1 }),
+    defaultToolsTab('quick', {
+      quick: 0,
+      macros: 0,
+      triggers: 1,
+      highlights: 1,
+      history: 1,
+      checksum: 0,
+    }),
     'triggers',
   );
   assert.equal(
-    defaultToolsTab('quick', { quick: 0, macros: 0, triggers: 0, highlights: 1, history: 1 }),
+    defaultToolsTab('quick', {
+      quick: 0,
+      macros: 0,
+      triggers: 0,
+      highlights: 1,
+      history: 1,
+      checksum: 0,
+    }),
     'highlights',
   );
   assert.equal(
-    defaultToolsTab('quick', { quick: 0, macros: 0, triggers: 0, highlights: 0, history: 1 }),
+    defaultToolsTab('quick', {
+      quick: 0,
+      macros: 0,
+      triggers: 0,
+      highlights: 0,
+      history: 1,
+      checksum: 0,
+    }),
     'history',
   );
 });

@@ -2,6 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
 import { useAppStore } from '../../src/stores/app.ts';
+import { useWorkspaceUiStore } from '../../src/features/workspace';
 
 interface LocalStorageLike {
   getItem(key: string): string | null;
@@ -98,6 +99,7 @@ test('setters update each persisted setting through its validate/apply path', as
   await withLocalStorageMock(async () => {
     setActivePinia(createPinia());
     const app = useAppStore();
+    const workspaceUi = useWorkspaceUiStore();
 
     // Cover each validate/apply shape in the descriptor table: string-enum
     // (displayMode/packetViewMode/searchMode), boolean (sendAsHex), clamped number (sidebarWidth), and a number routed
@@ -106,7 +108,7 @@ test('setters update each persisted setting through its validate/apply path', as
     // freshly-loaded-store test below proves the full disk round-trip.
     app.setDisplayMode('UTF8');
     app.setSendAsHex(true);
-    app.setSidebarWidth(999); // above max → clamps to 340
+    workspaceUi.setSidebarWidth(999); // above max → clamps to 340
     app.setMaxBufferFrames(50_000);
     app.setPacketViewMode('MERGED');
     app.setSearchMode('HEX');
@@ -115,7 +117,7 @@ test('setters update each persisted setting through its validate/apply path', as
 
     assert.equal(app.displayMode, 'UTF8');
     assert.equal(app.sendAsHex, true);
-    assert.equal(app.sidebarWidth, 340, 'sidebarWidth clamped on set');
+    assert.equal(workspaceUi.sidebarWidth, 340, 'sidebarWidth clamped on set');
     assert.equal(app.maxBufferFrames, 50_000);
     assert.equal(app.packetViewMode, 'MERGED');
     assert.equal(app.searchMode, 'HEX');
@@ -148,12 +150,17 @@ test('a freshly-loaded store re-reads the persisted blob', async () => {
 
     setActivePinia(createPinia());
     const app = useAppStore();
+    const workspaceUi = useWorkspaceUiStore();
     // load() is async (it kicks off the secret migration), but its synchronous
     // part — reading the JSON blob into the refs — runs before useAppStore()
     // returns, so the values are already applied here.
     assert.equal(app.displayMode, 'ANSI');
     assert.equal(app.sendAsHex, true);
-    assert.equal(app.sidebarWidth, 300);
+    assert.equal(
+      workspaceUi.sidebarWidth,
+      292,
+      'legacy global sidebar is read-only compatibility data and cannot override a workspace',
+    );
     assert.equal(app.maxBufferFrames, 42_000);
     assert.equal(app.packetViewMode, 'MERGED');
     assert.equal(app.searchMode, 'HEX');
@@ -177,10 +184,11 @@ test('garbage persisted values are ignored, not thrown', async () => {
     );
     setActivePinia(createPinia());
     const app = useAppStore();
+    const workspaceUi = useWorkspaceUiStore();
 
     // Wrong-typed values fall back to defaults instead of crashing.
     assert.equal(app.autoScroll, true);
-    assert.equal(app.sidebarWidth, 292);
+    assert.equal(workspaceUi.sidebarWidth, 292);
     assert.equal(app.loopIntervalMs, 1000);
     assert.equal(app.theme, 'dark', 'unknown theme literal is ignored');
   });
@@ -189,27 +197,27 @@ test('garbage persisted values are ignored, not thrown', async () => {
 test('workspace layout applies without echo and user changes publish one versioned snapshot', () => {
   withLocalStorageMock(() => {
     setActivePinia(createPinia());
-    const app = useAppStore();
+    const workspaceUi = useWorkspaceUiStore();
     const published: unknown[] = [];
-    const unsubscribe = app.subscribeWorkspaceLayout((layout) => published.push(layout));
+    const unsubscribe = workspaceUi.subscribe((layout) => published.push(layout));
 
-    app.applyWorkspaceLayout({
+    workspaceUi.apply({
       version: 1,
       sidebar: { width: 312, collapsed: true },
     });
-    assert.equal(app.sidebarWidth, 312);
-    assert.equal(app.sidebarCollapsed, true);
+    assert.equal(workspaceUi.sidebarWidth, 312);
+    assert.equal(workspaceUi.sidebarCollapsed, true);
     assert.deepEqual(published, [], 'hydration must not enqueue a workspace mutation');
 
-    app.setSidebarWidth(320);
-    app.toggleSidebarCollapsed();
+    workspaceUi.setSidebarWidth(320);
+    workspaceUi.toggleSidebarCollapsed();
     assert.deepEqual(published, [
       { version: 1, sidebar: { width: 320, collapsed: true } },
       { version: 1, sidebar: { width: 320, collapsed: false } },
     ]);
 
     unsubscribe();
-    app.setSidebarWidth(300);
+    workspaceUi.setSidebarWidth(300);
     assert.equal(published.length, 2);
   });
 });

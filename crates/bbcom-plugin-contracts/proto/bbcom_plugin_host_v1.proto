@@ -105,6 +105,7 @@ message StateSnapshotDescriptor {
 
 message InitializeResponse {
   StateSnapshotDescriptor state = 1;
+  bytes panel_json = 2;
 }
 
 message GetStateChunkRequest {

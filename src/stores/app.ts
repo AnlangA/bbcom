@@ -1,30 +1,28 @@
 import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
 import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
-import { loadJson, saveJson } from '../lib/storage';
+import { settingsService } from '../features/settings';
 import {
   clearAiApiKey as clearAiApiKeyInKeyring,
   getAiKeyStatus,
   removeLegacyAiApiKey,
   setAiApiKey as setAiApiKeyInKeyring,
   type AiKeyStatus,
-} from '../lib/ai-key';
+} from '../features/settings';
 import { maxBufferFrames, setMaxBufferFrames } from '../lib/buffer-config';
-import { locale, setLocale } from '../lib/i18n';
-import { SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth } from '../lib/sidebar-layout';
-import type { WorkspaceLayoutV1 } from '../features/workspace/types';
+import { locale, setLocale, ensureLocaleLoaded } from '../lib/i18n';
 
-/** New workspace-era namespace. The 0.7.3 key remains read-only for G24. */
-const STORAGE_KEY = 'bbcom-v1:app-settings';
 const MISSING_AI_KEY_STATUS: AiKeyStatus = { configured: false, durability: 'missing' };
-const DISPLAY_MODES: readonly DisplayMode[] = ['HEX', 'HEXASCII', 'ASCII', 'ANSI', 'UTF8'];
-const SEARCH_MODES: readonly SearchMode[] = ['TEXT', 'HEX'];
-const PACKET_VIEW_MODES: readonly PacketViewMode[] = ['FRAME', 'MERGED'];
-const LINE_ENDINGS: readonly LineEnding[] = ['none', 'CR', 'LF', 'CRLF'];
 
 function isEnumValue<T extends string>(raw: unknown, values: readonly T[]): raw is T {
   return typeof raw === 'string' && values.includes(raw as T);
 }
+
+// Runtime enum guards used when applying the hydrated global settings document.
+const DISPLAY_MODES: readonly DisplayMode[] = ['HEX', 'HEXASCII', 'ASCII', 'ANSI', 'UTF8'];
+const SEARCH_MODES: readonly SearchMode[] = ['TEXT', 'HEX'];
+const PACKET_VIEW_MODES: readonly PacketViewMode[] = ['FRAME', 'MERGED'];
+const LINE_ENDINGS: readonly LineEnding[] = ['none', 'CR', 'LF', 'CRLF'];
 
 export const useAppStore = defineStore('app', () => {
   const displayMode = ref<DisplayMode>('HEX');
@@ -45,31 +43,17 @@ export const useAppStore = defineStore('app', () => {
   const aiCommandSeq = ref(0);
   const pendingAiCommand = ref('');
   const aiApiKeyLoaded = ref(false);
-  const sidebarWidth = ref(SIDEBAR_WIDTH_DEFAULT);
-  const sidebarCollapsed = ref(false);
-  const workspaceLayoutListeners = new Set<(layout: WorkspaceLayoutV1) => void>();
-  let loaded = false;
 
-  // Single source of truth for every persisted (non-secret) setting.
-  //
-  // Each descriptor owns its storage key, the reactive ref it binds to, a
-  // `validate(raw) -> boolean` predicate (matches the per-field `typeof`/truthy
-  // guards the hand-written load() used), and an `apply(raw)` that assigns the
-  // (already-validated) value back into the ref — including any clamping or
-  // special routing (sidebarWidth bounds, maxBufferFrames via its setter).
-  // load(), save(), and the persistence watch all iterate this one table, so a
-  // new setting is a one-line append instead of three synchronized edits.
-  interface PersistedSetting {
-    key: string;
-    ref: ReturnType<typeof ref>;
+  // The store is a reactive projection of the single global settings document
+  // owned by `settingsService`; it no longer touches localStorage itself.
+  interface HydratedSetting {
     validate: (raw: unknown) => boolean;
     apply: (raw: unknown) => void;
   }
 
-  const persistedSettings: PersistedSetting[] = [
+  const persistedSettings: (HydratedSetting & { key: string })[] = [
     {
       key: 'displayMode',
-      ref: displayMode,
       validate: (raw) => isEnumValue(raw, DISPLAY_MODES),
       apply: (raw) => {
         displayMode.value = raw as DisplayMode;
@@ -77,7 +61,6 @@ export const useAppStore = defineStore('app', () => {
     },
     {
       key: 'autoScroll',
-      ref: autoScroll,
       validate: (raw) => typeof raw === 'boolean',
       apply: (raw) => {
         autoScroll.value = raw as boolean;
@@ -85,7 +68,6 @@ export const useAppStore = defineStore('app', () => {
     },
     {
       key: 'showTimestamp',
-      ref: showTimestamp,
       validate: (raw) => typeof raw === 'boolean',
       apply: (raw) => {
         showTimestamp.value = raw as boolean;
@@ -93,7 +75,6 @@ export const useAppStore = defineStore('app', () => {
     },
     {
       key: 'searchMode',
-      ref: searchMode,
       validate: (raw) => isEnumValue(raw, SEARCH_MODES),
       apply: (raw) => {
         searchMode.value = raw as SearchMode;
@@ -101,7 +82,6 @@ export const useAppStore = defineStore('app', () => {
     },
     {
       key: 'packetViewMode',
-      ref: packetViewMode,
       validate: (raw) => isEnumValue(raw, PACKET_VIEW_MODES),
       apply: (raw) => {
         packetViewMode.value = raw as PacketViewMode;
@@ -109,7 +89,6 @@ export const useAppStore = defineStore('app', () => {
     },
     {
       key: 'lineEnding',
-      ref: lineEnding,
       validate: (raw) => isEnumValue(raw, LINE_ENDINGS),
       apply: (raw) => {
         lineEnding.value = raw as LineEnding;
@@ -117,7 +96,6 @@ export const useAppStore = defineStore('app', () => {
     },
     {
       key: 'sendAsHex',
-      ref: sendAsHex,
       validate: (raw) => typeof raw === 'boolean',
       apply: (raw) => {
         sendAsHex.value = raw as boolean;
@@ -125,7 +103,6 @@ export const useAppStore = defineStore('app', () => {
     },
     {
       key: 'loopIntervalMs',
-      ref: loopIntervalMs,
       validate: (raw) => typeof raw === 'number',
       apply: (raw) => {
         loopIntervalMs.value = raw as number;
@@ -133,7 +110,6 @@ export const useAppStore = defineStore('app', () => {
     },
     {
       key: 'ansiColorEnabled',
-      ref: ansiColorEnabled,
       validate: (raw) => typeof raw === 'boolean',
       apply: (raw) => {
         ansiColorEnabled.value = raw as boolean;
@@ -141,37 +117,18 @@ export const useAppStore = defineStore('app', () => {
     },
     {
       key: 'preserveLogLineBreaks',
-      ref: preserveLogLineBreaks,
       validate: (raw) => typeof raw === 'boolean',
       apply: (raw) => {
         preserveLogLineBreaks.value = raw as boolean;
       },
     },
     {
-      key: 'sidebarWidth',
-      ref: sidebarWidth,
-      validate: (raw) => typeof raw === 'number',
-      apply: (raw) => {
-        sidebarWidth.value = clampSidebarWidth(raw as number);
-      },
-    },
-    {
-      key: 'sidebarCollapsed',
-      ref: sidebarCollapsed,
-      validate: (raw) => typeof raw === 'boolean',
-      apply: (raw) => {
-        sidebarCollapsed.value = raw as boolean;
-      },
-    },
-    {
       key: 'maxBufferFrames',
-      ref: maxBufferFrames,
       validate: (raw) => typeof raw === 'number',
       apply: (raw) => setMaxBufferFrames(raw as number),
     },
     {
       key: 'autoReconnect',
-      ref: autoReconnect,
       validate: (raw) => typeof raw === 'boolean',
       apply: (raw) => {
         autoReconnect.value = raw as boolean;
@@ -179,7 +136,6 @@ export const useAppStore = defineStore('app', () => {
     },
     {
       key: 'theme',
-      ref: theme,
       validate: (raw) => raw === 'light' || raw === 'dark',
       apply: (raw) => {
         theme.value = raw as 'dark' | 'light';
@@ -188,55 +144,55 @@ export const useAppStore = defineStore('app', () => {
     {
       key: 'locale',
       // The i18n locale ref (reactive). Persisted as 'en' or 'zh'; defaults to 'zh'.
-      ref: locale,
       validate: (raw) => raw === 'en' || raw === 'zh',
       apply: (raw) => {
         locale.value = raw as 'en' | 'zh';
+        // Only the default locale (zh) is bundled synchronously; start the
+        // lazy loader for a persisted non-default locale so English fallback
+        // text resumes as soon as its chunk arrives.
+        void ensureLocaleLoaded(raw as 'en' | 'zh');
       },
     },
   ];
 
-  async function load() {
-    const defaults: Record<string, unknown> = {};
-    for (const s of persistedSettings) defaults[s.key] = s.ref.value;
+  const settingRefs: Record<string, ReturnType<typeof ref>> = {
+    displayMode,
+    autoScroll,
+    showTimestamp,
+    searchMode,
+    packetViewMode,
+    lineEnding,
+    sendAsHex,
+    loopIntervalMs,
+    ansiColorEnabled,
+    preserveLogLineBreaks,
+    maxBufferFrames,
+    autoReconnect,
+    theme,
+    locale,
+  };
 
-    const saved = loadJson(STORAGE_KEY, defaults);
+  function load() {
+    const boot = settingsService.hydrate();
     for (const s of persistedSettings) {
-      const raw = (saved as Record<string, unknown>)[s.key];
+      const raw = (boot.settings as unknown as Record<string, unknown>)[s.key];
       if (s.validate(raw)) s.apply(raw);
     }
-    loaded = true;
     void refreshAiKeyStatus();
   }
 
-  let saveTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function writeSettings(): boolean {
-    const payload: Record<string, unknown> = {};
-    for (const s of persistedSettings) payload[s.key] = s.ref.value;
-    return saveJson(STORAGE_KEY, payload);
-  }
-
   function save() {
-    if (!loaded) return;
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      saveTimer = null;
-      writeSettings();
-    }, 300);
+    const patch: Record<string, unknown> = {};
+    for (const key of Object.keys(settingRefs)) patch[key] = settingRefs[key].value;
+    settingsService.update(patch);
   }
 
   /** Cancel the debounce and synchronously persist the current settings snapshot. */
   function flushSettings(): boolean {
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = null;
-    return loaded && writeSettings();
+    return settingsService.flush();
   }
 
-  watch(
-    persistedSettings.map((s) => s.ref),
-    save,
-  );
+  watch(Object.values(settingRefs), save);
 
   function setDisplayMode(mode: DisplayMode) {
     displayMode.value = mode;
@@ -318,49 +274,6 @@ export const useAppStore = defineStore('app', () => {
     return command;
   }
 
-  function setSidebarWidth(width: number) {
-    const next = clampSidebarWidth(width);
-    if (sidebarWidth.value === next) return;
-    sidebarWidth.value = next;
-    notifyWorkspaceLayoutChanged();
-  }
-
-  function toggleSidebarCollapsed() {
-    sidebarCollapsed.value = !sidebarCollapsed.value;
-    notifyWorkspaceLayoutChanged();
-  }
-
-  function workspaceLayoutSnapshot(): WorkspaceLayoutV1 {
-    return Object.freeze({
-      version: 1,
-      sidebar: Object.freeze({
-        width: clampSidebarWidth(sidebarWidth.value),
-        collapsed: sidebarCollapsed.value,
-      }),
-    });
-  }
-
-  function applyWorkspaceLayout(layout: WorkspaceLayoutV1): void {
-    sidebarWidth.value = clampSidebarWidth(layout.sidebar.width);
-    sidebarCollapsed.value = layout.sidebar.collapsed;
-  }
-
-  function subscribeWorkspaceLayout(listener: (layout: WorkspaceLayoutV1) => void): () => void {
-    workspaceLayoutListeners.add(listener);
-    return () => workspaceLayoutListeners.delete(listener);
-  }
-
-  function notifyWorkspaceLayoutChanged(): void {
-    const layout = workspaceLayoutSnapshot();
-    for (const listener of workspaceLayoutListeners) {
-      try {
-        listener(layout);
-      } catch {
-        // A layout observer cannot interfere with the app settings store.
-      }
-    }
-  }
-
   async function refreshAiKeyStatus(): Promise<void> {
     aiApiKeyLoaded.value = false;
     try {
@@ -398,8 +311,6 @@ export const useAppStore = defineStore('app', () => {
     aiCommandSeq,
     pendingAiCommand,
     aiApiKeyLoaded,
-    sidebarWidth,
-    sidebarCollapsed,
     setDisplayMode,
     toggleAutoScroll,
     toggleShowTimestamp,
@@ -418,11 +329,6 @@ export const useAppStore = defineStore('app', () => {
     applyAiCommand,
     setPendingAiCommand,
     consumePendingAiCommand,
-    setSidebarWidth,
-    toggleSidebarCollapsed,
-    workspaceLayoutSnapshot,
-    applyWorkspaceLayout,
-    subscribeWorkspaceLayout,
     flushSettings,
   };
 });
