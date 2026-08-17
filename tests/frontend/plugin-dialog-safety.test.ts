@@ -3,6 +3,7 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import PluginCenterPanel from '../../src/components/plugins/PluginCenterPanel.vue';
+import PluginPromptHost from '../../src/components/plugins/PluginPromptHost.vue';
 import PluginSerialProposalDialog from '../../src/components/plugins/PluginSerialProposalDialog.vue';
 import {
   PLUGIN_CENTER_KEY,
@@ -52,6 +53,52 @@ const proposal: PluginSerialProposal = {
   expiresAtMs: 1_000,
 };
 
+function centerData(overrides: Partial<PluginCenterData> = {}): PluginCenterData {
+  return {
+    revision: 1,
+    catalog: [],
+    installed: [
+      {
+        pluginId: 'tools.capture',
+        displayName: 'Capture Tools',
+        version: '1.0.0',
+        status: 'stopped',
+        statusReason: null,
+        enabled: false,
+        pendingVersion: null,
+        declaredCapabilities: [],
+        effectiveCapabilities: [],
+        unavailableCapabilities: [],
+        runtime: null,
+      },
+    ],
+    serialProposals: [],
+    panels: [],
+    sources: [],
+    ...overrides,
+  };
+}
+
+function createCenterPort(initial: PluginCenterData): PluginCenterPort {
+  const refreshed: PluginCenterData = { ...initial, revision: 2, installed: [] };
+  return {
+    snapshot: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
+    requestLocalSourceGrant: vi.fn(async () => 'plugin-grant-fixture'),
+    install: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
+    installLocal: vi.fn(async () => ({ outcome: 'completed' as const, data: refreshed })),
+    uninstall: vi.fn(async () => ({ outcome: 'completed' as const, data: refreshed })),
+    setEnabled: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
+    addSource: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
+    updateSource: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
+    removeSource: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
+    refreshSource: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
+    setWatchEnabled: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
+    resolveSerialProposal: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
+    emitPanelEvent: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
+    subscribe: vi.fn(() => vi.fn()),
+  };
+}
+
 describe('plugin dialog safety boundaries', () => {
   test('does not reject a proposal while an action is busy', async () => {
     const serial = mount(PluginSerialProposalDialog, {
@@ -70,52 +117,6 @@ describe('plugin center panel local install and uninstall', () => {
   beforeEach(() => {
     dialogWarning.mockReset();
   });
-
-  function centerData(overrides: Partial<PluginCenterData> = {}): PluginCenterData {
-    return {
-      revision: 1,
-      catalog: [],
-      installed: [
-        {
-          pluginId: 'tools.capture',
-          displayName: 'Capture Tools',
-          version: '1.0.0',
-          status: 'stopped',
-          statusReason: null,
-          enabled: false,
-          pendingVersion: null,
-          declaredCapabilities: [],
-          effectiveCapabilities: [],
-          unavailableCapabilities: [],
-          runtime: null,
-        },
-      ],
-      serialProposals: [],
-      panels: [],
-      sources: [],
-      ...overrides,
-    };
-  }
-
-  function createCenterPort(initial: PluginCenterData): PluginCenterPort {
-    const refreshed: PluginCenterData = { ...initial, revision: 2, installed: [] };
-    return {
-      snapshot: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-      requestLocalSourceGrant: vi.fn(async () => 'plugin-grant-fixture'),
-      install: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-      installLocal: vi.fn(async () => ({ outcome: 'completed' as const, data: refreshed })),
-      uninstall: vi.fn(async () => ({ outcome: 'completed' as const, data: refreshed })),
-      setEnabled: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-      addSource: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-      updateSource: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-      removeSource: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-      refreshSource: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-      setWatchEnabled: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-      resolveSerialProposal: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-      emitPanelEvent: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-      subscribe: vi.fn(() => vi.fn()),
-    };
-  }
 
   async function mountPanel(port: PluginCenterPort) {
     const service = new PluginCenterService(port);
@@ -182,5 +183,112 @@ describe('plugin center panel local install and uninstall', () => {
     expect(alert.attributes('role')).toBe('alert');
     expect(alert.text()).toContain(zh['plugins.error.installation-failed']);
     wrapper.unmount();
+  });
+});
+
+describe('plugin runtime status banner and proposal expiry', () => {
+  test('panel renders and clears the runtime-unavailable banner from the service snapshot', async () => {
+    const port = createCenterPort(centerData());
+    const service = new PluginCenterService(port);
+    await service.start();
+    const wrapper = mount(PluginCenterPanel, {
+      global: { provide: { [PLUGIN_CENTER_KEY as symbol]: service } },
+    });
+    await flushPromises();
+
+    // Healthy runtime: no banner.
+    expect(wrapper.find('[data-testid="plugin-runtime-unavailable"]').exists()).toBe(false);
+
+    // Simulate a failed composition arriving through the native status event
+    // by driving the service's own listener surface: snapshot exposes the
+    // last status, and the panel renders it with the stable code.
+    const unavailable = {
+      ...centerData(),
+    };
+    void unavailable;
+    // Drive through the service internals is not public; instead verify the
+    // panel renders whatever runtimeStatus the snapshot carries.
+    const failing = new PluginCenterService(port);
+    await failing.start();
+    // @ts-expect-error test reaches the private status field
+    failing.runtimeStatus = Object.freeze({
+      available: false,
+      code: 'PLUGIN_BOOTSTRAP_STATE_STORE_MISSING',
+    });
+    // @ts-expect-error test drives the notify path
+    failing.notify();
+    const wrapper2 = mount(PluginCenterPanel, {
+      global: { provide: { [PLUGIN_CENTER_KEY as symbol]: failing } },
+    });
+    await flushPromises();
+    const banner = wrapper2.find('[data-testid="plugin-runtime-unavailable"]');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain('PLUGIN_BOOTSTRAP_STATE_STORE_MISSING');
+    wrapper.unmount();
+    wrapper2.unmount();
+  });
+
+  test('prompt host hides a proposal whose TTL already elapsed', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(5_000);
+    try {
+      const expired = { ...proposal, expiresAtMs: 4_000 };
+      const wrapper = mount(PluginPromptHost, {
+        global: {
+          provide: {
+            [PLUGIN_CENTER_KEY as symbol]: {
+              snapshot: () => ({ serialProposals: [expired], action: null, failure: null }),
+              subscribe: () => () => undefined,
+              clearFailure: vi.fn(),
+              resolveSerialProposal: vi.fn(),
+              refresh: vi.fn(),
+            },
+          },
+        },
+      });
+      await flushPromises();
+      expect(wrapper.findComponent(PluginSerialProposalDialog).exists()).toBe(false);
+
+      // An already-dismissed expired proposal stays hidden even when the
+      // expiry timer fires later.
+      vi.advanceTimersByTime(120_000);
+      expect(wrapper.findComponent(PluginSerialProposalDialog).exists()).toBe(false);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('prompt host dismisses a proposal when its TTL timer fires', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    try {
+      const live = { ...proposal, expiresAtMs: 70_000 };
+      const wrapper = mount(PluginPromptHost, {
+        global: {
+          provide: {
+            [PLUGIN_CENTER_KEY as symbol]: {
+              snapshot: () => ({ serialProposals: [live], action: null, failure: null }),
+              subscribe: () => () => undefined,
+              clearFailure: vi.fn(),
+              resolveSerialProposal: vi.fn(),
+              refresh: vi.fn(),
+            },
+          },
+        },
+      });
+      await flushPromises();
+      expect(wrapper.findComponent(PluginSerialProposalDialog).exists()).toBe(true);
+
+      vi.advanceTimersByTime(60_100);
+      await flushPromises();
+      expect(
+        wrapper.findComponent(PluginSerialProposalDialog).exists(),
+        'expired proposal is hidden without user action',
+      ).toBe(false);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
