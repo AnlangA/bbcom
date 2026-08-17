@@ -142,8 +142,9 @@ pub(crate) trait InputOperationControl: Send + Sync + 'static {
 /// Side-channel routing for pushed replies (proposal decisions, session
 /// query data) that are awaited by parked WIT host imports rather than the
 /// main envelope loop. Returning `None` consumes the envelope; `Some`
-/// hands it back to the normal pump path.
-pub(crate) trait EnvelopeDispatcher: Send + Sync + 'static {
+/// hands it back to the normal pump path. Public because the sidecar's
+/// `run_with_dispatcher` accepts it from embedders.
+pub trait EnvelopeDispatcher: Send + Sync + 'static {
     fn dispatch(&self, envelope: Envelope) -> Option<Envelope>;
 }
 

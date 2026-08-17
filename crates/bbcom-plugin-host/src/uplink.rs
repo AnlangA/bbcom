@@ -240,7 +240,6 @@ mod tests {
             Box::new(ProbeWriter(writer_sender)),
         );
 
-        let event = proposal_event("proposal-1");
         let waiter = {
             // Register through the public API path by spawning the request on
             // another thread; the probe writer received the pushed frame.
