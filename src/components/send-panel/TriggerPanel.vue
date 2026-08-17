@@ -12,7 +12,7 @@
           <n-checkbox
             :checked="trigger.enabled"
             size="small"
-            :aria-label="trigger.name"
+            :aria-label="t('trigger.enableToggle', { name: trigger.name })"
             @update:checked="(v: boolean) => toggleEnabled(trigger.id, v)"
           />
           <IconActionButton
@@ -24,9 +24,13 @@
           </IconActionButton>
           <IconActionButton
             class="trigger-remove"
-            :label="t('common.delete')"
+            :label="
+              removeConfirm.armedId.value === trigger.id
+                ? t('common.confirmDelete')
+                : t('common.delete')
+            "
             tone="danger"
-            @click="remove(trigger.id)"
+            @click="removeConfirm.request(trigger.id)"
           >
             <X class="icon-sm" />
           </IconActionButton>
@@ -92,7 +96,7 @@
           :max="60000"
           :step="100"
           :aria-label="t('trigger.cooldown')"
-          style="width: 130px"
+          style="width: var(--control-w-lg)"
         >
           <template #suffix>ms</template>
         </n-input-number>
@@ -122,6 +126,7 @@ import ActionListItem from '../ui/ActionListItem.vue';
 import InlineEditorActions from '../ui/InlineEditorActions.vue';
 import IconActionButton from '../ui/IconActionButton.vue';
 import { useSessionDocument } from '../../features/sessions';
+import { useConfirmRemove } from '../../composables/useConfirmRemove';
 import { t } from '../../lib/i18n';
 import {
   canSaveTriggerDraft,
@@ -179,9 +184,9 @@ function toggleEnabled(id: string, enabled: boolean) {
   document.updateTrigger(props.sessionId, id, { enabled });
 }
 
-function remove(id: string) {
+const removeConfirm = useConfirmRemove((id) => {
   document.removeTrigger(props.sessionId, id);
-}
+});
 
 function summary(trigger: Trigger): string {
   return formatTriggerSummary(trigger, (ms) => t('trigger.summaryCooldown', { ms }));

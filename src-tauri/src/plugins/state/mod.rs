@@ -483,18 +483,40 @@ fn ensure_application_directory(path: &Path) -> Result<(), HostFailure> {
 }
 
 fn ensure_private_directory(path: &Path) -> Result<(), HostFailure> {
-    let created = match fs::symlink_metadata(path) {
+    let mut created = false;
+    match fs::symlink_metadata(path) {
         Ok(metadata) => {
-            ensure_private_directory_metadata(&metadata)?;
-            false
+            // Symlinks and non-directories stay fatal (escape guard).
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(HostFailure::Initialization);
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o077 != 0 {
+                    // Self-heal a real directory with loose group/other bits
+                    // instead of rejecting it: composition creates sibling
+                    // roots under the process umask (e.g. 0775), and such a
+                    // directory is recoverable precisely because we can
+                    // chmod it. A failed chmod (read-only fs, foreign owner)
+                    // remains the hard failure it always was.
+                    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                        .map_err(|_| HostFailure::Initialization)?;
+                }
+            }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir(path).map_err(|_| HostFailure::Initialization)?;
-            true
+            created = true;
         }
         Err(_) => return Err(HostFailure::Initialization),
-    };
+    }
     set_private_directory_permissions(path)?;
+    // Re-verify the final mode so both the healed and freshly created paths
+    // land on the strict contract before anything is stored inside.
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        ensure_private_directory_metadata(&metadata)?;
+    }
     if created && let Some(parent) = path.parent() {
         sync_directory(parent)?;
     }
@@ -616,6 +638,40 @@ mod tests {
             artifact_slot: ArtifactSlot::Active,
             launch_mode: HostLaunchMode::Active,
         }
+    }
+
+    #[cfg(unix)]
+    fn directory_mode(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).expect("metadata").permissions().mode() & 0o777
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn existing_loose_state_root_is_self_healed_to_strict_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = private_root();
+        // Reproduce the umask-created sibling: a real directory with group
+        // write/read bits, exactly what `create_dir_all` produced under
+        // umask 022/002 before the bootstrap-ordering fix.
+        let state_root = root.path().join(ROOT_DIRECTORY);
+        fs::create_dir(&state_root).expect("create loose root");
+        fs::set_permissions(&state_root, fs::Permissions::from_mode(0o775)).expect("loosen");
+        let port = NativePluginStatePersistencePort::open(root.path())
+            .expect("loose state root must self-heal instead of failing");
+        assert_eq!(directory_mode(&state_root), 0o700);
+        drop(port);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinked_state_root_still_fails_closed() {
+        let root = private_root();
+        let target = private_root();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target.path(), root.path().join(ROOT_DIRECTORY))
+            .expect("symlink");
+        assert!(NativePluginStatePersistencePort::open(root.path()).is_err());
     }
 
     #[test]

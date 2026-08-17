@@ -74,7 +74,8 @@ export const locale = ref<Locale>(DEFAULT_LOCALE);
 export function setLocale(next: Locale): void {
   locale.value = next;
   void ensureLocaleLoaded(next);
-  if (typeof document !== 'undefined') {
+  // Some test environments define `document` without a full DOM tree.
+  if (typeof document !== 'undefined' && document.documentElement) {
     document.documentElement.lang = next === 'zh' ? 'zh-CN' : 'en';
   }
 }

@@ -12,7 +12,8 @@ use serde_json::Value;
 
 use bbcom_plugin_contracts::generated::{
     Envelope, GetStateChunkRequest, HostHello, InitializeRequest, InvokeRequest, InvokeResponse,
-    PluginStorageEntry, PluginStorageSnapshot, PutStateChunkRequest, envelope,
+    PluginStorageEntry, PluginStorageSnapshot, PutStateChunkRequest, SessionQueryResponse,
+    envelope,
 };
 use bbcom_plugin_contracts::{PLUGIN_STATE_SCHEMA_VERSION, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use bbcom_plugin_host::transport::{FrameReader, FrameWriter};
@@ -82,9 +83,44 @@ impl SidecarProcess {
 
     fn round_trip(&mut self, payload: envelope::Payload) -> Envelope {
         let request_id = self.send(payload);
-        let response = self.receive();
-        assert_eq!(response.request_id, request_id);
-        response
+        // While the guest executes it may push session/proposal requests
+        // that the main process must answer before the actual response can
+        // be produced — act as that main process here.
+        loop {
+            let response = self.receive();
+            match response.payload {
+                Some(envelope::Payload::SessionQueryRequest(query)) => {
+                    let query_id = match &query.query {
+                        Some(_) => query.query_id.clone(),
+                        None => String::new(),
+                    };
+                    // Echo the push's request id: wire validation rejects 0.
+                    let reply_request_id = response.request_id;
+                    self.writer
+                        .write_envelope(&Envelope {
+                            protocol_major: PROTOCOL_MAJOR,
+                            protocol_minor: PROTOCOL_MINOR,
+                            request_id: reply_request_id,
+                            payload: Some(envelope::Payload::SessionQueryResponse(
+                                SessionQueryResponse {
+                                    query_id,
+                                    ok: true,
+                                    error_code: String::new(),
+                                    sessions: Vec::new(),
+                                    frames: Vec::new(),
+                                    next_sequence: 0,
+                                    has_more: false,
+                                },
+                            )),
+                        })
+                        .expect("query reply frame");
+                }
+                _ => {
+                    assert_eq!(response.request_id, request_id);
+                    return response;
+                }
+            }
+        }
     }
 }
 

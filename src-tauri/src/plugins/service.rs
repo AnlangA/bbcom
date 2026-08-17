@@ -142,6 +142,16 @@ where
             .invoke_panel_event(plugin_id, field_id, value)?)
     }
 
+    /// Push an unsolicited envelope (proposal decision, session-query data)
+    /// into a running plugin's sidecar.
+    pub fn deliver_envelope(
+        &self,
+        plugin_id: &str,
+        payload: bbcom_plugin_contracts::generated::envelope::Payload,
+    ) -> Result<(), PluginServiceError> {
+        Ok(self.lock()?.deliver_envelope(plugin_id, payload)?)
+    }
+
     pub fn begin_manual_upgrade(
         &self,
         request: &ManualPackageRequest,

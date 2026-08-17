@@ -74,9 +74,12 @@ test('host ensures the active runtime and unmount only detaches application obse
 
   await wrapper.setProps({ sessions: [firstSession, secondSession], activeSessionId: 'session-2' });
   await nextTick();
-  await Promise.resolve();
-  assert.equal(reconcile.mock.calls.length, 2);
-  assert.equal(ensure.mock.calls.length, 2);
+  // The activation wrapper adds a microtask hop; wait for the queued
+  // reconciliation chain instead of pumping a fixed number of ticks.
+  await vi.waitFor(() => {
+    assert.equal(reconcile.mock.calls.length, 2);
+    assert.equal(ensure.mock.calls.length, 2);
+  });
 
   wrapper.unmount();
   assert.equal(listeners.size, 0);

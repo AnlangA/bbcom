@@ -56,6 +56,7 @@ const FAILURE_CODES = new Set<PluginFailureCode>([
   'proposal-consumed',
   'panel-event-rejected',
   'cancel-failed',
+  'workspace-missing',
 ]);
 
 interface PluginRequestCorrelation {

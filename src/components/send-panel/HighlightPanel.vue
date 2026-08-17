@@ -12,7 +12,7 @@
           <n-checkbox
             :checked="rule.enabled"
             size="small"
-            :aria-label="rule.name"
+            :aria-label="t('highlight.enableToggle', { name: rule.name })"
             @update:checked="(value: boolean) => toggleEnabled(rule.id, value)"
           />
           <IconActionButton
@@ -24,9 +24,13 @@
           </IconActionButton>
           <IconActionButton
             class="highlight-remove"
-            :label="t('common.delete')"
+            :label="
+              removeConfirm.armedId.value === rule.id
+                ? t('common.confirmDelete')
+                : t('common.delete')
+            "
             tone="danger"
-            @click="remove(rule.id)"
+            @click="removeConfirm.request(rule.id)"
           >
             <X class="icon-sm" />
           </IconActionButton>
@@ -86,7 +90,7 @@
           :aria-label="t('highlight.color')"
           :options="colorOptions"
           size="tiny"
-          style="width: 112px"
+          style="width: var(--control-w-md)"
         />
       </div>
       <div class="form-actions">
@@ -115,6 +119,7 @@ import InlineEditorActions from '../ui/InlineEditorActions.vue';
 import IconActionButton from '../ui/IconActionButton.vue';
 import { Pencil, Plus, X } from '@lucide/vue';
 import { useSessionDocument } from '../../features/sessions';
+import { useConfirmRemove } from '../../composables/useConfirmRemove';
 import { HIGHLIGHT_COLORS } from '../../lib/highlights';
 import { t } from '../../lib/i18n';
 import {
@@ -185,9 +190,9 @@ function toggleEnabled(id: string, enabled: boolean) {
   document.updateHighlight(props.sessionId, id, { enabled });
 }
 
-function remove(id: string) {
+const removeConfirm = useConfirmRemove((id) => {
   document.removeHighlight(props.sessionId, id);
-}
+});
 
 function summary(rule: HighlightRule): string {
   return formatHighlightSummary(rule);

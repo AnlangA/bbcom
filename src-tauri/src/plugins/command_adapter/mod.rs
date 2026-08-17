@@ -12,7 +12,9 @@ use bbcom_contracts::{
     PluginLifecycleStatus, PluginPanelField, PluginPanelFieldKind, PluginSerialProposal,
     PluginStatusReason, PluginUnavailableCapability, RuntimeInstanceKey,
 };
-use bbcom_plugin_broker::{PanelControlKind, PanelEvent, ProposalDecision};
+use bbcom_plugin_broker::{
+    PanelControlKind, PanelEvent, ProposalDecision, SerialProposalRequest, SerialProposalView,
+};
 use bbcom_plugin_contracts::Permission;
 use bbcom_plugin_manager::{
     Clock, ManualPackageRequest, PluginSnapshot, PluginStatus, SystemClock,
@@ -71,6 +73,14 @@ pub trait CatalogViewPort: Send + 'static {
 
 pub trait PluginCommandCorePort: Send + 'static {
     fn snapshot(&self) -> PluginCommandSnapshot;
+    /// Trusted host ingress for a parked sidecar proposal call.
+    fn register_proposal(
+        &mut self,
+        plugin_id: &str,
+        declared: &std::collections::BTreeSet<bbcom_plugin_contracts::Permission>,
+        request: SerialProposalRequest,
+        correlation: Option<String>,
+    ) -> Result<SerialProposalView, PluginCommandError>;
     fn queue_install(
         &mut self,
         revision: u64,
@@ -125,6 +135,27 @@ pub trait PluginCommandCorePort: Send + 'static {
 impl PluginCommandCorePort for PluginCommandService {
     fn snapshot(&self) -> PluginCommandSnapshot {
         PluginCommandService::snapshot(self)
+    }
+
+    fn register_proposal(
+        &mut self,
+        plugin_id: &str,
+        declared: &std::collections::BTreeSet<Permission>,
+        request: SerialProposalRequest,
+        correlation: Option<String>,
+    ) -> Result<SerialProposalView, PluginCommandError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_millis() as u64)
+            .unwrap_or_default();
+        PluginCommandService::register_proposal(
+            self,
+            plugin_id,
+            declared,
+            request,
+            correlation,
+            now,
+        )
     }
 
     fn queue_install(
@@ -292,6 +323,56 @@ impl NativePluginCommandAdapter {
                 completed_correlations: VecDeque::new(),
             }),
             clock,
+        }
+    }
+
+    /// Trusted host ingress for a sidecar serial-write proposal: the guest
+    /// call is parked inside the plugin's own process waiting for the user
+    /// decision this registration makes visible.
+    pub fn register_serial_proposal(
+        &self,
+        event: &bbcom_plugin_contracts::generated::SerialProposalEvent,
+    ) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        let Some(plugin) = state
+            .core
+            .snapshot()
+            .plugins
+            .iter()
+            .find(|plugin| plugin.artifact.plugin_id == event.plugin_id)
+            .cloned()
+        else {
+            tracing::warn!(
+                "sidecar proposal from unknown plugin {} dropped",
+                event.plugin_id
+            );
+            return;
+        };
+        let request = SerialProposalRequest {
+            operation_id: event.operation_id.clone(),
+            session_id: event.session_id.clone(),
+            payload: event.payload.clone(),
+            display_label: event.display_label.clone(),
+        };
+        match state.core.register_proposal(
+            &event.plugin_id,
+            &plugin.artifact.declared_capabilities,
+            request,
+            Some(event.proposal_id.clone()),
+        ) {
+            Ok(_) => tracing::info!(
+                "sidecar proposal {} registered for {}",
+                event.proposal_id,
+                event.plugin_id
+            ),
+            Err(error) => tracing::warn!(
+                "sidecar proposal {} rejected for {}: {:?}",
+                event.proposal_id,
+                event.plugin_id,
+                error
+            ),
         }
     }
 
@@ -1349,18 +1430,33 @@ fn failure_code(failure: Option<&PluginOperationFailure>) -> PluginFailureCode {
     let Some(failure) = failure else {
         return PluginFailureCode::Unavailable;
     };
-    if failure.code.contains("INSTALL") {
-        PluginFailureCode::InstallationFailed
-    } else if failure.code.contains("PANEL") {
-        PluginFailureCode::PanelEventRejected
-    } else if failure.code == "PLUGIN_SERIAL_EXECUTION_UNAVAILABLE" {
-        PluginFailureCode::Unavailable
-    } else if failure.code.contains("PROPOSAL") {
-        PluginFailureCode::ProposalConsumed
-    } else if failure.code.contains("HOST") {
-        PluginFailureCode::HostFailed
-    } else {
-        PluginFailureCode::Unavailable
+    // Exact-match table: substring matching mislabeled failures (e.g. an
+    // INSTALLER_* repository error landing in HostFailed because its message
+    // contained "HOST"). Unknown codes degrade to Unavailable.
+    match &*failure.code {
+        "PLUGIN_INSTALL_PREPARE_FAILED"
+        | "PLUGIN_INSTALL_COMMIT_FAILED"
+        | "PLUGIN_INSTALL_DISCARD_FAILED"
+        | "PLUGIN_UPDATE_TARGET_INVALID"
+        | "PLUGIN_ALREADY_INSTALLED"
+        | "PLUGIN_ARTIFACT_INVALID" => PluginFailureCode::InstallationFailed,
+        "PLUGIN_PANEL_INVALID" | "PLUGIN_PANEL_LIMIT_EXCEEDED" | "PLUGIN_PANEL_NOT_FOUND" => {
+            PluginFailureCode::PanelEventRejected
+        }
+        "PLUGIN_PROPOSAL_INVALID" | "PLUGIN_PROPOSAL_QUEUE_LIMIT" | "PLUGIN_PROPOSAL_NOT_FOUND" => {
+            PluginFailureCode::ProposalConsumed
+        }
+        "PLUGIN_WORKSPACE_NOT_OPEN" => PluginFailureCode::WorkspaceMissing,
+        "PLUGIN_HOST_START_FAILED"
+        | "PLUGIN_HOST_INITIALIZATION_FAILED"
+        | "PLUGIN_HOST_STOP_FAILED"
+        | "PLUGIN_HOST_IDENTITY_INVALID"
+        | "PLUGIN_HOST_CRASHED"
+        | "PLUGIN_HOST_MEMORY_LIMIT"
+        | "PLUGIN_HOST_EXECUTION_TIMEOUT"
+        | "PLUGIN_HOST_PROTOCOL_FAILED" => PluginFailureCode::HostFailed,
+        "PLUGIN_SERIAL_EXECUTION_UNAVAILABLE" => PluginFailureCode::Unavailable,
+        _ => PluginFailureCode::Unavailable,
     }
 }
 

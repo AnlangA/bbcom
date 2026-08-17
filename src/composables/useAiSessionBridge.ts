@@ -106,6 +106,28 @@ export function useAiSessionBridge() {
     return session.value?.id ?? NO_AI_SESSION_ID;
   }
 
+  async function sendCommandRejection(
+    requestId: string,
+    sessionId: string,
+    reason: 'revision-mismatch' | 'session-mismatch' | 'workspace-mismatch' | 'invalid-payload',
+  ) {
+    try {
+      await emit(
+        AI_BRIDGE_EVENTS.commandResult,
+        createAiBridgeEnvelope({
+          workspaceId: currentWorkspaceId(),
+          revision,
+          origin: 'main',
+          requestId,
+          sessionId,
+          payload: { kind: 'command-result', outcome: 'rejected', reason },
+        }),
+      );
+    } catch (error) {
+      logger.debug('ai command-result bridge unavailable:', error);
+    }
+  }
+
   async function sendSnapshot(requestId: string = crypto.randomUUID()) {
     try {
       const active = session.value;
@@ -526,16 +548,26 @@ export function useAiSessionBridge() {
         unlisteners.push(
           await listen<unknown>(AI_BRIDGE_EVENTS.commandApply, (event) => {
             const envelope = receiveEnvelope(event.payload);
+            if (!envelope || !isPayloadKind(envelope.payload, 'command-apply')) return;
             if (
-              envelope &&
               envelope.workspaceId === currentWorkspaceId() &&
               envelope.revision === revision &&
               envelope.sessionId === session.value?.id &&
-              isPayloadKind(envelope.payload, 'command-apply') &&
               isAiCommandApplyEvent(envelope.payload)
             ) {
               appStore.applyAiCommand(envelope.payload.command);
+              return;
             }
+            // Receipts make a dropped command visible to the AI window (which
+            // can offer a retry) instead of the old silent no-op.
+            const reason = !isAiCommandApplyEvent(envelope.payload)
+              ? 'invalid-payload'
+              : envelope.workspaceId !== currentWorkspaceId()
+                ? 'workspace-mismatch'
+                : envelope.sessionId !== session.value?.id
+                  ? 'session-mismatch'
+                  : 'revision-mismatch';
+            void sendCommandRejection(envelope.requestId, envelope.sessionId, reason);
           }),
         );
         unlisteners.push(

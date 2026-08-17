@@ -14,7 +14,11 @@ pub fn show_ai_window(app: tauri::AppHandle) -> Result<(), AppError> {
     window.show().map_err(|e| AppError::AiError {
         message: e.to_string(),
     })?;
-    window.set_focus().ok();
+    if let Err(e) = window.set_focus() {
+        // Some Linux WMs refuse focus stealing; the window is still shown, so
+        // degrade to a log line instead of failing the command.
+        tracing::warn!("failed to focus AI window: {e}");
+    }
     app.emit("ai-window-state", AiWindowState { visible: true })
         .ok();
     Ok(())
@@ -60,7 +64,20 @@ pub fn resize_ai_window(
         .ok_or_else(|| AppError::AiError {
             message: "AI 窗口不存在".to_string(),
         })?;
-    let (width, height) = clamp_window_size(request.width, request.height);
+    // The frontend reports CONTENT size only. Add the current decoration
+    // height (outer minus inner) so the visible client area matches the
+    // measured content instead of a hardcoded per-OS titlebar guess.
+    let decoration_height = window
+        .outer_size()
+        .ok()
+        .zip(window.inner_size().ok())
+        .map(|(outer, inner)| {
+            (outer.height.saturating_sub(inner.height)) as f64
+                / window.scale_factor().unwrap_or(1.0) as f64
+        })
+        .unwrap_or(0.0);
+    let (width, height) =
+        clamp_window_size(request.width, request.height + decoration_height.max(0.0));
     window
         .set_size(LogicalSize::new(width, height))
         .map_err(|e| AppError::AiError {
@@ -68,7 +85,8 @@ pub fn resize_ai_window(
         })
 }
 
-/// Bounds enforced by the AI window's resizable range (see lib.rs builder).
+/// Hard bounds for resize requests; the builder itself is non-resizable, so
+/// these constants are the only enforcement (unit-tested below).
 pub const AI_WINDOW_MIN_WIDTH: f64 = 420.0;
 pub const AI_WINDOW_MAX_WIDTH: f64 = 920.0;
 pub const AI_WINDOW_MIN_HEIGHT: f64 = 120.0;

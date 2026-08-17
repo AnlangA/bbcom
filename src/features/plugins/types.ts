@@ -147,11 +147,18 @@ export interface PluginCenterAction {
   readonly status: 'running' | 'cancelling';
 }
 
+/** Bootstrap composition status emitted by Rust (`plugin-runtime-status`). */
+export type PluginRuntimeStatus = Readonly<{
+  available: boolean;
+  code: string | null;
+}>;
+
 export type PluginCenterSnapshot = PluginCenterData &
   Readonly<{
     started: boolean;
     action: PluginCenterAction | null;
     failure: PluginFailure | null;
+    runtimeStatus: PluginRuntimeStatus | null;
   }>;
 
 export type PluginCenterListener = (snapshot: PluginCenterSnapshot) => void;

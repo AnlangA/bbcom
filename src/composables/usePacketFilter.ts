@@ -12,6 +12,10 @@ interface PacketFilterOptions {
   getTextSearchData: (frame: DataFrame) => string;
   /** Called synchronously when rolling-frame retention replaces source rows. */
   onFramesReplaced?: () => void;
+  /** Externally owned filter state (session-runtime retention across view
+   * remounts). When omitted the composable allocates its own local refs. */
+  directionFilter?: Ref<DirectionFilter>;
+  searchInput?: Ref<string>;
 }
 
 const SEARCH_DEBOUNCE_MS = 150;
@@ -35,9 +39,11 @@ export function usePacketFilter({
   getHexSearchData,
   getTextSearchData,
   onFramesReplaced,
+  directionFilter: retainedDirectionFilter,
+  searchInput: retainedSearchInput,
 }: PacketFilterOptions) {
-  const directionFilter = ref<DirectionFilter>('ALL');
-  const searchInput = ref('');
+  const directionFilter = retainedDirectionFilter ?? ref<DirectionFilter>('ALL');
+  const searchInput = retainedSearchInput ?? ref('');
   const searchQuery = ref('');
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
 

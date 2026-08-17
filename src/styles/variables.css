@@ -103,6 +103,13 @@
   --line-height-normal: 1.5;
   --line-height-relaxed: 1.7;
 
+  /* Control widths: the fixed-size select/number controls used across
+     toolbars and panels. Inline pixel widths are forbidden for these. */
+  --control-w-xs: 86px;
+  --control-w-sm: 96px;
+  --control-w-md: 112px;
+  --control-w-lg: 130px;
+
   /* Spacing */
   --space-2xs: 2px;
   --space-xs: 4px;
@@ -137,9 +144,15 @@
   --z-modal: 2000;
   --z-tooltip: 3000;
   --z-notification: 4000;
+  /* App-level gates (shutdown dialog, legacy reset) sit above everything. */
+  --z-gate: 10000;
 
   /* Layout */
   --sidebar-width: 292px;
+  /* Fixed content width of the floating AI assistant panel; shared by
+     AiWindow.vue and the AI settings panel so the resize target and the
+     rendered content can never drift apart. */
+  --ai-panel-width: 820px;
   --sidebar-width-min: 252px;
   --sidebar-width-max: 340px;
   --toolbar-height: 46px;

@@ -32,6 +32,11 @@ export class WorkspaceApplicationResetTarget implements WorkspaceResetTarget {
       context,
     );
     if (!active) throw new Error('last active workspace is missing');
+    // Mirror open(): recovery must land on the workspace the reset journal
+    // committed, never release the gate against different data.
+    if (active.workspaceId !== workspaceId) {
+      throw new Error('restored workspace mismatch');
+    }
   }
 
   private async open(workspaceId: string, context: LegacyReadContext) {

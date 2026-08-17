@@ -55,21 +55,17 @@ async function readExistingDatabase(
   signal: AbortSignal,
 ): Promise<unknown> {
   if (!factory) return null;
-  const enumerate = factory.databases;
-  if (typeof enumerate === 'function') {
-    const databases = await enumerate.call(factory);
-    throwIfAborted(signal);
-    if (!databases.some((database) => database.name === SESSION_STATE_DATABASE_NAME)) return null;
-  }
-
   let database: IDBDatabase;
   try {
+    // Never use IDBFactory.databases() enumeration as an absence proof:
+    // some WebViews list a pre-existing database inconsistently (or not at
+    // all), which classified real legacy data as an empty install and
+    // silently skipped the backup flow. Opening without a version and
+    // aborting the initial upgrade transaction is the portable, non-creating
+    // existence probe required by the IndexedDB transaction model, so it is
+    // the only authority on whether the database exists.
     database = await openExistingDatabase(factory, signal);
   } catch (error) {
-    // Some WebViews do not implement IDBFactory.databases(). Opening without
-    // a version and aborting the initial upgrade transaction is the portable,
-    // non-creating existence probe required by the IndexedDB transaction
-    // model. A real existing database never takes this branch.
     if (error instanceof MissingLegacyDatabaseError) return null;
     throw error;
   }

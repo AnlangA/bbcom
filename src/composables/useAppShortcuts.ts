@@ -7,6 +7,23 @@ interface AppShortcuts {
 
 const INPUT_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
+/** Selectors for every modal/overlay system in the app (AppModal, Naive's
+ *  NModal, the shutdown dialog, and the legacy reset gate). */
+const MODAL_OVERLAY_SELECTORS = [
+  '.app-modal-overlay',
+  '.n-modal-container',
+  '.shutdown-backdrop',
+  '.legacy-reset-gate',
+].join(', ');
+
+/** Exported for unit testing — true when any modal overlay is currently
+ *  mounted. App-level shortcuts must not fire behind a dialog (e.g. Ctrl+W
+ *  closing a session while the settings modal is open). */
+export function isModalOverlayOpen(): boolean {
+  if (typeof document === 'undefined') return false;
+  return Boolean(document.querySelector(MODAL_OVERLAY_SELECTORS));
+}
+
 /** Exported for unit testing — true when the focused element would consume
  *  keyboard input, so shortcuts must be suppressed. Uses a tagName duck-type
  *  rather than `instanceof HTMLElement` so it is decoupled from the DOM global
@@ -24,6 +41,7 @@ export function useAppShortcuts({ onCreateSession, onCloseSession }: AppShortcut
   function handleKeydown(event: KeyboardEvent) {
     if (!event.ctrlKey && !event.metaKey) return;
     if (isEditable(event.target)) return;
+    if (isModalOverlayOpen()) return;
 
     if (event.key === 'n') {
       event.preventDefault();

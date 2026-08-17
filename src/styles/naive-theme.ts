@@ -119,9 +119,34 @@ export const themeOverrides: GlobalThemeOverrides = {
     optionColorActive: 'var(--bg-active)',
   },
   Tabs: {
-    tabTextColorActiveLine: 'var(--text-primary)',
+    tabTextColorLine: 'var(--text-muted)',
     tabTextColorHoverLine: 'var(--text-primary)',
+    tabTextColorActiveLine: 'var(--text-primary)',
+    tabTextColorDisabledLine: 'var(--text-dim)',
     barColor: 'var(--color-primary)',
+  },
+  // Without darkTheme in the bundle (App.vue bundle-budget trade-off), any
+  // component not listed here derives its palette from Naive's light base in
+  // JavaScript — visible as washed-out rails/bubbles in dark mode. These
+  // overrides pin the remaining in-use components to semantic tokens, which
+  // re-resolve per data-theme for both palettes.
+  Switch: {
+    railColor: 'var(--bg-active)',
+    railColorHover: 'var(--bg-hover)',
+    railColorActive: 'var(--color-primary)',
+    railColorActiveHover: 'var(--color-primary-hover)',
+    railColorActivePressed: 'var(--color-primary-pressed)',
+    loadingColor: 'var(--color-primary)',
+  },
+  Tooltip: {
+    color: 'var(--bg-elevated)',
+    textColor: 'var(--text-primary)',
+    borderRadius: 'var(--radius-md)',
+    boxShadow: 'var(--shadow-lg)',
+  },
+  Progress: {
+    fillColor: 'var(--color-primary)',
+    railColor: 'var(--bg-inset)',
   },
 };
 

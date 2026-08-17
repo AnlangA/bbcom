@@ -33,9 +33,13 @@
           <IconActionButton
             class="macro-remove"
             :disabled="runningMacroId !== null"
-            :label="t('common.delete')"
+            :label="
+              removeConfirm.armedId.value === macro.id
+                ? t('common.confirmDelete')
+                : t('common.delete')
+            "
             tone="danger"
-            @click="remove(macro.id)"
+            @click="removeConfirm.request(macro.id)"
           >
             <X class="icon-sm" />
           </IconActionButton>
@@ -85,7 +89,7 @@
         </n-button>
       </div>
       <div class="step-list">
-        <div v-for="(step, i) in draft.steps" :key="i" class="step-row">
+        <div v-for="(step, i) in draft.steps" :key="stepKeys[i] ?? i" class="step-row">
           <span class="step-idx">{{ i + 1 }}</span>
           <n-checkbox v-model:checked="step.isHex" size="small" :title="t('macro.hexMode')">
             HEX
@@ -139,13 +143,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, shallowReactive } from 'vue';
+import { ref, computed, shallowReactive, watch } from 'vue';
 import { NInput, NButton, NCheckbox, NInputNumber, useMessage } from 'naive-ui';
 import { Download, Pencil, Play, Plus, Square, Upload, X } from '@lucide/vue';
 import ActionListItem from '../ui/ActionListItem.vue';
 import IconActionButton from '../ui/IconActionButton.vue';
 import InlineEditorActions from '../ui/InlineEditorActions.vue';
 import { useSessionDocument } from '../../features/sessions';
+import { useConfirmRemove } from '../../composables/useConfirmRemove';
 import type { MacroRunResult } from '../../composables/useMacroRunner';
 import {
   canSaveMacroDraft,
@@ -175,6 +180,17 @@ const macros = computed(() => sessionDocument.session.value?.macros ?? []);
 // --- runner ---
 const runner = props.runner;
 const runningMacroId = ref<string | null>(runner.running.value ? 'background' : null);
+// The runner is application-owned: a run started outside this panel (ToolsTabs
+// is KeepAlive-cached, the runner lives on the session runtime) can finish or
+// be aborted while the panel is mounted. Without this sync the stale
+// 'background' marker would keep edit/remove disabled and block new runs
+// until the SessionView itself is destroyed.
+watch(
+  () => runner.running.value,
+  (running) => {
+    if (!running) runningMacroId.value = null;
+  },
+);
 
 async function runMacro(macro: Macro) {
   if (
@@ -213,6 +229,16 @@ const editing = ref(false);
 const editingId = ref<string | null>(null);
 const draft = shallowReactive<MacroDraft>({ name: '', steps: [] });
 
+// MacroStep is the persisted shape and has no id; these panel-local keys keep
+// v-for rows stable across splices so a removed step cannot shuffle DOM state
+// into its neighbors. Every draft.steps mutation goes through this panel.
+let stepKeySeed = 0;
+const stepKeys = ref<number[]>([]);
+
+function resetStepKeys(count: number): void {
+  stepKeys.value = Array.from({ length: count }, () => (stepKeySeed += 1));
+}
+
 const canSave = computed(() => canSaveMacroDraft(draft));
 
 function startCreate() {
@@ -220,6 +246,7 @@ function startCreate() {
   editingId.value = null;
   draft.name = nextDraft.name;
   draft.steps = nextDraft.steps;
+  resetStepKeys(nextDraft.steps.length);
   editing.value = true;
 }
 
@@ -228,6 +255,7 @@ function startEdit(macro: Macro) {
   editingId.value = macro.id;
   draft.name = nextDraft.name;
   draft.steps = nextDraft.steps;
+  resetStepKeys(nextDraft.steps.length);
   editing.value = true;
 }
 
@@ -238,10 +266,12 @@ function cancelEdit() {
 
 function addStep() {
   draft.steps.push(createMacroStep());
+  stepKeys.value.push((stepKeySeed += 1));
 }
 
 function removeStep(index: number) {
   draft.steps.splice(index, 1);
+  stepKeys.value.splice(index, 1);
 }
 
 function save() {
@@ -258,9 +288,9 @@ function save() {
   editingId.value = null;
 }
 
-function remove(id: string) {
+const removeConfirm = useConfirmRemove((id) => {
   sessionDocument.removeMacro(props.sessionId, id);
-}
+});
 
 // --- cross-session library import/export ---
 // Uses the File System Access API (available in Tauri's Chromium webview) with a

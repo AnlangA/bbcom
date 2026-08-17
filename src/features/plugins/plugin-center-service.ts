@@ -3,6 +3,8 @@ import {
   validateDeclarativePanel,
   validPanelEventValue,
 } from './panel-validation';
+import { logger } from '../../lib/logger';
+import { listenNativeEvent } from '../native';
 import {
   PLUGIN_PERMISSIONS,
   type InstalledPluginView,
@@ -17,6 +19,7 @@ import {
   type PluginPanelEvent,
   type PluginPermission,
   type PluginPortOutcome,
+  type PluginRuntimeStatus,
   type PluginSerialProposal,
   type PluginSourceView,
 } from './types';
@@ -50,8 +53,11 @@ export class PluginCenterService {
   private started = false;
   private action: PluginCenterSnapshot['action'] = null;
   private failure: PluginFailure | null = null;
+  private runtimeStatus: PluginCenterSnapshot['runtimeStatus'] = null;
   private actionAbort: AbortController | null = null;
   private detachPort: (() => void) | null = null;
+  private detachRuntimeStatus: (() => void) | null = null;
+  private detachSnapshotChanged: (() => void) | null = null;
 
   constructor(private readonly port: PluginCenterPort) {}
 
@@ -61,6 +67,7 @@ export class PluginCenterService {
       started: this.started,
       action: this.action ? Object.freeze({ ...this.action }) : null,
       failure: this.failure ? Object.freeze({ ...this.failure }) : null,
+      runtimeStatus: this.runtimeStatus,
     });
   }
 
@@ -78,6 +85,35 @@ export class PluginCenterService {
     if (this.started) return Promise.resolve();
     this.started = true;
     this.detachPort = this.port.subscribe((data) => this.acceptPush(data));
+    // Bootstrap composition outcomes (setup + every workspace-switch retry)
+    // arrive as a native broadcast; a browser-only shell stays null.
+    void listenNativeEvent<PluginRuntimeStatus>('plugin-runtime-status', (event) => {
+      const status = event.payload;
+      if (
+        typeof status?.available === 'boolean' &&
+        (status.code === null || typeof status.code === 'string')
+      ) {
+        this.runtimeStatus = Object.freeze({ ...status });
+        this.notify();
+      }
+    })
+      .then((unlisten) => {
+        this.detachRuntimeStatus = unlisten;
+      })
+      .catch(() => {
+        // Browser-only shells provide no native event API.
+      });
+    // Host-side proposals arrive between renderer commands; nudge a refresh
+    // so the confirmation prompt appears without a user action.
+    void listenNativeEvent('plugin-snapshot-changed', () => {
+      if (!this.action) void this.refresh();
+    })
+      .then((unlisten) => {
+        this.detachSnapshotChanged = unlisten;
+      })
+      .catch(() => {
+        // Browser-only shells provide no native event API.
+      });
     this.notify();
     return this.refresh();
   }
@@ -200,6 +236,10 @@ export class PluginCenterService {
     this.actionAbort?.abort();
     this.detachPort?.();
     this.detachPort = null;
+    this.detachRuntimeStatus?.();
+    this.detachRuntimeStatus = null;
+    this.detachSnapshotChanged?.();
+    this.detachSnapshotChanged = null;
     this.started = false;
     this.notify();
   }
@@ -221,7 +261,10 @@ export class PluginCenterService {
     try {
       const outcome = await call(abort.signal);
       this.acceptOutcome(outcome);
-    } catch {
+    } catch (error) {
+      // Port exceptions are folded into the failure state; keep the cause in
+      // the log so transport issues stay diagnosable.
+      logger.warn('plugin-center action failed:', kind, error);
       this.failure = Object.freeze({
         code: abort.signal.aborted ? 'cancel-failed' : 'unavailable',
       });

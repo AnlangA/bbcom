@@ -119,6 +119,21 @@ pub trait PluginRuntimeLifecycle: Send + Sync + 'static {
         states: Vec<OpaqueProjectPluginState>,
     ) -> Result<(), PluginServiceError>;
     fn close_project(&self) -> Result<(), PluginServiceError>;
+    /// Trusted host ingress for a parked sidecar proposal call. Default
+    /// no-op: embedders without the pipeline keep old behavior.
+    fn register_serial_proposal(
+        &self,
+        _event: bbcom_plugin_contracts::generated::SerialProposalEvent,
+    ) {
+    }
+    /// Push an unsolicited envelope into a running plugin's sidecar.
+    fn deliver_envelope(
+        &self,
+        _plugin_id: &str,
+        _payload: bbcom_plugin_contracts::generated::envelope::Payload,
+    ) -> Result<(), PluginServiceError> {
+        Err(PluginServiceError::StatePoisoned)
+    }
 }
 
 /// Fully composed plugin runtime. The command service is suitable for
@@ -204,6 +219,7 @@ pub struct ProductionPluginRuntimeBuilder {
     state: Option<NativePluginStatePersistencePort>,
     serial: Option<DynSerialScheduler>,
     host_upstream: Option<DynHostUpstream>,
+    push_sink: Option<Arc<dyn bbcom_plugin_manager::HostPushSink>>,
     proposals: Option<Box<dyn ProposalBrokerPort + Send>>,
     panels: Option<Box<dyn PanelBrokerPort + Send>>,
     sandbox: Option<PlatformSandboxDriver>,
@@ -319,6 +335,12 @@ impl ProductionPluginRuntimeBuilder {
         self
     }
 
+    #[must_use]
+    pub fn push_sink(mut self, sink: Arc<dyn bbcom_plugin_manager::HostPushSink>) -> Self {
+        self.push_sink = Some(sink);
+        self
+    }
+
     pub fn build(self) -> Result<ProductionPluginRuntime, PluginBootstrapError> {
         // Keep this extraction order stable: it is the deterministic missing
         // dependency precedence used by native setup and diagnostics.
@@ -359,7 +381,7 @@ impl ProductionPluginRuntimeBuilder {
             .ok_or(PluginBootstrapError::MissingWorkspace)?;
 
         let resolver = RepositoryArtifactPathResolver::new(Arc::clone(&installer));
-        let (hosts, exits) = SidecarHostLauncher::new(
+        let (mut hosts, exits) = SidecarHostLauncher::new(
             sidecar_executable,
             private_artifact_root,
             resolver,
@@ -367,6 +389,10 @@ impl ProductionPluginRuntimeBuilder {
             state,
         )
         .map_err(map_sidecar_error)?;
+        if let Some(sink) = &self.push_sink {
+            use bbcom_plugin_manager::HostLauncher as _;
+            hosts.attach_push_sink(Arc::clone(sink));
+        }
 
         let backend = NativeRepositoryStagingBackend::new(installer, repository);
         let installation = RepositoryInstallationPort::new(backend);
@@ -435,6 +461,14 @@ impl PluginRuntimeLifecycle for ProductionLifecycle {
     ) -> Result<(), PluginServiceError> {
         PluginService::open_workspace(self, workspace_id, bindings, states).map(|_| ())
     }
+
+    fn deliver_envelope(
+        &self,
+        plugin_id: &str,
+        payload: bbcom_plugin_contracts::generated::envelope::Payload,
+    ) -> Result<(), PluginServiceError> {
+        PluginService::deliver_envelope(self, plugin_id, payload)
+    }
 }
 
 /// Synchronizes manager changes caused by native host-exit polling before the
@@ -459,6 +493,22 @@ impl RefreshingCommandCore {
 }
 
 impl super::command_adapter::PluginCommandCorePort for RefreshingCommandCore {
+    fn register_proposal(
+        &mut self,
+        plugin_id: &str,
+        declared: &std::collections::BTreeSet<bbcom_plugin_contracts::Permission>,
+        request: bbcom_plugin_broker::SerialProposalRequest,
+        correlation: Option<String>,
+    ) -> Result<bbcom_plugin_broker::SerialProposalView, super::command_service::PluginCommandError>
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_millis() as u64)
+            .unwrap_or_default();
+        self.mutable()
+            .register_proposal(plugin_id, declared, request, correlation, now)
+    }
+
     fn snapshot(&self) -> PluginCommandSnapshot {
         let mut core = self
             .inner

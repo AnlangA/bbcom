@@ -213,11 +213,11 @@ test('packetContextCopyText formats every context-menu copy mode', () => {
   );
 });
 
-test('packetKeyboardCopyText keeps the existing raw timestamp shortcut format', () => {
+test('packetKeyboardCopyText formats the timestamp like every other copy path', () => {
   const f = frame('x', 'TX', encodeUtf8('AT'), 456);
   assert.equal(
     packetKeyboardCopyText(f, () => 'AT'),
-    '[456] TX | AT',
+    `[${formatTimestamp(456)}] TX | AT`,
   );
 });
 

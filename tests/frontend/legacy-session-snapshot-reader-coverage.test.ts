@@ -107,7 +107,7 @@ describe('BrowserLegacySessionSnapshotReader', () => {
     ).resolves.toEqual({ indexedDb: null, localStorage: { malformedJson: '{broken' } });
   });
 
-  test('enumerates before opening and returns a complete readonly database snapshot', async () => {
+  test('opens by name and returns a complete readonly database snapshot', async () => {
     const db = existingDatabase({
       manifest: { revision: 4 },
       sessions: [{ id: 'session-a' }],
@@ -133,29 +133,54 @@ describe('BrowserLegacySessionSnapshotReader', () => {
     expect(db.close).toHaveBeenCalledOnce();
   });
 
-  test('does not open an enumerably missing database and rejects incomplete schemas', async () => {
+  test('ignores lying enumeration and proves absence only via the open probe', async () => {
+    // Some WebViews enumerate an existing database inconsistently; the
+    // enumeration listing must never classify real data as absent. Here the
+    // listing omits the database while the open probe confirms it exists —
+    // the reader must still read it.
+    const db = existingDatabase({ manifest: { revision: 1 }, sessions: [], frames: [] });
+    const { factory } = factoryForDatabase(db.database);
+    (factory as unknown as { databases?: () => Promise<readonly IDBDatabaseInfo[]> }).databases =
+      vi.fn(async () => []);
+    const reader = new BrowserLegacySessionSnapshotReader(storageWith(null), factory);
+    const snapshot = await reader.read({ signal: new AbortController().signal });
+    expect(snapshot.indexedDb).not.toBeNull();
+    expect(factory.open).toHaveBeenCalledWith(SESSION_STATE_DATABASE_NAME);
+
+    // Absence is proven solely by the non-creating upgrade probe firing.
+    const upgradeAbort = vi.fn();
+    const request = {
+      result: null,
+      error: null,
+      transaction: { abort: upgradeAbort },
+    } as unknown as MutableOpenRequest;
     const absentFactory = {
       databases: vi.fn(async () => [{ name: 'another-database', version: 1 }]),
-      open: vi.fn(),
+      open: vi.fn(() => {
+        queueMicrotask(() =>
+          request.onupgradeneeded?.(new Event('upgradeneeded') as IDBVersionChangeEvent),
+        );
+        return request;
+      }),
     } as unknown as IDBFactory;
     await expect(
       new BrowserLegacySessionSnapshotReader(storageWith(null), absentFactory).read({
         signal: new AbortController().signal,
       }),
     ).resolves.toEqual({ indexedDb: null, localStorage: null });
-    expect(absentFactory.open).not.toHaveBeenCalled();
+    expect(absentFactory.open).toHaveBeenCalled();
 
-    const db = existingDatabase({ stores: ['manifest', 'sessions'] });
-    const { factory } = factoryForDatabase(db.database);
+    const incomplete = existingDatabase({ stores: ['manifest', 'sessions'] });
+    const { factory: incompleteFactory } = factoryForDatabase(incomplete.database);
     await expect(
-      new BrowserLegacySessionSnapshotReader(storageWith(null), factory).read({
+      new BrowserLegacySessionSnapshotReader(storageWith(null), incompleteFactory).read({
         signal: new AbortController().signal,
       }),
     ).rejects.toThrow('legacy session database schema is incomplete');
-    expect(db.close).toHaveBeenCalledOnce();
+    expect(incomplete.close).toHaveBeenCalledOnce();
   });
 
-  test('uses the non-creating upgrade probe when enumeration is unavailable', async () => {
+  test('uses the non-creating upgrade probe to prove database absence', async () => {
     const upgradeAbort = vi.fn();
     const request = {
       result: null,
@@ -206,7 +231,7 @@ describe('BrowserLegacySessionSnapshotReader', () => {
     }
   });
 
-  test('honors cancellation before enumeration, during open, and during a transaction', async () => {
+  test('honours cancellation before open, during open, and during a transaction', async () => {
     const alreadyAborted = new AbortController();
     alreadyAborted.abort();
     await expect(
@@ -215,18 +240,26 @@ describe('BrowserLegacySessionSnapshotReader', () => {
       }),
     ).rejects.toMatchObject({ name: 'AbortError' });
 
-    const enumerating = new AbortController();
-    const enumerationFactory = {
+    // Aborting before the open probe resolves rejects with AbortError before
+    // any database handle is produced.
+    const beforeOpen = new AbortController();
+    const pendingBeforeOpen = {
+      result: null,
+      error: null,
+      transaction: null,
+    } as unknown as MutableOpenRequest;
+    const beforeOpenFactory = {
       databases: vi.fn(async () => [{ name: SESSION_STATE_DATABASE_NAME, version: 1 }]),
-      open: vi.fn(),
+      open: vi.fn(() => pendingBeforeOpen),
     } as unknown as IDBFactory;
-    const enumerationRead = new BrowserLegacySessionSnapshotReader(
+    const beforeOpenRead = new BrowserLegacySessionSnapshotReader(
       storageWith(null),
-      enumerationFactory,
-    ).read({ signal: enumerating.signal });
-    enumerating.abort();
-    await expect(enumerationRead).rejects.toMatchObject({ name: 'AbortError' });
-    expect(enumerationFactory.open).not.toHaveBeenCalled();
+      beforeOpenFactory,
+    ).read({ signal: beforeOpen.signal });
+    await Promise.resolve();
+    beforeOpen.abort();
+    await expect(beforeOpenRead).rejects.toMatchObject({ name: 'AbortError' });
+    expect(beforeOpenFactory.open).toHaveBeenCalled();
 
     const opening = new AbortController();
     const pendingRequest = {

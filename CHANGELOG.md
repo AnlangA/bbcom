@@ -5,6 +5,55 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed: plugin bootstrap self-inflicted permission failure
+
+- The plugin state store root (`plugin-state-v2`) was pre-created by the
+  installer under the process umask and then rejected by the state port's
+  strict permission check, so every first run with umask != 077 failed with
+  `PLUGIN_BOOTSTRAP_STATE_STORE_MISSING`. Installer snapshots now live in
+  their own directory and an existing real directory with loose permissions
+  is tightened to 0700 instead of rejected (symlinks and chmod failures stay
+  fatal).
+- A failed runtime composition now retries on every workspace switch instead
+  of requiring an application restart, and its outcome is emitted as
+  `plugin-runtime-status` so the plugin center shows the stable failure code.
+
+### Fixed: legacy migration gate flashed on every start
+
+- Already-migrated installs no longer render the one-time migration dialog
+  while the workspace hydrates: a local completion marker suppresses the
+  gate entirely and the journal re-confirms underneath. First-run checks now
+  show a neutral loading skeleton instead of migration copy.
+- IndexedDB enumeration is no longer trusted as a proof of absence (lying
+  `databases()` listings classified real legacy data as an empty install);
+  workspaceReady drift degrades to opening the workspace instead of looping
+  a failed reset; workspace restore verifies the requested workspace id.
+
+### Added: serial proposal pipeline and G43 session data (plugins)
+
+- `propose-serial-send` now round-trips end to end: the sidecar forwards the
+  proposal to the main process, the user decision prompt appears without a
+  manual refresh, and the parked guest call resolves with
+  accepted/rejected/cancelled (broker TTL). See the audit doc for the
+  retry-after-timeout duplicate-write caveat recorded in the WIT contract.
+- `session-list` and `capture-read` return real session metadata and bounded
+  capture pages from the main window's catalog (protocol minor 3 adds the
+  session query envelope pair).
+- Enabling a plugin without an open workspace now reports
+  `workspace-missing` instead of a generic unavailable failure.
+
+### Changed: packaging, sandbox, and UI tokens
+
+- The deb package now depends on `python3` (the sandbox self-test requires
+  it), bubblewrap resolves via PATH when `/usr/bin/bwrap` is absent, and
+  local reinstall pre-validates the package (manifest + component SHA-256)
+  before removing the previous installation.
+- UI tokens: control widths (`--control-w-*`), `--ai-panel-width`, and the
+  `--z-gate` tier landed; `font-size: 12px` was eliminated in favor of
+  `--font-size-data`; WaveformLegend is config-driven; CreateSessionDialog
+  moved to AppModal; the AI window measures its titlebar in Rust instead of
+  a hardcoded +28px.
+
 ### Runtime plugin install, uninstall, and auto-load
 
 - Added `plugin_install_local`: install a plugin at runtime from a local

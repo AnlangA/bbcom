@@ -343,7 +343,9 @@ describe('MacroPanel', () => {
     setup.save();
     expect(store.addMacro).toHaveBeenCalledTimes(1);
     setup.cancelEdit();
-    setup.remove('macro-one');
+    // Two-step inline confirmation: first request arms, second deletes.
+    setup.removeConfirm.request('macro-one');
+    setup.removeConfirm.request('macro-one');
     expect(store.removeMacro).toHaveBeenCalledWith('session-a', 'macro-one');
 
     run.mockResolvedValueOnce({ completed: 1, failedAt: 1, aborted: false });

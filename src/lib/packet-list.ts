@@ -230,7 +230,7 @@ export function packetKeyboardCopyText(
   frame: DataFrame,
   formatFrame: (frame: DataFrame) => string,
 ): string {
-  return `[${frame.timestamp}] ${frame.direction} | ${formatFrame(frame)}`;
+  return `[${formatTimestamp(frame.timestamp)}] ${frame.direction} | ${formatFrame(frame)}`;
 }
 
 export function framesForPacketCopy(

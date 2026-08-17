@@ -4,7 +4,7 @@
     "externalBin": ["binaries/bbcom-plugin-host"],
     "linux": {
       "deb": {
-        "depends": ["bubblewrap (>= 0.6.1)"]
+        "depends": ["bubblewrap (>= 0.6.1)", "python3"]
       }
     }
   }

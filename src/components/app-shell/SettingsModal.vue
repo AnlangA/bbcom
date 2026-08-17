@@ -82,11 +82,13 @@
           <div class="about-row">
             <dt>{{ t('settings.homepage') }}</dt>
             <dd>
+              <!-- wry does not handle target=_blank natively; route through
+                   the opener plugin so the OS browser actually launches. -->
               <a
                 class="about-link"
                 href="https://github.com/AnlangA/bbcom"
-                target="_blank"
                 rel="noreferrer"
+                @click.prevent="openHomepage"
                 >github.com/AnlangA/bbcom</a
               >
             </dd>
@@ -117,6 +119,8 @@ import AppSelect from '../ui/AppSelect.vue';
 import AppModal from '../ui/AppModal.vue';
 import SettingsSection from '../ui/SettingsSection.vue';
 import { useAppStore } from '../../stores/app';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { logger } from '../../lib/logger';
 import { APP_VERSION } from '../../lib/version';
 import { supportedLocales, t, type Locale } from '../../lib/i18n';
 import { MAX_FRAMES } from '../../types';
@@ -160,6 +164,14 @@ function setAutoReconnect(value: boolean): void {
 
 function close() {
   emit('update:show', false);
+}
+
+async function openHomepage(): Promise<void> {
+  try {
+    await openUrl('https://github.com/AnlangA/bbcom');
+  } catch (error) {
+    logger.warn('failed to open homepage:', error);
+  }
 }
 </script>
 

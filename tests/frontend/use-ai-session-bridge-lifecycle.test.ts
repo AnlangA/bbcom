@@ -202,7 +202,9 @@ test('mounted AI bridge validates requests, publishes snapshots, and cleans up l
   const wrapper = mount(Host);
   await flush();
 
-  expect(bridge.listeners.size).toBe(Object.keys(AI_BRIDGE_EVENTS).length - 6);
+  // Main listens to every bridge event except the seven it only emits
+  // (authority/session/chat/log-context/activity snapshots + command result).
+  expect(bridge.listeners.size).toBe(Object.keys(AI_BRIDGE_EVENTS).length - 7);
   expect(bridge.emitted.map(({ event }) => event)).toEqual(
     expect.arrayContaining([
       AI_BRIDGE_EVENTS.authoritySnapshot,

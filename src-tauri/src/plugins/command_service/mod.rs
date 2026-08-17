@@ -16,10 +16,19 @@ use bbcom_plugin_broker::{
     SerialProposalView,
 };
 use bbcom_plugin_contracts::Permission;
+use bbcom_plugin_contracts::generated::{ProposalOutcomeValue, ProposalResult, envelope};
 use bbcom_plugin_manager::{
     Clock, HostLauncher, HostPanel, HostPanelFieldKind, HostPublishedPanel, InstallationPort,
     ManualPackageRequest, PluginSnapshot,
 };
+
+/// Terminal proposal outcome pushed to a sidecar parked on its guest call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostProposalOutcome {
+    Approved,
+    Rejected,
+    Expired,
+}
 
 use super::service::{PluginService, PluginServiceError};
 
@@ -276,7 +285,7 @@ mod operation_retention_tests {
         let mut service = proposal_service(Arc::clone(&count));
         let declared = BTreeSet::from([Permission::SerialWriteProposal]);
         let first = service
-            .register_proposal("dev.bbcom.fixture", &declared, proposal(1), 1)
+            .register_proposal("dev.bbcom.fixture", &declared, proposal(1), None, 1)
             .unwrap();
         assert_eq!(service.snapshot().proposals.len(), 1);
         let queued = service
@@ -294,7 +303,7 @@ mod operation_retention_tests {
         assert_eq!(count.load(Ordering::Relaxed), 1);
 
         service
-            .register_proposal("dev.bbcom.fixture", &declared, proposal(2), 3)
+            .register_proposal("dev.bbcom.fixture", &declared, proposal(2), None, 3)
             .unwrap();
         assert!(service.snapshot().proposals.is_empty());
         assert_eq!(count.load(Ordering::Relaxed), 2);
@@ -306,7 +315,7 @@ mod operation_retention_tests {
         let mut service = proposal_service(Arc::clone(&count));
         let declared = BTreeSet::from([Permission::SerialWriteProposal]);
         let first = service
-            .register_proposal("dev.bbcom.fixture", &declared, proposal(1), 1)
+            .register_proposal("dev.bbcom.fixture", &declared, proposal(1), None, 1)
             .unwrap();
         let queued = service
             .queue_proposal_decision(
@@ -318,10 +327,175 @@ mod operation_retention_tests {
             .unwrap();
         service.execute(&queued.operation_id, 2).unwrap();
         service
-            .register_proposal("dev.bbcom.fixture", &declared, proposal(2), 3)
+            .register_proposal("dev.bbcom.fixture", &declared, proposal(2), None, 3)
             .unwrap();
         assert!(service.snapshot().proposals.is_empty());
         assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    /// Lifecycle wrapper that records pushed envelopes so tests can assert
+    /// parked sidecar calls receive their correlated outcome.
+    struct RecordingLifecycle {
+        inner: RunningLifecycle,
+        delivered: std::sync::Mutex<Vec<(String, String, i32)>>,
+    }
+
+    impl PluginLifecyclePort for RecordingLifecycle {
+        fn snapshots(&self) -> Result<Vec<PluginSnapshot>, PluginOperationFailure> {
+            self.inner.snapshots()
+        }
+        fn workspace_id(&self) -> Result<Option<String>, PluginOperationFailure> {
+            self.inner.workspace_id()
+        }
+        fn install_manual(
+            &self,
+            request: &ManualPackageRequest,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            self.inner.install_manual(request)
+        }
+        fn install_local(
+            &self,
+            package_root: &std::path::Path,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            self.inner.install_local(package_root)
+        }
+        fn uninstall(&self, plugin_id: &str) -> Result<PluginSnapshot, PluginOperationFailure> {
+            self.inner.uninstall(plugin_id)
+        }
+        fn set_enabled(
+            &self,
+            plugin_id: &str,
+            enabled: bool,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            self.inner.set_enabled(plugin_id, enabled)
+        }
+        fn deliver_envelope(
+            &self,
+            plugin_id: &str,
+            payload: envelope::Payload,
+        ) -> Result<(), PluginOperationFailure> {
+            if let envelope::Payload::ProposalResult(result) = payload {
+                self.delivered
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((plugin_id.to_owned(), result.proposal_id, result.outcome));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn correlated_proposals_push_their_outcome_back_to_the_sidecar() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let audit: &'static NoopAuditSink = Box::leak(Box::new(NoopAuditSink));
+        let recording = Arc::new(RecordingLifecycle {
+            inner: RunningLifecycle(running_snapshot()),
+            delivered: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut service = PluginCommandService::new(
+            recording.clone(),
+            Box::new(CountingUpstream(Arc::clone(&count))),
+            Box::new(SerialProposalBroker::new(audit)),
+            Box::new(DeclarativePanelBroker::new(audit)),
+        )
+        .unwrap();
+        let declared = BTreeSet::from([Permission::SerialWriteProposal]);
+
+        let approved = service
+            .register_proposal(
+                "dev.bbcom.fixture",
+                &declared,
+                proposal(1),
+                Some("sidecar-proposal-1".to_owned()),
+                1,
+            )
+            .unwrap();
+        let queued = service
+            .queue_proposal_decision(
+                service.snapshot().revision,
+                "approve".to_owned(),
+                approved.proposal_id,
+                ProposalDecision::Approve,
+            )
+            .unwrap();
+        service.execute(&queued.operation_id, 2).unwrap();
+
+        // A second proposal under the cached approval auto-resolves and
+        // still pushes its correlated outcome without a renderer decision.
+        service
+            .register_proposal(
+                "dev.bbcom.fixture",
+                &declared,
+                proposal(2),
+                Some("sidecar-proposal-2".to_owned()),
+                3,
+            )
+            .unwrap();
+
+        // Rejection outcome uses a fresh service (the approve cache is
+        // per-generation by design).
+        let recording_reject = Arc::new(RecordingLifecycle {
+            inner: RunningLifecycle(running_snapshot()),
+            delivered: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut reject_service = PluginCommandService::new(
+            recording_reject.clone(),
+            Box::new(CountingUpstream(Arc::clone(&count))),
+            Box::new(SerialProposalBroker::new(audit)),
+            Box::new(DeclarativePanelBroker::new(audit)),
+        )
+        .unwrap();
+        let rejected = reject_service
+            .register_proposal(
+                "dev.bbcom.fixture",
+                &declared,
+                proposal(1),
+                Some("sidecar-proposal-3".to_owned()),
+                1,
+            )
+            .unwrap();
+        let queued = reject_service
+            .queue_proposal_decision(
+                reject_service.snapshot().revision,
+                "reject".to_owned(),
+                rejected.proposal_id,
+                ProposalDecision::Reject,
+            )
+            .unwrap();
+        reject_service.execute(&queued.operation_id, 2).unwrap();
+        assert_eq!(
+            recording_reject
+                .delivered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+            vec![(
+                "dev.bbcom.fixture".to_owned(),
+                "sidecar-proposal-3".to_owned(),
+                ProposalOutcomeValue::Rejected as i32
+            )]
+        );
+
+        let delivered = recording
+            .delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(
+            delivered,
+            vec![
+                (
+                    "dev.bbcom.fixture".to_owned(),
+                    "sidecar-proposal-1".to_owned(),
+                    ProposalOutcomeValue::Approved as i32
+                ),
+                (
+                    "dev.bbcom.fixture".to_owned(),
+                    "sidecar-proposal-2".to_owned(),
+                    ProposalOutcomeValue::Approved as i32
+                ),
+            ]
+        );
     }
 }
 
@@ -487,6 +661,18 @@ pub trait PluginLifecyclePort {
     fn take_published_panels(&self) -> Result<Vec<HostPublishedPanel>, PluginOperationFailure> {
         Ok(Vec::new())
     }
+    /// Push an unsolicited envelope (proposal decision, session-query data)
+    /// into the plugin's own sidecar process. Default: unavailable.
+    fn deliver_envelope(
+        &self,
+        _plugin_id: &str,
+        _payload: bbcom_plugin_contracts::generated::envelope::Payload,
+    ) -> Result<(), PluginOperationFailure> {
+        Err(PluginOperationFailure {
+            code: "PLUGIN_HOST_DELIVERY_UNAVAILABLE",
+            message_key: "plugin.error.hostDeliveryUnavailable",
+        })
+    }
     fn invoke_panel_event(
         &self,
         _plugin_id: &str,
@@ -546,6 +732,14 @@ where
     ) -> Result<Option<HostPanel>, PluginOperationFailure> {
         PluginService::invoke_panel_event(self, plugin_id, field_id, value)
             .map_err(lifecycle_failure)
+    }
+
+    fn deliver_envelope(
+        &self,
+        plugin_id: &str,
+        payload: envelope::Payload,
+    ) -> Result<(), PluginOperationFailure> {
+        PluginService::deliver_envelope(self, plugin_id, payload).map_err(lifecycle_failure)
     }
 
     fn install_manual(
@@ -779,6 +973,8 @@ pub struct PluginCommandService {
     requests: BTreeMap<String, String>,
     proposal_views: BTreeMap<String, SerialProposalView>,
     proposal_generations: BTreeMap<String, u64>,
+    /// Broker proposal id → sidecar correlation id for parked guest calls.
+    proposal_correlations: BTreeMap<String, String>,
     hosted_panels: BTreeMap<String, HostedPanel>,
     panel_generations: BTreeMap<String, u64>,
     serial_write_decisions: BTreeMap<(String, u64), bool>,
@@ -811,6 +1007,7 @@ impl PluginCommandService {
             requests: BTreeMap::new(),
             proposal_views: BTreeMap::new(),
             proposal_generations: BTreeMap::new(),
+            proposal_correlations: BTreeMap::new(),
             hosted_panels: BTreeMap::new(),
             panel_generations: BTreeMap::new(),
             serial_write_decisions: BTreeMap::new(),
@@ -912,14 +1109,32 @@ impl PluginCommandService {
     }
 
     /// Trusted host ingress. `plugin_id` and `declared` come from the native running
-    /// instance, never from a renderer request.
+    /// instance, never from a renderer request. `correlation` is the sidecar's
+    /// own proposal id: when present, terminal outcomes are pushed back so the
+    /// parked guest `propose-serial-send` call can resolve.
     pub fn register_proposal(
         &mut self,
         plugin_id: &str,
         declared: &BTreeSet<Permission>,
         request: SerialProposalRequest,
+        correlation: Option<String>,
         now_ms: u64,
     ) -> Result<SerialProposalView, PluginCommandError> {
+        // Drop proposals whose broker TTL already elapsed: their parked
+        // sidecar calls resolved themselves as cancelled, so registry slots
+        // and correlation entries must not accumulate across re-propose
+        // loops.
+        let expired: Vec<String> = self
+            .proposal_views
+            .iter()
+            .filter(|(_, view)| now_ms >= view.expires_at_ms)
+            .map(|(proposal_id, _)| proposal_id.clone())
+            .collect();
+        for proposal_id in expired {
+            self.proposal_views.remove(&proposal_id);
+            self.proposal_generations.remove(&proposal_id);
+            self.proposal_correlations.remove(&proposal_id);
+        }
         if self.proposal_views.len() >= MAX_PENDING_PROPOSALS {
             return Err(PluginCommandError::new(
                 PluginCommandErrorCode::RegistryLimit,
@@ -941,6 +1156,13 @@ impl PluginCommandService {
             .get(&(plugin_id.to_owned(), generation))
             .copied()
         {
+            // Cached per-generation decision: resolve immediately. The
+            // correlation must be registered before resolution so the
+            // outcome push below can find it.
+            if let Some(correlation) = correlation {
+                self.proposal_correlations
+                    .insert(view.proposal_id.clone(), correlation);
+            }
             let current = self
                 .upstream
                 .current_proposal_context(&view)
@@ -960,18 +1182,52 @@ impl PluginCommandService {
                 &current,
                 now_ms,
             );
-            if let ProposalResolution::Action(action) = resolution {
-                let runtime = self.running_instance_key(plugin_id)?;
-                self.upstream
-                    .execute_serial_action(runtime, action)
-                    .map_err(|error| {
-                        PluginCommandError::with_failure(
-                            PluginCommandErrorCode::UpstreamUnavailable,
-                            PluginOperationFailure::upstream(error),
-                        )
-                    })?;
+            match resolution {
+                ProposalResolution::Action(action) => {
+                    let runtime = self.running_instance_key(plugin_id)?;
+                    self.upstream
+                        .execute_serial_action(runtime, action)
+                        .map_err(|error| {
+                            PluginCommandError::with_failure(
+                                PluginCommandErrorCode::UpstreamUnavailable,
+                                PluginOperationFailure::upstream(error),
+                            )
+                        })?;
+                    // Cache the approval only after the action executed:
+                    // a failed execution must not seed an auto-approve for
+                    // the rest of this instance's lifetime.
+                    self.serial_write_decisions
+                        .insert((plugin_id.to_owned(), generation), true);
+                    self.deliver_proposal_outcome(
+                        plugin_id,
+                        &view.proposal_id,
+                        HostProposalOutcome::Approved,
+                    );
+                }
+                ProposalResolution::NoAction(NoActionReason::Rejected) => {
+                    self.deliver_proposal_outcome(
+                        plugin_id,
+                        &view.proposal_id,
+                        HostProposalOutcome::Rejected,
+                    );
+                }
+                ProposalResolution::NoAction(NoActionReason::Expired) => {
+                    self.deliver_proposal_outcome(
+                        plugin_id,
+                        &view.proposal_id,
+                        HostProposalOutcome::Expired,
+                    );
+                }
+                ProposalResolution::NoAction(
+                    NoActionReason::ContextChanged | NoActionReason::UnknownOrConsumed,
+                ) => {}
             }
+            self.proposal_correlations.remove(&view.proposal_id);
         } else {
+            if let Some(correlation) = correlation {
+                self.proposal_correlations
+                    .insert(view.proposal_id.clone(), correlation);
+            }
             self.proposal_generations
                 .insert(view.proposal_id.clone(), generation);
             self.proposal_views
@@ -979,6 +1235,34 @@ impl PluginCommandService {
         }
         self.bump_revision()?;
         Ok(view)
+    }
+
+    /// Best-effort push of a terminal proposal outcome to the parked sidecar
+    /// call. Delivery failure is logged only: the sidecar's own TTL bound
+    /// resolves the call even when this push cannot be delivered.
+    fn deliver_proposal_outcome(
+        &self,
+        plugin_id: &str,
+        broker_proposal_id: &str,
+        outcome: HostProposalOutcome,
+    ) {
+        let Some(correlation) = self.proposal_correlations.get(broker_proposal_id) else {
+            return;
+        };
+        let payload = envelope::Payload::ProposalResult(ProposalResult {
+            proposal_id: correlation.clone(),
+            outcome: match outcome {
+                HostProposalOutcome::Approved => ProposalOutcomeValue::Approved,
+                HostProposalOutcome::Rejected => ProposalOutcomeValue::Rejected,
+                HostProposalOutcome::Expired => ProposalOutcomeValue::Expired,
+            } as i32,
+        });
+        if let Err(error) = self.lifecycle.deliver_envelope(plugin_id, payload) {
+            tracing::warn!(
+                "proposal outcome push failed for {plugin_id} ({broker_proposal_id}): {}",
+                error.code
+            );
+        }
     }
 
     pub fn queue_proposal_decision(
@@ -1087,10 +1371,9 @@ impl PluginCommandService {
         }
         self.ensure_revision_capacity(2)?;
         let action = {
-            let record = self
-                .operations
-                .get_mut(operation_id)
-                .expect("operation existence checked above");
+            let record = self.operations.get_mut(operation_id).ok_or_else(|| {
+                PluginCommandError::new(PluginCommandErrorCode::OperationNotFound)
+            })?;
             if record.snapshot.status != PluginOperationStatus::Queued {
                 return Err(PluginCommandError::new(
                     PluginCommandErrorCode::OperationNotCancellable,
@@ -1143,7 +1426,7 @@ impl PluginCommandService {
         let record = self
             .operations
             .get_mut(operation_id)
-            .expect("operation existence checked above");
+            .ok_or_else(|| PluginCommandError::new(PluginCommandErrorCode::OperationNotFound))?;
         if record.snapshot.status != PluginOperationStatus::Queued {
             // Current real lifecycle and broker APIs are synchronous. Reporting
             // `cancelling` for a running call would be false; fail closed until
@@ -1278,8 +1561,6 @@ impl PluginCommandService {
                 )?;
                 match resolution {
                     ProposalResolution::Action(action) => {
-                        self.serial_write_decisions
-                            .insert((view.plugin_id.clone(), generation), true);
                         let runtime =
                             self.running_instance_key(&view.plugin_id)
                                 .map_err(|error| {
@@ -1290,16 +1571,42 @@ impl PluginCommandService {
                                 })?;
                         self.upstream
                             .execute_serial_action(runtime, action)
-                            .map_err(PluginOperationFailure::upstream)
+                            .map_err(PluginOperationFailure::upstream)?;
+                        // Cache the approval only after the action executed:
+                        // a failed execution must not seed an auto-approve for
+                        // the rest of this instance's lifetime.
+                        self.serial_write_decisions
+                            .insert((view.plugin_id.clone(), generation), true);
+                        self.deliver_proposal_outcome(
+                            &view.plugin_id,
+                            &proposal_id,
+                            HostProposalOutcome::Approved,
+                        );
+                        self.proposal_correlations.remove(&proposal_id);
+                        Ok(())
                     }
                     ProposalResolution::NoAction(NoActionReason::Rejected) => {
                         self.serial_write_decisions
                             .insert((view.plugin_id.clone(), generation), false);
+                        self.deliver_proposal_outcome(
+                            &view.plugin_id,
+                            &proposal_id,
+                            HostProposalOutcome::Rejected,
+                        );
+                        self.proposal_correlations.remove(&proposal_id);
                         Ok(())
                     }
                     ProposalResolution::NoAction(
                         NoActionReason::Expired | NoActionReason::ContextChanged,
-                    ) => Ok(()),
+                    ) => {
+                        self.deliver_proposal_outcome(
+                            &view.plugin_id,
+                            &proposal_id,
+                            HostProposalOutcome::Expired,
+                        );
+                        self.proposal_correlations.remove(&proposal_id);
+                        Ok(())
+                    }
                     ProposalResolution::NoAction(NoActionReason::UnknownOrConsumed) => {
                         Err(PluginOperationFailure {
                             code: "PLUGIN_PROPOSAL_NOT_FOUND",

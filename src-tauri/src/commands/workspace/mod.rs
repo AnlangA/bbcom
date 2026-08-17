@@ -110,21 +110,34 @@ impl WorkspaceManager {
         let persisted = service.plugin_bindings().ok()?;
         let mut bindings = Vec::with_capacity(persisted.len());
         let mut states = Vec::new();
+        // A single malformed binding must not silently drop plugin activation
+        // for the whole workspace: skip it, keep the rest, and leave a trail.
+        let mut skipped = 0usize;
         for item in persisted {
-            bindings.push(
-                bbcom_plugin_manager::WorkspacePluginBinding::new(
-                    item.plugin_id.clone(),
-                    item.expected_enabled,
-                    item.version_requirement,
-                )
-                .ok()?,
-            );
-            if let Some(bytes) = item.project_state {
-                states.push(
-                    bbcom_plugin_manager::OpaqueProjectPluginState::new(item.plugin_id, bytes)
-                        .ok()?,
-                );
+            match bbcom_plugin_manager::WorkspacePluginBinding::new(
+                item.plugin_id.clone(),
+                item.expected_enabled,
+                item.version_requirement,
+            ) {
+                Ok(binding) => {
+                    bindings.push(binding);
+                    if let Some(bytes) = item.project_state {
+                        match bbcom_plugin_manager::OpaqueProjectPluginState::new(
+                            item.plugin_id,
+                            bytes,
+                        ) {
+                            Ok(state) => states.push(state),
+                            Err(_) => skipped += 1,
+                        }
+                    }
+                }
+                Err(_) => skipped += 1,
             }
+        }
+        if skipped > 0 {
+            tracing::warn!(
+                "skipped {skipped} malformed plugin binding(s) for workspace {workspace_id}"
+            );
         }
         Some(NativePluginWorkspaceSnapshot {
             workspace_id,
@@ -328,19 +341,22 @@ fn workspace_catalog_from_label(
     })
 }
 
-/// After a successful workspace switch, activate the new context on the
-/// process-lifetime plugin actor off the response path.
-fn activate_plugin_runtime_after_switch<T>(
+/// After a workspace switch attempt, activate the plugin runtime for the
+/// workspace that is active when the dust settles: the new one on success, or
+/// the unchanged previous one on failure — the plugin project closed up front
+/// must never stay closed because a switch happened to fail. When no runtime
+/// was ever composed (a failed setup composition), retry composition first so
+/// transient bootstrap failures heal without an application restart.
+fn activate_plugin_runtime_after_attempt<T>(
     app: &tauri::AppHandle,
     result: Result<T, IpcError>,
 ) -> Result<T, IpcError> {
-    if result.is_ok() {
-        let app = app.clone();
-        // Detached: the workspace response never waits on plugin composition.
-        let _detached = tauri::async_runtime::spawn_blocking(move || {
-            crate::plugins::activate_plugin_workspace(&app);
-        });
-    }
+    let app = app.clone();
+    // Detached: the workspace response never waits on plugin composition.
+    let _detached = tauri::async_runtime::spawn_blocking(move || {
+        crate::plugins::ensure_plugin_runtime(&app);
+        crate::plugins::activate_plugin_workspace(&app);
+    });
     result
 }
 
@@ -352,13 +368,17 @@ pub async fn create_workspace(
 ) -> Result<CreateWorkspaceCommandResponse, IpcError> {
     const OPERATION: &str = "create_workspace";
     let label = window.label().to_string();
+    // Reject invalid requests before tearing down the plugin project — label
+    // and requestId checks never depend on workspace state.
+    require_main_window_label(&label, OPERATION)?;
+    validate_opaque_id(&request.request_id, "requestId", OPERATION)?;
     // Close the plugin project before the active workspace is replaced.
     crate::plugins::close_plugin_project(&app);
     let result = dispatch_workspace_core(app.clone(), label, OPERATION, |manager, label| {
         create_workspace_from_label(manager, label, request)
     })
     .await;
-    activate_plugin_runtime_after_switch(&app, result)
+    activate_plugin_runtime_after_attempt(&app, result)
 }
 
 fn create_workspace_from_label(
@@ -409,13 +429,18 @@ pub async fn open_workspace(
 ) -> Result<OpenWorkspaceResponse, IpcError> {
     const OPERATION: &str = "open_workspace";
     let label = window.label().to_string();
+    // Same precondition set as open_workspace_from_label, checked before the
+    // plugin project is closed so a rejected request leaves plugins running.
+    require_main_window_label(&label, OPERATION)?;
+    validate_opaque_id(&request.request_id, "requestId", OPERATION)?;
+    WorkspaceUuid::parse(&request.workspace_id).map_err(|error| project_error(error, OPERATION))?;
     // Close the plugin project before the active workspace is replaced.
     crate::plugins::close_plugin_project(&app);
     let result = dispatch_workspace_core(app.clone(), label, OPERATION, |manager, label| {
         open_workspace_from_label(manager, label, request)
     })
     .await;
-    activate_plugin_runtime_after_switch(&app, result)
+    activate_plugin_runtime_after_attempt(&app, result)
 }
 
 fn open_workspace_from_label(

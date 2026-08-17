@@ -54,6 +54,17 @@ bytes). The 290/145 KiB window, 85 KiB bootstrap, and 105 KiB chunk ceilings are
 unchanged. This addendum does not enable plugins or the marketplace; ADR-0004's
 platform gates remain authoritative.
 
+### 2026-08-16 tri-domain fix batch addendum
+
+The navigation/UI/plugin fix batch (docs/BUGFIX_AUDIT_2026-08.md) added
+accepted production surface: the `tauri-plugin-opener` JS binding for external
+links, ~30 locale keys in both catalogs, dark-mode overrides for the remaining
+Naive controls, session view-state retention, and command-receipt protocol
+handling. The complete build measured 378.60 KiB total while every startup,
+window, chunk, and bootstrap ceiling remained satisfied. Following the plugin
+boundary precedent, the total-only ceiling is amended once more to 380 KiB
+(389,120 bytes); all other ceilings are unchanged.
+
 ## Regression rules
 
 - CI measures binary gzip sizes from the production Vite manifest using the

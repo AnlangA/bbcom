@@ -472,6 +472,32 @@ function observeCanvasResize() {
   resizeObserver.observe(canvas);
 }
 
+let themeObserver: MutationObserver | null = null;
+let dprMediaQuery: MediaQueryList | null = null;
+
+function observeThemeChanges() {
+  if (typeof MutationObserver === 'undefined') return;
+  // Plot colors are read from CSS variables at render time, so a theme switch
+  // must trigger a redraw — otherwise the plot keeps the old palette until
+  // the next frame of data or pointer interaction.
+  themeObserver = new MutationObserver(() => scheduleRender());
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['data-theme'],
+  });
+}
+
+function observeDevicePixelRatio() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+  // Dragging between displays can change the DPR without a CSS resize, so
+  // ResizeObserver alone would leave a stale backing-store scale (blurry
+  // canvas). Re-arm the query at the new ratio on every change.
+  dprMediaQuery?.removeEventListener('change', observeDevicePixelRatio);
+  dprMediaQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  dprMediaQuery.addEventListener('change', observeDevicePixelRatio, { once: true });
+  scheduleRender();
+}
+
 watch(
   () => props.channelLabels,
   () => scheduleRender(),
@@ -479,6 +505,8 @@ watch(
 
 onMounted(() => {
   observeCanvasResize();
+  observeThemeChanges();
+  observeDevicePixelRatio();
   ingest.hydrateSharedWaveform();
   if (ingest.ingestNewFrames()) ingest.invalidateWaveform();
   else scheduleRender();
@@ -489,6 +517,10 @@ onUnmounted(() => {
   viewport.resetWheelGesture();
   resizeObserver?.disconnect();
   resizeObserver = null;
+  themeObserver?.disconnect();
+  themeObserver = null;
+  dprMediaQuery?.removeEventListener('change', observeDevicePixelRatio);
+  dprMediaQuery = null;
 });
 </script>
 

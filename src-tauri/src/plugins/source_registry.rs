@@ -158,31 +158,33 @@ impl NativePluginSourceRegistry {
         let endpoint = RepositoryEndpoint::new(source_id.clone(), url)
             .map_err(|_| SourceRegistryError::Invalid)?;
         let mut file = self.file.lock().map_err(|_| SourceRegistryError::Io)?;
-        if file.sources.iter().any(|source| {
-            source.source_id == source_id
-                || source.url.as_deref().is_some_and(|url| {
-                    RepositoryEndpoint::new("origin-check", url.to_owned())
-                        .is_ok_and(|existing| existing.origin() == endpoint.origin())
-                })
-        }) {
-            return Err(SourceRegistryError::Conflict);
-        }
-        file.sources.push(SourceRecord {
-            source_id,
-            kind: PersistedSourceKind::Https,
-            display_name: endpoint.origin().to_owned(),
-            url: Some(endpoint.url().to_owned()),
-            enabled,
-            watch_enabled: false,
-            health: PersistedSourceHealth::Idle,
-            last_attempt_ms: None,
-            last_success_ms: None,
-            etag: None,
-            last_modified: None,
-            cached_index: None,
-            native_path: None,
-        });
-        persist(&self.path, &file)
+        commit(&self.path, &mut file, |candidate| {
+            if candidate.sources.iter().any(|source| {
+                source.source_id == source_id
+                    || source.url.as_deref().is_some_and(|url| {
+                        RepositoryEndpoint::new("origin-check", url.to_owned())
+                            .is_ok_and(|existing| existing.origin() == endpoint.origin())
+                    })
+            }) {
+                return Err(SourceRegistryError::Conflict);
+            }
+            candidate.sources.push(SourceRecord {
+                source_id,
+                kind: PersistedSourceKind::Https,
+                display_name: endpoint.origin().to_owned(),
+                url: Some(endpoint.url().to_owned()),
+                enabled,
+                watch_enabled: false,
+                health: PersistedSourceHealth::Idle,
+                last_attempt_ms: None,
+                last_success_ms: None,
+                etag: None,
+                last_modified: None,
+                cached_index: None,
+                native_path: None,
+            });
+            Ok(())
+        })
     }
 
     pub fn add_or_update_dev_directory(
@@ -201,45 +203,49 @@ impl NativePluginSourceRegistry {
             return Err(SourceRegistryError::Invalid);
         }
         let mut file = self.file.lock().map_err(|_| SourceRegistryError::Io)?;
-        if let Some(source) = file
-            .sources
-            .iter_mut()
-            .find(|source| source.source_id == source_id)
-        {
-            if !matches!(source.kind, PersistedSourceKind::DevDirectory) {
-                return Err(SourceRegistryError::Conflict);
+        commit(&self.path, &mut file, |candidate| {
+            if let Some(source) = candidate
+                .sources
+                .iter_mut()
+                .find(|source| source.source_id == source_id)
+            {
+                if !matches!(source.kind, PersistedSourceKind::DevDirectory) {
+                    return Err(SourceRegistryError::Conflict);
+                }
+                source.display_name = display_name;
+                source.native_path = Some(path);
+                source.health = PersistedSourceHealth::Healthy;
+            } else {
+                candidate.sources.push(SourceRecord {
+                    source_id,
+                    kind: PersistedSourceKind::DevDirectory,
+                    display_name,
+                    url: None,
+                    enabled: true,
+                    watch_enabled: false,
+                    health: PersistedSourceHealth::Healthy,
+                    last_attempt_ms: None,
+                    last_success_ms: Some(now_ms()),
+                    etag: None,
+                    last_modified: None,
+                    cached_index: None,
+                    native_path: Some(path),
+                });
             }
-            source.display_name = display_name;
-            source.native_path = Some(path);
-            source.health = PersistedSourceHealth::Healthy;
-        } else {
-            file.sources.push(SourceRecord {
-                source_id,
-                kind: PersistedSourceKind::DevDirectory,
-                display_name,
-                url: None,
-                enabled: true,
-                watch_enabled: false,
-                health: PersistedSourceHealth::Healthy,
-                last_attempt_ms: None,
-                last_success_ms: Some(now_ms()),
-                etag: None,
-                last_modified: None,
-                cached_index: None,
-                native_path: Some(path),
-            });
-        }
-        persist(&self.path, &file)
+            Ok(())
+        })
     }
 
     pub fn remove_dev_directory(&self, plugin_id: &str) -> Result<(), SourceRegistryError> {
         let source_id = format!("dev-{plugin_id}");
         let mut file = self.file.lock().map_err(|_| SourceRegistryError::Io)?;
-        file.sources.retain(|source| {
-            source.source_id != source_id
-                || !matches!(source.kind, PersistedSourceKind::DevDirectory)
-        });
-        persist(&self.path, &file)
+        commit(&self.path, &mut file, |candidate| {
+            candidate.sources.retain(|source| {
+                source.source_id != source_id
+                    || !matches!(source.kind, PersistedSourceKind::DevDirectory)
+            });
+            Ok(())
+        })
     }
 
     pub(crate) fn watched_dev_directories(
@@ -269,24 +275,26 @@ impl NativePluginSourceRegistry {
         healthy: bool,
     ) -> Result<(), SourceRegistryError> {
         let mut file = self.file.lock().map_err(|_| SourceRegistryError::Io)?;
-        let source = file
-            .sources
-            .iter_mut()
-            .find(|source| source.source_id == source_id)
-            .ok_or(SourceRegistryError::Missing)?;
-        if !matches!(source.kind, PersistedSourceKind::DevDirectory) {
-            return Err(SourceRegistryError::Invalid);
-        }
-        source.health = if healthy {
-            PersistedSourceHealth::Healthy
-        } else {
-            PersistedSourceHealth::Disconnected
-        };
-        source.last_attempt_ms = Some(now_ms());
-        if healthy {
-            source.last_success_ms = Some(now_ms());
-        }
-        persist(&self.path, &file)
+        commit(&self.path, &mut file, |candidate| {
+            let source = candidate
+                .sources
+                .iter_mut()
+                .find(|source| source.source_id == source_id)
+                .ok_or(SourceRegistryError::Missing)?;
+            if !matches!(source.kind, PersistedSourceKind::DevDirectory) {
+                return Err(SourceRegistryError::Invalid);
+            }
+            source.health = if healthy {
+                PersistedSourceHealth::Healthy
+            } else {
+                PersistedSourceHealth::Disconnected
+            };
+            source.last_attempt_ms = Some(now_ms());
+            if healthy {
+                source.last_success_ms = Some(now_ms());
+            }
+            Ok(())
+        })
     }
 
     pub fn update_https(
@@ -298,44 +306,50 @@ impl NativePluginSourceRegistry {
         let endpoint = RepositoryEndpoint::new(source_id.to_owned(), url)
             .map_err(|_| SourceRegistryError::Invalid)?;
         let mut file = self.file.lock().map_err(|_| SourceRegistryError::Io)?;
-        if file.sources.iter().any(|source| {
-            source.source_id != source_id
-                && source.url.as_deref().is_some_and(|url| {
-                    RepositoryEndpoint::new("origin-check", url.to_owned())
-                        .is_ok_and(|existing| existing.origin() == endpoint.origin())
-                })
-        }) {
-            return Err(SourceRegistryError::Conflict);
-        }
-        let source = file
-            .sources
-            .iter_mut()
-            .find(|source| source.source_id == source_id)
-            .ok_or(SourceRegistryError::Missing)?;
-        if !matches!(source.kind, PersistedSourceKind::Https) {
-            return Err(SourceRegistryError::Invalid);
-        }
-        let changed = source.url.as_deref() != Some(endpoint.url());
-        source.url = Some(endpoint.url().to_owned());
-        source.display_name = endpoint.origin().to_owned();
-        source.enabled = enabled;
-        if changed {
-            source.cached_index = None;
-            source.health = PersistedSourceHealth::Idle;
-            source.etag = None;
-            source.last_modified = None;
-        }
-        persist(&self.path, &file)
+        commit(&self.path, &mut file, |candidate| {
+            if candidate.sources.iter().any(|source| {
+                source.source_id != source_id
+                    && source.url.as_deref().is_some_and(|url| {
+                        RepositoryEndpoint::new("origin-check", url.to_owned())
+                            .is_ok_and(|existing| existing.origin() == endpoint.origin())
+                    })
+            }) {
+                return Err(SourceRegistryError::Conflict);
+            }
+            let source = candidate
+                .sources
+                .iter_mut()
+                .find(|source| source.source_id == source_id)
+                .ok_or(SourceRegistryError::Missing)?;
+            if !matches!(source.kind, PersistedSourceKind::Https) {
+                return Err(SourceRegistryError::Invalid);
+            }
+            let changed = source.url.as_deref() != Some(endpoint.url());
+            source.url = Some(endpoint.url().to_owned());
+            source.display_name = endpoint.origin().to_owned();
+            source.enabled = enabled;
+            if changed {
+                source.cached_index = None;
+                source.health = PersistedSourceHealth::Idle;
+                source.etag = None;
+                source.last_modified = None;
+            }
+            Ok(())
+        })
     }
 
     pub fn remove(&self, source_id: &str) -> Result<(), SourceRegistryError> {
         let mut file = self.file.lock().map_err(|_| SourceRegistryError::Io)?;
-        let before = file.sources.len();
-        file.sources.retain(|source| source.source_id != source_id);
-        if file.sources.len() == before {
-            return Err(SourceRegistryError::Missing);
-        }
-        persist(&self.path, &file)
+        commit(&self.path, &mut file, |candidate| {
+            let before = candidate.sources.len();
+            candidate
+                .sources
+                .retain(|source| source.source_id != source_id);
+            if candidate.sources.len() == before {
+                return Err(SourceRegistryError::Missing);
+            }
+            Ok(())
+        })
     }
 
     pub fn set_watch_enabled(
@@ -344,16 +358,18 @@ impl NativePluginSourceRegistry {
         enabled: bool,
     ) -> Result<(), SourceRegistryError> {
         let mut file = self.file.lock().map_err(|_| SourceRegistryError::Io)?;
-        let source = file
-            .sources
-            .iter_mut()
-            .find(|source| source.source_id == source_id)
-            .ok_or(SourceRegistryError::Missing)?;
-        if !matches!(source.kind, PersistedSourceKind::DevDirectory) {
-            return Err(SourceRegistryError::Invalid);
-        }
-        source.watch_enabled = enabled;
-        persist(&self.path, &file)
+        commit(&self.path, &mut file, |candidate| {
+            let source = candidate
+                .sources
+                .iter_mut()
+                .find(|source| source.source_id == source_id)
+                .ok_or(SourceRegistryError::Missing)?;
+            if !matches!(source.kind, PersistedSourceKind::DevDirectory) {
+                return Err(SourceRegistryError::Invalid);
+            }
+            source.watch_enabled = enabled;
+            Ok(())
+        })
     }
 
     /// Refreshes only the index and retains the last-known-good value on any
@@ -391,21 +407,23 @@ impl NativePluginSourceRegistry {
         };
         let now = now_ms();
         let mut file = self.file.lock().map_err(|_| SourceRegistryError::Io)?;
-        let source = file
-            .sources
-            .iter_mut()
-            .find(|source| source.source_id == source_id)
-            .ok_or(SourceRegistryError::Missing)?;
-        source.last_attempt_ms = Some(now);
-        match fetched {
-            Ok(catalog) => {
-                source.cached_index = catalog.repositories.into_iter().next();
-                source.last_success_ms = Some(now);
-                source.health = PersistedSourceHealth::Healthy;
+        commit(&self.path, &mut file, |candidate| {
+            let source = candidate
+                .sources
+                .iter_mut()
+                .find(|source| source.source_id == source_id)
+                .ok_or(SourceRegistryError::Missing)?;
+            source.last_attempt_ms = Some(now);
+            match &fetched {
+                Ok(catalog) => {
+                    source.cached_index = catalog.repositories.clone().into_iter().next();
+                    source.last_success_ms = Some(now);
+                    source.health = PersistedSourceHealth::Healthy;
+                }
+                Err(_) => source.health = PersistedSourceHealth::Error,
             }
-            Err(_) => source.health = PersistedSourceHealth::Error,
-        }
-        persist(&self.path, &file)
+            Ok(())
+        })
     }
 }
 
@@ -479,6 +497,26 @@ fn validate_registry(file: &SourceRegistryFile) -> Result<(), SourceRegistryErro
             }
         }
     }
+    Ok(())
+}
+
+/// Apply `mutate` to a candidate clone, validate it, durably persist it, and
+/// only then commit it to the shared in-memory state. Mutating the shared
+/// state before validation (the old pattern) poisoned the registry whenever
+/// validation failed: memory kept the invalid shape while disk kept the last
+/// valid one, and every later persist failed until restart.
+fn commit<F>(
+    path: &Path,
+    file: &mut std::sync::MutexGuard<'_, SourceRegistryFile>,
+    mutate: F,
+) -> Result<(), SourceRegistryError>
+where
+    F: FnOnce(&mut SourceRegistryFile) -> Result<(), SourceRegistryError>,
+{
+    let mut candidate = (**file).clone();
+    mutate(&mut candidate)?;
+    persist(path, &candidate)?;
+    **file = candidate;
     Ok(())
 }
 

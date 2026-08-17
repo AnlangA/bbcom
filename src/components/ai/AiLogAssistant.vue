@@ -38,7 +38,7 @@
         :max="2000"
         :step="20"
         :aria-label="t('ai.log.context')"
-        style="width: 112px"
+        style="width: var(--control-w-md)"
         @update:value="setFrameLimit"
       />
     </div>
@@ -298,7 +298,7 @@ function clearMessages() {
 
 .empty-hint {
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: var(--font-size-data);
 }
 
 .message-item {
@@ -324,7 +324,7 @@ function clearMessages() {
 .answer,
 .result-section li {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-data);
   line-height: 1.5;
 }
 

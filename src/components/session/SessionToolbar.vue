@@ -95,7 +95,7 @@
             :aria-label="t('toolbar.format')"
             :options="displayModeOptions"
             size="small"
-            style="width: 120px"
+            style="width: var(--control-w-lg)"
             @update:value="appStore.setDisplayMode"
           />
         </div>

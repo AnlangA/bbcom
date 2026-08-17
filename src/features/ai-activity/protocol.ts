@@ -24,6 +24,7 @@ export const AI_BRIDGE_EVENTS = Object.freeze({
   logContextRequest: 'ai-log-context-request',
   logContext: 'ai-log-context',
   commandApply: 'ai-command-apply',
+  commandResult: 'ai-command-result',
   sessionUpdate: 'ai-session-update',
   activityRun: 'ai-activity-run',
   activityCancel: 'ai-activity-cancel',
@@ -66,6 +67,30 @@ export type AiActivityResultPayload =
 
 export interface AiActivitySnapshotRequestPayload {
   readonly kind: 'activity-snapshot-request';
+}
+
+/** Receipt for a command-apply envelope: the main window either applied the
+ *  command or dropped it (with why), so the AI renderer can surface a retry
+ *  instead of a silent no-op. */
+export type AiCommandResultPayload =
+  | { readonly kind: 'command-result'; readonly outcome: 'applied' }
+  | {
+      readonly kind: 'command-result';
+      readonly outcome: 'rejected';
+      readonly reason:
+        'revision-mismatch' | 'session-mismatch' | 'workspace-mismatch' | 'invalid-payload';
+    };
+
+export function isAiCommandResultPayload(value: unknown): value is AiCommandResultPayload {
+  if (!isRecord(value) || value.kind !== 'command-result') return false;
+  if (value.outcome === 'applied') return true;
+  if (value.outcome !== 'rejected') return false;
+  return (
+    value.reason === 'revision-mismatch' ||
+    value.reason === 'session-mismatch' ||
+    value.reason === 'workspace-mismatch' ||
+    value.reason === 'invalid-payload'
+  );
 }
 
 export interface AiActivitySnapshotPayload {

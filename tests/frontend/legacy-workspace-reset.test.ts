@@ -24,6 +24,9 @@ interface HarnessOptions {
   readonly beginBackup?: LegacyBackupPort['beginEncryptedBackup'];
   readonly verifyBackup?: LegacyBackupPort['verifyEncryptedBackup'];
   readonly activateTarget?: WorkspaceResetTarget['activateEmptyV1'];
+  /** Simulates crash-recovery drift: activateEmptyV1 throws while the
+   *  completed-restore path still succeeds. */
+  readonly activateEmptyTargetError?: Error;
   readonly emptyLegacyState?: boolean;
 }
 
@@ -117,6 +120,7 @@ function createHarness(options: HarnessOptions = {}) {
   const target: WorkspaceResetTarget = {
     async activateEmptyV1(_workspaceId, _expectedRevision, context) {
       targetCalls += 1;
+      if (options.activateEmptyTargetError) throw options.activateEmptyTargetError;
       if (options.activateTarget) {
         return options.activateTarget('00000000-0000-4000-8000-000000000001', 0, context);
       }
@@ -248,6 +252,22 @@ test('a clean first install creates its empty workspace without showing the migr
   assert.equal(harness.targetCalls, 1);
   assert.equal(harness.backupCalls.begins, 0);
   assert.equal(harness.markers.get(LEGACY_RESET_MARKER_KEY), LEGACY_RESET_MARKER_VALUE);
+});
+
+test('workspaceReady drift degrades to completed-restore instead of looping target_failed', async () => {
+  const harness = createHarness({
+    nativePhase: 'workspaceReady',
+    activateEmptyTargetError: new Error('reset target is not an empty workspace'),
+    activateTarget: async () => undefined,
+  });
+  const outcome = await harness.coordinator.start();
+  // The empty-workspace contract failed (revision advanced after a crash),
+  // but the degrade path opens the workspace as-is and still completes.
+  assert.equal(outcome.outcome, 'completed');
+  assert.equal(harness.coordinator.snapshot().status, 'completed');
+  assert.equal(harness.nativeCalls.completes, 1);
+  assert.equal(harness.markerCalls.writes, 1);
+  assert.equal(harness.markers.has(LEGACY_RESET_MARKER_KEY), true);
 });
 
 test('cancelling target activation leaves native workspaceReady and writes no marker', async () => {

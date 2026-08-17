@@ -299,13 +299,11 @@ export const useSessionCoreStore = defineStore('session-core', () => {
     const session = findSession(id);
     if (!session) return null;
     const cleanup = cleanupFns.get(id);
-    if (cleanup) {
-      cleanupFns.delete(id);
-      await cleanup();
-    }
-    // The workspace can become read-only while asynchronous runtime cleanup
-    // is awaited. Re-check before the first document mutation.
-    if (!canMutateUserState()) return null;
+    if (cleanup) cleanupFns.delete(id);
+    // Remove the session from every document in one synchronous mutation
+    // block, then run the asynchronous runtime cleanup (port disconnect)
+    // afterwards. A workspace turning read-only mid-cleanup can no longer
+    // strand an already-disconnected session in the tab list.
     const currentIndex = sessions.value.findIndex((candidate) => candidate.id === id);
     const snapshot = Object.freeze<DeletedSessionSnapshot>({
       session: cloneStoppedSession(session),
@@ -323,13 +321,20 @@ export const useSessionCoreStore = defineStore('session-core', () => {
     delete nextRebind[id];
     workspaceRebindBySessionId.value = Object.freeze(nextRebind);
     waveform.removeSession(id);
-    if (activeSessionId.value === id) {
-      activeSessionId.value = sessions.value[0]?.id ?? null;
+    if (snapshot.wasActive) {
+      // Fall back to the most recently used remaining session — picking the
+      // first tab would both surprise the user and corrupt the MRU order.
+      const remainingIds = new Set(sessions.value.map((session) => session.id));
+      const mruSuccessor = catalog
+        .snapshotMruSessionIds()
+        .find((candidate) => remainingIds.has(candidate));
+      activeSessionId.value = mruSuccessor ?? sessions.value[0]?.id ?? null;
       if (activeSessionId.value) catalog.touch(activeSessionId.value);
     }
     schedulePersist();
     lastDeletedSession.value = snapshot;
     notifyWorkspaceChange(Object.freeze({ kind: 'catalog-changed' }));
+    if (cleanup) await cleanup();
     return snapshot;
   }
 
@@ -424,6 +429,12 @@ export const useSessionCoreStore = defineStore('session-core', () => {
     activeSessionId.value = nextActiveSessionId;
     workspaceRebindBySessionId.value = Object.freeze(preparedRebind);
     waveform.replacePrepared(preparedWaveforms);
+    // The replacement owns the full session set: drop cleanup closures for
+    // sessions that no longer exist (runtime disposal itself goes through the
+    // registry reconcile diff) so stale closures cannot linger or be reused.
+    for (const registeredId of [...cleanupFns.keys()]) {
+      if (!seen.has(registeredId)) cleanupFns.delete(registeredId);
+    }
     lastDeletedSession.value = null;
     persistenceTracker.reset();
   }

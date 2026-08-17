@@ -1,6 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::time::Duration;
 
 use bbcom_plugin_contracts::generated::{PluginStorageEntry, PluginStorageSnapshot};
+use bbcom_plugin_contracts::generated::{
+    CaptureReadQuery, SerialProposalEvent, SessionListQuery, SessionQueryRequest,
+};
 use bbcom_plugin_contracts::{
     MAX_PLUGIN_PERSISTED_STATE_BYTES, PLUGIN_STATE_SCHEMA_VERSION, Permission,
 };
@@ -9,15 +14,18 @@ use wasmtime::{ResourceLimiter, StoreLimits, StoreLimitsBuilder};
 
 use crate::bindings::bbcom::plugin::host::Host;
 use crate::bindings::bbcom::plugin::types::{
-    CapturePage, ContractError, DeclarativePanel, ProposalResult, ProposalStatus,
-    SerialSendProposal, SessionMetadata,
+    CaptureFrame, CapturePage, ContractError, DeclarativePanel, FrameDirection, ProposalResult,
+    ProposalStatus, SerialSendProposal, SessionMetadata,
 };
+use crate::uplink::{ProposalOutcome, Uplink};
 
 impl crate::bindings::bbcom::plugin::types::Host for StoreState {}
 
 const MAX_STORAGE_KEY_BYTES: usize = 256;
 const MAX_CAPTURE_PAGE_FRAMES: u32 = 256;
 const MAX_CAPTURE_PAGE_BYTES: u32 = 512 * 1024;
+/// Bounded wait for main-process session/capture data.
+const SESSION_QUERY_TIMEOUT_MS: u64 = 10_000;
 
 pub(crate) struct StoreState {
     pub limits: TrackingLimits,
@@ -28,6 +36,10 @@ pub(crate) struct StoreState {
     sessions: Vec<SessionMetadata>,
     published_panel: Option<DeclarativePanel>,
     next_proposal_id: u64,
+    next_query_id: u64,
+    /// When absent (unit-test / example embedders) the data-dependent host
+    /// imports keep their historical pure-local behavior.
+    uplink: Option<Arc<Uplink>>,
 }
 
 impl StoreState {
@@ -41,7 +53,20 @@ impl StoreState {
             sessions: Vec::new(),
             published_panel: None,
             next_proposal_id: 1,
+            next_query_id: 1,
+            uplink: None,
         }
+    }
+
+    pub fn with_uplink(mut self, uplink: Arc<Uplink>) -> Self {
+        self.uplink = Some(uplink);
+        self
+    }
+
+    fn next_query_id(&mut self) -> u64 {
+        let id = self.next_query_id;
+        self.next_query_id = self.next_query_id.saturating_add(1);
+        id
     }
 
     /// Drains the most recently published panel (initialize return value or
@@ -221,13 +246,42 @@ impl Host for StoreState {
         if !self.has(Permission::SessionMetadataRead) {
             return Err(ContractError::PermissionDenied);
         }
-        Ok(self.sessions.clone())
+        let Some(uplink) = self.uplink.clone() else {
+            return Ok(self.sessions.clone());
+        };
+        let query_id = format!("session-list-{}", self.next_query_id());
+        let request = SessionQueryRequest {
+            plugin_id: uplink.plugin_id().to_owned(),
+            query_id,
+            query: Some(bbcom_plugin_contracts::generated::session_query_request::Query::List(
+                SessionListQuery {},
+            )),
+        };
+        let response = uplink
+            .request_session_query(request, Duration::from_millis(SESSION_QUERY_TIMEOUT_MS))
+            .map_err(|_| ContractError::Unavailable)?
+            .ok_or(ContractError::Unavailable)?;
+        if !response.ok {
+            return Err(query_error(&response.error_code));
+        }
+        Ok(response
+            .sessions
+            .iter()
+            .map(|entry| SessionMetadata {
+                session_id: entry.session_id.clone(),
+                name: entry.name.clone(),
+                kind: entry.kind.clone(),
+                connected: entry.connected,
+                rx_bytes: entry.rx_bytes,
+                tx_bytes: entry.tx_bytes,
+            })
+            .collect())
     }
 
     fn capture_read(
         &mut self,
-        _session_id: String,
-        _from_sequence: u64,
+        session_id: String,
+        from_sequence: u64,
         max_frames: u32,
         max_bytes: u32,
     ) -> Result<CapturePage, ContractError> {
@@ -241,11 +295,48 @@ impl Host for StoreState {
         {
             return Err(ContractError::LimitExceeded);
         }
-        // Capture material is supplied by the broker in G43. No file, device,
-        // handle, or renderer path is exposed to this store.
+        let Some(uplink) = self.uplink.clone() else {
+            // No parent process (unit embedders): no capture material.
+            return Ok(CapturePage {
+                frames: Vec::new(),
+                next_sequence: None,
+            });
+        };
+        let request = SessionQueryRequest {
+            plugin_id: uplink.plugin_id().to_owned(),
+            query_id: format!("capture-{}", self.next_query_id()),
+            query: Some(bbcom_plugin_contracts::generated::session_query_request::Query::Capture(
+                CaptureReadQuery {
+                    session_id,
+                    from_sequence,
+                    max_frames,
+                    max_bytes,
+                },
+            )),
+        };
+        let response = uplink
+            .request_session_query(request, Duration::from_millis(SESSION_QUERY_TIMEOUT_MS))
+            .map_err(|_| ContractError::Unavailable)?
+            .ok_or(ContractError::Unavailable)?;
+        if !response.ok {
+            return Err(query_error(&response.error_code));
+        }
         Ok(CapturePage {
-            frames: Vec::new(),
-            next_sequence: None,
+            frames: response
+                .frames
+                .iter()
+                .map(|frame| CaptureFrame {
+                    sequence: frame.sequence,
+                    timestamp_ms: frame.timestamp_ms,
+                    direction: if frame.tx {
+                        FrameDirection::Tx
+                    } else {
+                        FrameDirection::Rx
+                    },
+                    payload: frame.payload.clone(),
+                })
+                .collect(),
+            next_sequence: response.has_more.then_some(response.next_sequence),
         })
     }
 
@@ -285,11 +376,40 @@ impl Host for StoreState {
         {
             return Err(ContractError::InvalidInput);
         }
-        let proposal_id = self.next_proposal_id;
+        let proposal_number = self.next_proposal_id;
         self.next_proposal_id = self.next_proposal_id.saturating_add(1);
+        let proposal_id = format!("proposal-{proposal_number}");
+        let Some(uplink) = self.uplink.clone() else {
+            return Ok(ProposalResult {
+                proposal_id,
+                status: ProposalStatus::PendingUserConfirmation,
+            });
+        };
+        // Forward to the trusted main process and park this guest call until
+        // the user decision (or the broker TTL) resolves it. The parked call
+        // blocks only this plugin's own host loop, matching the per-plugin
+        // process isolation model.
+        let event = SerialProposalEvent {
+            plugin_id: uplink.plugin_id().to_owned(),
+            proposal_id: proposal_id.clone(),
+            operation_id: format!("sidecar-proposal-{proposal_number}"),
+            session_id: proposal.session_id,
+            display_label: proposal.display_label,
+            payload: proposal.payload,
+        };
+        let outcome = uplink
+            .request_proposal_outcome(event)
+            .map_err(|_| ContractError::Unavailable)?;
+        let status = match outcome {
+            Some(ProposalOutcome::Approved) => ProposalStatus::Accepted,
+            Some(ProposalOutcome::Rejected) => ProposalStatus::Rejected,
+            // TTL expiry, main shutdown, or unknown — the WIT contract maps
+            // all of them to the cancelled status the guest understands.
+            Some(ProposalOutcome::Expired) | None => ProposalStatus::Cancelled,
+        };
         Ok(ProposalResult {
-            proposal_id: format!("proposal-{proposal_id}"),
-            status: ProposalStatus::PendingUserConfirmation,
+            proposal_id,
+            status,
         })
     }
 
@@ -299,6 +419,17 @@ impl Host for StoreState {
         }
         self.published_panel = Some(panel);
         Ok(())
+    }
+}
+
+/// Map a main-process query error name onto the WIT contract error. Unknown
+/// names degrade to `unavailable` rather than leaking error text.
+fn query_error(code: &str) -> ContractError {
+    match code {
+        "permission-denied" => ContractError::PermissionDenied,
+        "invalid-input" | "not-found" => ContractError::InvalidInput,
+        "limit-exceeded" => ContractError::LimitExceeded,
+        _ => ContractError::Unavailable,
     }
 }
 

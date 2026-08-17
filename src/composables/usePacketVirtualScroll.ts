@@ -73,6 +73,13 @@ export function usePacketVirtualScroll({
     virtualizer.value.measureElement(element as Element | null);
   }
 
+  /** Scroll to an arbitrary index, including rows outside the rendered
+   * window: the virtualizer computes the offset from its measurement cache
+   * and estimates, where scanning `virtualItems` alone would miss. */
+  function scrollToIndex(index: number) {
+    virtualizer.value.scrollToIndex(index, { align: 'start' });
+  }
+
   if (rowSizeVersion) {
     watch(rowSizeVersion, () => virtualizer.value.measure());
   }
@@ -107,6 +114,18 @@ export function usePacketVirtualScroll({
     autoScrollRafId = requestAnimationFrame(pinToBottom);
   });
 
+  // Toggling auto-scroll back on is an explicit "follow the tail again"
+  // gesture: clear the un-pinned state left by an earlier scroll-up so the
+  // next frame (or this very tick) pins to the bottom instead of silently
+  // ignoring the enabled toggle.
+  watch(autoScroll, (enabled) => {
+    if (!enabled) return;
+    shouldAutoScroll.value = true;
+    if (autoScrollRafId === null) {
+      autoScrollRafId = requestAnimationFrame(pinToBottom);
+    }
+  });
+
   onUnmounted(() => {
     if (autoScrollRafId !== null) {
       cancelAnimationFrame(autoScrollRafId);
@@ -120,5 +139,6 @@ export function usePacketVirtualScroll({
     totalSize,
     measureElement,
     onScroll,
+    scrollToIndex,
   };
 }

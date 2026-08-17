@@ -65,7 +65,9 @@ pub fn run() {
                 WebviewUrl::App("index.html?window=ai".into()),
             )
             .title("AI 终端助手")
-            .inner_size(760.0, 170.0)
+            // Matches the fixed content width of AiPanel/AiWindow.vue so the
+            // first show never horizontally clips (resize clamps to 920 max).
+            .inner_size(820.0, 170.0)
             .min_inner_size(420.0, 120.0)
             .resizable(false)
             .maximizable(false)
@@ -127,6 +129,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_serialplugin::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::ai::cancel_ai_request,
             commands::ai::run_ai_request,
@@ -190,6 +193,7 @@ pub fn run() {
             commands::plugin::plugin_install_local,
             commands::plugin::plugin_uninstall,
             commands::plugin::plugin_serial_action_result,
+            commands::plugin::plugin_session_query_result,
         ])
         .run(tauri::generate_context!());
 

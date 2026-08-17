@@ -104,7 +104,7 @@ async function saveApiKey() {
   border: 0;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-data);
   font-weight: 700;
   cursor: pointer;
 }

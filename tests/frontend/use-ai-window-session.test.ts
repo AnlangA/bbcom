@@ -592,7 +592,7 @@ test('useAiWindowSession: injected activity authority handles run, cancel, and s
 
 test('useAiWindowSession: mounted lifecycle wires all listeners and disposes pending work', async () => {
   const listeners = new Map<string, (event: { payload: unknown }) => void>();
-  const unlisteners = Array.from({ length: 5 }, () => vi.fn());
+  const unlisteners = Array.from({ length: 6 }, () => vi.fn());
   const emitted: RecordedEmit[] = [];
   let index = 0;
   let api!: ReturnType<typeof useAiWindowSession>;
@@ -614,7 +614,7 @@ test('useAiWindowSession: mounted lifecycle wires all listeners and disposes pen
   });
   const wrapper = mount(Harness);
   await flushPromises();
-  expect(listeners.size).toBe(5);
+  expect(listeners.size).toBe(6);
   expect(emitted.map((entry) => entry.event)).toContain(AI_BRIDGE_EVENTS.activitySnapshotRequest);
   expect(emitted.map((entry) => entry.event)).toContain(AI_BRIDGE_EVENTS.sessionRequest);
   listeners.get(AI_BRIDGE_EVENTS.sessionSnapshot)?.({

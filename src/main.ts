@@ -58,11 +58,56 @@ if (!isAiWindow) {
     baseApplicationServices.runtimeRegistry.get(sessionId),
   );
   await pluginSerialActionBridge.start();
+  // G43: plugins read session metadata and bounded capture pages from the
+  // renderer-owned catalog through the same trusted event/answer bridge.
+  const sessionCatalog = sessions.useSessionCatalog();
+  const pluginSessionQueryBridge = new pluginsModule.PluginSessionQueryBridge({
+    listSessions: () =>
+      sessionCatalog.sessions.value.map((session) => ({
+        sessionId: session.id,
+        name: session.portName,
+        kind: 'serial',
+        connected:
+          baseApplicationServices.runtimeRegistry.get(session.id)?.isConnected.value === true,
+        rxBytes: session.rxBytes,
+        txBytes: session.txBytes,
+      })),
+    readCapture: ({ sessionId, fromSequence, maxFrames, maxBytes }) => {
+      const session = sessionCatalog.sessions.value.find((candidate) => candidate.id === sessionId);
+      if (!session) return null;
+      const frames: {
+        sequence: number;
+        timestampMs: number;
+        tx: boolean;
+        bytes: number[];
+      }[] = [];
+      let budget = maxBytes;
+      let index = fromSequence;
+      for (; index < session.frames.length && frames.length < maxFrames; index += 1) {
+        const frame = session.frames[index];
+        if (!frame) break;
+        if (frame.data.length > budget) break;
+        budget -= frame.data.length;
+        frames.push({
+          sequence: index,
+          timestampMs: frame.timestamp,
+          tx: frame.direction === 'TX',
+          bytes: Array.from(frame.data),
+        });
+      }
+      return {
+        frames,
+        nextSequence: index < session.frames.length ? index : null,
+      };
+    },
+  });
+  await pluginSessionQueryBridge.start();
   const applicationServices = Object.freeze({
     ...baseApplicationServices,
     runtimeStatusRegistry,
     async shutdown(): Promise<void> {
       pluginSerialActionBridge.stop();
+      pluginSessionQueryBridge.stop();
       await baseApplicationServices.shutdown();
     },
   });

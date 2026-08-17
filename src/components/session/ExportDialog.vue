@@ -321,7 +321,7 @@ function confirm(): void {
   flex-wrap: wrap;
   gap: 8px 18px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-data);
 }
 
 .export-progress {
@@ -331,7 +331,7 @@ function confirm(): void {
 .validation-message {
   margin: 0;
   color: var(--accent-red);
-  font-size: 12px;
+  font-size: var(--font-size-data);
 }
 
 .dialog-actions {

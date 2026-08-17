@@ -174,13 +174,19 @@ describe('LegacyResetGate interactions', () => {
   test('renders every busy status, releases the application slot, and supports cancellation', async () => {
     const gate = mountGate(snapshot('checking', { canCancel: true }));
     await flushPromises();
-    for (const status of ['checking', 'backing-up', 'verifying', 'resetting'] as const) {
+    // 'checking' renders the neutral skeleton (no migration copy, no card);
+    // the user-driven busy statuses keep the full card with its live message.
+    gate.emit(snapshot('checking', { canCancel: true }));
+    await nextTick();
+    expect(gate.wrapper.find('.legacy-reset-gate--neutral').exists()).toBe(true);
+    expect(gate.wrapper.find('.legacy-reset-card').exists()).toBe(false);
+    for (const status of ['backing-up', 'verifying', 'resetting'] as const) {
       gate.emit(snapshot(status, { canCancel: true }));
       await nextTick();
       expect(gate.wrapper.find('.legacy-reset-message').exists()).toBe(true);
       await gate.wrapper.find('.legacy-reset-gate').trigger('keydown', { key: 'Escape' });
     }
-    expect(gate.cancel).toHaveBeenCalledTimes(4);
+    expect(gate.cancel).toHaveBeenCalledTimes(3);
 
     gate.emit(snapshot('completed'));
     await nextTick();

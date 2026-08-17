@@ -20,7 +20,7 @@ use bbcom_plugin_contracts::{
     HANDSHAKE_TIMEOUT_MS, HOST_PROCESS_MEMORY_LIMIT_BYTES, MAX_PLUGIN_PERSISTED_STATE_BYTES,
     MAX_PLUGIN_STATE_CHUNK_BYTES, MAX_WORKSPACE_PLUGIN_PERSISTED_STATE_BYTES,
     PLUGIN_STATE_SCHEMA_VERSION, PROTOCOL_MAJOR, PROTOCOL_MINOR, Permission, WIT_PACKAGE,
-    empty_plugin_storage_payload,
+    empty_plugin_storage_payload, encode_frame,
 };
 use bbcom_plugin_host::transport::{FrameReader, FrameWriter};
 use bbcom_plugin_manager::{
@@ -427,7 +427,17 @@ pub struct SidecarHostLauncher<R, S, P> {
     persistence: P,
     processes: Arc<Mutex<HostProcesses>>,
     next_instance_id: AtomicU64,
+    /// Sidecar-initiated pushes (proposals, session queries) stream here.
+    /// Shared with every host reader thread so a sink attached after
+    /// construction is honored by already-running readers.
+    push_sink: Arc<Mutex<Option<Arc<dyn bbcom_plugin_manager::HostPushSink>>>>,
+    /// Outbound push request ids live in a dedicated high range so they can
+    /// never collide with request/response ids.
+    push_request_id: AtomicU64,
 }
+
+/// First id of the outbound push range.
+const PUSH_REQUEST_ID_BASE: u64 = 1 << 63;
 
 impl<R, S, P> Drop for SidecarHostLauncher<R, S, P> {
     fn drop(&mut self) {
@@ -477,6 +487,9 @@ where
         let monitor = HostExitMonitor {
             processes: Arc::clone(&processes),
         };
+        let push_sink = Arc::new(Mutex::new(
+            None::<Arc<dyn bbcom_plugin_manager::HostPushSink>>,
+        ));
         Ok((
             Self {
                 sidecar_executable: sidecar_executable.to_path_buf(),
@@ -486,6 +499,8 @@ where
                 persistence,
                 processes,
                 next_instance_id: AtomicU64::new(1),
+                push_sink,
+                push_request_id: AtomicU64::new(PUSH_REQUEST_ID_BASE),
             },
             monitor,
         ))
@@ -721,12 +736,33 @@ where
             return Err(HostFailure::Launch);
         };
         let (sender, responses) = mpsc::sync_channel(32);
+        let sink_cell = Arc::clone(&self.push_sink);
         if thread::Builder::new()
             .name(format!("plugin-host-{}", request.artifact.plugin_id))
             .spawn(move || {
                 let mut reader = FrameReader::new(stdout);
                 loop {
                     let response = reader.read_envelope().map_err(|_| HostFailure::Transport);
+                    // Sidecar pushes bypass request/response matching: the
+                    // guest call is parked inside the sidecar waiting for the
+                    // pipeline, not for this reader's correlation. Sinks must
+                    // only enqueue (never block) — this is the plugin's sole
+                    // response pump.
+                    if let Ok(Some(envelope)) = &response
+                        && let Some(sink) = sink_cell.lock().ok().and_then(|guard| guard.clone())
+                    {
+                        match envelope.payload.as_ref() {
+                            Some(envelope::Payload::SerialProposalEvent(event)) => {
+                                sink.serial_proposal(event.clone());
+                                continue;
+                            }
+                            Some(envelope::Payload::SessionQueryRequest(query)) => {
+                                sink.session_query(query.clone());
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                     let terminal = !matches!(response, Ok(Some(_)));
                     if sender.send(response).is_err() || terminal {
                         return;
@@ -813,81 +849,100 @@ where
     }
 
     fn initialize(&mut self, handle: &HostHandle) -> Result<(), HostFailure> {
-        let mut processes = self.processes.lock().map_err(|_| HostFailure::Launch)?;
-        let process = exact_process(&mut processes, handle)?;
-        let plugin_storage = process.initial_state.plugin_storage.clone();
-        let project_state = process.initial_state.project_state.clone();
-        Self::upload_state(process, OpaqueStateKind::PluginStorage, &plugin_storage)?;
-        if let Some(project_state) = project_state.as_ref() {
-            Self::upload_state(process, OpaqueStateKind::ProjectState, project_state)?;
-        }
-        let response = Self::process_request(
-            process,
-            envelope::Payload::InitializeRequest(InitializeRequest {
-                state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-                has_plugin_storage: true,
-                has_project_state: project_state.is_some(),
-            }),
-            REQUEST_TIMEOUT,
-        )?;
-        let descriptor = match response.payload {
-            Some(envelope::Payload::InitializeResponse(response)) => {
-                process.published_panel = parse_panel_json(&response.panel_json)?;
-                response.state.ok_or(HostFailure::Initialization)?
+        let mut process = take_process(&self.processes, handle)?;
+        let result = (|| {
+            let plugin_storage = process.initial_state.plugin_storage.clone();
+            let project_state = process.initial_state.project_state.clone();
+            Self::upload_state(
+                &mut process,
+                OpaqueStateKind::PluginStorage,
+                &plugin_storage,
+            )?;
+            if let Some(project_state) = project_state.as_ref() {
+                Self::upload_state(&mut process, OpaqueStateKind::ProjectState, project_state)?;
             }
-            _ => return Err(HostFailure::Initialization),
-        };
-        let state = Self::download_state(process, &descriptor)?;
-        self.persistence.persist_state(&process.state_key, &state)?;
-        process.initial_state = state;
-        Ok(())
+            let response = Self::process_request(
+                &mut process,
+                envelope::Payload::InitializeRequest(InitializeRequest {
+                    state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
+                    has_plugin_storage: true,
+                    has_project_state: project_state.is_some(),
+                }),
+                REQUEST_TIMEOUT,
+            )?;
+            let descriptor = match response.payload {
+                Some(envelope::Payload::InitializeResponse(response)) => {
+                    process.published_panel = parse_panel_json(&response.panel_json)?;
+                    response.state.ok_or(HostFailure::Initialization)?
+                }
+                _ => return Err(HostFailure::Initialization),
+            };
+            let state = Self::download_state(&mut process, &descriptor)?;
+            self.persistence.persist_state(&process.state_key, &state)?;
+            process.initial_state = state;
+            Ok(())
+        })();
+        // Failure restores the previous behavior exactly: the entry stays in
+        // the table so the exit monitor and terminate fallbacks can find it.
+        reinsert_process(&self.processes, handle.instance_id, process);
+        result
     }
 
     fn shutdown(&mut self, handle: &HostHandle) -> Result<(), HostFailure> {
-        let mut processes = self.processes.lock().map_err(|_| HostFailure::Launch)?;
-        let process = exact_process(&mut processes, handle)?;
-        let response = Self::process_request(
-            process,
-            envelope::Payload::ShutdownRequest(ShutdownRequest {
-                state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-            }),
-            REQUEST_TIMEOUT,
-        )?;
-        let descriptor = match response.payload {
-            Some(envelope::Payload::ShutdownResponse(response)) => {
-                response.state.ok_or(HostFailure::Shutdown)?
+        let mut process = take_process(&self.processes, handle)?;
+        let result = (|| {
+            let response = Self::process_request(
+                &mut process,
+                envelope::Payload::ShutdownRequest(ShutdownRequest {
+                    state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
+                }),
+                REQUEST_TIMEOUT,
+            )?;
+            let descriptor = match response.payload {
+                Some(envelope::Payload::ShutdownResponse(response)) => {
+                    response.state.ok_or(HostFailure::Shutdown)?
+                }
+                _ => return Err(HostFailure::Shutdown),
+            };
+            let state = Self::download_state(&mut process, &descriptor)
+                .map_err(|_| HostFailure::Shutdown)?;
+            self.persistence
+                .persist_state(&process.state_key, &state)
+                .map_err(|_| HostFailure::Shutdown)?;
+            let completed = Self::process_request(
+                &mut process,
+                envelope::Payload::CompleteShutdownRequest(CompleteShutdownRequest {
+                    state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
+                    revision: descriptor.revision,
+                }),
+                REQUEST_TIMEOUT,
+            )?;
+            if !matches!(
+                completed.payload,
+                Some(envelope::Payload::CompleteShutdownResponse(_))
+            ) {
+                return Err(HostFailure::Shutdown);
             }
-            _ => return Err(HostFailure::Shutdown),
-        };
-        let state =
-            Self::download_state(process, &descriptor).map_err(|_| HostFailure::Shutdown)?;
-        self.persistence
-            .persist_state(&process.state_key, &state)
-            .map_err(|_| HostFailure::Shutdown)?;
-        let completed = Self::process_request(
-            process,
-            envelope::Payload::CompleteShutdownRequest(CompleteShutdownRequest {
-                state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-                revision: descriptor.revision,
-            }),
-            REQUEST_TIMEOUT,
-        )?;
-        if !matches!(
-            completed.payload,
-            Some(envelope::Payload::CompleteShutdownResponse(_))
-        ) {
-            return Err(HostFailure::Shutdown);
-        }
-        let deadline = Instant::now() + REQUEST_TIMEOUT;
-        loop {
-            match process.child.try_wait() {
-                Ok(true) => break,
-                Ok(false) if Instant::now() < deadline => thread::sleep(PROCESS_EXIT_POLL),
-                Ok(false) | Err(_) => return Err(HostFailure::Shutdown),
+            let deadline = Instant::now() + REQUEST_TIMEOUT;
+            loop {
+                match process.child.try_wait() {
+                    Ok(true) => break,
+                    Ok(false) if Instant::now() < deadline => thread::sleep(PROCESS_EXIT_POLL),
+                    Ok(false) | Err(_) => return Err(HostFailure::Shutdown),
+                }
+            }
+            Ok(())
+        })();
+        match result {
+            // Success keeps the old final state: removed from the table.
+            Ok(()) => Ok(()),
+            // Failure reinserts so the caller's terminate fallback (and the
+            // exit monitor) can still find and kill the child.
+            Err(error) => {
+                reinsert_process(&self.processes, handle.instance_id, process);
+                Err(error)
             }
         }
-        processes.running.remove(&handle.instance_id);
-        Ok(())
     }
 
     fn take_published_panel(
@@ -938,6 +993,34 @@ where
             terminate_child(&mut process.child);
         }
     }
+
+    fn deliver_envelope(
+        &mut self,
+        handle: &HostHandle,
+        payload: envelope::Payload,
+    ) -> Result<(), HostFailure> {
+        let request_id = self.push_request_id.fetch_add(1, Ordering::Relaxed);
+        let frame = encode_frame(&Envelope {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
+            request_id,
+            payload: Some(payload),
+        })
+        .map_err(|_| HostFailure::Transport)?;
+        let mut processes = self.lock_processes()?;
+        let process = exact_process(&mut processes, handle)?;
+        process
+            .stdin
+            .write_all(&frame)
+            .and_then(|()| process.stdin.flush())
+            .map_err(|_| HostFailure::Transport)
+    }
+
+    fn attach_push_sink(&mut self, sink: std::sync::Arc<dyn bbcom_plugin_manager::HostPushSink>) {
+        if let Ok(mut current) = self.push_sink.lock() {
+            *current = Some(sink);
+        }
+    }
 }
 
 fn receive_response(
@@ -985,6 +1068,36 @@ fn parse_panel_json(bytes: &[u8]) -> Result<Option<HostPanel>, HostFailure> {
         title: panel.title,
         fields,
     }))
+}
+
+/// Remove a process from the shared table so long request sequences (chunked
+/// state transfer, shutdown) can run without holding the single table mutex —
+/// otherwise one slow host head-of-line blocks the 500ms crash poll and every
+/// other plugin's commands. Identity is verified against the handle exactly
+/// like `exact_process`; a mismatch reinserts and fails.
+fn take_process(
+    processes: &Arc<Mutex<HostProcesses>>,
+    handle: &HostHandle,
+) -> Result<HostProcess, HostFailure> {
+    let mut processes = processes.lock().map_err(|_| HostFailure::Launch)?;
+    match processes.running.remove(&handle.instance_id) {
+        Some(process)
+            if process.plugin_id == handle.plugin_id && process.version == handle.version =>
+        {
+            Ok(process)
+        }
+        Some(process) => {
+            processes.running.insert(handle.instance_id, process);
+            Err(HostFailure::Transport)
+        }
+        None => Err(HostFailure::Transport),
+    }
+}
+
+fn reinsert_process(processes: &Arc<Mutex<HostProcesses>>, instance_id: u64, process: HostProcess) {
+    if let Ok(mut processes) = processes.lock() {
+        processes.running.entry(instance_id).or_insert(process);
+    }
 }
 
 fn exact_process<'a>(

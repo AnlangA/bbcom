@@ -5,6 +5,7 @@ import { settingsService } from '../features/settings';
 import {
   clearAiApiKey as clearAiApiKeyInKeyring,
   getAiKeyStatus,
+  isAiAssistantWindow,
   removeLegacyAiApiKey,
   setAiApiKey as setAiApiKeyInKeyring,
   type AiKeyStatus,
@@ -146,7 +147,11 @@ export const useAppStore = defineStore('app', () => {
       // The i18n locale ref (reactive). Persisted as 'en' or 'zh'; defaults to 'zh'.
       validate: (raw) => raw === 'en' || raw === 'zh',
       apply: (raw) => {
-        locale.value = raw as 'en' | 'zh';
+        // Route through setLocale (not a raw locale.value write) so the
+        // persisted locale also lands on <html lang> at startup — index.html
+        // hardcodes zh-CN and screen readers would otherwise read English UI
+        // with a Chinese voice until the user re-picked the language.
+        setLocale(raw as 'en' | 'zh');
         // Only the default locale (zh) is bundled synchronously; start the
         // lazy loader for a persisted non-default locale so English fallback
         // text resumes as soon as its chunk arrives.
@@ -178,7 +183,10 @@ export const useAppStore = defineStore('app', () => {
       const raw = (boot.settings as unknown as Record<string, unknown>)[s.key];
       if (s.validate(raw)) s.apply(raw);
     }
-    void refreshAiKeyStatus();
+    // The AI assistant window's capability denies `get_ai_key_status` by
+    // design; its status arrives via the main-window authority bridge. Calling
+    // this there would always fail and briefly show a false "missing key".
+    if (!isAiAssistantWindow()) void refreshAiKeyStatus();
   }
 
   function save() {

@@ -88,6 +88,7 @@ const appShellMocks = vi.hoisted(() => ({
 const packetVirtualMocks = vi.hoisted(() => ({
   measureElement: vi.fn(),
   onScroll: vi.fn(),
+  scrollToIndex: vi.fn(),
   options: null as {
     itemKey?: (index: number) => string | number;
     rowSizeVersion?: { readonly value: unknown };
@@ -137,6 +138,7 @@ vi.mock('../../src/composables/usePacketVirtualScroll', async () => {
         totalSize: ref(56),
         measureElement: packetVirtualMocks.measureElement,
         onScroll: packetVirtualMocks.onScroll,
+        scrollToIndex: packetVirtualMocks.scrollToIndex,
       };
     },
   };
@@ -507,6 +509,8 @@ test('TriggerPanel creates, edits, disables, and deletes a persisted trigger', a
     .trigger('click');
   expect(sessions.sessions[0].triggers[0].name).toBe('Updated login');
 
+  // Two-step inline confirmation: first click arms, second confirms.
+  await wrapper.find('.trigger-remove').trigger('click');
   await wrapper.find('.trigger-remove').trigger('click');
   expect(sessions.sessions[0].triggers).toHaveLength(0);
 });
@@ -547,6 +551,8 @@ test('HighlightPanel creates, edits, toggles, and removes typed direction/color 
     .trigger('click');
   expect(sessions.sessions[0].highlights[0].name).toBe('Updated errors');
 
+  // Two-step inline confirmation: first click arms, second confirms.
+  await wrapper.find('.highlight-remove').trigger('click');
   await wrapper.find('.highlight-remove').trigger('click');
   expect(sessions.sessions[0].highlights).toHaveLength(0);
 });
@@ -1505,15 +1511,21 @@ test('CreateSessionDialog syncs selected port/config, creates sessions, and save
   serialStore.setSelectedPort('COM-B');
   const busyId = sessions.createSession('COM-A', config);
   sessions.setConnected(busyId, true);
-  const wrapper = mount(CreateSessionDialog, { props: { show: false } });
+  const wrapper = mount(CreateSessionDialog, {
+    props: { show: false },
+    global: { stubs: { Teleport: true } },
+  });
   await wrapper.setProps({ show: true });
   await wrapper.vm.$nextTick();
   const selects = wrapper.findAll('select');
   expect((selects[0].element as HTMLSelectElement).options[0].disabled).toBe(true);
   expect((selects[0].element as HTMLSelectElement).value).toBe('1');
 
-  await selects[2].setValue('3');
-  await selects[5].setValue('2');
+  // Re-query before each interaction: under the Teleport stub the modal body
+  // re-mounts per parent render, so element handles captured earlier go
+  // stale. Production teleports patch in place; only the stub remounts.
+  await wrapper.findAll('select')[2].setValue('3');
+  await wrapper.findAll('select')[5].setValue('2');
   await wrapper.findAll('.modal-positive')[0].trigger('click');
   expect(sessionActions.createSession).toHaveBeenCalledWith(
     'COM-B',
@@ -1550,7 +1562,7 @@ test('App reflects the active theme and mounts the application shell through the
   expect(document.documentElement.getAttribute('data-theme')).toBe('light');
 });
 
-test('AiWindow publishes visibility and debounces content-size updates while mounting and unmounting', async () => {
+test('AiWindow never broadcasts visibility and only debounces content-size updates', async () => {
   vi.useFakeTimers();
   const callbacks: Array<() => void> = [];
   class TestResizeObserver {
@@ -1568,12 +1580,21 @@ test('AiWindow publishes visibility and debounces content-size updates while mou
     ({ width: 800.2, height: 500.4 }) as DOMRect;
   await wrapper.vm.$nextTick();
   await Promise.resolve();
-  expect(nativeMocks.tauriEmit).toHaveBeenCalledWith('ai-window-state', { visible: true });
+  // Visibility is OS-window state owned by Rust (show/hide/close emit there);
+  // this webview mounts while the window is hidden and must stay silent so it
+  // can never desync the main-window toggle. The authority request the AI
+  // renderer legitimately emits on mount is unrelated.
+  const visibilityCalls = nativeMocks.tauriEmit.mock.calls.filter(
+    (call) => call[0] === 'ai-window-state',
+  );
+  expect(visibilityCalls).toEqual([]);
   expect(callbacks).toHaveLength(1);
   callbacks[0]!();
   await vi.advanceTimersByTimeAsync(60);
-  expect(nativeMocks.resizeAiWindow).toHaveBeenCalledWith(801, 529);
+  expect(nativeMocks.resizeAiWindow).toHaveBeenCalledWith(801, 501);
   await wrapper.unmount();
-  expect(nativeMocks.tauriEmit).toHaveBeenCalledWith('ai-window-state', { visible: false });
+  expect(nativeMocks.tauriEmit.mock.calls.filter((call) => call[0] === 'ai-window-state')).toEqual(
+    [],
+  );
   vi.unstubAllGlobals();
 });

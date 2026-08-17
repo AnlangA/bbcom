@@ -234,3 +234,51 @@ test('gate renders no application content until native journal workspace open co
   expect(sourceRead).not.toHaveBeenCalled();
   wrapper.unmount();
 });
+
+test('a trusted completion marker suppresses the gate flash entirely', async () => {
+  // The gate probes window.localStorage (not the injected marker storage) so
+  // an already-migrated install renders neither the migration card nor the
+  // neutral skeleton while the journal confirm + hydration run.
+  window.localStorage.setItem(LEGACY_RESET_MARKER_KEY, LEGACY_RESET_MARKER_VALUE);
+  try {
+    let finishActivation!: () => void;
+    const activation = new Promise<void>((resolve) => {
+      finishActivation = resolve;
+    });
+    const activateCompletedV1 = vi.fn(() => activation);
+    const reset = createLegacyResetBootstrap({
+      source: {
+        readSnapshot: vi.fn(async () => ({ applicationVersion: '0.7.3' as const, payload: {} })),
+        readSettings: async () => ({}),
+        readPresets: async () => ({}),
+      },
+      backupPort: {
+        beginEncryptedBackup: async () => ({ backupId: 'unused' }),
+        verifyEncryptedBackup: async () => ({ verified: false }),
+      },
+      target: {
+        activateEmptyV1: async () => undefined,
+        activateCompletedV1,
+      },
+      markerStorage: createStorage().storage,
+      resetPort: createNativeResetPort('completed'),
+    });
+    const wrapper = mount(LegacyResetGate, {
+      global: { provide: { [LEGACY_RESET_CONTEXT_KEY as symbol]: reset } },
+      slots: { default: '<main data-test="application">application</main>' },
+    });
+
+    // Suppressed: no migration card, no skeleton, no application content.
+    expect(wrapper.find('.legacy-reset-card').exists()).toBe(false);
+    expect(wrapper.find('.legacy-reset-gate--neutral').exists()).toBe(false);
+    expect(wrapper.find('[data-test="application"]').exists()).toBe(false);
+
+    finishActivation();
+    await flushPromises();
+    await nextTick();
+    expect(wrapper.find('[data-test="application"]').exists()).toBe(true);
+    wrapper.unmount();
+  } finally {
+    window.localStorage.removeItem(LEGACY_RESET_MARKER_KEY);
+  }
+});

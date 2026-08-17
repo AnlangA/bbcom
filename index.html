@@ -8,15 +8,18 @@
       Paint the native window background before the JS/CSS bundle evaluates so a
       dark-theme desktop app never flashes white between window creation and
       first paint. The value matches --bg-app in src/styles/variables.css and is
-      chosen from the persisted theme (key "bbcom-app-settings") so light-theme
-      users get their background too. main.ts mounts into #app and replaces the
-      skeleton, so there is no layout shift.
+      chosen from the persisted theme so light-theme users get their background
+      too. Keys mirror src/features/settings/global-settings.ts: prefer the v2
+      document, fall back to the read-only v1 app-settings blob. main.ts mounts
+      into #app and replaces the skeleton, so there is no layout shift.
     -->
     <link rel="preconnect" href="https://rsms.me" crossorigin />
     <script>
       (function () {
         try {
-          var raw = localStorage.getItem('bbcom-app-settings');
+          var raw =
+            localStorage.getItem('bbcom-v2:global-settings') ||
+            localStorage.getItem('bbcom-v1:app-settings');
           if (raw) {
             var saved = JSON.parse(raw);
             if (saved && saved.theme === 'light') {
