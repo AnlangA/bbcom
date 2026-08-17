@@ -83,7 +83,12 @@ function benchmarkCommand() {
       affinity.stderr.trim() || 'taskset could not determine the current CPU affinity.',
     );
   }
-  const cpu = affinity.stdout.match(/:\s*([0-9]+)/)?.[1];
+  // taskset's "current affinity list" line is locale-localized (e.g.
+  // "pid N 的当前亲和力列表：0-31"); parse the list after the last ASCII or
+  // fullwidth colon and pin to its first CPU instead of matching a fixed
+  // English phrase.
+  const list = affinity.stdout.split(/[:：]/).pop()?.trim() ?? '';
+  const cpu = /^[0-9]+(?:[,-][0-9]+)*$/.test(list) ? list.split(',')[0].split('-')[0] : undefined;
   if (!cpu)
     throw new Error(`taskset returned an unrecognized CPU affinity: ${affinity.stdout.trim()}`);
   return { command: 'taskset', prefix: ['--cpu-list', cpu, process.execPath, ...nodeArgs] };
