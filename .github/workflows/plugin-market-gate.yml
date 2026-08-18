@@ -364,20 +364,36 @@ jobs:
           evidence="g45-evidence/plugin-g46-runtime-${{ matrix.platform }}.json"
           evidence_temp="$evidence.tmp"
           log="$RUNNER_TEMP/bbcom-plugin-runtime-probe-linux.log"
+          xvfb_log="$RUNNER_TEMP/bbcom-plugin-runtime-probe-linux-xvfb.log"
           data_root="$RUNNER_TEMP/bbcom-g46-data"
           test -x "$application"
           set +e
-          xvfb-run -a timeout --signal=TERM --kill-after=2s 60s \
-            "$application" \
-            --plugin-market-readiness-probe --format json \
-            --commit "$GITHUB_SHA" \
-            --platform '${{ matrix.platform }}' \
-            --target '${{ matrix.target }}' \
-            --data-root "$data_root" >"$evidence_temp" 2>"$log"
+          # The nested Bash process, not this workflow shell, expands its parameters.
+          # shellcheck disable=SC2016
+          xvfb-run -a bash -c '
+            application=$1
+            evidence_temp=$2
+            log=$3
+            commit=$4
+            platform=$5
+            target=$6
+            data_root=$7
+            timeout --signal=TERM --kill-after=2s 60s \
+              "$application" \
+              --plugin-market-readiness-probe --format json \
+              --commit "$commit" \
+              --platform "$platform" \
+              --target "$target" \
+              --data-root "$data_root" >"$evidence_temp" 2>"$log"
+          ' -- \
+            "$application" "$evidence_temp" "$log" "$GITHUB_SHA" \
+            '${{ matrix.platform }}' '${{ matrix.target }}' "$data_root" \
+            >"$xvfb_log" 2>&1
           probe_status=$?
           set -e
           if [ "$probe_status" -ne 0 ]; then
             cat "$log"
+            cat "$xvfb_log"
             exit "$probe_status"
           fi
           test -s "$evidence_temp"
