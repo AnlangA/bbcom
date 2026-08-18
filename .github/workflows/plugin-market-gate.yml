@@ -69,7 +69,9 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libudev-dev \
-            patchelf
+            patchelf \
+            xauth \
+            xvfb
 
       - name: Setup pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
@@ -365,7 +367,7 @@ jobs:
           data_root="$RUNNER_TEMP/bbcom-g46-data"
           test -x "$application"
           set +e
-          timeout --signal=TERM --kill-after=2s 60s \
+          xvfb-run -a timeout --signal=TERM --kill-after=2s 60s \
             "$application" \
             --plugin-market-readiness-probe --format json \
             --commit "$GITHUB_SHA" \
@@ -374,7 +376,10 @@ jobs:
             --data-root "$data_root" >"$evidence_temp" 2>"$log"
           probe_status=$?
           set -e
-          test "$probe_status" -eq 0
+          if [ "$probe_status" -ne 0 ]; then
+            cat "$log"
+            exit "$probe_status"
+          fi
           test -s "$evidence_temp"
           mv "$evidence_temp" "$evidence"
 
