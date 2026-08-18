@@ -5,7 +5,11 @@ pub mod bindings;
 pub mod error;
 pub mod handshake;
 mod host_state;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub mod native_sandbox_probe;
 pub mod policy;
+#[cfg(target_os = "macos")]
+pub mod process_memory_limit;
 pub mod runtime;
 pub mod sidecar;
 pub mod transport;

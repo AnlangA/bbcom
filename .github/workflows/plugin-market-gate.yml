@@ -31,16 +31,19 @@ jobs:
             target: x86_64-pc-windows-msvc
             platform: windows
             artifact: windows-x64
+            probe_sidecar: target/x86_64-pc-windows-msvc/debug/bbcom-plugin-host.exe
           - name: macOS arm64
             os: macos-15
             target: aarch64-apple-darwin
             platform: macos
             artifact: macos-arm64
+            probe_sidecar: target/aarch64-apple-darwin/debug/bbcom-plugin-host
           - name: Linux x64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             platform: linux
             artifact: linux-x64
+            probe_sidecar: target/x86_64-unknown-linux-gnu/debug/bbcom-plugin-host
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -93,9 +96,15 @@ jobs:
 
       # This is the only execution of the platform fixture on each OS. Broker
       # and IPC contracts are already covered by the reused quality workflow.
+      - name: Build trusted native sandbox probe sidecar
+        run: >-
+          cargo build -p bbcom-plugin-host --bin bbcom-plugin-host
+          --target ${{ matrix.target }} --locked
+
       - name: Prove native sandbox controls once
         env:
-          BBCOM_G45_SANDBOX_EVIDENCE: g45-evidence/plugin-g45-sandbox-${{ matrix.platform }}.json
+          BBCOM_G45_SIDECAR: ${{ github.workspace }}/${{ matrix.probe_sidecar }}
+          BBCOM_G45_SANDBOX_EVIDENCE: ${{ github.workspace }}/g45-evidence/plugin-g45-sandbox-${{ matrix.platform }}.json
           BBCOM_G45_COMMIT_SHA: ${{ github.sha }}
           BBCOM_G45_PLATFORM: ${{ matrix.platform }}
           BBCOM_G45_TARGET: ${{ matrix.target }}

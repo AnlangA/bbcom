@@ -29,7 +29,10 @@ pub struct PlatformSandboxDriver;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 impl SandboxDriver for PlatformSandboxDriver {
-    fn self_test(&self) -> Result<SandboxSelfTest, SandboxError> {
+    fn self_test(
+        &self,
+        _sidecar_executable: &std::path::Path,
+    ) -> Result<SandboxSelfTest, SandboxError> {
         Err(SandboxError::new(
             "plugin sandbox is unavailable on this operating system",
         ))

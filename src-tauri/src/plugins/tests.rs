@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -137,7 +137,7 @@ fn repository_adapter_rejects_backend_descriptor_substitution() {
 struct IncompleteSandbox;
 
 impl SandboxDriver for IncompleteSandbox {
-    fn self_test(&self) -> Result<SandboxSelfTest, SandboxError> {
+    fn self_test(&self, _sidecar_executable: &Path) -> Result<SandboxSelfTest, SandboxError> {
         Ok(SandboxSelfTest {
             blocks_network: false,
             blocks_child_processes: true,

@@ -40,7 +40,6 @@ use windows_sys::Win32::System::JobObjects::{
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject,
 };
-use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
     DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
@@ -60,8 +59,8 @@ const HANG_OBSERVATION_MS: u32 = 500;
 const HANG_TERMINATION_TIMEOUT_MS: u32 = 5_000;
 const HANG_TERMINATION_EXIT_CODE: u32 = 47;
 const APPCONTAINER_PREFIX: &str = "bbcom.plugin.host";
-const SELF_TEST_MARKER: &str = "bbcom-appcontainer-readable-package";
-const SELF_TEST_SECRET: &str = "bbcom-appcontainer-sensitive-file";
+const SELF_TEST_MARKER: &str = "bbcom-native-sandbox-readable-package";
+const SELF_TEST_SECRET: &str = "bbcom-native-sandbox-sensitive-file";
 // AppContainer process creation needs the Windows profile and temporary-path
 // variables so it can redirect them into the profile. Keep this list limited
 // to non-secret operating-system paths: application variables (including API
@@ -109,8 +108,8 @@ impl WindowsSandboxDriver {
 }
 
 impl SandboxDriver for WindowsSandboxDriver {
-    fn self_test(&self) -> Result<SandboxSelfTest, SandboxError> {
-        run_self_test()?;
+    fn self_test(&self, sidecar_executable: &Path) -> Result<SandboxSelfTest, SandboxError> {
+        run_self_test(sidecar_executable)?;
         Ok(SandboxSelfTest {
             blocks_network: true,
             blocks_child_processes: true,
@@ -129,7 +128,7 @@ impl SandboxDriver for WindowsSandboxDriver {
 
     fn spawn(&self, launch: &SandboxLaunch<'_>) -> Result<SandboxedChild, SandboxError> {
         validate_launch(launch)?;
-        let process = unsafe { spawn_appcontainer_suspended(launch, SidecarAcl::Brokered, false)? };
+        let process = unsafe { spawn_appcontainer_suspended(launch, false)? };
         Ok(SandboxedChild::platform(Box::new(process)))
     }
 
@@ -237,12 +236,6 @@ fn validate_launch(launch: &SandboxLaunch<'_>) -> Result<(), SandboxError> {
         ));
     }
     Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum SidecarAcl {
-    Brokered,
-    SystemProvided,
 }
 
 struct AppContainerProfile {
@@ -632,13 +625,10 @@ impl AclLease {
         executable: &Path,
         package_root: &Path,
         sid: PSID,
-        sidecar_acl: SidecarAcl,
     ) -> Result<Self, SandboxError> {
         let sid = copy_sid(sid)?;
         let mut lease = Self { grants: Vec::new() };
-        if matches!(sidecar_acl, SidecarAcl::Brokered) {
-            lease.grant_path(executable, &sid, true)?;
-        }
+        lease.grant_path(executable, &sid, true)?;
         let mut paths = Vec::new();
         collect_package_paths(package_root, &mut paths)?;
         for path in paths {
@@ -759,7 +749,6 @@ const fn hresult_from_win32(code: u32) -> i32 {
 
 unsafe fn spawn_appcontainer_suspended(
     launch: &SandboxLaunch<'_>,
-    sidecar_acl: SidecarAcl,
     temporary_profile: bool,
 ) -> Result<WindowsSandboxedProcess, SandboxError> {
     let executable = fs::canonicalize(launch.sidecar_executable)
@@ -768,7 +757,7 @@ unsafe fn spawn_appcontainer_suspended(
         .map_err(|_| SandboxError::new("Windows plugin package root cannot be resolved"))?;
     let profile_name = profile_name(&package_root, temporary_profile)?;
     let profile = unsafe { AppContainerProfile::open(&profile_name)? };
-    let acl = unsafe { AclLease::grant(&executable, &package_root, profile.sid(), sidecar_acl)? };
+    let acl = unsafe { AclLease::grant(&executable, &package_root, profile.sid())? };
     let job = unsafe { create_constrained_job(launch.memory_limit_bytes)? };
     verify_job_limits(&job, launch.memory_limit_bytes)?;
     let (child_stdin, parent_stdin) = unsafe { create_pipe_pair(false)? };
@@ -778,15 +767,9 @@ unsafe fn spawn_appcontainer_suspended(
     let executable_wide = wide_null(executable.as_os_str());
     let current_directory = wide_null(package_root.as_os_str());
     let mut command_line = command_line(&executable, launch.arguments);
-    // The temporary self-test executes only reviewed system PowerShell and
-    // repository-owned probe scripts. Let Windows construct its AppContainer
-    // environment as documented so PowerShell receives its complete runtime
-    // setup. Production plugin hosts always receive the strict allowlist.
-    let mut environment = if temporary_profile {
-        None
-    } else {
-        Some(sanitized_environment_block()?)
-    };
+    // The self-test and production launch execute the same trusted sidecar, so
+    // both must prove they start with the strict non-secret system allowlist.
+    let mut environment = sanitized_environment_block()?;
     let capabilities = SECURITY_CAPABILITIES {
         AppContainerSid: profile.sid(),
         Capabilities: null_mut(),
@@ -824,9 +807,7 @@ unsafe fn spawn_appcontainer_suspended(
                 | CREATE_UNICODE_ENVIRONMENT
                 | CREATE_NO_WINDOW
                 | EXTENDED_STARTUPINFO_PRESENT,
-            environment
-                .as_mut()
-                .map_or(null_mut(), |block| block.as_mut_ptr().cast::<c_void>()),
+            environment.as_mut_ptr().cast::<c_void>(),
             current_directory.as_ptr(),
             &startup.StartupInfo,
             &mut process,
@@ -1111,22 +1092,18 @@ fn quote_windows_argument(value: &OsStr) -> String {
     quoted
 }
 
-fn run_self_test() -> Result<(), SandboxError> {
-    let (powershell, child_executable) = system_probe_executables()?;
+fn run_self_test(sidecar: &Path) -> Result<(), SandboxError> {
+    validate_probe_executable(sidecar)?;
+    let sidecar = fs::canonicalize(sidecar)
+        .map_err(|_| SandboxError::new("Windows sandbox probe executable cannot be resolved"))?;
     let fixture = WindowsSelfTestFixture::create()?;
     let base_arguments = vec![
-        std::ffi::OsString::from("-NoLogo"),
-        std::ffi::OsString::from("-NoProfile"),
-        std::ffi::OsString::from("-NonInteractive"),
-        std::ffi::OsString::from("-ExecutionPolicy"),
-        std::ffi::OsString::from("Bypass"),
-        std::ffi::OsString::from("-File"),
-        fixture.base_script.clone().into_os_string(),
+        std::ffi::OsString::from("--native-sandbox-self-test"),
         fixture.package.clone().into_os_string(),
         fixture.sensitive_file.clone().into_os_string(),
-        child_executable.into_os_string(),
+        sidecar.clone().into_os_string(),
     ];
-    match run_self_test_probe(&powershell, &fixture.package, &base_arguments)? {
+    match run_self_test_probe(&sidecar, &fixture.package, &base_arguments)? {
         0 => {}
         41 => {
             return Err(SandboxError::new(
@@ -1148,6 +1125,21 @@ fn run_self_test() -> Result<(), SandboxError> {
                 "Windows AppContainer self-test did not prove read-only package access",
             ));
         }
+        45 => {
+            return Err(SandboxError::new(
+                "Windows AppContainer self-test did not prove the process memory limit",
+            ));
+        }
+        48 => {
+            return Err(SandboxError::new(
+                "Windows AppContainer self-test could not read the package fixture",
+            ));
+        }
+        49 => {
+            return Err(SandboxError::new(
+                "Windows AppContainer self-test did not prove sensitive-file denial",
+            ));
+        }
         code => {
             return Err(SandboxError::from_process_exit(
                 "Windows AppContainer base self-test failed",
@@ -1156,52 +1148,16 @@ fn run_self_test() -> Result<(), SandboxError> {
         }
     }
 
-    let memory_arguments = vec![
-        std::ffi::OsString::from("-NoLogo"),
-        std::ffi::OsString::from("-NoProfile"),
-        std::ffi::OsString::from("-NonInteractive"),
-        std::ffi::OsString::from("-ExecutionPolicy"),
-        std::ffi::OsString::from("Bypass"),
-        std::ffi::OsString::from("-File"),
-        fixture.memory_script.clone().into_os_string(),
-    ];
-    match run_self_test_probe(&powershell, &fixture.package, &memory_arguments)? {
-        0 => {}
-        45 => {
-            return Err(SandboxError::new(
-                "Windows AppContainer self-test did not prove the process memory limit",
-            ));
-        }
-        code => {
-            return Err(SandboxError::from_process_exit(
-                "Windows AppContainer memory self-test failed",
-                code,
-            ));
-        }
-    }
-
-    let crash_arguments = powershell_file_arguments(&fixture.crash_script);
-    let crash_code = run_self_test_probe(&powershell, &fixture.package, &crash_arguments)?;
+    let crash_arguments = vec![std::ffi::OsString::from("--native-sandbox-crash")];
+    let crash_code = run_self_test_probe(&sidecar, &fixture.package, &crash_arguments)?;
     if crash_code == 0 || crash_code == STILL_ACTIVE as u32 {
         return Err(SandboxError::new(
             "Windows AppContainer crash probe was not observed as failed",
         ));
     }
 
-    let hang_arguments = powershell_file_arguments(&fixture.hang_script);
-    run_hang_termination_probe(&powershell, &fixture.package, &hang_arguments)
-}
-
-fn powershell_file_arguments(script: &Path) -> Vec<std::ffi::OsString> {
-    vec![
-        std::ffi::OsString::from("-NoLogo"),
-        std::ffi::OsString::from("-NoProfile"),
-        std::ffi::OsString::from("-NonInteractive"),
-        std::ffi::OsString::from("-ExecutionPolicy"),
-        std::ffi::OsString::from("Bypass"),
-        std::ffi::OsString::from("-File"),
-        script.as_os_str().to_owned(),
-    ]
+    let hang_arguments = vec![std::ffi::OsString::from("--native-sandbox-hang")];
+    run_hang_termination_probe(&sidecar, &fixture.package, &hang_arguments)
 }
 
 fn run_self_test_probe(
@@ -1216,8 +1172,7 @@ fn run_self_test_probe(
         arguments,
     };
     validate_launch(&launch)?;
-    let mut process =
-        unsafe { spawn_appcontainer_suspended(&launch, SidecarAcl::SystemProvided, true)? };
+    let mut process = unsafe { spawn_appcontainer_suspended(&launch, true)? };
     process.stdin.take();
     let wait = unsafe { WaitForSingleObject(raw_handle(&process.process), SELF_TEST_TIMEOUT_MS) };
     if wait == WAIT_TIMEOUT {
@@ -1253,8 +1208,7 @@ fn run_hang_termination_probe(
         arguments,
     };
     validate_launch(&launch)?;
-    let mut process =
-        unsafe { spawn_appcontainer_suspended(&launch, SidecarAcl::SystemProvided, true)? };
+    let mut process = unsafe { spawn_appcontainer_suspended(&launch, true)? };
     process.stdin.take();
 
     let observed =
@@ -1296,47 +1250,24 @@ fn run_hang_termination_probe(
     Ok(())
 }
 
-fn system_probe_executables() -> Result<(PathBuf, PathBuf), SandboxError> {
-    let mut buffer = vec![0u16; 32_768];
-    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
-    if length == 0 || length >= buffer.len() {
+fn validate_probe_executable(executable: &Path) -> Result<(), SandboxError> {
+    let metadata = fs::symlink_metadata(executable)
+        .map_err(|_| SandboxError::new("Windows sandbox probe executable is unavailable"))?;
+    if metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || !metadata.is_file()
+    {
         return Err(SandboxError::new(
-            "Windows system directory is unavailable for the sandbox probe",
+            "Windows sandbox probe is not a protected regular file",
         ));
     }
-    buffer.truncate(length);
-    let system = PathBuf::from(std::ffi::OsString::from_wide(&buffer));
-    let powershell = system
-        .join("WindowsPowerShell")
-        .join("v1.0")
-        .join("powershell.exe");
-    let powershell = fs::canonicalize(powershell)
-        .map_err(|_| SandboxError::new("Windows PowerShell sandbox probe is unavailable"))?;
-    let child = fs::canonicalize(system.join("cmd.exe"))
-        .map_err(|_| SandboxError::new("Windows child-process sandbox probe is unavailable"))?;
-    for executable in [&powershell, &child] {
-        let metadata = fs::symlink_metadata(executable)
-            .map_err(|_| SandboxError::new("Windows sandbox probe executable is unavailable"))?;
-        if metadata.file_type().is_symlink()
-            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-            || !metadata.is_file()
-        {
-            return Err(SandboxError::new(
-                "Windows sandbox probe is not a protected regular file",
-            ));
-        }
-    }
-    Ok((powershell, child))
+    Ok(())
 }
 
 struct WindowsSelfTestFixture {
     root: PathBuf,
     package: PathBuf,
     sensitive_file: PathBuf,
-    base_script: PathBuf,
-    memory_script: PathBuf,
-    crash_script: PathBuf,
-    hang_script: PathBuf,
 }
 
 impl WindowsSelfTestFixture {
@@ -1361,17 +1292,9 @@ impl WindowsSelfTestFixture {
             ));
         }
         let sensitive_file = sensitive.join("secret.txt");
-        let base_script = package.join("base-probe.ps1");
-        let memory_script = package.join("memory-probe.ps1");
-        let crash_script = package.join("crash-probe.ps1");
-        let hang_script = package.join("hang-probe.ps1");
         let writes = [
             (package.join("package-marker"), SELF_TEST_MARKER),
             (sensitive_file.clone(), SELF_TEST_SECRET),
-            (base_script.clone(), BASE_SELF_TEST_SCRIPT),
-            (memory_script.clone(), MEMORY_SELF_TEST_SCRIPT),
-            (crash_script.clone(), CRASH_SELF_TEST_SCRIPT),
-            (hang_script.clone(), HANG_SELF_TEST_SCRIPT),
         ];
         for (path, contents) in writes {
             if fs::write(path, contents).is_err() {
@@ -1385,10 +1308,6 @@ impl WindowsSelfTestFixture {
             root,
             package,
             sensitive_file,
-            base_script,
-            memory_script,
-            crash_script,
-            hang_script,
         })
     }
 }
@@ -1398,86 +1317,6 @@ impl Drop for WindowsSelfTestFixture {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
-
-const BASE_SELF_TEST_SCRIPT: &str = r#"
-param([string]$Package, [string]$Sensitive, [string]$ChildExecutable)
-$ErrorActionPreference = 'Stop'
-
-try {
-    $marker = [System.IO.File]::ReadAllText([System.IO.Path]::Combine($Package, 'package-marker'))
-    if ($marker -ne 'bbcom-appcontainer-readable-package') { exit 43 }
-} catch { exit 43 }
-
-try {
-    [System.IO.File]::WriteAllText([System.IO.Path]::Combine($Package, 'write-must-fail'), 'escape')
-    exit 44
-} catch {
-    $leaf = $_.Exception
-    while ($null -ne $leaf.InnerException) { $leaf = $leaf.InnerException }
-    if (-not ($leaf -is [System.UnauthorizedAccessException])) { exit 44 }
-}
-
-try {
-    [void][System.IO.File]::ReadAllText($Sensitive)
-    exit 43
-} catch {
-    $leaf = $_.Exception
-    while ($null -ne $leaf.InnerException) { $leaf = $leaf.InnerException }
-    if (-not ($leaf -is [System.UnauthorizedAccessException])) { exit 43 }
-}
-
-try {
-    $socket = [System.Net.Sockets.Socket]::new(
-        [System.Net.Sockets.AddressFamily]::InterNetwork,
-        [System.Net.Sockets.SocketType]::Stream,
-        [System.Net.Sockets.ProtocolType]::Tcp)
-    $socket.Connect([System.Net.IPAddress]::Loopback, 9)
-    exit 41
-} catch {
-    $leaf = $_.Exception
-    while ($null -ne $leaf.InnerException) { $leaf = $leaf.InnerException }
-    if (-not ($leaf -is [System.Net.Sockets.SocketException]) -or
-        $leaf.SocketErrorCode -ne [System.Net.Sockets.SocketError]::AccessDenied) { exit 41 }
-}
-
-try {
-    $child = Start-Process -FilePath $ChildExecutable -ArgumentList '/c', 'exit 0' -PassThru
-    if ($null -ne $child) { $child.WaitForExit() }
-    exit 42
-} catch {
-    $leaf = $_.Exception
-    while ($null -ne $leaf.InnerException) { $leaf = $leaf.InnerException }
-    if (-not ($leaf -is [System.ComponentModel.Win32Exception]) -or $leaf.NativeErrorCode -ne 5) {
-        exit 42
-    }
-}
-exit 0
-"#;
-
-const MEMORY_SELF_TEST_SCRIPT: &str = r#"
-$ErrorActionPreference = 'Stop'
-try {
-    $allocation = [byte[]]::new(320 * 1024 * 1024)
-    $allocation[0] = 1
-    exit 45
-} catch {
-    $leaf = $_.Exception
-    while ($null -ne $leaf.InnerException) { $leaf = $leaf.InnerException }
-    if ($leaf -is [System.OutOfMemoryException]) { exit 0 }
-    exit 45
-}
-"#;
-
-const CRASH_SELF_TEST_SCRIPT: &str = r#"
-$ErrorActionPreference = 'Stop'
-[Environment]::FailFast('bbcom G45 crash-observation probe')
-exit 0
-"#;
-
-const HANG_SELF_TEST_SCRIPT: &str = r#"
-$ErrorActionPreference = 'Stop'
-while ($true) { [Threading.Thread]::Sleep(1000) }
-"#;
 
 #[cfg(test)]
 mod tests {

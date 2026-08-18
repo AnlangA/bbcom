@@ -127,7 +127,6 @@ impl SandboxError {
         }
     }
 
-    #[cfg(target_os = "windows")]
     #[must_use]
     pub(crate) fn from_process_exit(context: &'static str, code: u32) -> Self {
         Self {
@@ -160,7 +159,7 @@ pub struct SandboxLaunch<'a> {
 /// default adapter preserves Linux/macOS command-based drivers. Setting the
 /// sidecar's attestation flags alone is never sufficient.
 pub trait SandboxDriver: Send + Sync + 'static {
-    fn self_test(&self) -> Result<SandboxSelfTest, SandboxError>;
+    fn self_test(&self, sidecar_executable: &Path) -> Result<SandboxSelfTest, SandboxError>;
     fn command(&self, launch: &SandboxLaunch<'_>) -> Result<Command, SandboxError>;
     fn spawn(&self, launch: &SandboxLaunch<'_>) -> Result<SandboxedChild, SandboxError> {
         let mut command = self.command(launch)?;
@@ -494,7 +493,7 @@ where
             return Err(HostLauncherBuildError::SidecarExecutable);
         }
         let self_test = sandbox
-            .self_test()
+            .self_test(sidecar_executable)
             .map_err(HostLauncherBuildError::SandboxUnavailable)?;
         if !self_test.is_complete() {
             return Err(HostLauncherBuildError::SandboxUnavailable(
@@ -1207,7 +1206,7 @@ mod tests {
     }
 
     impl SandboxDriver for FixedSandbox {
-        fn self_test(&self) -> Result<SandboxSelfTest, SandboxError> {
+        fn self_test(&self, _sidecar_executable: &Path) -> Result<SandboxSelfTest, SandboxError> {
             self.result.clone()
         }
 
