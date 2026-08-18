@@ -1433,7 +1433,7 @@ fn failure_code(failure: Option<&PluginOperationFailure>) -> PluginFailureCode {
     // Exact-match table: substring matching mislabeled failures (e.g. an
     // INSTALLER_* repository error landing in HostFailed because its message
     // contained "HOST"). Unknown codes degrade to Unavailable.
-    match &*failure.code {
+    match failure.code {
         "PLUGIN_INSTALL_PREPARE_FAILED"
         | "PLUGIN_INSTALL_COMMIT_FAILED"
         | "PLUGIN_INSTALL_DISCARD_FAILED"

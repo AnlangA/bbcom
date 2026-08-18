@@ -674,9 +674,8 @@ where
         let plugin_storage = self
             .persistence
             .load_plugin_storage(&state_key)
-            .map_err(|error| {
+            .inspect_err(|error| {
                 tracing::warn!(?error, plugin_id = %request.artifact.plugin_id, "plugin storage load failed before host launch");
-                error
             })?
             .unwrap_or_else(empty_plugin_storage_payload);
         let initial_state = PluginPersistedState {
@@ -705,16 +704,14 @@ where
                 &request.artifact.version,
                 &request.artifact_slot,
             )
-            .map_err(|error| {
+            .inspect_err(|error| {
                 tracing::warn!(?error, plugin_id = %request.artifact.plugin_id, "plugin artifact resolution failed before host launch");
-                error
             })?;
         let package_root = self
             .private_root
             .validate_package(resolved.package_root())
-            .map_err(|error| {
+            .inspect_err(|error| {
                 tracing::warn!(?error, plugin_id = %request.artifact.plugin_id, package_root = %resolved.package_root().display(), "plugin package validation failed before host launch");
-                error
             })?;
         let mut arguments = vec![
             OsString::from("--package-root"),

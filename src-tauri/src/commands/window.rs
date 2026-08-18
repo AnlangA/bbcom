@@ -73,7 +73,7 @@ pub fn resize_ai_window(
         .zip(window.inner_size().ok())
         .map(|(outer, inner)| {
             (outer.height.saturating_sub(inner.height)) as f64
-                / window.scale_factor().unwrap_or(1.0) as f64
+                / window.scale_factor().unwrap_or(1.0)
         })
         .unwrap_or(0.0);
     let (width, height) =
