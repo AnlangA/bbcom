@@ -133,8 +133,17 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get \
+            -o Acquire::Languages=none \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
@@ -397,7 +406,11 @@ jobs:
           run_gui_smoke appimage env APPIMAGE_EXTRACT_AND_RUN=1 "${GITHUB_WORKSPACE}/${appimage[0]}"
           dpkg-deb --info "${deb[0]}" >/dev/null
           package="$(dpkg-deb -f "${deb[0]}" Package)"
-          sudo apt-get install -y "${GITHUB_WORKSPACE}/${deb[0]}"
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            install -y "${GITHUB_WORKSPACE}/${deb[0]}"
           binary="$(dpkg -L "$package" | awk '/^\/usr\/bin\// { print; exit }')"
           sidecar="$(dpkg -L "$package" | awk '/bbcom-plugin-host/ { print; exit }')"
           test -n "$binary"
