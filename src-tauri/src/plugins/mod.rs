@@ -9,6 +9,7 @@ mod command_service;
 mod g45_probe;
 mod host_launcher;
 mod installation;
+mod market_readiness_probe;
 mod repository;
 mod runtime_actor;
 mod runtime_wiring;
@@ -55,7 +56,9 @@ pub use command_service::{
     ProposalBrokerPort,
 };
 pub use g45_probe::{PluginG45ProbeError, run_plugin_g45_probe_from_environment};
+pub(crate) use market_readiness_probe::PluginMarketReadinessProbe;
 pub use runtime_actor::PluginRuntimeActorHandle;
+pub(crate) use runtime_wiring::PluginRuntimeDataRoot;
 pub use runtime_wiring::{
     PluginLifecycleHandle, SerialActionResultRegistry, SessionQueryResultRegistry,
     activate_plugin_workspace, close_plugin_project, compose, ensure_plugin_runtime,

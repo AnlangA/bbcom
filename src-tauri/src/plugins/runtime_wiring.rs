@@ -17,6 +17,7 @@
 //! - installer rollback snapshots: `plugin-state-v2/installer-snapshots`
 //! - opaque plugin storage: `plugin-state-v2`
 //! - bounded broker audit log: `logs/plugin-audit.jsonl`
+//! - Windows AppContainer host copy: `plugin-host-v1` (content addressed)
 //!
 //! On-disk plugin roots for every builder dependency are resolved by native
 //! setup only; no command, event, DTO or renderer string can select them.
@@ -62,6 +63,7 @@ use super::sandbox::PlatformSandboxDriver;
 use super::state::NativePluginStatePersistencePort;
 
 const SIDECAR_BASENAME: &str = "bbcom-plugin-host";
+static NEXT_SIDECAR_STAGE_ID: AtomicU64 = AtomicU64::new(1);
 /// Serial actions wait at most this long for a main-window acknowledgement
 /// before the operation is reported as unavailable (fail-closed).
 /// The webview acknowledgement round trip includes the user-visible send
@@ -541,15 +543,34 @@ pub fn activate_plugin_workspace<R: tauri::Runtime>(app: &AppHandle<R>) {
 fn app_data_roots<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> Result<PluginRuntimeRoots, PluginBootstrapError> {
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| PluginBootstrapError::MissingInstaller)?;
+    let app_data = match app.try_state::<PluginRuntimeDataRoot>() {
+        Some(root) => root.0.clone(),
+        None => app
+            .path()
+            .app_data_dir()
+            .map_err(|_| PluginBootstrapError::MissingInstaller)?,
+    };
     // An unresolvable or unwritable application-data root fails composition
     // with the first-dependency code; setup records only that code.
     fs::create_dir_all(&app_data).map_err(|_| PluginBootstrapError::MissingInstaller)?;
-    let sidecar_executable =
+    let bundled_sidecar =
         resolve_sidecar_executable().ok_or(PluginBootstrapError::MissingSidecarExecutable)?;
+    // A packaged Windows sidecar commonly lives under Program Files. Standard
+    // users cannot add the per-AppContainer read/execute ACE there, so launch
+    // used to fail even though discovery and the sandbox self-test succeeded.
+    // Copy the byte-verified executable into user-owned app data before the
+    // Windows ACL lease is acquired. Content-addressing makes upgrades and
+    // crash recovery deterministic without ever overwriting a running host.
+    let sidecar_executable = if cfg!(windows) {
+        stage_runtime_sidecar(&bundled_sidecar, &app_data.join("plugin-host-v1")).map_err(
+            |error| {
+                tracing::warn!(%error, "Windows plugin host staging failed");
+                PluginBootstrapError::MissingSidecarExecutable
+            },
+        )?
+    } else {
+        bundled_sidecar
+    };
     Ok(PluginRuntimeRoots {
         installer_packages: app_data.join("plugins-v2"),
         // Installer staging lives OUTSIDE `plugin-state-v2`: `open_installer`
@@ -1074,6 +1095,10 @@ fn audit_line(event: &AuditEvent) -> String {
 /// dangling-reference risk.
 pub struct PluginLifecycleHandle(Mutex<Option<Arc<dyn PluginRuntimeLifecycle>>>);
 
+/// Private G46 override installed before composition. Normal application
+/// setup never manages this type and therefore always uses the OS data root.
+pub(crate) struct PluginRuntimeDataRoot(pub(crate) PathBuf);
+
 impl PluginLifecycleHandle {
     fn empty() -> Self {
         Self(Mutex::new(None))
@@ -1087,7 +1112,7 @@ impl PluginLifecycleHandle {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
 
-    fn current(&self) -> Option<Arc<dyn PluginRuntimeLifecycle>> {
+    pub(super) fn current(&self) -> Option<Arc<dyn PluginRuntimeLifecycle>> {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1342,6 +1367,87 @@ fn is_regular_file(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
 }
 
+/// Materialize an immutable, content-addressed sidecar in a writable private
+/// root. This is platform-neutral for unit coverage but used only on Windows.
+fn stage_runtime_sidecar(source: &Path, root: &Path) -> std::io::Result<PathBuf> {
+    let source_metadata = fs::symlink_metadata(source)?;
+    if !source_metadata.is_file() || source_metadata.file_type().is_symlink() {
+        return Err(std::io::Error::other(
+            "plugin sidecar source is not a regular file",
+        ));
+    }
+    let digest = file_sha256(source)?;
+    fs::create_dir_all(root)?;
+    let root_metadata = fs::symlink_metadata(root)?;
+    if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
+        return Err(std::io::Error::other(
+            "plugin sidecar runtime root is unsafe",
+        ));
+    }
+
+    let extension = source.extension().and_then(|value| value.to_str());
+    let file_name = match extension {
+        Some(extension) => format!("{SIDECAR_BASENAME}-{digest}.{extension}"),
+        None => format!("{SIDECAR_BASENAME}-{digest}"),
+    };
+    let destination = root.join(file_name);
+    match fs::symlink_metadata(&destination) {
+        Ok(metadata) => {
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(std::io::Error::other("staged plugin sidecar is unsafe"));
+            }
+            if file_sha256(&destination)? == digest {
+                return Ok(destination);
+            }
+            fs::remove_file(&destination)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let sequence = NEXT_SIDECAR_STAGE_ID.fetch_add(1, Ordering::Relaxed);
+    let temporary = root.join(format!(
+        ".{SIDECAR_BASENAME}-{}-{sequence}.tmp",
+        std::process::id()
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut input = File::open(source)?;
+        let mut output = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)?;
+        std::io::copy(&mut input, &mut output)?;
+        output.flush()?;
+        output.sync_all()?;
+        if file_sha256(&temporary)? != digest {
+            return Err(std::io::Error::other(
+                "staged plugin sidecar digest mismatch",
+            ));
+        }
+        fs::rename(&temporary, &destination)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
+    Ok(destination)
+}
+
+fn file_sha256(path: &Path) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
 /// Compile-target triple used for dev sidecar fallbacks. Packaged resolution
 /// does not depend on it; an unmapped platform simply has no dev fallback.
 fn current_target_triple() -> &'static str {
@@ -1366,5 +1472,69 @@ fn current_target_triple() -> &'static str {
         ("windows", "x86_64") => "x86_64-pc-windows-msvc",
         ("windows", "aarch64") => "aarch64-pc-windows-msvc",
         _ => "",
+    }
+}
+
+#[cfg(test)]
+mod sidecar_staging_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_sidecar_is_content_addressed_reused_and_repaired() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let source = fixture.path().join("bbcom-plugin-host.exe");
+        let runtime = fixture.path().join("runtime");
+        fs::write(&source, b"trusted-sidecar-v1").expect("source");
+
+        let first = stage_runtime_sidecar(&source, &runtime).expect("first stage");
+        let second = stage_runtime_sidecar(&source, &runtime).expect("reuse stage");
+        assert_eq!(first, second);
+        assert_eq!(
+            fs::read(&first).expect("staged bytes"),
+            b"trusted-sidecar-v1"
+        );
+
+        fs::write(&first, b"corrupt").expect("corrupt staged copy");
+        let repaired = stage_runtime_sidecar(&source, &runtime).expect("repair stage");
+        assert_eq!(repaired, first);
+        assert_eq!(
+            fs::read(repaired).expect("repaired bytes"),
+            b"trusted-sidecar-v1"
+        );
+
+        fs::write(&source, b"trusted-sidecar-v2").expect("upgrade source");
+        let upgraded = stage_runtime_sidecar(&source, &runtime).expect("upgrade stage");
+        assert_ne!(upgraded, first);
+        assert_eq!(
+            fs::read(upgraded).expect("upgraded bytes"),
+            b"trusted-sidecar-v2"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_sidecar_rejects_symlink_sources_roots_and_destinations() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let source = fixture.path().join("host.exe");
+        let source_link = fixture.path().join("host-link.exe");
+        fs::write(&source, b"host").expect("source");
+        symlink(&source, &source_link).expect("source link");
+        assert!(stage_runtime_sidecar(&source_link, &fixture.path().join("runtime")).is_err());
+
+        let real_root = fixture.path().join("real-runtime");
+        let linked_root = fixture.path().join("linked-runtime");
+        fs::create_dir(&real_root).expect("real root");
+        symlink(&real_root, &linked_root).expect("root link");
+        assert!(stage_runtime_sidecar(&source, &linked_root).is_err());
+
+        let runtime = fixture.path().join("runtime");
+        fs::create_dir(&runtime).expect("runtime");
+        let digest = file_sha256(&source).expect("source digest");
+        let destination = runtime.join(format!("{SIDECAR_BASENAME}-{digest}.exe"));
+        let dangling_target = runtime.join("missing.exe");
+        symlink(dangling_target, destination).expect("destination link");
+        assert!(stage_runtime_sidecar(&source, &runtime).is_err());
     }
 }

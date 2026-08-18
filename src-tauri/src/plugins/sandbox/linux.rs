@@ -342,7 +342,7 @@ impl Default for LinuxSandboxDriver {
 }
 
 impl SandboxDriver for LinuxSandboxDriver {
-    fn self_test(&self) -> Result<SandboxSelfTest, SandboxError> {
+    fn self_test(&self, _sidecar_executable: &Path) -> Result<SandboxSelfTest, SandboxError> {
         self.run_self_test()?;
         Ok(SandboxSelfTest {
             blocks_network: true,

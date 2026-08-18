@@ -9,6 +9,9 @@
 - Start one sidecar process per enabled plugin and retain the process-lifetime
   manager/actor in native application state.
 - Run the platform sandbox self-test before exposing the plugin command service.
+- On Windows, stage the packaged sidecar by SHA-256 below the user-owned
+  application-data root before granting the AppContainer read/execute ACL;
+  never require permission changes under the application install directory.
 - Keep project state in workspace persistence and private `plugin.storage`
   below the application-data state root.
 - Validate panel publications and panel events through the declarative broker.

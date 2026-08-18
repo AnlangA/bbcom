@@ -68,6 +68,11 @@ interface ActivationEnvelope {
   readonly expectedName?: string;
 }
 
+interface SanitizedActivation {
+  readonly active: ActiveWorkspaceViewModel;
+  readonly project: WorkspaceProjectViewModel;
+}
+
 let fallbackIdSequence = 0;
 
 /**
@@ -503,8 +508,8 @@ export class WorkspaceCoordinator {
     try {
       const envelope = await invoke(call);
       if (!this.isCurrentActivation(call)) return staleOutcome(call);
-      const active = sanitizeActivationResponse(envelope);
-      this.activateHeader(active);
+      const activation = sanitizeActivationResponse(envelope);
+      this.activateHeader(activation.active, activation.project);
       this.activationCall = null;
       this.navigationAction = null;
       this.libraryStatus = 'ready';
@@ -534,7 +539,10 @@ export class WorkspaceCoordinator {
     }
   }
 
-  private activateHeader(header: ActiveWorkspaceViewModel): void {
+  private activateHeader(
+    header: ActiveWorkspaceViewModel,
+    project: WorkspaceProjectViewModel,
+  ): void {
     if (this.active?.workspaceId === header.workspaceId && header.revision < this.active.revision) {
       throw new InvalidWorkspaceResponseError('revision');
     }
@@ -549,29 +557,38 @@ export class WorkspaceCoordinator {
       layout: header.layout,
     };
     this.catalogActiveWorkspaceId = header.workspaceId;
-    this.mergeActiveIntoProjects();
+    this.mergeActiveIntoProjects(project);
   }
 
   private setSaveHealth(health: WorkspaceSaveHealth): void {
     if (this.active) this.active.saveHealth = health;
   }
 
-  private mergeActiveIntoProjects(): void {
+  private mergeActiveIntoProjects(summary?: WorkspaceProjectViewModel): void {
     const active = this.active;
     if (!active) return;
-    const existing = this.projects.find((project) => project.workspaceId === active.workspaceId);
+    const existingIndex = this.projects.findIndex(
+      (project) => project.workspaceId === active.workspaceId,
+    );
+    const existing = existingIndex >= 0 ? this.projects[existingIndex] : undefined;
     const merged: WorkspaceProjectViewModel = Object.freeze({
       workspaceId: active.workspaceId,
       name: active.name,
       revision: Math.max(active.revision, existing?.revision ?? 0),
-      updatedAtMs: Math.max(existing?.updatedAtMs ?? 0, Date.now()),
+      // Activation is not a project edit. Preserve the catalog timestamp, or
+      // use the authoritative activation summary for a newly created/imported
+      // project, instead of manufacturing recency with Date.now().
+      updatedAtMs: summary?.updatedAtMs ?? existing?.updatedAtMs ?? 0,
       saveHealth: active.saveHealth,
       active: true,
     });
-    this.projects = Object.freeze([
-      merged,
-      ...this.projects.filter((project) => project.workspaceId !== active.workspaceId),
-    ]);
+    if (existingIndex < 0) {
+      this.projects = Object.freeze([...this.projects, merged]);
+      return;
+    }
+    const projects = [...this.projects];
+    projects[existingIndex] = merged;
+    this.projects = Object.freeze(projects);
   }
 
   private beginCall(scope: 'catalog' | 'activate' | 'export', generation: number): PendingCall {
@@ -625,7 +642,7 @@ export class WorkspaceCoordinator {
   }
 }
 
-function sanitizeActivationResponse(envelope: ActivationEnvelope): ActiveWorkspaceViewModel {
+function sanitizeActivationResponse(envelope: ActivationEnvelope): SanitizedActivation {
   requireMatchingRequestId(envelope.response.requestId, envelope.expectedRequestId);
   const summary = sanitizeWorkspaceSummary(envelope.response.workspace);
   const header = sanitizeHeader(envelope.response.header);
@@ -645,7 +662,10 @@ function sanitizeActivationResponse(envelope: ActivationEnvelope): ActiveWorkspa
   if (envelope.expectedName !== undefined && summary.name !== envelope.expectedName) {
     throw new InvalidWorkspaceResponseError('name');
   }
-  return Object.freeze({ ...header, saveHealth: summary.saveHealth });
+  return Object.freeze({
+    active: Object.freeze({ ...header, saveHealth: summary.saveHealth }),
+    project: summary,
+  });
 }
 
 function validateEncryption(encryption: ProjectEncryptionOptions): ProjectEncryptionOptions {

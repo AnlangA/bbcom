@@ -1,6 +1,5 @@
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,89 +10,9 @@ use super::{SandboxDriver, SandboxError, SandboxLaunch, SandboxSelfTest};
 
 const MAX_HOST_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
-const SELF_TEST_PYTHON: &str = "/usr/bin/python3";
-const SELF_TEST_MARKER: &str = "bbcom-seatbelt-readable-package";
-const SELF_TEST_SECRET: &str = "bbcom-seatbelt-sensitive-home";
+const SELF_TEST_MARKER: &str = "bbcom-native-sandbox-readable-package";
+const SELF_TEST_SECRET: &str = "bbcom-native-sandbox-sensitive-file";
 const PROCESS_PROBE_OBSERVATION: Duration = Duration::from_millis(200);
-const SELF_TEST_SCRIPT: &str = r#"
-import errno
-import os
-import resource
-import socket
-import sys
-
-package = sys.argv[1]
-sensitive = sys.argv[2]
-limit = int(sys.argv[3])
-
-try:
-    with open(os.path.join(package, "package-marker"), "r", encoding="ascii") as marker:
-        if marker.read() != "bbcom-seatbelt-readable-package":
-            raise SystemExit(43)
-except OSError:
-    raise SystemExit(43)
-
-try:
-    open(os.path.join(package, "write-must-fail"), "wb")
-except OSError as error:
-    if error.errno not in (errno.EPERM, errno.EACCES, errno.EROFS):
-        raise SystemExit(44)
-else:
-    raise SystemExit(44)
-
-if os.environ.get("HOME") != sensitive:
-    raise SystemExit(43)
-for forbidden in (
-    os.path.join(sensitive, "home-secret"),
-    "/etc/passwd",
-):
-    try:
-        open(forbidden, "rb")
-    except OSError as error:
-        if error.errno not in (errno.EPERM, errno.EACCES, errno.ENOENT):
-            raise SystemExit(43)
-    else:
-        raise SystemExit(43)
-
-stream = None
-try:
-    stream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    stream.settimeout(0.1)
-    stream.connect(("127.0.0.1", 9))
-except OSError as error:
-    if error.errno not in (errno.EPERM, errno.EACCES):
-        # Connection-refused or timeout means ambient network authority was
-        # available even though no server accepted the probe.
-        raise SystemExit(41)
-else:
-    raise SystemExit(41)
-finally:
-    if stream is not None:
-        stream.close()
-
-try:
-    child = os.fork()
-except OSError as error:
-    if error.errno not in (errno.EPERM, errno.EACCES):
-        raise SystemExit(42)
-else:
-    if child == 0:
-        os._exit(42)
-    os.waitpid(child, 0)
-    raise SystemExit(42)
-
-soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-if soft != limit or hard != limit:
-    raise SystemExit(45)
-
-try:
-    allocation = bytearray(limit)
-except MemoryError:
-    pass
-else:
-    del allocation
-    raise SystemExit(45)
-"#;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -139,43 +58,34 @@ impl MacOsSandboxDriver {
         let profile = seatbelt_profile(&executable, &package)?;
         let mut command = Command::new(&self.sandbox_exec);
         command.arg("-p").arg(profile).arg("--").arg(executable);
-        apply_memory_limit(&mut command, launch.memory_limit_bytes);
         Ok(command)
     }
 
-    fn run_self_test(&self) -> Result<(), SandboxError> {
+    fn run_self_test(&self, sidecar: &Path) -> Result<(), SandboxError> {
         validate_system_executable(
             &self.sandbox_exec,
             "macOS Seatbelt interface is unavailable",
         )?;
-        let python = PathBuf::from(SELF_TEST_PYTHON);
-        validate_system_executable(&python, "macOS Seatbelt probe interpreter is unavailable")?;
-        let python = fs::canonicalize(python).map_err(|_| {
-            SandboxError::new("macOS Seatbelt probe interpreter cannot be resolved")
-        })?;
+        validate_regular_file(sidecar, "macOS Seatbelt probe executable is unavailable")?;
+        let sidecar = fs::canonicalize(sidecar)
+            .map_err(|_| SandboxError::new("macOS Seatbelt probe executable cannot be resolved"))?;
         let fixture = SelfTestFixture::create()?;
-        let profile = self_test_profile(&python, &fixture.package)?;
-        let mut command = Command::new(&self.sandbox_exec);
+        let package = fs::canonicalize(&fixture.package)
+            .map_err(|_| SandboxError::new("macOS Seatbelt package fixture cannot be resolved"))?;
+        let sensitive = fs::canonicalize(fixture.sensitive.join("home-secret")).map_err(|_| {
+            SandboxError::new("macOS Seatbelt sensitive fixture cannot be resolved")
+        })?;
+        let mut command = self.self_test_process_command(&sidecar, &fixture)?;
         command
-            .env_clear()
-            .env("HOME", &fixture.sensitive)
-            .arg("-p")
-            .arg(profile)
-            .arg("--")
-            .arg(&python)
-            .arg("-I")
-            .arg("-S")
-            .arg("-c")
-            .arg(SELF_TEST_SCRIPT)
-            .arg(&fixture.package)
-            .arg(&fixture.sensitive)
-            .arg(MAX_HOST_MEMORY_BYTES.to_string());
-        apply_memory_limit(&mut command, MAX_HOST_MEMORY_BYTES);
+            .arg("--native-sandbox-self-test")
+            .arg(&package)
+            .arg(&sensitive)
+            .arg(&sidecar);
         let status = command
             .status()
             .map_err(|_| SandboxError::new("macOS Seatbelt self-test could not start"))?;
         match status.code() {
-            Some(0) => self.run_process_resilience_probes(&python, &fixture),
+            Some(0) => self.run_process_resilience_probes(&sidecar, &fixture),
             Some(41) => Err(SandboxError::new(
                 "macOS Seatbelt self-test did not prove network denial",
             )),
@@ -191,21 +101,30 @@ impl MacOsSandboxDriver {
             Some(45) => Err(SandboxError::new(
                 "macOS Seatbelt self-test did not prove the memory limit",
             )),
-            _ => Err(SandboxError::new("macOS Seatbelt self-test failed")),
+            Some(48) => Err(SandboxError::new(
+                "macOS Seatbelt self-test could not read the package fixture",
+            )),
+            Some(49) => Err(SandboxError::new(
+                "macOS Seatbelt self-test did not prove sensitive-file denial",
+            )),
+            Some(code) => Err(SandboxError::from_process_exit(
+                "macOS Seatbelt self-test failed",
+                code.cast_unsigned(),
+            )),
+            None => Err(SandboxError::new(
+                "macOS Seatbelt self-test ended without an exit code",
+            )),
         }
     }
 
     fn run_process_resilience_probes(
         &self,
-        python: &Path,
+        sidecar: &Path,
         fixture: &SelfTestFixture,
     ) -> Result<(), SandboxError> {
-        let mut crash = self.self_test_process_command(python, fixture)?;
+        let mut crash = self.self_test_process_command(sidecar, fixture)?;
         let crash_status = crash
-            .arg("-I")
-            .arg("-S")
-            .arg("-c")
-            .arg("import os; os.abort()")
+            .arg("--native-sandbox-crash")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -217,12 +136,9 @@ impl MacOsSandboxDriver {
             ));
         }
 
-        let mut hang = self.self_test_process_command(python, fixture)?;
+        let mut hang = self.self_test_process_command(sidecar, fixture)?;
         let mut child = hang
-            .arg("-I")
-            .arg("-S")
-            .arg("-c")
-            .arg("while True: pass")
+            .arg("--native-sandbox-hang")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -263,10 +179,12 @@ impl MacOsSandboxDriver {
 
     fn self_test_process_command(
         &self,
-        python: &Path,
+        sidecar: &Path,
         fixture: &SelfTestFixture,
     ) -> Result<Command, SandboxError> {
-        let profile = self_test_profile(python, &fixture.package)?;
+        let package = fs::canonicalize(&fixture.package)
+            .map_err(|_| SandboxError::new("macOS Seatbelt package fixture cannot be resolved"))?;
+        let profile = self_test_profile(sidecar, &package)?;
         let mut command = Command::new(&self.sandbox_exec);
         command
             .env_clear()
@@ -274,8 +192,7 @@ impl MacOsSandboxDriver {
             .arg("-p")
             .arg(profile)
             .arg("--")
-            .arg(python);
-        apply_memory_limit(&mut command, MAX_HOST_MEMORY_BYTES);
+            .arg(sidecar);
         Ok(command)
     }
 }
@@ -287,8 +204,8 @@ impl Default for MacOsSandboxDriver {
 }
 
 impl SandboxDriver for MacOsSandboxDriver {
-    fn self_test(&self) -> Result<SandboxSelfTest, SandboxError> {
-        self.run_self_test()?;
+    fn self_test(&self, sidecar_executable: &Path) -> Result<SandboxSelfTest, SandboxError> {
+        self.run_self_test(sidecar_executable)?;
         Ok(SandboxSelfTest {
             blocks_network: true,
             blocks_child_processes: true,
@@ -343,6 +260,7 @@ fn seatbelt_profile(executable: &Path, package: &Path) -> Result<String, Sandbox
 (deny network*)
 (deny process-fork)
 (allow process-exec (literal "{executable}"))
+(allow file-read-data (literal "/"))
 (allow file-read* (literal "{executable}"))
 (allow file-read* (subpath "{package}"))
 (allow file-read* (subpath "/System/Library"))
@@ -369,32 +287,16 @@ fn self_test_profile(executable: &Path, package: &Path) -> Result<String, Sandbo
 (deny network*)
 (deny process-fork)
 (allow process-exec (literal "{executable}"))
+(allow file-read-data (literal "/"))
 (allow file-read* (literal "{executable}"))
 (allow file-read* (subpath "{package}"))
 (allow file-read* (subpath "/System/Library"))
 (allow file-read* (subpath "/usr/lib"))
-(allow file-read* (subpath "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework"))
 (allow file-read-metadata)
 (allow sysctl-read)
 (allow mach-lookup (global-name "com.apple.system.logger"))
 "#
     ))
-}
-
-fn apply_memory_limit(command: &mut Command, memory_limit_bytes: usize) {
-    let limit = memory_limit_bytes as u64;
-    unsafe {
-        command.pre_exec(move || {
-            let value = RLimit {
-                current: limit,
-                maximum: limit,
-            };
-            if setrlimit(RLIMIT_AS, &value) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
 }
 
 struct SelfTestFixture {
@@ -478,18 +380,6 @@ fn escape_profile_literal(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-#[repr(C)]
-struct RLimit {
-    current: u64,
-    maximum: u64,
-}
-
-const RLIMIT_AS: i32 = 5;
-
-unsafe extern "C" {
-    fn setrlimit(resource: i32, limit: *const RLimit) -> i32;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,9 +404,15 @@ mod tests {
     }
 
     #[test]
-    fn probe_maps_every_missing_evidence_to_a_distinct_exit_code() {
-        for code in [41, 42, 43, 44, 45] {
-            assert!(SELF_TEST_SCRIPT.contains(&format!("SystemExit({code})")));
-        }
+    fn probe_profile_runs_only_the_trusted_sidecar() {
+        let profile = self_test_profile(
+            Path::new("/Applications/bbcom.app/Contents/MacOS/bbcom-plugin-host"),
+            Path::new("/private/var/plugin-package"),
+        )
+        .unwrap();
+        assert!(profile.contains("bbcom-plugin-host"));
+        assert!(profile.contains("plugin-package"));
+        assert!(!profile.contains("Python"));
+        assert!(profile.contains("(allow file-read-data (literal \"/\"))"));
     }
 }

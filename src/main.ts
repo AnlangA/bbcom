@@ -129,6 +129,7 @@ if (!isAiWindow) {
   const workspaceCoordinator = new workspace.WorkspaceCoordinator(workspacePort, {
     operations: workspace.workspaceOperationLifecycleFor(applicationServices.operationRegistry),
   });
+  const workspaceSessionFacade = new workspace.WorkspaceSessionFacadeBridge();
   const runtimeContext: {
     application: InstanceType<typeof workspace.WorkspaceApplicationService> | null;
     adapter: InstanceType<typeof workspace.SessionStoreWorkspaceAdapter> | null;
@@ -170,12 +171,7 @@ if (!isAiWindow) {
   const workspaceApplication = new workspace.WorkspaceApplicationService(
     workspaceCoordinator,
     workspacePort,
-    {
-      replaceWorkspace(snapshot) {
-        sessionStore.replaceWorkspaceSessions(snapshot.sessions, snapshot.activeSessionId);
-        workspaceUi.apply(snapshot.layout);
-      },
-    },
+    workspaceSessionFacade,
     {
       runtimeLifecycle: transitions,
       onPersistenceFailure() {
@@ -192,6 +188,12 @@ if (!isAiWindow) {
     sessionStore,
     workspaceApplication,
   );
+  workspaceSessionFacade.bind({
+    replaceWorkspace(snapshot) {
+      workspaceAdapter.replaceWorkspace(snapshot);
+      workspaceUi.apply(snapshot.layout);
+    },
+  });
   runtimeContext.adapter = workspaceAdapter;
   workspaceAdapter.start();
   workspaceUi.subscribe((layout) => {

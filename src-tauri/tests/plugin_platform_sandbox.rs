@@ -17,8 +17,12 @@ use serde::Serialize;
 #[ignore = "run only in the native G45 plugin market gate"]
 fn platform_sandbox_self_test_proves_os_controls() {
     let sandbox = PlatformSandboxDriver::system();
+    let sidecar = std::env::var_os("BBCOM_G45_SIDECAR")
+        .map(PathBuf::from)
+        .expect("BBCOM_G45_SIDECAR must identify the reviewed probe executable");
+    let sidecar = fs::canonicalize(sidecar).expect("the reviewed probe executable must exist");
     let evidence = sandbox
-        .self_test()
+        .self_test(&sidecar)
         .expect("the native plugin sandbox self-test must be executable and complete");
     assert!(evidence.blocks_network, "network denial was not proven");
     assert!(

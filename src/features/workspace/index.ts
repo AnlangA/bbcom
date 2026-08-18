@@ -2,7 +2,10 @@ export { createProjectLibraryViewModel } from './project-library-view-model';
 export { WorkspaceCoordinator } from './workspace-coordinator';
 export { TauriWorkspacePort } from './tauri-workspace-port';
 export { ValidatedWorkspaceGateway } from './validated-workspace-gateway';
-export { SessionStoreWorkspaceAdapter } from './session-store-workspace-adapter';
+export {
+  SessionStoreWorkspaceAdapter,
+  WorkspaceSessionFacadeBridge,
+} from './session-store-workspace-adapter';
 export { DEFAULT_WORKSPACE_LAYOUT, useWorkspaceUiStore } from './workspace-ui-store';
 export * from './adapters';
 export * from './application';

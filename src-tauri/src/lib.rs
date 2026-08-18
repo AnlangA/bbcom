@@ -12,6 +12,14 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let market_readiness_probe = match plugins::PluginMarketReadinessProbe::from_environment() {
+        None => None,
+        Some(Ok(probe)) => Some(probe),
+        Some(Err(error)) => {
+            eprintln!("plugin market-readiness probe failed: {error}");
+            std::process::exit(2);
+        }
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -28,9 +36,22 @@ pub fn run() {
         .manage(commands::shutdown::ShutdownGate::default())
         .manage(commands::plugin::PluginLocalGrantState::default())
         .manage(commands::legacy_backup::LegacyBackupManager::default())
-        .setup(|app| {
-            let app_data_root = app.path().app_data_dir()?;
+        .setup(move |app| {
+            let app_data_root = match &market_readiness_probe {
+                Some(probe) => {
+                    probe.prepare_data_root().map_err(|error| {
+                        std::io::Error::other(format!(
+                            "plugin market-readiness probe failed: {error}"
+                        ))
+                    })?;
+                    probe.data_root().to_path_buf()
+                }
+                None => app.path().app_data_dir()?,
+            };
             let workspace_root = app_data_root.join("projects-v1");
+            if market_readiness_probe.is_some() {
+                app.manage(plugins::PluginRuntimeDataRoot(app_data_root.clone()));
+            }
             app.manage(commands::workspace::WorkspaceManager::open(workspace_root)?);
             let plugin_sources = Arc::new(
                 plugins::NativePluginSourceRegistry::open(
@@ -49,6 +70,13 @@ pub fn run() {
             // A missing active workspace (fresh install) composes later when
             // the first workspace is created or opened.
             plugins::ensure_plugin_runtime(app.handle());
+            if let Some(probe) = &market_readiness_probe {
+                probe.write_evidence(app.handle()).map_err(|error| {
+                    std::io::Error::other(format!("plugin market-readiness probe failed: {error}"))
+                })?;
+                app.handle().exit(0);
+                return Ok(());
+            }
             plugins::spawn_dev_directory_watchers(app.handle().clone());
             app.manage(commands::legacy_reset::LegacyResetManager::open(
                 app_data_root.join("reset-v1"),

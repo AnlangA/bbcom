@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { test, vi } from 'vitest';
 
 import { createSessionRecord } from '../../src/lib/session-persistence.ts';
-import { SessionStoreWorkspaceAdapter } from '../../src/features/workspace/session-store-workspace-adapter.ts';
+import {
+  SessionStoreWorkspaceAdapter,
+  WorkspaceSessionFacadeBridge,
+} from '../../src/features/workspace/session-store-workspace-adapter.ts';
 import type {
   WorkspaceApplicationService,
   WorkspaceApplicationViewModel,
@@ -515,6 +518,36 @@ test('catalog projection registers additions, forgets removals and rolls registr
   const before = harness.calls.length;
   harness.emit({ kind: 'catalog-changed' });
   assert.equal(harness.calls.length, before);
+  harness.adapter.stop();
+});
+
+test('facade bridge keeps hydration baseline and deletion projection on the same adapter', () => {
+  const alpha = session('alpha', 'COM7');
+  const harness = createAdapterHarness([alpha]);
+  const bridge = new WorkspaceSessionFacadeBridge();
+  assert.throws(() => bridge.replaceWorkspace(facadeSnapshot([alpha], 'alpha')), /not bound/);
+
+  harness.adapter.start();
+  bridge.bind(harness.adapter);
+  bridge.bind(harness.adapter);
+  bridge.replaceWorkspace(facadeSnapshot([alpha], 'alpha'));
+  assert.equal(harness.replaceWorkspaceSessions.mock.calls.length, 1);
+
+  harness.setSessions([], null);
+  harness.emit({ kind: 'catalog-changed' });
+  const commands = harness.calls.find((call) => call.method === 'queueOrderedMutations')
+    ?.args[0] as Array<Record<string, unknown>> | undefined;
+  assert.deepEqual(commands, [
+    { kind: 'remove-session', sessionId: 'alpha' },
+    { kind: 'set-active-session', sessionId: null },
+  ]);
+  assert.deepEqual(
+    harness.calls.filter((call) => call.method === 'forgetSession').map((call) => call.args[0]),
+    ['alpha'],
+  );
+
+  const other = createAdapterHarness([]).adapter;
+  assert.throws(() => bridge.bind(other), /already bound/);
   harness.adapter.stop();
 });
 

@@ -891,7 +891,7 @@ describe('WorkspacePanel', () => {
     await flushPromises();
     const setup = componentSetup<WorkspaceSetup>(wrapper);
     expect(coordinator.refreshCatalog).toHaveBeenCalledOnce();
-    expect(wrapper.findAll('.workspace-recent')).toHaveLength(2);
+    expect(wrapper.findAll('.workspace-project-item')).toHaveLength(2);
 
     application.openWorkspace.mockResolvedValueOnce({
       outcome: 'failed',

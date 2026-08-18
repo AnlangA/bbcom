@@ -11,7 +11,32 @@ import type {
   WorkspaceConfigMutationCommand,
   WorkspaceRuntimePersistenceDrain,
   WorkspaceSessionFacade,
+  WorkspaceFacadeSnapshot,
 } from './application';
+
+/**
+ * Breaks the composition-time cycle between the workspace application and its
+ * session adapter without bypassing the adapter's projection baseline.
+ *
+ * The application is constructed first, then the adapter (which needs that
+ * application) is bound exactly once before any workspace can be activated.
+ */
+export class WorkspaceSessionFacadeBridge implements WorkspaceSessionFacade {
+  private delegate: WorkspaceSessionFacade | null = null;
+
+  bind(delegate: WorkspaceSessionFacade): void {
+    if (this.delegate && this.delegate !== delegate) {
+      throw new Error('workspace session facade is already bound');
+    }
+    this.delegate = delegate;
+  }
+
+  replaceWorkspace(snapshot: WorkspaceFacadeSnapshot): void {
+    const delegate = this.delegate;
+    if (!delegate) throw new Error('workspace session facade is not bound');
+    delegate.replaceWorkspace(snapshot);
+  }
+}
 
 /** Bridges the temporary Pinia compatibility facade to the application-owned
  * workspace service. The bridge never sees a native path and only submits

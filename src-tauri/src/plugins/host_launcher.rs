@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
@@ -105,19 +106,41 @@ impl SandboxSelfTest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxError {
-    detail: &'static str,
+    detail: Cow<'static, str>,
 }
 
 impl SandboxError {
     #[must_use]
     pub const fn new(detail: &'static str) -> Self {
-        Self { detail }
+        Self {
+            detail: Cow::Borrowed(detail),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[must_use]
+    pub(crate) fn from_win32(context: &'static str, code: u32) -> Self {
+        Self {
+            // Keep diagnostics actionable without surfacing paths, account
+            // names, environment variables, or other native error text.
+            detail: Cow::Owned(format!("{context} (Win32 error {code})")),
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[must_use]
+    pub(crate) fn from_process_exit(context: &'static str, code: u32) -> Self {
+        Self {
+            // Numeric exit status identifies the failed probe without exposing
+            // captured output, paths, account names, or environment values.
+            detail: Cow::Owned(format!("{context} (process exit code {code})")),
+        }
     }
 }
 
 impl fmt::Display for SandboxError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.detail)
+        formatter.write_str(&self.detail)
     }
 }
 
@@ -137,7 +160,7 @@ pub struct SandboxLaunch<'a> {
 /// default adapter preserves Linux/macOS command-based drivers. Setting the
 /// sidecar's attestation flags alone is never sufficient.
 pub trait SandboxDriver: Send + Sync + 'static {
-    fn self_test(&self) -> Result<SandboxSelfTest, SandboxError>;
+    fn self_test(&self, sidecar_executable: &Path) -> Result<SandboxSelfTest, SandboxError>;
     fn command(&self, launch: &SandboxLaunch<'_>) -> Result<Command, SandboxError>;
     fn spawn(&self, launch: &SandboxLaunch<'_>) -> Result<SandboxedChild, SandboxError> {
         let mut command = self.command(launch)?;
@@ -471,7 +494,7 @@ where
             return Err(HostLauncherBuildError::SidecarExecutable);
         }
         let self_test = sandbox
-            .self_test()
+            .self_test(sidecar_executable)
             .map_err(HostLauncherBuildError::SandboxUnavailable)?;
         if !self_test.is_complete() {
             return Err(HostLauncherBuildError::SandboxUnavailable(
@@ -1184,7 +1207,7 @@ mod tests {
     }
 
     impl SandboxDriver for FixedSandbox {
-        fn self_test(&self) -> Result<SandboxSelfTest, SandboxError> {
+        fn self_test(&self, _sidecar_executable: &Path) -> Result<SandboxSelfTest, SandboxError> {
             self.result.clone()
         }
 

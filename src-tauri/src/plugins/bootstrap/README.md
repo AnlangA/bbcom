@@ -9,6 +9,11 @@ registry, the matching catalog projection, the active workspace bindings,
 private plugin storage, the serial result scheduler, sidecar upstream ports,
 bounded brokers, the platform sandbox, and the bundled sidecar path.
 
+On Windows, native setup copies the verified bundled sidecar into the
+content-addressed `plugin-host-v1` application-data directory. The sandbox ACL
+lease is applied to that user-owned copy, so installed builds do not depend on
+permission to modify files under Program Files.
+
 `build()` runs the sandbox self-test before constructing the manager and actor.
 The application retains one runtime for the process, polls host exits natively,
 and opens/closes workspace contexts through lifecycle hooks. Any composition

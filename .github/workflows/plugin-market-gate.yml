@@ -31,16 +31,19 @@ jobs:
             target: x86_64-pc-windows-msvc
             platform: windows
             artifact: windows-x64
+            probe_sidecar: target/x86_64-pc-windows-msvc/debug/bbcom-plugin-host.exe
           - name: macOS arm64
             os: macos-15
             target: aarch64-apple-darwin
             platform: macos
             artifact: macos-arm64
+            probe_sidecar: target/aarch64-apple-darwin/debug/bbcom-plugin-host
           - name: Linux x64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             platform: linux
             artifact: linux-x64
+            probe_sidecar: target/x86_64-unknown-linux-gnu/debug/bbcom-plugin-host
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -50,14 +53,25 @@ jobs:
       - name: Install Linux sandbox and native build dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get \
+            -o Acquire::Languages=none \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            install -y --no-install-recommends \
             bubblewrap \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libudev-dev \
-            patchelf
+            patchelf \
+            xauth \
+            xvfb
 
       - name: Setup pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
@@ -76,15 +90,23 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
 
       - name: Install locked frontend and packaging tools
         run: pnpm install --frozen-lockfile
 
       # This is the only execution of the platform fixture on each OS. Broker
       # and IPC contracts are already covered by the reused quality workflow.
+      - name: Build trusted native sandbox probe sidecar
+        run: >-
+          cargo build -p bbcom-plugin-host --bin bbcom-plugin-host
+          --target ${{ matrix.target }} --locked
+
       - name: Prove native sandbox controls once
         env:
-          BBCOM_G45_SANDBOX_EVIDENCE: g45-evidence/plugin-g45-sandbox-${{ matrix.platform }}.json
+          BBCOM_G45_SIDECAR: ${{ github.workspace }}/${{ matrix.probe_sidecar }}
+          BBCOM_G45_SANDBOX_EVIDENCE: ${{ github.workspace }}/g45-evidence/plugin-g45-sandbox-${{ matrix.platform }}.json
           BBCOM_G45_COMMIT_SHA: ${{ github.sha }}
           BBCOM_G45_PLATFORM: ${{ matrix.platform }}
           BBCOM_G45_TARGET: ${{ matrix.target }}
@@ -273,23 +295,28 @@ jobs:
           if (-not (Test-Path -PathType Leaf $application)) { throw 'installed bbcom.exe is absent' }
           $evidenceRoot = (Resolve-Path g45-evidence).Path
           $stdout = Join-Path $evidenceRoot 'plugin-g46-runtime-${{ matrix.platform }}.json'
+          $stdoutTemp = "$stdout.tmp"
           $stderr = Join-Path $env:RUNNER_TEMP 'bbcom-plugin-runtime-probe-windows.log'
+          $dataRoot = Join-Path $env:RUNNER_TEMP 'bbcom-g46-data'
           $arguments = @(
             '--plugin-market-readiness-probe', '--format', 'json',
             '--commit', $env:GITHUB_SHA,
             '--platform', '${{ matrix.platform }}',
-            '--target', '${{ matrix.target }}'
+            '--target', '${{ matrix.target }}',
+            '--data-root', $dataRoot
           )
           $probe = Start-Process -FilePath $application -ArgumentList $arguments `
-            -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
-          if (-not $probe.WaitForExit(15000)) {
+            -RedirectStandardOutput $stdoutTemp -RedirectStandardError $stderr -PassThru
+          if (-not $probe.WaitForExit(60000)) {
             Stop-Process -Id $probe.Id -Force
             throw 'production-runtime probe timed out'
           }
+          $probe.WaitForExit()
           if ($probe.ExitCode -ne 0) { throw "production-runtime probe exited with $($probe.ExitCode)" }
-          if (-not (Test-Path -PathType Leaf $stdout) -or (Get-Item $stdout).Length -eq 0) {
+          if (-not (Test-Path -PathType Leaf $stdoutTemp) -or (Get-Item $stdoutTemp).Length -eq 0) {
             throw 'production-runtime probe emitted no evidence'
           }
+          Move-Item -Force $stdoutTemp $stdout
 
       - name: Ask installed macOS application for production-runtime evidence
         if: runner.os == 'macOS'
@@ -298,17 +325,20 @@ jobs:
         run: |
           application="$RUNNER_TEMP/bbcom-g45-runtime/bbcom.app/Contents/MacOS/bbcom"
           evidence="g45-evidence/plugin-g46-runtime-${{ matrix.platform }}.json"
+          evidence_temp="$evidence.tmp"
           log="$RUNNER_TEMP/bbcom-plugin-runtime-probe-macos.log"
+          data_root="$RUNNER_TEMP/bbcom-g46-data"
           test -x "$application"
           set +e
           "$application" \
             --plugin-market-readiness-probe --format json \
             --commit "$GITHUB_SHA" \
             --platform '${{ matrix.platform }}' \
-            --target '${{ matrix.target }}' >"$evidence" 2>"$log" &
+            --target '${{ matrix.target }}' \
+            --data-root "$data_root" >"$evidence_temp" 2>"$log" &
           probe_pid=$!
           probe_status=124
-          for _ in {1..150}; do
+          for _ in {1..600}; do
             if ! kill -0 "$probe_pid" 2>/dev/null; then
               wait "$probe_pid"
               probe_status=$?
@@ -322,7 +352,8 @@ jobs:
           fi
           set -e
           test "$probe_status" -eq 0
-          test -s "$evidence"
+          test -s "$evidence_temp"
+          mv "$evidence_temp" "$evidence"
 
       - name: Ask installed Linux application for production-runtime evidence
         if: runner.os == 'Linux'
@@ -331,19 +362,42 @@ jobs:
         run: |
           application="$RUNNER_TEMP/bbcom-g45-installed/usr/bin/bbcom"
           evidence="g45-evidence/plugin-g46-runtime-${{ matrix.platform }}.json"
+          evidence_temp="$evidence.tmp"
           log="$RUNNER_TEMP/bbcom-plugin-runtime-probe-linux.log"
+          xvfb_log="$RUNNER_TEMP/bbcom-plugin-runtime-probe-linux-xvfb.log"
+          data_root="$RUNNER_TEMP/bbcom-g46-data"
           test -x "$application"
           set +e
-          timeout --signal=TERM --kill-after=2s 15s \
-            "$application" \
-            --plugin-market-readiness-probe --format json \
-            --commit "$GITHUB_SHA" \
-            --platform '${{ matrix.platform }}' \
-            --target '${{ matrix.target }}' >"$evidence" 2>"$log"
+          # The nested Bash process, not this workflow shell, expands its parameters.
+          # shellcheck disable=SC2016
+          xvfb-run -a bash -c '
+            application=$1
+            evidence_temp=$2
+            log=$3
+            commit=$4
+            platform=$5
+            target=$6
+            data_root=$7
+            timeout --signal=TERM --kill-after=2s 60s \
+              "$application" \
+              --plugin-market-readiness-probe --format json \
+              --commit "$commit" \
+              --platform "$platform" \
+              --target "$target" \
+              --data-root "$data_root" >"$evidence_temp" 2>"$log"
+          ' -- \
+            "$application" "$evidence_temp" "$log" "$GITHUB_SHA" \
+            '${{ matrix.platform }}' '${{ matrix.target }}' "$data_root" \
+            >"$xvfb_log" 2>&1
           probe_status=$?
           set -e
-          test "$probe_status" -eq 0
-          test -s "$evidence"
+          if [ "$probe_status" -ne 0 ]; then
+            cat "$log"
+            cat "$xvfb_log"
+            exit "$probe_status"
+          fi
+          test -s "$evidence_temp"
+          mv "$evidence_temp" "$evidence"
 
       - name: Require real packaged-host malicious-Component evidence for G45
         if: always()
@@ -385,6 +439,7 @@ jobs:
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .node-version
+          package-manager-cache: false
 
       - name: Download all installed-package and runtime proofs
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7

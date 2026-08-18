@@ -32,12 +32,12 @@
       </n-button>
     </div>
 
-    <div v-if="librarySnapshot.library.projects.length" class="workspace-recents">
+    <div v-if="librarySnapshot.library.projects.length" class="workspace-project-list">
       <button
         v-for="project in librarySnapshot.library.projects"
         :key="project.workspaceId"
         type="button"
-        class="workspace-recent"
+        class="workspace-project-item"
         :class="{ active: project.active }"
         :disabled="busy || project.active"
         @click="openProject(project.workspaceId)"
@@ -374,7 +374,7 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
 
 .workspace-save-health,
 .workspace-current,
-.workspace-recent small {
+.workspace-project-item small {
   color: var(--text-muted);
   font-size: var(--font-size-data);
 }
@@ -393,12 +393,12 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
   color: var(--color-warning);
 }
 
-.workspace-recents {
+.workspace-project-list {
   display: grid;
   gap: 4px;
 }
 
-.workspace-recent {
+.workspace-project-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -412,7 +412,7 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
   text-align: left;
 }
 
-.workspace-recent.active {
+.workspace-project-item.active {
   border-color: var(--color-primary);
 }
 
