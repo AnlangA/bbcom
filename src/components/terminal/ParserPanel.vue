@@ -252,7 +252,7 @@ async function copyFrame(f: { data: Uint8Array }) {
 async function copyAscii(f: { data: Uint8Array }) {
   try {
     await navigator.clipboard.writeText(frameAsciiText(f));
-    message.success(t('parser.copiedHex'));
+    message.success(t('parser.copiedAscii'));
   } catch {
     message.error(t('packet.copyFailed'));
   }

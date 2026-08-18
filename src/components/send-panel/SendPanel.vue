@@ -23,7 +23,7 @@
           :options="lineEndingOptions"
           :aria-label="t('send.lineEnding.none')"
           size="tiny"
-          style="width: 96px"
+          style="width: var(--control-w-sm)"
           :disabled="isHex || looping"
         />
         <AppSelect
@@ -31,7 +31,7 @@
           :options="checksumOptions"
           :aria-label="t('checksum.title')"
           size="tiny"
-          style="width: 100px"
+          style="width: var(--control-w-sm)"
           :disabled="!isHex || looping"
         />
         <n-input-number
@@ -40,7 +40,7 @@
           :min="50"
           :max="3600000"
           :step="100"
-          style="width: 112px"
+          style="width: var(--control-w-md)"
           :disabled="looping"
           :title="t('send.loopIntervalHint')"
           :aria-label="t('send.loopIntervalHint')"

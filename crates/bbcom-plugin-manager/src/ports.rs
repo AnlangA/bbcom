@@ -109,6 +109,29 @@ pub trait HostLauncher {
     /// Forcefully terminates an instance after graceful shutdown or protocol
     /// handling failed. This operation must be idempotent.
     fn terminate(&mut self, handle: &HostHandle);
+
+    /// Push an unsolicited envelope to the sidecar (proposal decisions,
+    /// session-query data) for a guest call parked inside the plugin's own
+    /// host process. The default fails closed: embedders without a real
+    /// sidecar never accept pushes.
+    fn deliver_envelope(
+        &mut self,
+        _handle: &HostHandle,
+        _payload: bbcom_plugin_contracts::generated::envelope::Payload,
+    ) -> std::result::Result<(), HostFailure> {
+        Err(HostFailure::Transport)
+    }
+
+    /// Stream sidecar-initiated push requests (serial write proposals, G43
+    /// session/capture queries) into the application. The default drops
+    /// them: embedders without the pipeline keep the old behavior.
+    fn attach_push_sink(&mut self, _sink: std::sync::Arc<dyn HostPushSink>) {}
+}
+
+/// Receiver for sidecar push requests routed out of the host reader thread.
+pub trait HostPushSink: Send + Sync + 'static {
+    fn serial_proposal(&self, event: bbcom_plugin_contracts::generated::SerialProposalEvent);
+    fn session_query(&self, request: bbcom_plugin_contracts::generated::SessionQueryRequest);
 }
 
 pub trait Clock {

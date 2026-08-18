@@ -44,9 +44,11 @@ export function useAiWindowState(deps: UseAiWindowStateDeps = {}) {
       }
     } catch (e) {
       // User clicked the AI toggle but show/hide failed — surface it so the
-      // silent no-op is at least diagnosable.
+      // silent no-op is at least diagnosable, then re-query instead of
+      // guessing: assuming `false` after a failed hide leaves the toggle
+      // showing the opposite of the still-visible window.
       logger.warn('ai-window toggle failed:', e);
-      visible.value = false;
+      await refresh();
     }
   }
 

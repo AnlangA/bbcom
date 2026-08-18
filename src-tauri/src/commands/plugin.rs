@@ -534,6 +534,32 @@ pub async fn plugin_serial_action_result(
     Ok(())
 }
 
+/// Answers one G43 plugin session/capture query from the renderer-owned
+/// session catalog. Bound checks mirror the plugin capture-page limits.
+#[tauri::command]
+pub async fn plugin_session_query_result(
+    app: AppHandle,
+    window: WebviewWindow,
+    result: bbcom_contracts::PluginSessionQueryResult,
+) -> Result<(), IpcError> {
+    const OPERATION: &str = "plugin_session_query_result";
+    require_main_window_label(window.label(), OPERATION)?;
+    validate_identity(&result.query_id, "queryId", OPERATION)?;
+    if result.frames.len() > 256
+        || result
+            .frames
+            .iter()
+            .any(|frame| frame.bytes.len() > MAX_WORKSPACE_FRAME_BYTES)
+    {
+        return Err(IpcError::invalid_input(OPERATION, "frames"));
+    }
+    let Some(registry) = app.try_state::<crate::plugins::SessionQueryResultRegistry>() else {
+        return Ok(());
+    };
+    registry.complete(result);
+    Ok(())
+}
+
 /// Runs one plugin command on a blocking thread so the injected service's
 /// internal timeouts and poll loops never occupy the async runtime.
 async fn dispatch_async(

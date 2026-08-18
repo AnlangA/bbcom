@@ -1,15 +1,9 @@
 <template>
-  <n-modal
+  <AppModal
     :show="show"
-    preset="dialog"
     :title="t('create.title')"
-    :positive-text="t('create.confirm')"
-    :negative-text="t('common.cancel')"
-    :positive-button-props="{ disabled: !canCreate }"
-    :style="{ width: '460px' }"
-    @update:show="emit('update:show', $event)"
-    @positive-click="createSession"
-    @negative-click="emit('update:show', false)"
+    :width="460"
+    @close="emit('update:show', false)"
   >
     <div class="session-form">
       <div class="form-field form-full">
@@ -131,26 +125,44 @@
         </div>
       </div>
     </div>
-  </n-modal>
+    <template #footer>
+      <n-button size="small" @click="emit('update:show', false)">
+        {{ t('common.cancel') }}
+      </n-button>
+      <n-button
+        class="modal-positive"
+        size="small"
+        type="primary"
+        :disabled="!canCreate"
+        @click="createSession"
+      >
+        {{ t('create.confirm') }}
+      </n-button>
+    </template>
+  </AppModal>
   <!-- Lightweight inline prompt for naming a new preset (avoids pulling another
        naive-ui component; reuses a small dialog). -->
-  <n-modal
+  <AppModal
     :show="namingPreset"
-    preset="dialog"
     :title="t('create.savePresetDialog')"
-    :positive-text="t('common.save')"
-    :negative-text="t('common.cancel')"
-    :style="{ width: '380px' }"
-    @positive-click="confirmSavePreset"
-    @negative-click="namingPreset = false"
+    :width="380"
+    :closable="false"
+    @close="namingPreset = false"
   >
     <n-input v-model:value="presetName" :placeholder="t('create.presetNamePlaceholder')" />
-  </n-modal>
+    <template #footer>
+      <n-button size="small" @click="namingPreset = false">{{ t('common.cancel') }}</n-button>
+      <n-button class="modal-positive" size="small" type="primary" @click="confirmSavePreset">
+        {{ t('common.save') }}
+      </n-button>
+    </template>
+  </AppModal>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { NModal, NInput, NInputNumber, NButton } from 'naive-ui';
+import { NInput, NInputNumber, NButton } from 'naive-ui';
+import AppModal from '../ui/AppModal.vue';
 import AppSelect from '../ui/AppSelect.vue';
 import SignalToggle from '../ui/SignalToggle.vue';
 import { BookmarkPlus, RefreshCw, Trash2 } from '@lucide/vue';
@@ -222,10 +234,26 @@ const usedPorts = computed(
     ),
 );
 
+function syncFormFromStoreConfig(): void {
+  const config = serialStore.portConfig;
+  baudRate.value = config.baudRate;
+  dataBits.value = config.dataBits;
+  stopBits.value = config.stopBits;
+  parity.value = config.parity;
+  flowControl.value = config.flowControl;
+  rxFrameGapMs.value = normalizeRxFrameGapMs(config.rxFrameGapMs);
+  dtr.value = config.dtr;
+  rts.value = config.rts;
+}
+
 watch(
   () => props.show,
   (show) => {
     if (!show) return;
+    // Seed once per open. A continuous deep watch on the shared store config
+    // would clobber the user's in-progress edits whenever another path (e.g.
+    // a created session) updates it while the dialog is open.
+    syncFormFromStoreConfig();
     void refreshPorts();
     const preferred = props.preferredPort || serialStore.selectedPort;
     if (preferred && !usedPorts.value.has(preferred)) portName.value = preferred;
@@ -276,21 +304,6 @@ const flowControlOptions = computed(() =>
     ...option,
     label: t(`serial.flow.${option.value}`),
   })),
-);
-
-watch(
-  () => serialStore.portConfig,
-  (config) => {
-    baudRate.value = config.baudRate;
-    dataBits.value = config.dataBits;
-    stopBits.value = config.stopBits;
-    parity.value = config.parity;
-    flowControl.value = config.flowControl;
-    rxFrameGapMs.value = normalizeRxFrameGapMs(config.rxFrameGapMs);
-    dtr.value = config.dtr;
-    rts.value = config.rts;
-  },
-  { immediate: true, deep: true },
 );
 
 function createSession() {

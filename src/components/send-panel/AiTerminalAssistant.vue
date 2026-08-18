@@ -106,6 +106,7 @@ const cancelRequested = ref(false);
 const activeRequestId = ref<string | null>(null);
 const result = ref<TerminalAiResponse | null>(null);
 const resultBinding = ref<AiWindowRequestBinding | null>(null);
+const appliedRequestId = ref<string | null>(null);
 
 const activeSession = computed(() => props.session);
 const hasApiKey = computed(() => appStore.aiKeyConfigured);
@@ -118,6 +119,19 @@ watch(
   () => {
     result.value = null;
     resultBinding.value = null;
+  },
+);
+
+// The main window rejects stale command-apply envelopes with a receipt; tell
+// the user instead of leaving the press silently ignored.
+watch(
+  () => props.bridge.lastCommandRejection?.value,
+  (rejection) => {
+    if (!rejection || rejection.requestId !== appliedRequestId.value) return;
+    appliedRequestId.value = null;
+    result.value = null;
+    resultBinding.value = null;
+    message.warning(t('ai.terminal.commandStale'));
   },
 );
 
@@ -211,7 +225,9 @@ function applyCommand() {
 }
 
 function applyCommandToApp(command: string, binding: AiWindowRequestBinding) {
-  void props.bridge.applyCommand(command, binding);
+  void props.bridge.applyCommand(command, binding).then((requestId) => {
+    appliedRequestId.value = requestId;
+  });
 }
 
 function setTerminalModel(model: AiModel) {
@@ -287,7 +303,7 @@ function setTerminalModel(model: AiModel) {
 .command {
   color: var(--accent-green);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--font-size-data);
   padding: 6px 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);

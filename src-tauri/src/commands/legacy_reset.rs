@@ -83,6 +83,7 @@ impl LegacyResetManager {
     ) -> Result<LegacyResetJournal, IpcError> {
         validate_journal(&next).map_err(|error| io_error(error, operation))?;
         if let Err(error) = persist_journal(&self.root, &next) {
+            tracing::warn!("legacy reset journal persist failed ({operation}): {error}");
             // A directory fsync can report an error after rename committed.
             // Keep in-memory authority converged with an independently parsed
             // destination even while reporting the durability failure.

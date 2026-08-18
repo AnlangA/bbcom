@@ -97,6 +97,11 @@ pub fn render_typescript() -> String {
     declaration!(ResolvePluginSerialProposalRequest);
     declaration!(PluginSerialAction);
     declaration!(PluginSerialActionResultRequest);
+    declaration!(PluginSessionQuery);
+    declaration!(PluginSessionQueryKind);
+    declaration!(PluginSessionQueryResult);
+    declaration!(PluginSessionSummary);
+    declaration!(PluginCapturedFrame);
     declaration!(EmitPluginPanelEventRequest);
     declaration!(CancelPluginOperationRequest);
     declaration!(SerialSendOutcome);

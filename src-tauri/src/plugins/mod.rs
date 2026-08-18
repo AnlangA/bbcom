@@ -57,7 +57,7 @@ pub use command_service::{
 pub use g45_probe::{PluginG45ProbeError, run_plugin_g45_probe_from_environment};
 pub use runtime_actor::PluginRuntimeActorHandle;
 pub use runtime_wiring::{
-    PluginLifecycleHandle, SerialActionResultRegistry, activate_plugin_workspace,
-    close_plugin_project, compose, ensure_plugin_runtime, install_managed_defaults,
-    spawn_dev_directory_watchers, spawn_host_exit_poll,
+    PluginLifecycleHandle, SerialActionResultRegistry, SessionQueryResultRegistry,
+    activate_plugin_workspace, close_plugin_project, compose, ensure_plugin_runtime,
+    install_managed_defaults, spawn_dev_directory_watchers, spawn_host_exit_poll,
 };

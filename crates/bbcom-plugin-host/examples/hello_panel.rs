@@ -76,7 +76,7 @@ fn stage1_assemble_package(package_root: &Path) -> String {
          name = \"Hello Panel Example\"\n\
          version = \"{PLUGIN_VERSION}\"\n\
          api = \"^1.0\"\n\
-         requested-capabilities = []\n\
+         requested-capabilities = [\"ui.panel\", \"plugin.storage\"]\n\
          \n\
          [component]\n\
          path = \"component/plugin.wasm\"\n\

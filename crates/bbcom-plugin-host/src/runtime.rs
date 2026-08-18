@@ -71,12 +71,28 @@ impl PluginEngineFactory {
         artifact: &TrustedPluginArtifact,
         granted_permissions: impl IntoIterator<Item = Permission>,
     ) -> Result<PluginRuntime> {
+        self.load_with_uplink(artifact, granted_permissions, None)
+    }
+
+    /// `load` with a main-process uplink: serial-write proposal decisions and
+    /// G43 session/capture data then round-trip to the trusted launcher
+    /// instead of resolving from sidecar-local (empty) state.
+    pub fn load_with_uplink(
+        &self,
+        artifact: &TrustedPluginArtifact,
+        granted_permissions: impl IntoIterator<Item = Permission>,
+        uplink: Option<std::sync::Arc<crate::uplink::Uplink>>,
+    ) -> Result<PluginRuntime> {
         let guard = ProcessStoreGuard::acquire()?;
         let component = Component::from_binary(&self.engine, artifact.component_bytes())
             .map_err(|_| HostError::InvalidComponent)?;
         let permissions: BTreeSet<_> = granted_permissions.into_iter().collect();
         let limits = TrackingLimits::fixed(self.policy.wasm_memory_bytes);
-        let mut store = Store::new(&self.engine, StoreState::new(limits, permissions));
+        let mut state = StoreState::new(limits, permissions);
+        if let Some(uplink) = uplink {
+            state = state.with_uplink(uplink);
+        }
+        let mut store = Store::new(&self.engine, state);
         store.limiter(|state| &mut state.limits);
         store
             .set_fuel(self.policy.fuel_per_call)

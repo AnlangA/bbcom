@@ -9,6 +9,7 @@ pub mod policy;
 pub mod runtime;
 pub mod sidecar;
 pub mod transport;
+pub mod uplink;
 
 pub use artifact::TrustedPluginArtifact;
 pub use error::{ExecutionFailure, ExecutionFailureKind, HostError, Result};
@@ -16,3 +17,4 @@ pub use handshake::{HandshakeExpectation, HandshakeMachine};
 pub use policy::{AmbientAuthorityPolicy, HostPlatform, HostPolicy, ProcessLimitPolicy};
 pub use runtime::{CallKind, PluginEngineFactory, PluginRuntime, RuntimeInterruptHandle};
 pub use sidecar::{PluginExecutor, PluginInterrupt, Sidecar, SidecarExit};
+pub use uplink::{ProposalOutcome, Uplink};

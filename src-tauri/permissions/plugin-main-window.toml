@@ -16,5 +16,6 @@ commands.allow = [
   "plugin_resolve_serial_proposal",
   "plugin_emit_panel_event",
   "plugin_serial_action_result",
+  "plugin_session_query_result",
   "plugin_cancel_operation",
 ]

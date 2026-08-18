@@ -5,6 +5,16 @@
       <button type="button" :disabled="busy" @click="refresh">{{ t('common.refresh') }}</button>
     </header>
 
+    <!-- Bootstrap composition failures used to be stderr-only; surface the
+         stable code so a broken plugin runtime is diagnosable in-UI. -->
+    <p
+      v-if="runtimeUnavailable"
+      class="plugin-center__error"
+      role="alert"
+      data-testid="plugin-runtime-unavailable"
+    >
+      {{ bootstrapMessage }}
+    </p>
     <p v-if="snapshot.failure" class="plugin-center__error" role="alert">
       {{ t(`plugins.error.${snapshot.failure.code}`) }}
       <IconActionButton :label="t('common.dismiss')" @click="service.clearFailure()">
@@ -272,6 +282,16 @@ function resolveDialog(): ReturnType<typeof useDialog> | null {
 }
 
 const busy = computed(() => snapshot.value.action !== null);
+
+const runtimeUnavailable = computed(
+  () => snapshot.value.runtimeStatus?.available === false && snapshot.value.runtimeStatus?.code,
+);
+
+const bootstrapMessage = computed(() => {
+  const code = runtimeUnavailable.value;
+  if (!code) return '';
+  return t('plugins.bootstrap.unavailable', { code });
+});
 const statusAnnouncement = computed(() => {
   if (snapshot.value.action) return t(`plugins.action.${snapshot.value.action.status}`);
   if (snapshot.value.failure) return t(`plugins.error.${snapshot.value.failure.code}`);
@@ -421,6 +441,7 @@ function emptySnapshot(): PluginCenterSnapshot {
     started: false,
     action: null,
     failure: null,
+    runtimeStatus: null,
   });
 }
 </script>

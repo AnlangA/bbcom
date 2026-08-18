@@ -139,13 +139,26 @@ pub(crate) trait InputOperationControl: Send + Sync + 'static {
     fn cancel(&self, target_request_id: u64) -> bool;
 }
 
+/// Side-channel routing for pushed replies (proposal decisions, session
+/// query data) that are awaited by parked WIT host imports rather than the
+/// main envelope loop. Returning `None` consumes the envelope; `Some`
+/// hands it back to the normal pump path. Public because the sidecar's
+/// `run_with_dispatcher` accepts it from embedders.
+pub trait EnvelopeDispatcher: Send + Sync + 'static {
+    fn dispatch(&self, envelope: Envelope) -> Option<Envelope>;
+}
+
 pub(crate) struct FramePump {
     receiver: Receiver<PumpEvent>,
     join: Option<JoinHandle<()>>,
 }
 
 impl FramePump {
-    pub fn spawn<R>(reader: R, operations: Arc<dyn InputOperationControl>) -> Result<Self>
+    pub fn spawn<R>(
+        reader: R,
+        operations: Arc<dyn InputOperationControl>,
+        dispatcher: Option<Arc<dyn EnvelopeDispatcher>>,
+    ) -> Result<Self>
     where
         R: Read + Send + 'static,
     {
@@ -156,7 +169,9 @@ impl FramePump {
         let byte_budget = Arc::new(ByteQueueBudget::default());
         let join = thread::Builder::new()
             .name("bbcom-plugin-input".to_owned())
-            .spawn(move || pump_frames(reader, sender, byte_budget, operations))
+            .spawn(move || {
+                pump_frames(reader, sender, byte_budget, operations, dispatcher)
+            })
             .map_err(|_| HostError::Transport)?;
         Ok(Self {
             receiver,
@@ -187,12 +202,25 @@ fn pump_frames<R: Read>(
     sender: SyncSender<PumpEvent>,
     byte_budget: Arc<ByteQueueBudget>,
     operations: Arc<dyn InputOperationControl>,
+    dispatcher: Option<Arc<dyn EnvelopeDispatcher>>,
 ) {
     let mut reader = FrameReader::new(reader);
     loop {
         let event = match reader.read_envelope_with_size() {
             Ok(Some((envelope, bytes))) => {
                 let permit = byte_budget.reserve(bytes);
+                // Push replies awaited by parked host imports bypass the
+                // main queue entirely; their permit is released on drop here.
+                let mut envelope = envelope;
+                if let Some(dispatch) = dispatcher.as_deref() {
+                    match dispatch.dispatch(envelope) {
+                        None => {
+                            drop(permit);
+                            continue;
+                        }
+                        Some(unconsumed) => envelope = unconsumed,
+                    }
+                }
                 match envelope.payload.as_ref() {
                     Some(
                         envelope::Payload::InvokeRequest(_)

@@ -1,6 +1,28 @@
 <template>
   <slot v-if="snapshot.status === 'completed'" />
 
+  <!-- Recovery-in-progress with a trusted completion marker: render nothing.
+       The journal + workspace hydration still run underneath; only the gate's
+       own flash is suppressed. -->
+  <div v-else-if="reset && suppressed" class="sr-only" role="status" aria-live="polite">
+    {{ t('migration.reset.checkingHint') }}
+  </div>
+
+  <!-- First run (or marker-less boot): a neutral loading screen. The 0.7.3
+       migration copy is deliberately NOT shown here — it used to flash scary
+       "old database" wording on every already-migrated startup. Without a
+       native reset integration the full card must stay visible so the
+       integration-unavailable alert is reachable. -->
+  <div
+    v-else-if="reset && snapshot.status === 'checking'"
+    class="legacy-reset-gate legacy-reset-gate--neutral"
+    role="status"
+    aria-live="polite"
+  >
+    <span class="legacy-reset-spinner" aria-hidden="true"></span>
+    <p class="legacy-reset-hint">{{ t('migration.reset.checkingHint') }}</p>
+  </div>
+
   <div v-else class="legacy-reset-gate" @keydown="onKeydown">
     <section
       ref="dialogRef"
@@ -124,7 +146,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useOptionalLegacyResetContext, type LegacyResetViewModel } from '../../features/migration';
+import {
+  isLegacyResetMarkerSet,
+  useOptionalLegacyResetContext,
+  type LegacyResetViewModel,
+} from '../../features/migration';
 import { t } from '../../lib/i18n';
 
 const reset = useOptionalLegacyResetContext();
@@ -136,6 +162,13 @@ const snapshot = ref<LegacyResetViewModel>(
     discardChallengePending: false,
     resetAuthorizedBy: null,
   },
+);
+// The completion marker is only written after the native journal committed.
+// When present, the checking phase renders nothing at all — the journal
+// confirm + workspace hydration continue underneath and flip straight to
+// `completed`, so an already-migrated install never sees the gate flash.
+const suppressed = ref(
+  typeof window !== 'undefined' && isLegacyResetMarkerSet(window.localStorage),
 );
 const discardChallenge = ref<string | null>(null);
 const passphrase = ref('');
@@ -199,6 +232,9 @@ onMounted(() => {
   }
   stop = reset.coordinator.subscribe((value) => {
     snapshot.value = value;
+    // Any definitive journal outcome ends suppression: `completed` releases
+    // the slot, everything else needs the visible gate again.
+    if (value.status !== 'checking') suppressed.value = false;
     if (!value.discardChallengePending) discardChallenge.value = null;
   });
   void start();
@@ -282,12 +318,39 @@ function onKeydown(event: KeyboardEvent): void {
 .legacy-reset-gate {
   position: fixed;
   inset: 0;
-  z-index: 10000;
+  z-index: var(--z-gate);
   display: grid;
   place-items: center;
   padding: 24px;
   color: var(--text-primary);
   background: var(--bg-primary);
+}
+
+.legacy-reset-gate--neutral {
+  gap: var(--space-md);
+  grid-auto-flow: row;
+  justify-items: center;
+}
+
+.legacy-reset-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--color-primary);
+  border-radius: var(--radius-full);
+  animation: legacy-reset-spin 0.9s linear infinite;
+}
+
+.legacy-reset-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+@keyframes legacy-reset-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .legacy-reset-card {

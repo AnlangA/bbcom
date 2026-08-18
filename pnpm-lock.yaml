@@ -8,6 +8,7 @@ overrides:
   brace-expansion@>=1.0.0 <1.1.18: 1.1.18
   brace-expansion@>=2.0.0 <2.1.4: 2.1.4
   brace-expansion@>=5.0.0 <5.0.9: 5.0.9
+  deepmerge-ts@<8.0.0: 8.0.1
   ip-address@>=10.0.0 <=10.3.0: 10.3.1
   js-yaml@>=5.0.0 <=5.2.1: 5.2.2
   nanoid@>=3.0.0 <3.3.18: 3.3.18
@@ -31,6 +32,9 @@ importers:
       '@tauri-apps/api':
         specifier: 2.11.1
         version: 2.11.1
+      '@tauri-apps/plugin-opener':
+        specifier: 2.5.4
+        version: 2.5.4
       ansi_up:
         specifier: 6.0.6
         version: 6.0.6
@@ -954,6 +958,9 @@ packages:
     engines: {node: '>= 10'}
     hasBin: true
 
+  '@tauri-apps/plugin-opener@2.5.4':
+    resolution: {integrity: sha512-1HnPkb+AmgO29HBazm4uPLKB+r7zzcTBW1d0fyYp1uP+jwtpoiNDGKMMzz58SFp49nOIrxdE3aUJtT57lfO9CQ==}
+
   '@tootallnate/quickjs-emscripten@0.23.0':
     resolution: {integrity: sha512-C5Mc6rdnsaJDjO3UpGW/CQTHtCKaYlScZTly4JIu97Jxo/odCiH0ITnDXSJPTOrEKk/ycSZ0AOgTmkDtkOsvIA==}
 
@@ -1716,8 +1723,8 @@ packages:
   deep-is@0.1.4:
     resolution: {integrity: sha512-oIPzksmTg4/MriiaYGO+okXDT7ztn/w3Eptv/+gSIdMdKsJo0u4CfYNFJPy+4SKMuCqGw2wxnA+URMg3t8a/bQ==}
 
-  deepmerge-ts@7.1.5:
-    resolution: {integrity: sha512-HOJkrhaYsweh+W+e74Yn7YStZOilkoPb6fycpwNLKzSPtruFs48nYis0zy5yJz1+ktUhHxoRDJ27RQAWLIJVJw==}
+  deepmerge-ts@8.0.1:
+    resolution: {integrity: sha512-szCXE7YLCvLKR9bFPJcvsezOShdalctSvrgN/LM/QGUEPZQajwjmsMObZ6/DuANT5lxzM/wtO8Feubwdkz8myA==}
     engines: {node: '>=16.0.0'}
 
   default-browser-id@5.0.1:
@@ -4283,6 +4290,10 @@ snapshots:
       '@tauri-apps/cli-win32-ia32-msvc': 2.11.4
       '@tauri-apps/cli-win32-x64-msvc': 2.11.4
 
+  '@tauri-apps/plugin-opener@2.5.4':
+    dependencies:
+      '@tauri-apps/api': 2.11.1
+
   '@tootallnate/quickjs-emscripten@0.23.0': {}
 
   '@tybys/wasm-util@0.10.3':
@@ -4686,7 +4697,7 @@ snapshots:
       '@wdio/logger': 9.29.1
       '@wdio/types': 9.29.1
       '@wdio/utils': 9.29.1
-      deepmerge-ts: 7.1.5
+      deepmerge-ts: 8.0.1
       glob: 10.5.0
       import-meta-resolve: 4.2.0
       jiti: 2.7.0
@@ -4831,7 +4842,7 @@ snapshots:
       '@wdio/logger': 9.29.1
       '@wdio/types': 9.29.1
       '@wdio/utils': 9.29.1
-      deepmerge-ts: 7.1.5
+      deepmerge-ts: 8.0.1
       expect-webdriverio: 5.7.0(@wdio/globals@9.29.1)(@wdio/logger@9.29.1)(webdriverio@9.29.1)
       webdriver: 9.29.1
       webdriverio: 9.29.1
@@ -4892,7 +4903,7 @@ snapshots:
       '@wdio/logger': 9.29.1
       '@wdio/types': 9.29.1
       decamelize: 6.0.1
-      deepmerge-ts: 7.1.5
+      deepmerge-ts: 8.0.1
       edgedriver: 6.3.0
       geckodriver: 6.1.0
       get-port: 7.2.0
@@ -5256,7 +5267,7 @@ snapshots:
 
   deep-is@0.1.4: {}
 
-  deepmerge-ts@7.1.5: {}
+  deepmerge-ts@8.0.1: {}
 
   default-browser-id@5.0.1: {}
 
@@ -7145,7 +7156,7 @@ snapshots:
       '@wdio/protocols': 9.29.1
       '@wdio/types': 9.29.1
       '@wdio/utils': 9.29.1
-      deepmerge-ts: 7.1.5
+      deepmerge-ts: 8.0.1
       https-proxy-agent: 7.0.6
       undici: 6.28.0
       ws: 8.21.1

@@ -96,6 +96,10 @@ impl<'a, A: AuditSink> SerialProposalBroker<'a, A> {
         request: SerialProposalRequest,
         now_ms: u64,
     ) -> Result<SerialProposalView> {
+        // Expired-but-never-resolved proposals otherwise linger until their
+        // plugin's generation changes; a plugin could park the registry full
+        // of dead entries and block every later proposal.
+        self.retain_active(now_ms);
         if !valid_context_id(plugin_id) || !plugin_id.contains('.') {
             return Err(BrokerError::PluginContextInvalid);
         }
@@ -205,6 +209,31 @@ impl<'a, A: AuditSink> SerialProposalBroker<'a, A> {
     #[must_use]
     pub const fn queued_bytes(&self) -> usize {
         self.queued_bytes
+    }
+
+    /// Evict proposals whose TTL elapsed without a resolution and return how
+    /// many were dropped. Frees queue bytes and registry slots that lazy
+    /// expiry in `resolve` alone would never release.
+    pub fn retain_active(&mut self, now_ms: u64) -> usize {
+        let expired: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|(_, proposal)| now_ms >= proposal.view.expires_at_ms)
+            .map(|(proposal_id, _)| proposal_id.clone())
+            .collect();
+        let evicted = expired.len();
+        for proposal_id in expired {
+            if let Some(pending) = self.pending.remove(&proposal_id) {
+                self.queued_bytes = self.queued_bytes.saturating_sub(pending.payload.len());
+                self.audit.record(AuditEvent {
+                    plugin_id: pending.view.plugin_id,
+                    operation: AuditOperation::SerialProposalResolve,
+                    error_code: Some(BrokerError::PermissionDenied.code()),
+                    byte_count: pending.payload.len() as u64,
+                });
+            }
+        }
+        evicted
     }
 
     fn fail_create<T>(&self, plugin_id: &str, error: BrokerError, byte_count: usize) -> Result<T> {

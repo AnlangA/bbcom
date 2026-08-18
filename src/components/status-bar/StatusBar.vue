@@ -101,10 +101,14 @@ watch(
             txRate.value = Math.round(txDelta / elapsed);
             rxRate.value = Math.round(rxDelta / elapsed);
           }
-          // Frames-per-second: sample the live frame count delta.
-          let frameDelta = props.session.frames.length - prevFrames;
-          if (frameDelta < 0) frameDelta = props.session.frames.length;
-          frameRate.value = Math.round(frameDelta / elapsed);
+          // Frames-per-second: sample the live frame count delta. Guard the
+          // divisor the same way as the byte rates — a zero-ms interval tick
+          // would otherwise render "Infinity/s".
+          if (elapsed > 0) {
+            let frameDelta = props.session.frames.length - prevFrames;
+            if (frameDelta < 0) frameDelta = props.session.frames.length;
+            frameRate.value = Math.round(frameDelta / elapsed);
+          }
           prevTxBytes = props.session.txBytes;
           prevRxBytes = props.session.rxBytes;
           prevFrames = props.session.frames.length;

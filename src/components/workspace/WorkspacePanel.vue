@@ -376,7 +376,7 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
 .workspace-current,
 .workspace-recent small {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-data);
 }
 
 .workspace-current,

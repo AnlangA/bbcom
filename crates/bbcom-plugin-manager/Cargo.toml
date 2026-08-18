@@ -11,6 +11,7 @@ bbcom-contracts = { path = "../bbcom-contracts" }
 bbcom-plugin-broker = { path = "../bbcom-plugin-broker" }
 bbcom-plugin-contracts = { path = "../bbcom-plugin-contracts" }
 semver = "=1.0.27"
+sha2 = "=0.10.9"
 thiserror = "=2.0.18"
 
 [lints.rust]

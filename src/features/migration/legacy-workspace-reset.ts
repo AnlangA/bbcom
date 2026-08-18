@@ -19,6 +19,7 @@ import {
   type LegacyWorkspaceResetOptions,
   type WorkspaceResetTarget,
 } from './types';
+import { logger } from '../../lib/logger';
 
 type ActiveOperationKind = 'checking' | 'backup' | 'reset';
 type ResetAuthorization = LegacyResetViewModel['resetAuthorizedBy'];
@@ -229,7 +230,21 @@ export class LegacyWorkspaceResetCoordinator {
         if (journal.phase === 'completed') {
           await this.openCompletedJournalWorkspace(journal, context);
         } else {
-          await this.openJournalWorkspace(journal, context);
+          try {
+            await this.openJournalWorkspace(journal, context);
+          } catch (recoveryError) {
+            if (isAbort(recoveryError)) throw recoveryError;
+            // Crash-recovery drift: the prepared workspace was used meanwhile
+            // (revision advanced / no longer empty), so the empty-workspace
+            // contract can never validate again. Degrade to opening it as-is
+            // instead of looping target_failed on every boot; native complete
+            // still runs below and its own failure keeps the retry UI.
+            logger.warn(
+              'legacy reset workspace recovery degraded to completed-restore',
+              recoveryError,
+            );
+            await this.openCompletedJournalWorkspace(journal, context);
+          }
         }
         this.ensureCurrent(operation);
         if (journal.phase === 'workspaceReady') {
@@ -404,9 +419,12 @@ export class LegacyWorkspaceResetCoordinator {
   private async writeMarkerMirror(): Promise<void> {
     try {
       await this.markerStore.write(LEGACY_RESET_MARKER_KEY, LEGACY_RESET_MARKER_VALUE);
-    } catch {
+    } catch (error) {
       // The native completed journal is authoritative. A quota/privacy error
-      // in this optional cache must not re-block a verified native reset.
+      // in this optional cache must not re-block a verified native reset —
+      // but it stays diagnosable because the marker also suppresses the
+      // gate's startup flash on the next launch.
+      logger.warn('legacy reset completion marker could not be written:', error);
     }
   }
 
@@ -415,8 +433,9 @@ export class LegacyWorkspaceResetCoordinator {
       if (await this.markerStore.isSet(LEGACY_RESET_MARKER_KEY)) {
         await this.markerStore.remove(LEGACY_RESET_MARKER_KEY);
       }
-    } catch {
+    } catch (error) {
       // A renderer cache cannot influence native-required state.
+      logger.warn('legacy reset completion marker could not be removed:', error);
     }
   }
 

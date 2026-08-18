@@ -26,3 +26,11 @@ export function webStorageLegacyResetMarkerStore(
     },
   };
 }
+
+/** Synchronous completion probe used by the gate to skip its own flash: the
+ *  marker is only ever written after the native journal committed, so a set
+ *  marker lets the gate start fully transparent while the authoritative
+ *  journal is still being confirmed. */
+export function isLegacyResetMarkerSet(storage: LegacyResetWebStorage): boolean {
+  return storage.getItem(LEGACY_RESET_MARKER_KEY) === LEGACY_RESET_MARKER_VALUE;
+}

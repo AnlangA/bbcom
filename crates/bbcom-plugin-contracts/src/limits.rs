@@ -1,5 +1,7 @@
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 2;
+/// v3: additive SerialProposalEvent/ProposalResult and SessionQuery* payloads
+/// for the parked serial-proposal and G43 session/capture pipelines.
+pub const PROTOCOL_MINOR: u32 = 3;
 pub const WIT_PACKAGE: &str = "bbcom:plugin@1.0.0";
 
 pub const FRAME_LENGTH_PREFIX_BYTES: usize = 4;

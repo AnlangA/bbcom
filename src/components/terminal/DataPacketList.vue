@@ -148,12 +148,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, toRef, watch } from 'vue';
+import { computed, inject, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, useMessage } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
 import { Cable, Copy, Search } from '@lucide/vue';
 import { useAppStore } from '../../stores/app';
 import { usePacketFilter } from '../../composables/usePacketFilter';
+import { SESSION_UI_STATE_KEY } from '../../features/sessions/runtime/session-ui-state';
 import { usePacketFormatter } from '../../composables/usePacketFormatter';
 import { usePacketVirtualScroll } from '../../composables/usePacketVirtualScroll';
 import PacketRow from './PacketRow.vue';
@@ -241,6 +242,11 @@ watch(
   },
 );
 
+// Retention: when mounted under a session runtime (SessionView provides the
+// key), the search box and direction filter live on the runtime so switching
+// session tabs and back does not lose them.
+const retainedUiState = inject(SESSION_UI_STATE_KEY, null);
+
 const {
   directionFilter,
   searchInput,
@@ -260,6 +266,8 @@ const {
     clearCaches();
     frameReplacementVersion.value += 1;
   },
+  directionFilter: retainedUiState?.packetDirection,
+  searchInput: retainedUiState?.packetSearch,
 });
 
 // HEXASCII is a fixed-width hex dump: always multi-line, independent of the
@@ -283,7 +291,14 @@ const rowSizeVersion = computed(() =>
   ].join(':'),
 );
 
-const { scrollRef, virtualItems, totalSize, measureElement, onScroll } = usePacketVirtualScroll({
+const {
+  scrollRef,
+  virtualItems,
+  totalSize,
+  measureElement,
+  onScroll,
+  scrollToIndex: scrollToVirtualIndex,
+} = usePacketVirtualScroll({
   frameCount: visibleFrameCount,
   autoScroll: computed(() => appStore.autoScroll),
   rowSize: (index) =>
@@ -375,7 +390,12 @@ function scrollToIndex(index: number) {
   );
   if (nextScrollTop !== null) {
     scrollRef.value.scrollTop = nextScrollTop;
+    return;
   }
+  // The row is outside the rendered window (e.g. the first keyboard selection
+  // while parked at the tail): let the virtualizer compute the offset from
+  // its measurement cache and estimates so the selection becomes visible.
+  scrollToVirtualIndex(index);
 }
 
 function onRowContextMenu(e: MouseEvent, frame: DataFrame) {
@@ -484,9 +504,6 @@ async function handleCopySelect(key: string) {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   background: var(--bg-secondary);
-  position: sticky;
-  top: 0;
-  z-index: 1;
   padding-left: var(--space-sm);
   box-shadow: var(--shadow-sm);
 }

@@ -102,14 +102,22 @@ where
     /// Development-mode install from a user-selected local package directory.
     /// Mirrors `install_manual` exactly (validation, revocation check, exact
     /// commit) except the package source is a local path instead of the
-    /// repository trust boundary.
+    /// repository trust boundary. Installing over an existing installation
+    /// REPLACES it: the host is stopped, the durable package tree is wiped,
+    /// and a fresh initial install is committed — so both version bumps and
+    /// same-version recompiles (changed digest) work, which is the core dev
+    /// iteration loop. Plugin storage and project state live outside the
+    /// package tree and survive the replacement.
     pub fn install_local(&mut self, package_root: &std::path::Path) -> Result<PluginSnapshot> {
-        if self
-            .records
-            .contains_key(&Self::local_probe_plugin_id(package_root).unwrap_or_default())
+        if let Some(plugin_id) = Self::local_probe_plugin_id(package_root)
+            && self.records.contains_key(&plugin_id)
         {
-            return Err(ManagerErrorCode::PluginAlreadyInstalled.into());
+            return self.replace_local_install(&plugin_id, package_root);
         }
+        self.install_local_fresh(package_root)
+    }
+
+    fn install_local_fresh(&mut self, package_root: &std::path::Path) -> Result<PluginSnapshot> {
         let prepared = self
             .installer
             .prepare_local(package_root, None)
@@ -135,6 +143,83 @@ where
         self.snapshot(&plugin_id)
     }
 
+    fn replace_local_install(
+        &mut self,
+        plugin_id: &str,
+        package_root: &std::path::Path,
+    ) -> Result<PluginSnapshot> {
+        if self.record(plugin_id)?.pending.is_some() {
+            return Err(ManagerErrorCode::InvalidStateTransition.into());
+        }
+        // Validate the replacement package BEFORE touching the running
+        // installation: manifest parses, component path is confined to the
+        // package root, file exists within the package byte budget, and its
+        // SHA-256 matches the manifest. A broken package must leave the old
+        // install intact instead of wiping it and failing halfway. (An I/O
+        // error during the later staging copy can still land between wipe
+        // and commit — that residual window is accepted.)
+        if !Self::local_package_precheck(package_root) {
+            return Err(ManagerErrorCode::InvalidPluginArtifact.into());
+        }
+        let artifact = self.record(plugin_id)?.artifact.clone();
+        let expected_enabled = self.record(plugin_id)?.expected_enabled;
+        // The host must be fully stopped (with proved shutdown evidence)
+        // before its durable package tree is removed underneath it. A stop
+        // failure aborts the replace with the old installation intact.
+        self.stop_running(plugin_id)?;
+        self.installer
+            .remove_installed(&artifact)
+            .map_err(|_| ManagerErrorCode::InstallationPrepareFailed)?;
+        self.records.remove(plugin_id);
+        self.install_local_fresh(package_root)?;
+        let record = self.record_mut(plugin_id)?;
+        record.expected_enabled = expected_enabled;
+        if expected_enabled && self.workspace_id.is_some() {
+            return self.enable(plugin_id);
+        }
+        self.snapshot(plugin_id)
+    }
+
+    /// Best-effort plugin-id probe for a local package directory, used to
+    /// route reinstalls over an existing installation to the replace path
+    /// before any staging work.
+    fn local_probe_plugin_id(package_root: &std::path::Path) -> Option<String> {
+        let manifest = Self::local_probe_manifest(package_root)?;
+        Some(manifest.id)
+    }
+
+    fn local_probe_manifest(package_root: &std::path::Path) -> Option<bbcom_plugin_contracts::PluginManifest> {
+        let manifest_text = std::fs::read_to_string(package_root.join("plugin.toml")).ok()?;
+        let manifest = bbcom_plugin_contracts::PluginManifest::parse(&manifest_text).ok()?;
+        Some(manifest)
+    }
+
+    fn local_package_precheck(package_root: &std::path::Path) -> bool {
+        use sha2::{Digest, Sha256};
+
+        let Some(manifest) = Self::local_probe_manifest(package_root) else {
+            return false;
+        };
+        let Some(component_path) = confined_component_path(package_root, &manifest.component.path)
+        else {
+            return false;
+        };
+        let metadata = match std::fs::metadata(&component_path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            _ => return false,
+        };
+        if metadata.len() > bbcom_plugin_contracts::MAX_PACKAGE_DOWNLOAD_BYTES {
+            return false;
+        }
+        let bytes = match std::fs::read(&component_path) {
+            Ok(bytes) => bytes,
+            Err(_) => return false,
+        };
+        let digest = Sha256::digest(&bytes);
+        let computed: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        computed == manifest.component.sha256.to_ascii_lowercase()
+    }
+
     /// Removes an installed plugin at runtime: stops its host, discards any
     /// pending upgrade, and deletes the durable installation. The returned
     /// snapshot is the final pre-removal state for UI feedback.
@@ -146,18 +231,16 @@ where
         let artifact = record.artifact.clone();
         let final_snapshot = self.snapshot(plugin_id)?;
         let stop_result = self.stop_running(plugin_id);
-        self.records.remove(plugin_id);
+        // Delete the durable installation before dropping the in-memory
+        // record: when the disk removal fails the record must survive so the
+        // UI and restart discovery still see the plugin — otherwise the
+        // "uninstalled" plugin silently resurrects on the next launch.
         self.installer
             .remove_installed(&artifact)
             .map_err(|_| ManagerErrorCode::InstallationPrepareFailed)?;
+        self.records.remove(plugin_id);
         stop_result?;
         Ok(final_snapshot)
-    }
-
-    /// Best-effort plugin-id probe for a local package directory, used only
-    /// to reject duplicate installs before staging work.
-    fn local_probe_plugin_id(_package_root: &std::path::Path) -> Option<String> {
-        None
     }
 
     fn validate_initial_prepared_local(&self, prepared: &PreparedInstallation) -> Result<()> {
@@ -200,17 +283,24 @@ where
 
     /// Explicitly enables a plugin after checking a current, version-specific
     /// approval receipt. Calling this for an already-running plugin is
-    /// idempotent and never creates a second host.
+    /// idempotent and never creates a second host. A failed start KEEPS
+    /// `expected_enabled = true` deliberately: the next `open_workspace`
+    /// retries the launch, so transient host/sandbox failures self-heal while
+    /// the record's `last_error` keeps the last failure visible.
     pub fn enable(&mut self, plugin_id: &str) -> Result<PluginSnapshot> {
         self.require_workspace()?;
+        // Validate the transition before committing the expectation. A
+        // running plugin stays idempotent even with a pending upgrade
+        // prepared; a non-running one with a pending upgrade must not be
+        // started out from under the two-phase update.
+        if !self.running.contains_key(plugin_id) && self.record(plugin_id)?.pending.is_some() {
+            return Err(ManagerErrorCode::InvalidStateTransition.into());
+        }
         self.record_mut(plugin_id)?.expected_enabled = true;
         if self.running.contains_key(plugin_id) {
             return self.snapshot(plugin_id);
         }
         let record = self.record(plugin_id)?;
-        if record.pending.is_some() {
-            return Err(ManagerErrorCode::InvalidStateTransition.into());
-        }
         let artifact = record.artifact.clone();
         self.record_mut(plugin_id)?.status = PluginStatus::Starting;
         match self.start_active(&artifact) {
@@ -775,6 +865,24 @@ where
         }
     }
 
+    /// Push an unsolicited envelope (proposal decision, session-query data)
+    /// to a running plugin's sidecar.
+    pub fn deliver_envelope(
+        &mut self,
+        plugin_id: &str,
+        payload: bbcom_plugin_contracts::generated::envelope::Payload,
+    ) -> Result<()> {
+        let handle = self
+            .running
+            .get(plugin_id)
+            .map(|host| host.handle.clone())
+            .ok_or_else(|| ManagerError::from(ManagerErrorCode::PluginNotFound))?;
+        self.hosts
+            .deliver_envelope(&handle, payload)
+            .map_err(|_| ManagerError::from(ManagerErrorCode::HostProtocolFailure))?;
+        Ok(())
+    }
+
     fn commit_exact(&mut self, prepared: &PreparedInstallation) -> Result<PluginArtifact> {
         let artifact = self
             .installer
@@ -871,6 +979,23 @@ where
         record.last_error = Some(error);
         Ok(())
     }
+}
+
+/// Resolve a manifest-declared component path against the package root,
+/// refusing absolute paths and any `..`/`.` traversal so a hostile manifest
+/// cannot point the pre-check (or its reader) outside the package.
+fn confined_component_path(
+    package_root: &std::path::Path,
+    relative: &str,
+) -> Option<std::path::PathBuf> {
+    let mut resolved = package_root.to_path_buf();
+    for component in std::path::Path::new(relative).components() {
+        match component {
+            std::path::Component::Normal(part) => resolved.push(part),
+            _ => return None,
+        }
+    }
+    Some(resolved)
 }
 
 fn normalized_inactive_status(previous: PluginStatus) -> PluginStatus {

@@ -11,7 +11,9 @@
             connected: isConnected(session.id),
             dragging: dragIndex === index,
             'drag-over': dragOverIndex === index,
+            disabled: !mutationPolicy.userMutationsAllowed.value,
           }"
+          :aria-disabled="!mutationPolicy.userMutationsAllowed.value || undefined"
           :draggable="mutationPolicy.userMutationsAllowed.value"
           @click="switchSession(session.id)"
           @dragstart="onDragStart(index, $event)"
@@ -216,7 +218,7 @@ function tabTooltip(session: SerialSession): string {
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-tertiary);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-data);
 }
 
 .undo-action {
@@ -268,7 +270,7 @@ function tabTooltip(session: SerialSession): string {
   border: 1px solid transparent;
   border-bottom: 0;
   border-radius: var(--radius-md) var(--radius-md) 0 0;
-  font-size: 12px;
+  font-size: var(--font-size-data);
   color: var(--text-muted);
   background: transparent;
   white-space: nowrap;
@@ -313,6 +315,19 @@ function tabTooltip(session: SerialSession): string {
 
 .tab-item.dragging {
   opacity: 0.5;
+}
+
+/* Quiesce/read-only windows: switching is fail-closed in the store, so the
+ * hot zone at least advertises that it is inert instead of silently eating
+ * clicks. */
+.tab-item.disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.tab-item.disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
 }
 
 .tab-item.drag-over {

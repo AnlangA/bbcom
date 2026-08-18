@@ -175,3 +175,127 @@ fn declared_implemented_capabilities_are_granted_without_authorization() {
             .is_disjoint(&running.artifact.unavailable_capabilities)
     );
 }
+
+/// Mock installer that counts durable removals so tests can prove whether a
+/// failed local replace preserved the previous installation on disk.
+#[derive(Clone, Default)]
+struct RemovalCounter(std::rc::Rc<std::cell::Cell<usize>>);
+
+struct CountingInstaller {
+    removed: RemovalCounter,
+}
+
+impl InstallationPort for CountingInstaller {
+    fn prepare_manual(
+        &mut self,
+        _request: &ManualPackageRequest,
+        _current: Option<&PluginArtifact>,
+    ) -> Result<PreparedInstallation, InstallationFailure> {
+        PreparedInstallation::new(
+            PreparationToken::new("prepared-1").unwrap(),
+            artifact(),
+            PreparationKind::InitialInstall,
+        )
+        .map_err(|_| InstallationFailure)
+    }
+
+    fn prepare_rollback(
+        &mut self,
+        _current: &PluginArtifact,
+    ) -> Result<Option<PreparedInstallation>, InstallationFailure> {
+        Ok(None)
+    }
+
+    fn commit(
+        &mut self,
+        prepared: &PreparedInstallation,
+    ) -> Result<PluginArtifact, InstallationFailure> {
+        Ok(prepared.artifact.clone())
+    }
+
+    fn discard(&mut self, _prepared: &PreparedInstallation) -> Result<(), InstallationFailure> {
+        Ok(())
+    }
+
+    fn prepare_local(
+        &mut self,
+        _root: &std::path::Path,
+        _current: Option<&PluginArtifact>,
+    ) -> Result<PreparedInstallation, InstallationFailure> {
+        Err(InstallationFailure)
+    }
+
+    fn remove_installed(&mut self, _artifact: &PluginArtifact) -> Result<(), InstallationFailure> {
+        self.removed.0.set(self.removed.0.get() + 1);
+        Ok(())
+    }
+}
+
+fn local_package(root: &std::path::Path, declared_sha256: &str) {
+    let component_dir = root.join("component");
+    std::fs::create_dir_all(&component_dir).unwrap();
+    std::fs::write(component_dir.join("plugin.wasm"), b"fake-component-bytes").unwrap();
+    std::fs::write(
+        root.join("plugin.toml"),
+        format!(
+            "id = \"dev.bbcom.fixture\"\nname = \"Fixture\"\nversion = \"2.0.0\"\napi = \"^1\"\n\n\
+             [component]\npath = \"component/plugin.wasm\"\nsha256 = \"{declared_sha256}\"\n\n\
+             [publisher]\nname = \"fixture\"\nwebsite = \"https://example.invalid\"\n"
+        ),
+    )
+    .unwrap();
+}
+
+fn real_component_sha256() -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(b"fake-component-bytes")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[test]
+fn local_replace_rejects_a_broken_package_before_removing_the_install() {
+    let root = tempfile::tempdir().unwrap();
+    local_package(root.path(), &"0".repeat(64)); // digest mismatch
+
+    let removed = RemovalCounter::default();
+    let mut manager = PluginManager::new(
+        CountingInstaller {
+            removed: removed.clone(),
+        },
+        Hosts::default(),
+        FixedClock,
+    );
+    manager.observe_installed(artifact()).unwrap();
+
+    let error = manager.install_local(root.path()).unwrap_err();
+    assert_eq!(error.code().as_str(), "PLUGIN_ARTIFACT_INVALID");
+    // The pre-check fired before any stop/remove: the durable installation
+    // and the manager record survive untouched.
+    assert_eq!(removed.0.get(), 0);
+    assert_eq!(manager.snapshots().len(), 1);
+}
+
+#[test]
+fn local_replace_accepts_a_matching_package_up_to_the_documented_staging_window() {
+    let root = tempfile::tempdir().unwrap();
+    local_package(root.path(), &real_component_sha256());
+
+    let removed = RemovalCounter::default();
+    let mut manager = PluginManager::new(
+        CountingInstaller {
+            removed: removed.clone(),
+        },
+        Hosts::default(),
+        FixedClock,
+    );
+    manager.observe_installed(artifact()).unwrap();
+
+    // prepare_local is mocked to fail, so the replace aborts INSIDE the
+    // accepted wipe→staging window: removal happened, record is gone. This
+    // pins the documented residual risk instead of leaving it implicit.
+    assert!(manager.install_local(root.path()).is_err());
+    assert_eq!(removed.0.get(), 1);
+    assert!(manager.snapshots().is_empty());
+}

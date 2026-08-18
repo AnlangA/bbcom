@@ -9,6 +9,7 @@
     "core:window:allow-set-always-on-top",
     "core:window:allow-is-always-on-top",
     "serialplugin:default",
+    "opener:default",
     "main-window-commands",
     "plugin-main-window-commands"
   ]

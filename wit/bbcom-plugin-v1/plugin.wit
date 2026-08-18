@@ -83,8 +83,13 @@ interface host {
   project-state-get: func() -> result<option<list<u8>>, contract-error>;
   project-state-set: func(value: list<u8>) -> result<_, contract-error>;
 
-  /// A proposal never writes to serial directly and always requires a new
-  /// user confirmation. The host returns only a proposal identifier/status.
+  /// A proposal never writes to serial directly. The host surfaces it to the
+  /// user, whose decision is remembered for the remainder of this plugin
+  /// runtime instance (per AGENTS_PLAN: one prompt per
+  /// workspace+plugin+instance+generation). The host returns only a proposal
+  /// identifier/status. Note: the write itself crosses a bounded scheduler
+  /// round trip; if a plugin re-proposes after a timeout the device may see
+  /// the payload twice — plugins must treat timeouts as unknown outcome.
   propose-serial-send: func(proposal: serial-send-proposal) -> result<proposal-result, contract-error>;
 
   /// Declarative panels are rendered entirely by the trusted host.

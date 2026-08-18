@@ -150,7 +150,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onUnmounted, ref } from 'vue';
+import { computed, defineAsyncComponent, onUnmounted, provide, ref } from 'vue';
 import DataPacketList from '../terminal/DataPacketList.vue';
 import SendPanel from '../send-panel/SendPanel.vue';
 import SessionToolbar from './SessionToolbar.vue';
@@ -180,11 +180,16 @@ import type {
   SessionRuntimeController,
   SessionRuntimeWaveformSink,
 } from '../../features/sessions/runtime/session-runtime-controller';
+import { SESSION_UI_STATE_KEY } from '../../features/sessions/runtime/session-ui-state';
 
 const props = defineProps<{
   session: SerialSession;
   runtime: SessionRuntimeController;
 }>();
+
+// Panels (packet list, tools tabs, Modbus) inject this to retain their
+// view-local state on the runtime across SessionView remounts.
+provide(SESSION_UI_STATE_KEY, props.runtime.uiState);
 
 const WaveformPanel = defineAsyncComponent(() => import('../terminal/WaveformPanel.vue'));
 const ParserPanel = defineAsyncComponent(() => import('../terminal/ParserPanel.vue'));

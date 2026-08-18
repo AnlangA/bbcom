@@ -311,6 +311,10 @@ pub enum PluginFailureCode {
     ProposalConsumed,
     PanelEventRejected,
     CancelFailed,
+    /// The lifecycle rejected the action because no workspace is open (e.g.
+    /// enabling a plugin before a workspace exists) — distinct from a generic
+    /// service-unavailable so the UI can tell the user what to do next.
+    WorkspaceMissing,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -484,6 +488,78 @@ pub struct PluginSerialActionResultRequest {
     pub requested_bytes: usize,
     pub sent_bytes: usize,
 }
+
+/// G43: a plugin's session-list / capture-read query, delivered to the main
+/// window as `plugin-session-query` and answered via
+/// `plugin_session_query_result`. Bounded by the plugin capture-page limits.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginSessionQuery {
+    pub query_id: String,
+    pub plugin_id: String,
+    #[serde(flatten)]
+    pub kind: PluginSessionQueryKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", tag = "kind", deny_unknown_fields)]
+pub enum PluginSessionQueryKind {
+    #[serde(rename = "list")]
+    List,
+    #[serde(rename_all = "camelCase")]
+    Capture {
+        session_id: String,
+        #[ts(type = "number")]
+        from_sequence: u32,
+        #[ts(type = "number")]
+        max_frames: u32,
+        #[ts(type = "number")]
+        max_bytes: u32,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginSessionQueryResult {
+    pub query_id: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<PluginSessionSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frames: Vec<PluginCapturedFrame>,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub next_sequence: u32,
+    #[serde(default)]
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginSessionSummary {
+    pub session_id: String,
+    pub name: String,
+    pub kind: String,
+    pub connected: bool,
+    #[ts(type = "number")]
+    pub rx_bytes: u64,
+    #[ts(type = "number")]
+    pub tx_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginCapturedFrame {
+    #[ts(type = "number")]
+    pub sequence: u32,
+    #[ts(type = "number")]
+    pub timestamp_ms: u64,
+    pub tx: bool,
+    pub bytes: Vec<u8>,
+}
+
 plugin_request!(EmitPluginPanelEventRequest {
     event: PluginPanelEvent,
 });

@@ -12,6 +12,7 @@ import {
   createAiBridgeEnvelope,
   isAiActivityResultPayload,
   isAiActivitySnapshotPayload,
+  isAiCommandResultPayload,
   isPayloadKind,
   isRecord,
   parseAiBridgeEnvelope,
@@ -68,6 +69,10 @@ export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
   const workspaceId = ref(AI_BRIDGE_WORKSPACE_ID);
   const revision = ref(0);
   const activities = shallowRef<readonly OperationRecord[]>([]);
+  /** Last command the main window refused to apply, for UI retry feedback. */
+  const lastCommandRejection = shallowRef<Readonly<{ requestId: string; reason: string }> | null>(
+    null,
+  );
   const unlisteners: Array<() => void> = [];
   const pendingSnapshots = new Map<string, PendingResolver<AiWindowSession | null>>();
   const pendingContexts = new Map<string, PendingResolver<AiLogContextSnapshot | null>>();
@@ -111,6 +116,11 @@ export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
       unlisteners.push(
         await doListen<unknown>(AI_BRIDGE_EVENTS.activitySnapshot, (event) => {
           receiveActivitySnapshot(event.payload);
+        }),
+      );
+      unlisteners.push(
+        await doListen<unknown>(AI_BRIDGE_EVENTS.commandResult, (event) => {
+          receiveCommandResult(event.payload);
         }),
       );
       await requestActivitySnapshot();
@@ -285,13 +295,34 @@ export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
     await emitBound(AI_BRIDGE_EVENTS.activityCancel, binding, { kind: 'activity-cancel' });
   }
 
-  async function applyCommand(command: string, explicitBinding?: AiWindowRequestBinding) {
+  /** Records the main window's refusal so the UI can offer a retry instead of
+   *  leaving a command-apply press silently ignored. */
+  function receiveCommandResult(value: unknown): boolean {
+    const envelope = parseAiBridgeEnvelope(value, 'main');
+    if (!envelope || !isAiCommandResultPayload(envelope.payload)) return false;
+    if (envelope.payload.outcome === 'rejected') {
+      lastCommandRejection.value = Object.freeze({
+        requestId: envelope.requestId,
+        reason: envelope.payload.reason,
+      });
+    }
+    return true;
+  }
+
+  async function applyCommand(
+    command: string,
+    explicitBinding?: AiWindowRequestBinding,
+  ): Promise<string | null> {
     const binding = explicitBinding ?? createRequestBinding();
     if (!strictProtocol) {
       await doEmit(AI_BRIDGE_EVENTS.commandApply, { command });
-    } else if (binding) {
-      await emitBound(AI_BRIDGE_EVENTS.commandApply, binding, { kind: 'command-apply', command });
+      return null;
     }
+    if (binding) {
+      await emitBound(AI_BRIDGE_EVENTS.commandApply, binding, { kind: 'command-apply', command });
+      return binding.requestId;
+    }
+    return null;
   }
 
   async function setTerminalAiModel(model: AiModel) {
@@ -469,6 +500,7 @@ export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
     workspaceId,
     revision,
     activities,
+    lastCommandRejection,
     refreshSession,
     getLogContext,
     releaseRequestBinding,
@@ -490,6 +522,7 @@ export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
     receiveLogContext,
     receiveActivityResult,
     receiveActivitySnapshot,
+    receiveCommandResult,
   };
 }
 

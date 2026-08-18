@@ -14,10 +14,12 @@ function isTauriRuntime(): boolean {
 
 /**
  * Both webviews share an origin, so the floating AI window must never read a
- * pre-v0.5 plaintext localStorage key during startup.  The Rust command can
- * safely report key status to that window without exposing or migrating it.
+ * pre-v0.5 plaintext localStorage key during startup. The AI window's
+ * capability deliberately does NOT grant `get_ai_key_status` (see the
+ * ai_window_capability test): its key status arrives solely via the
+ * main-window authority bridge, never from the command surface.
  */
-function isAiAssistantWindow(): boolean {
+export function isAiAssistantWindow(): boolean {
   if (typeof window === 'undefined') return false;
   return new URLSearchParams(window.location.search).get('window') === 'ai';
 }

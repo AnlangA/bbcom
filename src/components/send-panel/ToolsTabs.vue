@@ -181,7 +181,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, ref, useId, watch } from 'vue';
+import { computed, defineAsyncComponent, inject, nextTick, ref, useId, watch } from 'vue';
 import { NButton, NInput } from 'naive-ui';
 import {
   BookmarkPlus,
@@ -205,6 +205,7 @@ import {
 } from '../../lib/tools-tabs';
 import type { QuickCommand, SendHistoryEntry } from '../../types';
 import type { SessionRuntimeMacroController } from '../../features/sessions/runtime/session-runtime-controller';
+import { SESSION_UI_STATE_KEY } from '../../features/sessions/runtime/session-ui-state';
 
 const props = defineProps<{
   sessionId: string;
@@ -236,7 +237,10 @@ const quickName = ref('');
 const toolsDomId = `tools-${useId().replace(/:/g, '')}`;
 // Default to Quick; if the session has no quick commands but has history, land
 // on history so a returning user immediately sees something useful.
-const activeTab = ref<ToolsTabId>('quick');
+// Retention: under a session runtime the tab ref lives on the runtime so
+// switching session tabs and back keeps the active tools page.
+const retainedUiState = inject(SESSION_UI_STATE_KEY, null);
+const activeTab = retainedUiState?.toolsTab ?? ref<ToolsTabId>('quick');
 
 const session = computed(() => sessionDocument.session.value ?? undefined);
 const counts = computed(() => activeToolCounts(session.value, props.quickCommands, props.history));

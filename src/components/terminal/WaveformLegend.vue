@@ -2,7 +2,8 @@
   Waveform legend + actions + per-channel stats. Extracted from WaveformPanel
   Presentational: receives the channel state + stats, emits per-channel
   toggle and the toolbar actions (toggle-mode/pause/clear/load/export). Pause
-  is two-way bound.
+  is two-way bound. The action row is a single config-driven loop; adding an
+  action means adding one entry below, not another tooltip block.
 -->
 <template>
   <div>
@@ -49,189 +50,23 @@
           </template>
           {{ sourceTooltip }}
         </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
-          <template #trigger>
-            <button
-              class="wf-btn"
-              type="button"
-              :aria-label="paused ? t('waveform.resume') : t('waveform.pause')"
-              @click="$emit('update:paused', !paused)"
-            >
-              <Play v-if="paused" class="icon-sm" />
-              <Pause v-else class="icon-sm" />
-            </button>
-          </template>
-          {{ paused ? t('waveform.resume') : t('waveform.pause') }}
-        </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
+        <n-tooltip v-for="action in actions" :key="action.key" trigger="hover" placement="bottom">
           <template #trigger>
             <span class="wf-tooltip-trigger">
               <button
                 class="wf-btn"
                 type="button"
-                :aria-label="t('waveform.panLeft')"
-                :disabled="!canPanLeft"
-                @click="$emit('pan-left')"
+                :class="{ active: action.pressed?.value }"
+                :aria-label="action.label.value"
+                :aria-pressed="action.pressed ? action.pressed.value : undefined"
+                :disabled="action.disabled?.value"
+                @click="action.onClick()"
               >
-                <ArrowLeft class="icon-sm" />
+                <component :is="action.icon.value" class="icon-sm" :class="action.iconClass" />
               </button>
             </span>
           </template>
-          {{ t('waveform.panLeft') }}
-        </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
-          <template #trigger>
-            <span class="wf-tooltip-trigger">
-              <button
-                class="wf-btn"
-                type="button"
-                :aria-label="t('waveform.panRight')"
-                :disabled="!canPanRight"
-                @click="$emit('pan-right')"
-              >
-                <ArrowRight class="icon-sm" />
-              </button>
-            </span>
-          </template>
-          {{ t('waveform.panRight') }}
-        </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
-          <template #trigger>
-            <span class="wf-tooltip-trigger">
-              <button
-                class="wf-btn"
-                type="button"
-                :aria-label="t('waveform.zoomIn')"
-                :disabled="!canZoomIn"
-                @click="$emit('zoom-in')"
-              >
-                <ZoomIn class="icon-sm" />
-              </button>
-            </span>
-          </template>
-          {{ t('waveform.zoomIn') }}
-        </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
-          <template #trigger>
-            <span class="wf-tooltip-trigger">
-              <button
-                class="wf-btn"
-                type="button"
-                :aria-label="t('waveform.zoomOut')"
-                :disabled="!canZoomOut"
-                @click="$emit('zoom-out')"
-              >
-                <ZoomOut class="icon-sm" />
-              </button>
-            </span>
-          </template>
-          {{ t('waveform.zoomOut') }}
-        </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
-          <template #trigger>
-            <button
-              class="wf-btn"
-              type="button"
-              :class="{ active: showXRuler }"
-              :aria-label="showXRuler ? t('waveform.xRuler.hide') : t('waveform.xRuler.show')"
-              :aria-pressed="showXRuler"
-              @click="$emit('toggle-x-ruler')"
-            >
-              <MoveHorizontal class="icon-sm" />
-            </button>
-          </template>
-          {{ showXRuler ? t('waveform.xRuler.hide') : t('waveform.xRuler.show') }}
-        </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
-          <template #trigger>
-            <button
-              class="wf-btn"
-              type="button"
-              :class="{ active: showYRuler }"
-              :aria-label="showYRuler ? t('waveform.yRuler.hide') : t('waveform.yRuler.show')"
-              :aria-pressed="showYRuler"
-              @click="$emit('toggle-y-ruler')"
-            >
-              <MoveVertical class="icon-sm" />
-            </button>
-          </template>
-          {{ showYRuler ? t('waveform.yRuler.hide') : t('waveform.yRuler.show') }}
-        </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
-          <template #trigger>
-            <button
-              class="wf-btn"
-              type="button"
-              :class="{ active: showHoverRuler }"
-              :aria-label="
-                showHoverRuler ? t('waveform.hoverRuler.hide') : t('waveform.hoverRuler.show')
-              "
-              :aria-pressed="showHoverRuler"
-              @click="$emit('toggle-hover-ruler')"
-            >
-              <Crosshair class="icon-sm" />
-            </button>
-          </template>
-          {{ showHoverRuler ? t('waveform.hoverRuler.hide') : t('waveform.hoverRuler.show') }}
-        </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
-          <template #trigger>
-            <button
-              class="wf-btn"
-              type="button"
-              :class="{ active: showSamplePoints }"
-              :aria-label="
-                showSamplePoints ? t('waveform.samplePoints.hide') : t('waveform.samplePoints.show')
-              "
-              :aria-pressed="showSamplePoints"
-              @click="$emit('toggle-sample-points')"
-            >
-              <CircleDot class="icon-sm sample-point-icon" />
-            </button>
-          </template>
-          {{ showSamplePoints ? t('waveform.samplePoints.hide') : t('waveform.samplePoints.show') }}
-        </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
-          <template #trigger>
-            <button
-              class="wf-btn"
-              type="button"
-              :aria-label="t('waveform.clear')"
-              @click="$emit('clear')"
-            >
-              <Eraser class="icon-sm" />
-            </button>
-          </template>
-          {{ t('waveform.clear') }}
-        </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
-          <template #trigger>
-            <button
-              class="wf-btn"
-              type="button"
-              :aria-label="t('waveform.loadStream')"
-              @click="$emit('load')"
-            >
-              <Upload class="icon-sm" />
-            </button>
-          </template>
-          {{ t('waveform.loadStream') }}
-        </n-tooltip>
-        <n-tooltip trigger="hover" placement="bottom">
-          <template #trigger>
-            <span class="wf-tooltip-trigger">
-              <button
-                class="wf-btn"
-                type="button"
-                :aria-label="t('waveform.exportCsv')"
-                :disabled="disabled"
-                @click="$emit('export')"
-              >
-                <Download class="icon-sm" />
-              </button>
-            </span>
-          </template>
-          {{ t('waveform.exportCsv') }}
+          {{ action.label.value }}
         </n-tooltip>
       </div>
     </div>
@@ -252,22 +87,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, type Component, type Ref } from 'vue';
 import {
-  LineChart,
-  Play,
-  Pause,
-  Eraser,
-  Upload,
-  Download,
   ArrowLeft,
   ArrowRight,
-  ZoomIn,
-  ZoomOut,
+  CircleDot,
+  Crosshair,
+  Download,
+  Eraser,
+  LineChart,
   MoveHorizontal,
   MoveVertical,
-  Crosshair,
-  CircleDot,
+  Pause,
+  Play,
+  Upload,
+  ZoomIn,
+  ZoomOut,
 } from '@lucide/vue';
 import { NTooltip } from 'naive-ui';
 import { t } from '../../lib/i18n';
@@ -302,7 +137,7 @@ const props = defineProps<{
   disabled: boolean;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   'toggle-channel': [number];
   'toggle-mode': [];
   'zoom-in': [];
@@ -329,6 +164,122 @@ const sourceTooltip = computed(() => {
     next: t(nextKey),
   });
 });
+
+interface LegendAction {
+  key: string;
+  icon: Ref<Component>;
+  iconClass?: string;
+  label: Ref<string>;
+  disabled?: Ref<boolean>;
+  pressed?: Ref<boolean>;
+  onClick: () => void;
+}
+
+/** Toggle actions flip their tooltip between the show/hide variants. */
+function toggler(
+  key: string,
+  onClick: () => void,
+  icon: Component,
+  pressed: Ref<boolean>,
+  iconClass?: string,
+): LegendAction {
+  return {
+    key,
+    icon: computed(() => icon),
+    iconClass,
+    label: computed(() => t(pressed.value ? `waveform.${key}.hide` : `waveform.${key}.show`)),
+    pressed,
+    onClick,
+  };
+}
+
+/** Plain action with a static tooltip. */
+function plain(
+  key: string,
+  onClick: () => void,
+  icon: Component,
+  labelKey: string,
+  disabled?: Ref<boolean>,
+): LegendAction {
+  return {
+    key,
+    icon: computed(() => icon),
+    label: computed(() => t(labelKey)),
+    disabled,
+    onClick,
+  };
+}
+
+const actions = computed<LegendAction[]>(() => [
+  {
+    key: 'pause',
+    icon: computed(() => (props.paused ? Play : Pause)),
+    label: computed(() => t(props.paused ? 'waveform.resume' : 'waveform.pause')),
+    onClick: () => emit('update:paused', !props.paused),
+  },
+  plain(
+    'pan-left',
+    () => emit('pan-left'),
+    ArrowLeft,
+    'waveform.panLeft',
+    computed(() => !props.canPanLeft),
+  ),
+  plain(
+    'pan-right',
+    () => emit('pan-right'),
+    ArrowRight,
+    'waveform.panRight',
+    computed(() => !props.canPanRight),
+  ),
+  plain(
+    'zoom-in',
+    () => emit('zoom-in'),
+    ZoomIn,
+    'waveform.zoomIn',
+    computed(() => !props.canZoomIn),
+  ),
+  plain(
+    'zoom-out',
+    () => emit('zoom-out'),
+    ZoomOut,
+    'waveform.zoomOut',
+    computed(() => !props.canZoomOut),
+  ),
+  toggler(
+    'xRuler',
+    () => emit('toggle-x-ruler'),
+    MoveHorizontal,
+    computed(() => props.showXRuler),
+  ),
+  toggler(
+    'yRuler',
+    () => emit('toggle-y-ruler'),
+    MoveVertical,
+    computed(() => props.showYRuler),
+  ),
+  toggler(
+    'hoverRuler',
+    () => emit('toggle-hover-ruler'),
+    Crosshair,
+    computed(() => props.showHoverRuler),
+  ),
+  toggler(
+    'samplePoints',
+    () => emit('toggle-sample-points'),
+    CircleDot,
+    computed(() => props.showSamplePoints),
+    'sample-point-icon',
+  ),
+  plain('clear', () => emit('clear'), Eraser, 'waveform.clear'),
+  plain('load', () => emit('load'), Upload, 'waveform.loadStream'),
+  plain(
+    'export',
+    () => emit('export'),
+    Download,
+    'waveform.exportCsv',
+    computed(() => props.disabled),
+  ),
+]);
 </script>
 
 <style scoped>

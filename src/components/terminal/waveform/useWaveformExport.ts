@@ -52,7 +52,7 @@ export function useWaveformExport({
     reader.onload = () => {
       const records = parseStream(String(reader.result ?? ''));
       if (records.length === 0) {
-        message.warning(t('waveform.noData'));
+        message.warning(t('waveform.fileNoSamples'));
         return;
       }
       const parsed: RegisterWaveformSampleInput[] = [];
@@ -62,12 +62,16 @@ export function useWaveformExport({
         }
       }
       if (parsed.length === 0) {
-        message.warning(t('waveform.noData'));
+        message.warning(t('waveform.fileNoSamples'));
         return;
       }
       onFileSamples(parsed);
-      message.success(t('waveform.exportedStream', { count: parsed.length }));
+      message.success(t('waveform.loadedStream', { count: parsed.length }));
     };
+    reader.onerror = () => {
+      message.error(t('common.fileReadFailed'));
+    };
+    reader.onabort = reader.onerror;
     reader.readAsText(file);
     input.value = '';
   }

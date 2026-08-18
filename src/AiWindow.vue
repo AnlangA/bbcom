@@ -11,7 +11,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, onErrorCaptured, ref, watch } from 'vue';
 import { NConfigProvider, NMessageProvider } from 'naive-ui';
-import { emitNativeEvent, resizeAiWindow } from './features/native';
+import { resizeAiWindow } from './features/native';
 import AiPanel from './components/ai/AiPanel.vue';
 import { useAiWindowAuthority } from './features/ai-activity';
 import { useAppStore } from './stores/app';
@@ -61,11 +61,16 @@ function scheduleResize() {
 async function resizeToContent() {
   if (!contentEl.value) return;
   const rect = contentEl.value.getBoundingClientRect();
-  await resizeAiWindow(Math.ceil(rect.width), Math.ceil(rect.height) + 28);
+  // Content size only — the Rust side adds the measured titlebar height.
+  await resizeAiWindow(Math.ceil(rect.width), Math.ceil(rect.height));
 }
 
+// Visibility is OS-window state owned by the Rust side: the show/hide/close
+// paths there emit `ai-window-state` after the real transition. This webview
+// must NOT broadcast its own visibility — it mounts while the window is still
+// hidden, so a mount-time `visible: true` would desync the main-window toggle
+// (and an unmount-time `false` would clobber a still-visible window on reload).
 onMounted(async () => {
-  await emitNativeEvent('ai-window-state', { visible: true });
   await nextTick();
   observer = new ResizeObserver(scheduleResize);
   if (contentEl.value) observer.observe(contentEl.value);
@@ -75,7 +80,6 @@ onMounted(async () => {
 onUnmounted(() => {
   observer?.disconnect();
   if (resizeTimer) clearTimeout(resizeTimer);
-  void emitNativeEvent('ai-window-state', { visible: false });
 });
 </script>
 
@@ -89,6 +93,6 @@ onUnmounted(() => {
 }
 
 .ai-window-content {
-  width: 820px;
+  width: var(--ai-panel-width);
 }
 </style>

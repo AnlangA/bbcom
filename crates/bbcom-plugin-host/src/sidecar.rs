@@ -17,9 +17,11 @@ use bbcom_plugin_contracts::{
     PLUGIN_STATE_SCHEMA_VERSION, PROTOCOL_MAJOR, PROTOCOL_MINOR, Permission, parse_permission,
 };
 
+use crate::bindings::bbcom::plugin::types::FieldKind;
 use crate::handshake::{HandshakeExpectation, HandshakeMachine};
 use crate::policy::{HostPlatform, ProcessLimitPolicy};
 use crate::transport::{FramePump, FrameWriter, InputOperationControl, PumpEvent};
+use crate::uplink::Uplink;
 use crate::{
     CallKind, HostError, PluginEngineFactory, PluginRuntime, Result, RuntimeInterruptHandle,
     TrustedPluginArtifact,
@@ -253,7 +255,7 @@ fn panel_json(panel: &crate::bindings::DeclarativePanel) -> Vec<u8> {
         "fields": panel.fields.iter().map(|field| json!({
             "id": field.id,
             "label": field.label,
-            "kind": format!("{:?}", field.kind).to_lowercase(),
+            "kind": field_kind_name(field.kind),
             "value": field.value,
             "options": field.options,
             "disabled": field.disabled,
@@ -261,6 +263,16 @@ fn panel_json(panel: &crate::bindings::DeclarativePanel) -> Vec<u8> {
     })
     .to_string()
     .into_bytes()
+}
+
+const fn field_kind_name(kind: FieldKind) -> &'static str {
+    match kind {
+        FieldKind::Text => "text",
+        FieldKind::Number => "number",
+        FieldKind::Toggle => "toggle",
+        FieldKind::Select => "select",
+        FieldKind::Button => "button",
+    }
 }
 
 impl<E: PluginExecutor> Sidecar<E> {
@@ -283,8 +295,23 @@ impl<E: PluginExecutor> Sidecar<E> {
         R: Read + Send + 'static,
         W: Write,
     {
+        self.run_with_dispatcher(reader, writer, None)
+    }
+
+    /// `run` with a pump-level push dispatcher for parked WIT host imports
+    /// (serial proposal decisions, session query data).
+    pub fn run_with_dispatcher<R, W>(
+        &mut self,
+        reader: R,
+        writer: W,
+        dispatcher: Option<Arc<dyn crate::transport::EnvelopeDispatcher>>,
+    ) -> Result<SidecarExit>
+    where
+        R: Read + Send + 'static,
+        W: Write,
+    {
         let operation_control: Arc<dyn InputOperationControl> = self.operations.clone();
-        let pump = FramePump::spawn(reader, operation_control)?;
+        let pump = FramePump::spawn(reader, operation_control, dispatcher)?;
         let mut writer = FrameWriter::new(writer);
         let first = match pump
             .receiver()
@@ -851,9 +878,41 @@ pub fn run_from_environment() -> Result<SidecarExit> {
         granted.iter().copied(),
     );
     let factory = PluginEngineFactory::new()?;
-    let runtime = factory.load(&artifact, granted)?;
+    // One shared stdout handle: the main loop and the WIT-host uplink write
+    // through the same mutex so envelope frames never interleave.
+    let shared_stdout: Arc<Mutex<Box<dyn Write + Send>>> =
+        Arc::new(Mutex::new(Box::new(std::io::stdout())));
+    let uplink = Uplink::new(
+        artifact.manifest.id.clone(),
+        Box::new(SharedWrite(Arc::clone(&shared_stdout))),
+    );
+    let runtime = factory.load_with_uplink(&artifact, granted, Some(Arc::clone(&uplink)))?;
     let mut sidecar = Sidecar::new(runtime, expectation);
-    sidecar.run(std::io::stdin(), std::io::stdout())
+    let dispatcher = crate::uplink::UplinkDispatcher(uplink);
+    sidecar.run_with_dispatcher(
+        std::io::stdin(),
+        SharedWrite(shared_stdout),
+        Some(Arc::new(dispatcher)),
+    )
+}
+
+/// Serialized writer handle shared by the main envelope loop and the uplink.
+pub(crate) struct SharedWrite(Arc<Mutex<Box<dyn Write + Send>>>);
+
+impl Write for SharedWrite {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .map_err(|_| std::io::Error::other("shared stdout poisoned"))?
+            .write(buffer)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .map_err(|_| std::io::Error::other("shared stdout poisoned"))?
+            .flush()
+    }
 }
 
 struct LaunchArguments {
@@ -1002,5 +1061,14 @@ mod tests {
         assert_eq!(error.code, "PLUGIN_DENIED");
         assert_eq!(error.message_key, "plugin.error.denied");
         assert!(!error.retryable);
+    }
+
+    #[test]
+    fn panel_field_kinds_use_stable_wire_names() {
+        assert_eq!(field_kind_name(FieldKind::Text), "text");
+        assert_eq!(field_kind_name(FieldKind::Number), "number");
+        assert_eq!(field_kind_name(FieldKind::Toggle), "toggle");
+        assert_eq!(field_kind_name(FieldKind::Select), "select");
+        assert_eq!(field_kind_name(FieldKind::Button), "button");
     }
 }

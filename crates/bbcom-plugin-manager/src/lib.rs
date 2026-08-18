@@ -16,7 +16,8 @@ pub use model::{
     PreparationToken, PreparedInstallation, WorkspacePluginBinding,
 };
 pub use ports::{
-    Clock, HostFailure, HostLauncher, InstallationFailure, InstallationPort, SystemClock,
+    Clock, HostFailure, HostLauncher, HostPushSink, InstallationFailure, InstallationPort,
+    SystemClock,
 };
 pub use project_state::{MAX_PLUGIN_PROJECT_STATE_BYTES, MAX_PROJECT_PLUGIN_STATE_BYTES};
 

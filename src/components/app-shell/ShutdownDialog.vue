@@ -192,7 +192,7 @@ onBeforeUnmount(detach);
 .shutdown-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 10000;
+  z-index: var(--z-gate);
   display: grid;
   place-items: center;
   padding: 24px;

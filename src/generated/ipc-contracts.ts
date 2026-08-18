@@ -127,7 +127,7 @@ export type PluginPanelEvent = { runtime: RuntimeInstanceKey, fieldId: string, v
 
 export type PluginCenterData = { revision: number, catalog: Array<PluginCatalogItem>, installed: Array<InstalledPluginView>, serialProposals: Array<PluginSerialProposal>, panels: Array<PluginDeclarativePanel>, sources: Array<PluginSourceView>, };
 
-export type PluginFailureCode = "unavailable" | "invalid-response" | "invalid-panel" | "invalid-input" | "operation-conflict" | "installation-failed" | "host-failed" | "proposal-expired" | "proposal-context-changed" | "proposal-consumed" | "panel-event-rejected" | "cancel-failed";
+export type PluginFailureCode = "unavailable" | "invalid-response" | "invalid-panel" | "invalid-input" | "operation-conflict" | "installation-failed" | "host-failed" | "proposal-expired" | "proposal-context-changed" | "proposal-consumed" | "panel-event-rejected" | "cancel-failed" | "workspace-missing";
 
 export type PluginFailure = { code: PluginFailureCode, };
 
@@ -166,6 +166,16 @@ export type ResolvePluginSerialProposalRequest = { requestId: string, revision: 
 export type PluginSerialAction = { correlationId: string, proposalId: string, operationId: string, sessionId: string, runtime: RuntimeInstanceKey, bytes: Array<number>, };
 
 export type PluginSerialActionResultRequest = { correlationId: string, runtime: RuntimeInstanceKey, outcome: SerialSendOutcome, requestedBytes: number, sentBytes: number, };
+
+export type PluginSessionQuery = { queryId: string, pluginId: string, } & ({ "kind": "list" } | { "kind": "capture", sessionId: string, fromSequence: number, maxFrames: number, maxBytes: number, });
+
+export type PluginSessionQueryKind = { "kind": "list" } | { "kind": "capture", sessionId: string, fromSequence: number, maxFrames: number, maxBytes: number, };
+
+export type PluginSessionQueryResult = { queryId: string, ok: boolean, errorCode?: string | null, sessions?: Array<PluginSessionSummary>, frames?: Array<PluginCapturedFrame>, nextSequence: number, hasMore: boolean, };
+
+export type PluginSessionSummary = { sessionId: string, name: string, kind: string, connected: boolean, rxBytes: number, txBytes: number, };
+
+export type PluginCapturedFrame = { sequence: number, timestampMs: number, tx: boolean, bytes: Array<number>, };
 
 export type EmitPluginPanelEventRequest = { requestId: string, revision: number, operationId: string, event: PluginPanelEvent, };
 

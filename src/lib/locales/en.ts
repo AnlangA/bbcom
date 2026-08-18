@@ -364,6 +364,8 @@ const en: Catalog = {
   'ai.terminal.moreInfo': 'Need more info',
   'ai.terminal.copy': 'Copy',
   'ai.terminal.apply': 'Insert',
+  'ai.terminal.commandStale':
+    'The session changed and the command was not applied — regenerate and retry',
   'ai.terminal.failed': 'AI command generation failed',
   'ai.terminal.copied': 'Command copied',
   'ai.log.model': 'Log model',
@@ -454,6 +456,7 @@ const en: Catalog = {
   'parser.kind.fixed': 'Fixed',
   'parser.kind.length': 'Length field',
   'parser.copiedHex': 'HEX copied',
+  'parser.copiedAscii': 'ASCII copied',
   'waveform.title': 'Waveform',
   // Tools tab bar (send-panel bottom)
   'tools.tab.quick': 'Quick',
@@ -508,6 +511,8 @@ const en: Catalog = {
   'waveform.loadStream': 'Load .bbreg stream',
   'waveform.exportStream': 'Export .bbreg stream',
   'waveform.exportedStream': 'Exported {count} samples',
+  'waveform.loadedStream': 'Loaded {count} samples',
+  'waveform.fileNoSamples': 'No usable sample records found in file',
   // Modbus register table
   'modbus.title': 'Modbus registers',
   'modbus.transport': 'Transport',
@@ -523,6 +528,10 @@ const en: Catalog = {
   'modbus.load': 'Load .bbreg',
   'modbus.save': 'Save .bbreg',
   'modbus.empty': 'No registers yet — add one or load a .bbreg snapshot.',
+  'modbus.savedRegisters': 'Saved {count} registers',
+  'modbus.replayStarted': 'Replay started with {count} records',
+  'modbus.replayNoTargets': 'No replayable write records (FC05/06/10) in file',
+  'modbus.importedRegisters': 'Imported {count} register definitions',
   'modbus.col.name': 'Name',
   'modbus.col.slave': 'Slave',
   'modbus.col.fc': 'FC',
@@ -594,6 +603,7 @@ const en: Catalog = {
   'migration.reset.integration_unavailable':
     'The secure native backup service is unavailable. The application remains locked.',
   'migration.reset.checking': 'Checking the legacy repository…',
+  'migration.reset.checkingHint': 'Checking local data…',
   'migration.reset.backing_up': 'Creating the encrypted backup…',
   'migration.reset.verifying': 'Reopening and verifying the encrypted backup…',
   'migration.reset.activating': 'Activating an empty workspace…',
@@ -684,6 +694,8 @@ const en: Catalog = {
   'plugins.serial.reject': 'Reject',
   'plugins.serial.approve_once': 'Approve for this instance',
   'plugins.error.unavailable': 'The native plugin service is unavailable.',
+  'plugins.bootstrap.unavailable':
+    'The plugin runtime is unavailable ({code}). Switching or creating a workspace retries automatically; if it persists, check app-data permissions and the bubblewrap/python3 dependencies.',
   'plugins.error.invalid-response': 'The plugin service returned an invalid response.',
   'plugins.error.invalid-input': 'Invalid plugin request; check the local install path.',
   'plugins.error.invalid-panel': 'An unsafe or invalid plugin panel was rejected.',
@@ -695,6 +707,8 @@ const en: Catalog = {
   'plugins.error.proposal-consumed': 'The serial write request was already resolved.',
   'plugins.error.panel-event-rejected': 'The plugin panel action was rejected.',
   'plugins.error.cancel-failed': 'The plugin operation could not be cancelled safely.',
+  'plugins.error.workspace-missing':
+    'No workspace is open. Create or open a workspace before managing plugins.',
   'plugins.permission.ui.panel': 'Declarative panel',
   'plugins.permission.ui.panel.description':
     'Show host-rendered controls without plugin JavaScript.',
@@ -748,6 +762,13 @@ const en: Catalog = {
   'common.confirm': 'Confirm',
   'common.clear': 'Clear',
   'common.bytes': 'Bytes',
+  'common.fileReadFailed': 'Failed to read file',
+  'common.confirmDelete': 'Click again to confirm',
+  'trigger.enableToggle': 'Enable trigger {name}',
+  'highlight.enableToggle': 'Enable highlight rule {name}',
+  'session.runtimeLoading': 'Preparing the session runtime…',
+  'session.runtimeError': 'Failed to create the session runtime',
+  'session.runtimeRetry': 'Retry',
   'common.refresh': 'Refresh',
   'common.dismiss': 'Dismiss',
   'common.cancelling': 'Cancelling…',

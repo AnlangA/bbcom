@@ -53,7 +53,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { nextTick, onBeforeUnmount, ref, useId, watch } from 'vue';
 import { t } from '../../lib/i18n';
 
 /**
@@ -76,7 +76,9 @@ const props = withDefaults(
 const emit = defineEmits<{ close: [via: 'overlay' | 'escape' | 'close-button'] }>();
 
 const dialogElement = ref<HTMLElement | null>(null);
-const titleId = `app-modal-title-${Math.random().toString(36).slice(2, 9)}`;
+// useId (not Math.random) so ids are SSR-safe, collision-free, and stable
+// across dev HMR reloads that re-run module setup.
+const titleId = `app-modal-title-${useId().replace(/:/g, '')}`;
 let restoreFocus: HTMLElement | null = null;
 let focusInsideHandler: ((event: FocusEvent) => void) | null = null;
 
@@ -159,7 +161,7 @@ onBeforeUnmount(() => {
 .app-modal-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: var(--z-modal);
   display: flex;
   align-items: center;
   justify-content: center;

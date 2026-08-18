@@ -26,6 +26,7 @@ import type {
 import type { SerialConnectionFailure } from '../../../composables/useSerialConnection';
 import { SessionProtocolRuntime } from './session-protocol-runtime';
 import { SessionRuntimeStatusRegistry } from './session-runtime-status';
+import type { SessionRuntimeUiState } from './session-ui-state';
 
 let nextRuntimeInstanceId = 0;
 
@@ -76,7 +77,6 @@ export type SessionRuntimeMacroController = ReturnType<typeof useMacroRunner> & 
   readonly status: Readonly<Ref<'idle' | 'running'>>;
 };
 export type SessionRuntimeViewMode = 'terminal' | 'waveform' | 'parser' | 'modbus';
-
 export interface SessionRuntimeControllerDependencies {
   readonly notifications: ApplicationNotificationPort;
   readonly portLeaseClient: PortLeaseClient;
@@ -101,6 +101,8 @@ export interface SessionRuntimeController {
   readonly sendingBreak: Readonly<Ref<boolean>>;
   readonly looping: Readonly<Ref<boolean>>;
   readonly viewMode: Ref<SessionRuntimeViewMode>;
+  /** View-local UI state retained across SessionView remounts. */
+  readonly uiState: SessionRuntimeUiState;
   readonly parser: SessionRuntimeProtocolView;
   readonly modbus: SessionRuntimeModbusController;
   readonly macro: SessionRuntimeMacroController;
@@ -278,6 +280,14 @@ export function useSessionRuntimeController(
   const viewBinding = shallowRef<SessionRuntimeViewBinding | null>(null);
   const waveformRef = computed(() => viewBinding.value?.waveformRef.value ?? null);
   const viewMode = ref<SessionRuntimeViewMode>('terminal');
+  const uiState: SessionRuntimeUiState = {
+    // Retained view state: search/filter text, active tools tab, and Modbus
+    // drafts survive SessionView destruction exactly like viewMode does.
+    packetSearch: ref(''),
+    packetDirection: ref<'ALL' | 'TX' | 'RX'>('ALL'),
+    toolsTab: ref<'quick' | 'macros' | 'triggers' | 'highlights' | 'history' | 'checksum'>('quick'),
+    modbusValueDrafts: ref<Record<string, string>>({}),
+  };
   const modbus = useSessionModbus({
     session: computed(() => session.value),
     sendBytes: (payload, writeOptions) => serial.sendBytes(payload, writeOptions),
@@ -464,6 +474,7 @@ export function useSessionRuntimeController(
     sendingBreak: readonly(sendingBreak),
     looping: readonly(looping),
     viewMode,
+    uiState,
     parser,
     modbus,
     macro,

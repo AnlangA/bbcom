@@ -13,6 +13,27 @@ use super::{SandboxDriver, SandboxError, SandboxLaunch, SandboxSelfTest};
 
 const MAX_HOST_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_BWRAP: &str = "/usr/bin/bwrap";
+
+/// Prefer the distro-managed absolute path; fall back to a PATH lookup for
+/// distributions that install bubblewrap elsewhere (NixOS, some containers).
+/// `verified_bwrap` applies the identical owner/permission/regular-file
+/// validation to whichever candidate is chosen.
+fn resolve_bwrap_path() -> PathBuf {
+    if fs::symlink_metadata(DEFAULT_BWRAP).is_ok() {
+        return PathBuf::from(DEFAULT_BWRAP);
+    }
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return PathBuf::from(DEFAULT_BWRAP);
+    };
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join("bwrap");
+        if fs::symlink_metadata(&candidate).is_ok() {
+            return candidate;
+        }
+    }
+    PathBuf::from(DEFAULT_BWRAP)
+}
+
 const SELF_TEST_PYTHON: &str = "/usr/bin/python3";
 const SELF_TEST_MARKER: &str = "bbcom-private-root";
 const PROCESS_PROBE_OBSERVATION: Duration = Duration::from_millis(200);
@@ -95,7 +116,7 @@ impl LinuxSandboxDriver {
     #[must_use]
     pub fn system() -> Self {
         Self {
-            bwrap: PathBuf::from(DEFAULT_BWRAP),
+            bwrap: resolve_bwrap_path(),
         }
     }
 

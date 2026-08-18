@@ -18,12 +18,12 @@ returns a declarative panel with one toggle field:
 
 ```text
 Hello Panel (beacon off)
-  └─ Beacon [toggle] = off
+  └─ Beacon [toggle] = false
 ```
 
 `handle-panel-event` returns the "on"/"off" panel variant depending on the
-event value (`"on"` switches the beacon on). `shutdown` is a no-op. The plugin
-requests no capabilities beyond the implicit `ui.panel` + `plugin.storage`.
+event value (`"true"` switches the beacon on). `shutdown` is a no-op. The plugin
+explicitly requests the `ui.panel` and `plugin.storage` capabilities it uses.
 
 ## Files
 
@@ -85,7 +85,7 @@ id = "dev.bbcom.hello-panel"
 name = "Hello Panel Example"
 version = "1.0.0"
 api = "^1.0"
-requested-capabilities = []
+requested-capabilities = ["ui.panel", "plugin.storage"]
 
 [component]
 path = "component/plugin.wasm"

@@ -5,6 +5,12 @@ export {
   PLUGIN_SERIAL_ACTION_RESULT_COMMAND,
 } from './plugin-serial-action-bridge';
 export {
+  PluginSessionQueryBridge,
+  PLUGIN_SESSION_QUERY_EVENT,
+  PLUGIN_SESSION_QUERY_RESULT_COMMAND,
+  type PluginSessionSnapshotSource,
+} from './plugin-session-query-bridge';
+export {
   PLUGIN_CENTER_KEY,
   useOptionalPluginCenter,
   usePluginCenter,

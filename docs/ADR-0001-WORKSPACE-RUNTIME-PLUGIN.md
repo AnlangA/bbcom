@@ -63,8 +63,10 @@ owned task lifetimes, and an isolation boundary for untrusted extensions.
   The plugin itself receives only explicitly linked WIT capabilities.
 - Version 1 plugins have no ambient filesystem, network, process, serial, Tauri,
   keyring, or environment access. Panels are host-rendered declarative UI.
-- Serial output is a proposal: every send requires a user confirmation and is
-  executed through bbcom's existing serial write scheduler. No persistent
+- Serial output is a proposal confirmed by the user and executed through
+  bbcom's existing serial write scheduler. The decision is remembered only for
+  the current plugin runtime instance (one prompt per
+  workspace+plugin+instance+generation, per AGENTS_PLAN); no persistent
   `always allow serial send` grant exists.
 - Repository trust is HTTPS plus pinned size and SHA-256. This protects transfer
   integrity, not publisher identity; the market UI must state that limitation.

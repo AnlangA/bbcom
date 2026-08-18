@@ -161,8 +161,19 @@ fn u32_le_wire_fixture_is_stable_and_rejects_invalid_frames() {
         Err(ContractError::TruncatedFrame)
     );
 
+    // Raw bytes carry major=1 but minor=2 (now outdated); the minor check
+    // fires before payload resolution, so an unknown payload at a wrong
+    // protocol minor is reported as the version mismatch it is.
     let unknown_payload =
         encode_raw_message(&[0x08, 0x01, 0x10, 0x02, 0x18, 0x01, 0xa2, 0x06, 0x00]);
+    assert_eq!(
+        decode_frame(&unknown_payload),
+        Err(ContractError::InvalidField {
+            field: "protocolMinor"
+        })
+    );
+    let unknown_payload =
+        encode_raw_message(&[0x08, 0x01, 0x10, 0x03, 0x18, 0x01, 0xa2, 0x06, 0x00]);
     assert_eq!(
         decode_frame(&unknown_payload),
         Err(ContractError::UnknownPayload)
@@ -172,7 +183,7 @@ fn u32_le_wire_fixture_is_stable_and_rejects_invalid_frames() {
 #[test]
 fn protocol_and_package_limits_are_fixed() {
     assert_eq!(PROTOCOL_MAJOR, 1);
-    assert_eq!(PROTOCOL_MINOR, 2);
+    assert_eq!(PROTOCOL_MINOR, 3);
     assert_eq!(WIT_PACKAGE, "bbcom:plugin@1.0.0");
     assert_eq!(HANDSHAKE_TIMEOUT_MS, 5_000);
     assert_eq!(CALL_TIMEOUT_MS, 2_000);

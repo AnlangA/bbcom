@@ -11,7 +11,7 @@ message Envelope {
     HostHello host_hello = 10;
     PluginHello plugin_hello = 11;
     InvokeRequest invoke_request = 12;
-    InvokeResponse invoke_response = 13;
+    InvokeResponse invoke_response =  13;
     CancelRequest cancel_request = 14;
     Event event = 15;
     Error error = 16;
@@ -25,6 +25,12 @@ message Envelope {
     ShutdownResponse shutdown_response = 24;
     CompleteShutdownRequest complete_shutdown_request = 25;
     CompleteShutdownResponse complete_shutdown_response = 26;
+    // Sidecar→main pushes awaited by parked WIT host imports (request_id 0).
+    SerialProposalEvent serial_proposal_event = 27;
+    SessionQueryRequest session_query_request = 28;
+    // Main→sidecar replies correlated by proposal/query id (request_id 0).
+    ProposalResult proposal_result = 29;
+    SessionQueryResponse session_query_response = 30;
   }
 }
 
@@ -152,4 +158,79 @@ message PluginStorageSnapshot {
 message PluginStorageEntry {
   string key = 1;
   bytes value = 2;
+}
+
+// --- Serial write proposals (sidecar→main push, decision reply) ---
+
+// Emitted when a guest calls propose-serial-send. The sidecar's WIT import
+// parks the guest call until the correlated ProposalResult arrives or the
+// broker TTL (60s) elapses. payload is bounded by MAX_FRAME_BYTES.
+message SerialProposalEvent {
+  string plugin_id = 1;
+  string proposal_id = 2;
+  string operation_id = 3;
+  string session_id = 4;
+  string display_label = 5;
+  bytes payload = 6;
+}
+
+enum ProposalOutcomeValue {
+  PROPOSAL_OUTCOME_VALUE_UNSPECIFIED = 0;
+  PROPOSAL_OUTCOME_VALUE_APPROVED = 1;  // the write was executed
+  PROPOSAL_OUTCOME_VALUE_REJECTED = 2;
+  PROPOSAL_OUTCOME_VALUE_EXPIRED = 3;   // TTL elapsed without a decision
+}
+
+message ProposalResult {
+  string proposal_id = 1;
+  ProposalOutcomeValue outcome = 2;
+}
+
+// --- G43 session metadata / capture queries (sidecar→main, data reply) ---
+
+message SessionListQuery {}
+
+message CaptureReadQuery {
+  string session_id = 1;
+  uint64 from_sequence = 2;
+  uint32 max_frames = 3;
+  uint32 max_bytes = 4;
+}
+
+message SessionQueryRequest {
+  string plugin_id = 1;
+  string query_id = 2;
+  oneof query {
+    SessionListQuery list = 3;
+    CaptureReadQuery capture = 4;
+  }
+}
+
+message SessionMetadataEntry {
+  string session_id = 1;
+  string name = 2;
+  string kind = 3;
+  bool connected = 4;
+  uint64 rx_bytes = 5;
+  uint64 tx_bytes = 6;
+}
+
+message CaptureFrameEntry {
+  uint64 sequence = 1;
+  uint64 timestamp_ms = 2;
+  bool tx = 3;
+  bytes payload = 4;
+}
+
+// ok=false carries a stable contract error name in error_code (permission-
+// denied, invalid-input, not-found, limit-exceeded). next_sequence is set
+// when more capture frames remain after this page.
+message SessionQueryResponse {
+  string query_id = 1;
+  bool ok = 2;
+  string error_code = 3;
+  repeated SessionMetadataEntry sessions = 4;
+  repeated CaptureFrameEntry frames = 5;
+  uint64 next_sequence = 6;
+  bool has_more = 7;
 }

@@ -228,7 +228,12 @@ export class WorkspaceApplicationService {
     signal?: AbortSignal,
   ): Promise<WorkspaceApplicationOutcome> {
     if (signal?.aborted) return Object.freeze({ outcome: 'cancelled' });
-    if (this.current) return { outcome: 'completed', value: this.snapshot() };
+    // Short-circuit only when the requested workspace is already active; a
+    // caller restoring a specific workspace (legacy reset recovery) must never
+    // be told "completed" while a different workspace is on screen.
+    if (this.current?.workspaceId === fallbackWorkspaceId) {
+      return { outcome: 'completed', value: this.snapshot() };
+    }
     const refreshed = await this.coordinator.refreshCatalog();
     if (signal?.aborted) return Object.freeze({ outcome: 'cancelled' });
     if (refreshed.outcome !== 'completed') return refreshed;
