@@ -673,7 +673,11 @@ where
         };
         let plugin_storage = self
             .persistence
-            .load_plugin_storage(&state_key)?
+            .load_plugin_storage(&state_key)
+            .map_err(|error| {
+                tracing::warn!(?error, plugin_id = %request.artifact.plugin_id, "plugin storage load failed before host launch");
+                error
+            })?
             .unwrap_or_else(empty_plugin_storage_payload);
         let initial_state = PluginPersistedState {
             plugin_storage,
@@ -694,14 +698,24 @@ where
         {
             return Err(HostFailure::SandboxUnavailable);
         }
-        let resolved = self.resolver.resolve(
-            &request.artifact.plugin_id,
-            &request.artifact.version,
-            &request.artifact_slot,
-        )?;
+        let resolved = self
+            .resolver
+            .resolve(
+                &request.artifact.plugin_id,
+                &request.artifact.version,
+                &request.artifact_slot,
+            )
+            .map_err(|error| {
+                tracing::warn!(?error, plugin_id = %request.artifact.plugin_id, "plugin artifact resolution failed before host launch");
+                error
+            })?;
         let package_root = self
             .private_root
-            .validate_package(resolved.package_root())?;
+            .validate_package(resolved.package_root())
+            .map_err(|error| {
+                tracing::warn!(?error, plugin_id = %request.artifact.plugin_id, package_root = %resolved.package_root().display(), "plugin package validation failed before host launch");
+                error
+            })?;
         let mut arguments = vec![
             OsString::from("--package-root"),
             package_root.as_os_str().to_owned(),
@@ -726,7 +740,10 @@ where
         let mut child = self
             .sandbox
             .spawn(&launch)
-            .map_err(|_| HostFailure::SandboxUnavailable)?;
+            .map_err(|error| {
+                tracing::warn!(%error, plugin_id = %request.artifact.plugin_id, "plugin sandbox spawn failed");
+                HostFailure::SandboxUnavailable
+            })?;
         let Some(stdin) = child.take_stdin() else {
             terminate_child(&mut child);
             return Err(HostFailure::Launch);
@@ -812,6 +829,7 @@ where
             )
         });
         if !handshake_valid {
+            tracing::warn!(plugin_id = %request.artifact.plugin_id, "plugin host handshake failed");
             terminate_child(&mut process.child);
             return Err(HostFailure::Handshake);
         }
@@ -882,6 +900,9 @@ where
             process.initial_state = state;
             Ok(())
         })();
+        if let Err(error) = &result {
+            tracing::warn!(?error, plugin_id = %handle.plugin_id, "plugin host initialization failed");
+        }
         // Failure restores the previous behavior exactly: the entry stays in
         // the table so the exit monitor and terminate fallbacks can find it.
         reinsert_process(&self.processes, handle.instance_id, process);

@@ -17,6 +17,7 @@ use bbcom_plugin_contracts::{
     PLUGIN_STATE_SCHEMA_VERSION, PROTOCOL_MAJOR, PROTOCOL_MINOR, Permission, parse_permission,
 };
 
+use crate::bindings::bbcom::plugin::types::FieldKind;
 use crate::handshake::{HandshakeExpectation, HandshakeMachine};
 use crate::policy::{HostPlatform, ProcessLimitPolicy};
 use crate::transport::{FramePump, FrameWriter, InputOperationControl, PumpEvent};
@@ -254,7 +255,7 @@ fn panel_json(panel: &crate::bindings::DeclarativePanel) -> Vec<u8> {
         "fields": panel.fields.iter().map(|field| json!({
             "id": field.id,
             "label": field.label,
-            "kind": format!("{:?}", field.kind).to_lowercase(),
+            "kind": field_kind_name(field.kind),
             "value": field.value,
             "options": field.options,
             "disabled": field.disabled,
@@ -262,6 +263,16 @@ fn panel_json(panel: &crate::bindings::DeclarativePanel) -> Vec<u8> {
     })
     .to_string()
     .into_bytes()
+}
+
+const fn field_kind_name(kind: FieldKind) -> &'static str {
+    match kind {
+        FieldKind::Text => "text",
+        FieldKind::Number => "number",
+        FieldKind::Toggle => "toggle",
+        FieldKind::Select => "select",
+        FieldKind::Button => "button",
+    }
 }
 
 impl<E: PluginExecutor> Sidecar<E> {
@@ -1050,5 +1061,14 @@ mod tests {
         assert_eq!(error.code, "PLUGIN_DENIED");
         assert_eq!(error.message_key, "plugin.error.denied");
         assert!(!error.retryable);
+    }
+
+    #[test]
+    fn panel_field_kinds_use_stable_wire_names() {
+        assert_eq!(field_kind_name(FieldKind::Text), "text");
+        assert_eq!(field_kind_name(FieldKind::Number), "number");
+        assert_eq!(field_kind_name(FieldKind::Toggle), "toggle");
+        assert_eq!(field_kind_name(FieldKind::Select), "select");
+        assert_eq!(field_kind_name(FieldKind::Button), "button");
     }
 }

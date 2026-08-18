@@ -11,6 +11,7 @@ use bbcom_plugin_repository::{
     DownloadedPackage, LOCAL_INSTALL_ORIGIN, PluginInstaller, PreparedInstallationKind,
     PreparedPluginInstallation,
 };
+use sha2::{Digest, Sha256};
 
 use super::{ArtifactPathResolver, ResolvedPluginArtifact};
 
@@ -319,10 +320,7 @@ fn map_repository_prepared(
         prepared.version(),
         prepared.package_sha256(),
         prepared.component_sha256(),
-        PluginArtifactSource {
-            source_id: prepared.repository_origin().to_owned(),
-            kind: source_kind(prepared.repository_origin()),
-        },
+        artifact_source(prepared.repository_origin()),
         prepared.requested_permissions().iter().copied(),
     )
     .map_err(|_| NativeRepositoryError::Descriptor)?;
@@ -347,10 +345,7 @@ fn map_active_artifact(
         &active.version,
         &active.package_sha256,
         &active.component_sha256,
-        PluginArtifactSource {
-            source_id: active.repository_origin.clone(),
-            kind: source_kind(&active.repository_origin),
-        },
+        artifact_source(&active.repository_origin),
         permissions.iter().copied(),
     )
     .map_err(|_| NativeRepositoryError::Descriptor)
@@ -542,11 +537,16 @@ impl<B: RepositoryStagingBackend> InstallationPort for RepositoryInstallationPor
     }
 }
 
-fn source_kind(origin: &str) -> PluginSourceKind {
+pub(crate) fn artifact_source(origin: &str) -> PluginArtifactSource {
     if origin == LOCAL_INSTALL_ORIGIN {
-        PluginSourceKind::LocalPackage
-    } else {
-        PluginSourceKind::Https
+        return PluginArtifactSource {
+            source_id: "local".to_owned(),
+            kind: PluginSourceKind::LocalPackage,
+        };
+    }
+    PluginArtifactSource {
+        source_id: format!("https-{:x}", Sha256::digest(origin.as_bytes())),
+        kind: PluginSourceKind::Https,
     }
 }
 
@@ -740,5 +740,23 @@ mod tests {
         ] {
             assert!(!error.to_string().is_empty());
         }
+    }
+
+    #[test]
+    fn repository_origins_map_to_manager_safe_source_ids() {
+        assert_eq!(artifact_source(LOCAL_INSTALL_ORIGIN).source_id, "local");
+        let remote = artifact_source("https://plugins.example.com");
+        assert_eq!(remote.kind, PluginSourceKind::Https);
+        assert!(
+            PluginArtifact::new(
+                "dev.bbcom.source-id",
+                "1.0.0",
+                "a".repeat(64),
+                "b".repeat(64),
+                remote,
+                [],
+            )
+            .is_ok()
+        );
     }
 }

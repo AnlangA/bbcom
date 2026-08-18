@@ -109,6 +109,32 @@ describe('PluginCenterService', () => {
     );
   });
 
+  test('accepts native development source ids derived from dotted plugin ids', async () => {
+    const { port } = createPort(
+      data({
+        sources: [
+          {
+            sourceId: 'dev-dev.bbcom.hello-panel',
+            kind: 'dev-directory',
+            displayName: 'Hello Panel Example',
+            url: null,
+            enabled: true,
+            watchEnabled: false,
+            health: 'healthy',
+            lastAttemptMs: null,
+            lastSuccessMs: 1,
+            etag: null,
+            lastModified: null,
+          },
+        ],
+      }),
+    );
+    const service = new PluginCenterService(port);
+    await service.start();
+    expect(service.snapshot().sources[0]?.sourceId).toBe('dev-dev.bbcom.hello-panel');
+    expect(service.snapshot().failure).toBeNull();
+  });
+
   test('filters unsafe declarative panels before the renderer sees them', async () => {
     const { port } = createPort(
       data({

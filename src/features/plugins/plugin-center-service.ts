@@ -481,7 +481,7 @@ function identityOf(value: unknown): string | null {
 }
 
 function validSourceId(value: string): boolean {
-  return /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u.test(value) && value.length >= 2;
+  return /^[a-z0-9](?:[a-z0-9.-]{0,126}[a-z0-9])?$/u.test(value) && value.length >= 2;
 }
 
 function validHttpsSourceUrl(value: string): boolean {

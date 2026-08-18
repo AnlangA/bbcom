@@ -1013,7 +1013,15 @@ impl PluginCommandService {
             serial_write_decisions: BTreeMap::new(),
             plugin_snapshots,
         };
-        service.ingest_published_panels()?;
+        if let Err(error) = service.ingest_published_panels() {
+            if error.code == PluginCommandErrorCode::BrokerRejected {
+                tracing::warn!(
+                    "ignoring a broker-rejected plugin panel during command-service bootstrap"
+                );
+            } else {
+                return Err(error);
+            }
+        }
         Ok(service)
     }
 

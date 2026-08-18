@@ -3,10 +3,10 @@
 ;; conventions as tests/fixtures/plugins/malicious.
 ;;
 ;; The plugin publishes one declarative panel with a single toggle field
-;; ("hello.beacon"). `initialize` first calls the `storage-set` host import to
+;; ("hello-beacon"). `initialize` first calls the `storage-set` host import to
 ;; persist a greeting — the only capability effect observable from outside the
 ;; host — and then returns the "beacon off" panel. `handle-panel-event` returns
-;; the "on" panel when the event value is "on" and the "off" panel otherwise.
+;; the "on" panel when the event value is "true" and the "off" panel otherwise.
 ;;
 ;; Component-model notes:
 ;; - Types referenced by imported/exported functions must themselves be named
@@ -81,10 +81,10 @@
     ;; Static strings. All reads are (pointer, length) pairs; no terminators.
     (data (i32.const 0x100000) "Hello Panel (beacon off)")
     (data (i32.const 0x100020) "Hello Panel (beacon on)")
-    (data (i32.const 0x100040) "hello.beacon")
+    (data (i32.const 0x100040) "hello-beacon")
     (data (i32.const 0x100060) "Beacon")
-    (data (i32.const 0x100080) "off")
-    (data (i32.const 0x1000a0) "on")
+    (data (i32.const 0x100080) "false")
+    (data (i32.const 0x1000a0) "true")
     (data (i32.const 0x1000c0) "hello.greeting")
     (data (i32.const 0x1000e0) "Hello from the hello-panel plugin!")
 
@@ -98,7 +98,7 @@
       (i32.store (i32.const 0x10020c) (i32.const 6))
       (i32.store (i32.const 0x100210) (i32.const 2))
       (i32.store (i32.const 0x100214) (i32.const 0x100080))
-      (i32.store (i32.const 0x100218) (i32.const 3))
+      (i32.store (i32.const 0x100218) (i32.const 5))
       (i32.store (i32.const 0x10021c) (i32.const 0))
       (i32.store (i32.const 0x100220) (i32.const 0))
       (i32.store8 (i32.const 0x100224) (i32.const 0))
@@ -108,7 +108,7 @@
       (i32.store (i32.const 0x10024c) (i32.const 6))
       (i32.store (i32.const 0x100250) (i32.const 2))
       (i32.store (i32.const 0x100254) (i32.const 0x1000a0))
-      (i32.store (i32.const 0x100258) (i32.const 2))
+      (i32.store (i32.const 0x100258) (i32.const 4))
       (i32.store (i32.const 0x10025c) (i32.const 0))
       (i32.store (i32.const 0x100260) (i32.const 0))
       (i32.store8 (i32.const 0x100264) (i32.const 0))
@@ -142,13 +142,13 @@
         (param $field-id-ptr i32) (param $field-id-len i32)
         (param $value-ptr i32) (param $value-len i32)
         (result i32)
-      ;; "on" (second byte 'n' = 0x6e) switches the beacon on; anything else
-      ;; (including "off") switches it off.
+      ;; "true" switches the beacon on; anything else (including "false")
+      ;; switches it off.
       (if (i32.and
-            (i32.ge_u (local.get $value-len) (i32.const 2))
+            (i32.ge_u (local.get $value-len) (i32.const 4))
             (i32.eq
-              (i32.load8_u (i32.add (local.get $value-ptr) (i32.const 1)))
-              (i32.const 0x6e)))
+              (i32.load8_u (local.get $value-ptr))
+              (i32.const 0x74)))
         (then (return (i32.const 0x1002a0))))
       (i32.const 0x100280))
 

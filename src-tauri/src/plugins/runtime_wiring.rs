@@ -56,7 +56,7 @@ use super::command_adapter::{
 };
 use super::command_service::PluginUpstreamFailure;
 use super::host_launcher::PrivateArtifactRoot;
-use super::installation::VerifiedPackageProvider;
+use super::installation::{VerifiedPackageProvider, artifact_source};
 use super::runtime_actor::PluginWorkspaceBindingPort;
 use super::sandbox::PlatformSandboxDriver;
 use super::state::NativePluginStatePersistencePort;
@@ -622,10 +622,7 @@ fn compose_from_parts<E: HostUpstreamEnvironment>(
                 &active.version,
                 &active.package_sha256,
                 &active.component_sha256,
-                bbcom_plugin_manager::PluginArtifactSource {
-                    source_id: active.repository_origin.clone(),
-                    kind: bbcom_plugin_manager::PluginSourceKind::LocalPackage,
-                },
+                artifact_source(&active.repository_origin),
                 permissions,
             ) {
                 Ok(artifact) => Some(artifact),
