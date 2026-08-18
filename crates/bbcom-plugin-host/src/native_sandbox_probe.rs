@@ -112,7 +112,11 @@ fn child_process_is_denied(executable: &Path) -> bool {
         .status()
     {
         Err(error) => error.kind() == ErrorKind::PermissionDenied,
-        Ok(_) => false,
+        // Windows Job Objects can let CreateProcess return successfully and
+        // terminate the child for exceeding ActiveProcessLimit before its
+        // entry point runs. Reaching the reserved 46 sentinel proves the
+        // child did execute; every other status was imposed before that code.
+        Ok(status) => status.code() != Some(INVALID_PROBE_ARGUMENTS),
     }
 }
 
