@@ -107,12 +107,28 @@ const fn system_sensitive_file() -> &'static str {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn child_process_is_denied(executable: &Path) -> bool {
-    matches!(
-        std::process::Command::new(executable)
+    match std::process::Command::new(executable)
         .arg("--native-sandbox-invalid-child")
-        .status(),
-        Err(error) if error.kind() == ErrorKind::PermissionDenied
-    )
+        .status()
+    {
+        Err(error) => child_creation_error_is_denial(&error),
+        Ok(_) => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn child_creation_error_is_denial(error: &std::io::Error) -> bool {
+    error.kind() == ErrorKind::PermissionDenied
+}
+
+#[cfg(target_os = "windows")]
+fn child_creation_error_is_denial(error: &std::io::Error) -> bool {
+    // Win32 reports the dedicated "process creation has been blocked" code
+    // for the token-level child-process mitigation rather than access denied.
+    const ERROR_CHILD_PROCESS_BLOCKED: i32 = 367;
+
+    error.kind() == ErrorKind::PermissionDenied
+        || error.raw_os_error() == Some(ERROR_CHILD_PROCESS_BLOCKED)
 }
 
 #[cfg(target_os = "macos")]
@@ -174,5 +190,16 @@ mod tests {
             run_if_requested(&[OsString::from("--native-sandbox-unknown")]),
             Some(INVALID_PROBE_ARGUMENTS)
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn recognizes_the_windows_child_process_policy_error() {
+        assert!(child_creation_error_is_denial(
+            &std::io::Error::from_raw_os_error(367)
+        ));
+        assert!(!child_creation_error_is_denial(
+            &std::io::Error::from_raw_os_error(2)
+        ));
     }
 }
