@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
@@ -105,19 +106,31 @@ impl SandboxSelfTest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxError {
-    detail: &'static str,
+    detail: Cow<'static, str>,
 }
 
 impl SandboxError {
     #[must_use]
     pub const fn new(detail: &'static str) -> Self {
-        Self { detail }
+        Self {
+            detail: Cow::Borrowed(detail),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[must_use]
+    pub(crate) fn from_win32(context: &'static str, code: u32) -> Self {
+        Self {
+            // Keep diagnostics actionable without surfacing paths, account
+            // names, environment variables, or other native error text.
+            detail: Cow::Owned(format!("{context} (Win32 error {code})")),
+        }
     }
 }
 
 impl fmt::Display for SandboxError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.detail)
+        formatter.write_str(&self.detail)
     }
 }
 

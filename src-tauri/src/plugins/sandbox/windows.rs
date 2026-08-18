@@ -14,9 +14,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT,
-    INVALID_HANDLE_VALUE, LocalFree, STILL_ACTIVE, SetHandleInformation, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GENERIC_WRITE, GetLastError, HANDLE,
+    HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LocalFree, STILL_ACTIVE, SetHandleInformation,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GetNamedSecurityInfoW, NO_MULTIPLE_TRUSTEE, REVOKE_ACCESS, SE_FILE_OBJECT,
@@ -744,11 +744,11 @@ unsafe fn spawn_appcontainer_suspended(
     let profile_name = profile_name(&package_root, temporary_profile)?;
     let profile = unsafe { AppContainerProfile::open(&profile_name)? };
     let acl = unsafe { AclLease::grant(&executable, &package_root, profile.sid(), sidecar_acl)? };
-    let job = create_constrained_job(launch.memory_limit_bytes)?;
+    let job = unsafe { create_constrained_job(launch.memory_limit_bytes)? };
     verify_job_limits(&job, launch.memory_limit_bytes)?;
-    let (child_stdin, parent_stdin) = create_pipe_pair(false)?;
-    let (parent_stdout, child_stdout) = create_pipe_pair(true)?;
-    let null_stderr = open_null_output()?;
+    let (child_stdin, parent_stdin) = unsafe { create_pipe_pair(false)? };
+    let (parent_stdout, child_stdout) = unsafe { create_pipe_pair(true)? };
+    let null_stderr = unsafe { open_null_output()? };
 
     let executable_wide = wide_null(executable.as_os_str());
     let current_directory = wide_null(package_root.as_os_str());
@@ -798,8 +798,9 @@ unsafe fn spawn_appcontainer_suspended(
         )
     };
     if created == 0 {
-        return Err(SandboxError::new(
+        return Err(SandboxError::from_win32(
             "Windows AppContainer plugin host could not be created",
+            unsafe { GetLastError() },
         ));
     }
     let process_handle = match unsafe { owned_handle(process.hProcess) } {
