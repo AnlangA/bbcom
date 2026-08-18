@@ -60,9 +60,13 @@ describe('project workspace browser journey', () => {
     expect(mocks.create.mock.calls[0][0].request.name).toBe(CREATED_WORKSPACE_NAME);
     expect(mocks.create.mock.results[0].value.workspace.workspaceId).toBe(CREATED_WORKSPACE_ID);
 
-    const resetProjectButton = await findRecentProject(RESET_WORKSPACE_NAME);
+    const initialProjectOrder = await projectOrder();
+    expect(initialProjectOrder).toEqual([RESET_WORKSPACE_NAME, CREATED_WORKSPACE_NAME]);
+
+    const resetProjectButton = await findProject(RESET_WORKSPACE_NAME);
     await resetProjectButton.click();
     await expect($('.workspace-current')).toHaveText(expect.stringContaining(RESET_WORKSPACE_NAME));
+    expect(await projectOrder()).toEqual(initialProjectOrder);
 
     await mocks.open.update();
     expect(mocks.open.mock.calls.length).toBe(1);
@@ -266,12 +270,19 @@ async function installInteractiveWorkspaceMocks() {
   return { create, open, flush, hydrate, serialOpen, aiRequest };
 }
 
-async function findRecentProject(name) {
-  const projects = await $$('.workspace-recent');
+async function findProject(name) {
+  const projects = await $$('.workspace-project-item');
   for (const project of projects) {
     if ((await project.getText()).includes(name)) return project;
   }
-  throw new Error(`Recent project was not rendered: ${name}`);
+  throw new Error(`Project was not rendered: ${name}`);
+}
+
+async function projectOrder() {
+  const projects = await $$('.workspace-project-item');
+  const names = [];
+  for (const project of projects) names.push(await project.$('span').getText());
+  return names;
 }
 
 async function assertNoSeriousOrCriticalAxeViolations(selector) {
