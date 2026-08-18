@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::ffi::{OsStr, c_void};
+use std::ffi::{OsStr, OsString, c_void};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::mem::{size_of, zeroed};
@@ -62,6 +62,31 @@ const HANG_TERMINATION_EXIT_CODE: u32 = 47;
 const APPCONTAINER_PREFIX: &str = "bbcom.plugin.host";
 const SELF_TEST_MARKER: &str = "bbcom-appcontainer-readable-package";
 const SELF_TEST_SECRET: &str = "bbcom-appcontainer-sensitive-file";
+// AppContainer process creation needs the Windows profile and temporary-path
+// variables so it can redirect them into the profile. Keep this list limited
+// to non-secret operating-system paths: application variables (including API
+// keys) must never cross the plugin sandbox boundary.
+const PLUGIN_ENVIRONMENT_ALLOWLIST: &[&str] = &[
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "ComSpec",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "OS",
+    "PATHEXT",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "windir",
+];
+const REQUIRED_PLUGIN_ENVIRONMENT: &[&str] = &["LOCALAPPDATA", "SystemRoot", "TEMP", "TMP"];
 
 static NEXT_SELF_TEST_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_PROFILE_ID: AtomicU64 = AtomicU64::new(1);
@@ -753,7 +778,7 @@ unsafe fn spawn_appcontainer_suspended(
     let executable_wide = wide_null(executable.as_os_str());
     let current_directory = wide_null(package_root.as_os_str());
     let mut command_line = command_line(&executable, launch.arguments);
-    let mut environment = [0_u16, 0_u16];
+    let mut environment = sanitized_environment_block()?;
     let capabilities = SECURITY_CAPABILITIES {
         AppContainerSid: profile.sid(),
         Capabilities: null_mut(),
@@ -845,6 +870,59 @@ unsafe fn spawn_appcontainer_suspended(
         stdin: Some(stdin),
         stdout: Some(stdout),
     })
+}
+
+fn sanitized_environment_block() -> Result<Vec<u16>, SandboxError> {
+    let entries = PLUGIN_ENVIRONMENT_ALLOWLIST
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| ((*name).to_owned(), value)))
+        .collect::<Vec<_>>();
+
+    if REQUIRED_PLUGIN_ENVIRONMENT.iter().any(|required| {
+        !entries
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case(required) && !value.is_empty())
+    }) {
+        return Err(SandboxError::new(
+            "Windows plugin environment is missing a required system path",
+        ));
+    }
+
+    encode_environment_block(entries)
+}
+
+fn encode_environment_block(
+    mut entries: Vec<(String, OsString)>,
+) -> Result<Vec<u16>, SandboxError> {
+    entries.sort_by(|(left, _), (right, _)| {
+        left.to_ascii_uppercase()
+            .cmp(&right.to_ascii_uppercase())
+            .then_with(|| left.cmp(right))
+    });
+
+    let mut block = Vec::new();
+    for (name, value) in entries {
+        if name.is_empty() || name.contains('=') || name.encode_utf16().any(|unit| unit == 0) {
+            return Err(SandboxError::new(
+                "Windows plugin environment contains an invalid variable name",
+            ));
+        }
+        let value = value.encode_wide().collect::<Vec<_>>();
+        if value.contains(&0) {
+            return Err(SandboxError::new(
+                "Windows plugin environment contains an invalid variable value",
+            ));
+        }
+        block.extend(name.encode_utf16());
+        block.push(u16::from(b'='));
+        block.extend(value);
+        block.push(0);
+    }
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    Ok(block)
 }
 
 unsafe fn create_constrained_job(memory_limit: usize) -> Result<OwnedHandle, SandboxError> {
@@ -1438,6 +1516,61 @@ mod tests {
         assert_eq!(
             quote_windows_argument(OsStr::new("trail \\")),
             r#""trail \\""#
+        );
+    }
+
+    #[test]
+    fn environment_block_is_sorted_unicode_and_double_null_terminated() {
+        let block = encode_environment_block(vec![
+            ("TMP".to_owned(), OsString::from(r"C:\Temp")),
+            ("SystemRoot".to_owned(), OsString::from(r"C:\Windows")),
+        ])
+        .expect("environment block");
+        let expected = "SystemRoot=C:\\Windows\0TMP=C:\\Temp\0\0"
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        assert_eq!(block, expected);
+        assert_eq!(
+            encode_environment_block(Vec::new()).expect("empty environment block"),
+            vec![0, 0]
+        );
+    }
+
+    #[test]
+    fn environment_block_rejects_embedded_nulls() {
+        let invalid_value =
+            OsString::from_wide(&[u16::from(b'C'), u16::from(b':'), 0, u16::from(b'x')]);
+        assert!(encode_environment_block(vec![("TEMP".to_owned(), invalid_value)]).is_err());
+        assert!(
+            encode_environment_block(vec![("BAD\0NAME".to_owned(), OsString::from("value"))])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn plugin_environment_allowlist_contains_only_system_paths() {
+        assert_eq!(
+            PLUGIN_ENVIRONMENT_ALLOWLIST,
+            [
+                "ALLUSERSPROFILE",
+                "APPDATA",
+                "ComSpec",
+                "HOMEDRIVE",
+                "HOMEPATH",
+                "LOCALAPPDATA",
+                "OS",
+                "PATHEXT",
+                "ProgramData",
+                "ProgramFiles",
+                "ProgramFiles(x86)",
+                "ProgramW6432",
+                "SystemDrive",
+                "SystemRoot",
+                "TEMP",
+                "TMP",
+                "USERPROFILE",
+                "windir",
+            ]
         );
     }
 
