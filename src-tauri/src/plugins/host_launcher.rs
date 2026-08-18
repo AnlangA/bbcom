@@ -127,6 +127,7 @@ impl SandboxError {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[must_use]
     pub(crate) fn from_process_exit(context: &'static str, code: u32) -> Self {
         Self {
