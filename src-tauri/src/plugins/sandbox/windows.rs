@@ -778,7 +778,15 @@ unsafe fn spawn_appcontainer_suspended(
     let executable_wide = wide_null(executable.as_os_str());
     let current_directory = wide_null(package_root.as_os_str());
     let mut command_line = command_line(&executable, launch.arguments);
-    let mut environment = sanitized_environment_block()?;
+    // The temporary self-test executes only reviewed system PowerShell and
+    // repository-owned probe scripts. Let Windows construct its AppContainer
+    // environment as documented so PowerShell receives its complete runtime
+    // setup. Production plugin hosts always receive the strict allowlist.
+    let mut environment = if temporary_profile {
+        None
+    } else {
+        Some(sanitized_environment_block()?)
+    };
     let capabilities = SECURITY_CAPABILITIES {
         AppContainerSid: profile.sid(),
         Capabilities: null_mut(),
@@ -816,7 +824,9 @@ unsafe fn spawn_appcontainer_suspended(
                 | CREATE_UNICODE_ENVIRONMENT
                 | CREATE_NO_WINDOW
                 | EXTENDED_STARTUPINFO_PRESENT,
-            environment.as_mut_ptr().cast::<c_void>(),
+            environment
+                .as_mut()
+                .map_or(null_mut(), |block| block.as_mut_ptr().cast::<c_void>()),
             current_directory.as_ptr(),
             &startup.StartupInfo,
             &mut process,
@@ -1138,7 +1148,12 @@ fn run_self_test() -> Result<(), SandboxError> {
                 "Windows AppContainer self-test did not prove read-only package access",
             ));
         }
-        _ => return Err(SandboxError::new("Windows AppContainer self-test failed")),
+        code => {
+            return Err(SandboxError::from_process_exit(
+                "Windows AppContainer base self-test failed",
+                code,
+            ));
+        }
     }
 
     let memory_arguments = vec![
@@ -1157,9 +1172,10 @@ fn run_self_test() -> Result<(), SandboxError> {
                 "Windows AppContainer self-test did not prove the process memory limit",
             ));
         }
-        _ => {
-            return Err(SandboxError::new(
+        code => {
+            return Err(SandboxError::from_process_exit(
                 "Windows AppContainer memory self-test failed",
+                code,
             ));
         }
     }

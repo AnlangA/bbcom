@@ -126,6 +126,16 @@ impl SandboxError {
             detail: Cow::Owned(format!("{context} (Win32 error {code})")),
         }
     }
+
+    #[cfg(target_os = "windows")]
+    #[must_use]
+    pub(crate) fn from_process_exit(context: &'static str, code: u32) -> Self {
+        Self {
+            // Numeric exit status identifies the failed probe without exposing
+            // captured output, paths, account names, or environment values.
+            detail: Cow::Owned(format!("{context} (process exit code {code})")),
+        }
+    }
 }
 
 impl fmt::Display for SandboxError {
