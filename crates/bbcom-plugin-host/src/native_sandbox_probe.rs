@@ -107,17 +107,12 @@ const fn system_sensitive_file() -> &'static str {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn child_process_is_denied(executable: &Path) -> bool {
-    match std::process::Command::new(executable)
+    matches!(
+        std::process::Command::new(executable)
         .arg("--native-sandbox-invalid-child")
-        .status()
-    {
-        Err(error) => error.kind() == ErrorKind::PermissionDenied,
-        // Windows Job Objects can let CreateProcess return successfully and
-        // terminate the child for exceeding ActiveProcessLimit before its
-        // entry point runs. Reaching the reserved 46 sentinel proves the
-        // child did execute; every other status was imposed before that code.
-        Ok(status) => status.code() != Some(INVALID_PROBE_ARGUMENTS),
-    }
+        .status(),
+        Err(error) if error.kind() == ErrorKind::PermissionDenied
+    )
 }
 
 #[cfg(target_os = "macos")]

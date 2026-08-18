@@ -45,11 +45,12 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
     DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
-    InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ResumeThread,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject,
+    InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+    PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
+use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
 
 use super::{
     SandboxDriver, SandboxError, SandboxLaunch, SandboxSelfTest, SandboxedChild, SandboxedProcess,
@@ -97,8 +98,9 @@ static NEXT_PROFILE_ID: AtomicU64 = AtomicU64::new(1);
 /// Every package gets a distinct AppContainer SID with an empty capability
 /// set. A native ACL lease grants that SID read-only package access and
 /// read/execute access to the trusted sidecar for exactly the child lifetime.
-/// The process is created suspended with extended security attributes, then
-/// attached to a kill-on-close, one-process, 256 MiB Job before it is resumed.
+/// The process receives the token-level child-process restriction, is created
+/// suspended, and is attached to a kill-on-close, one-process, 256 MiB Job
+/// before it is resumed.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WindowsSandboxDriver;
 
@@ -314,9 +316,10 @@ impl ProcessAttributeList {
     unsafe fn security_capabilities(
         capabilities: &SECURITY_CAPABILITIES,
         inherited_handles: &[HANDLE],
+        child_process_policy: &u32,
     ) -> Result<Self, SandboxError> {
         let mut bytes = 0usize;
-        let _ = unsafe { InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut bytes) };
+        let _ = unsafe { InitializeProcThreadAttributeList(null_mut(), 3, 0, &mut bytes) };
         if bytes == 0 {
             return Err(SandboxError::new(
                 "Windows process security attribute size is unavailable",
@@ -326,7 +329,7 @@ impl ProcessAttributeList {
         let mut list = Self {
             storage: vec![0usize; words],
         };
-        if unsafe { InitializeProcThreadAttributeList(list.as_ptr(), 2, 0, &mut bytes) } == 0 {
+        if unsafe { InitializeProcThreadAttributeList(list.as_ptr(), 3, 0, &mut bytes) } == 0 {
             list.storage.clear();
             return Err(SandboxError::new(
                 "Windows process security attributes could not be initialized",
@@ -366,6 +369,26 @@ impl ProcessAttributeList {
             list.storage.clear();
             return Err(SandboxError::new(
                 "Windows plugin host inherited handle list could not be restricted",
+            ));
+        }
+        if unsafe {
+            UpdateProcThreadAttribute(
+                list.as_ptr(),
+                0,
+                PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY as usize,
+                (child_process_policy as *const u32)
+                    .cast_mut()
+                    .cast::<c_void>(),
+                size_of::<u32>(),
+                null_mut(),
+                null(),
+            )
+        } == 0
+        {
+            unsafe { DeleteProcThreadAttributeList(list.as_ptr()) };
+            list.storage.clear();
+            return Err(SandboxError::new(
+                "Windows plugin host child-process restriction could not be applied",
             ));
         }
         Ok(list)
@@ -783,8 +806,14 @@ unsafe fn spawn_appcontainer_suspended(
         raw_handle(&child_stdout),
         raw_handle(&null_stderr),
     ];
-    let attributes =
-        unsafe { ProcessAttributeList::security_capabilities(&capabilities, &inherited_handles)? };
+    let child_process_policy = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
+    let attributes = unsafe {
+        ProcessAttributeList::security_capabilities(
+            &capabilities,
+            &inherited_handles,
+            &child_process_policy,
+        )?
+    };
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
