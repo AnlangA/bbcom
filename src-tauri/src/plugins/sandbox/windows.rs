@@ -3,7 +3,9 @@ use std::ffi::{OsStr, OsString, c_void};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::mem::{size_of, zeroed};
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::ffi::OsStrExt;
+#[cfg(test)]
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::MetadataExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};

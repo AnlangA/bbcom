@@ -78,7 +78,10 @@ fn run_base_probe(package: &Path, sensitive: &Path, child_executable: &Path) -> 
         }
     }
 
-    let network_probe = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9);
+    // TEST-NET-1 is permanently non-routable. A process with ambient network
+    // authority would time out or report routing failure, while the sandbox
+    // must reject the connect attempt immediately with access denied.
+    let network_probe = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 9);
     match TcpStream::connect_timeout(&network_probe, Duration::from_millis(100)) {
         Err(error) if error.kind() == ErrorKind::PermissionDenied => {}
         _ => return NETWORK_DENIAL_FAILURE,
