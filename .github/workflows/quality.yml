@@ -6,7 +6,19 @@ on:
     branches:
       - master
   workflow_call:
+    inputs:
+      run_benchmark:
+        description: Run the frontend benchmark after correctness checks
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
+    inputs:
+      run_benchmark:
+        description: Run the frontend benchmark after correctness checks
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -202,7 +214,7 @@ jobs:
     name: Master/manual frontend benchmark
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-      github.event_name == 'workflow_dispatch'
+      (github.event_name == 'workflow_dispatch' && inputs.run_benchmark)
     needs: quality-gate
     runs-on: ubuntu-22.04
     timeout-minutes: 25
