@@ -26,17 +26,16 @@ export class WorkspaceApplicationResetTarget implements WorkspaceResetTarget {
       await this.open(workspaceId, context);
       return;
     }
-    const active = await this.activate(
+    await this.activate(
       () => restore.call(this.application, workspaceId, context.signal),
       'last active workspace activation failed',
       context,
     );
-    if (!active) throw new Error('last active workspace is missing');
-    // Mirror open(): recovery must land on the workspace the reset journal
-    // committed, never release the gate against different data.
-    if (active.workspaceId !== workspaceId) {
-      throw new Error('restored workspace mismatch');
-    }
+    // `workspaceId` is a fallback for installs without a durable selection.
+    // Once the reset journal is completed, a user may legitimately create or
+    // select another project. The application restore boundary validates and
+    // opens that native last-active project; requiring it to still equal the
+    // reset workspace would re-lock every such install on its next startup.
   }
 
   private async open(workspaceId: string, context: LegacyReadContext) {

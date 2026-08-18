@@ -207,6 +207,62 @@ test('catalog refresh ignores stale responses and exposes a bounded recent-proje
   assert.equal(coordinator.snapshot().library.recentProjects[0]?.workspaceId, 'workspace-14');
 });
 
+test('selecting a project changes only active state and never reorders the library', async () => {
+  const catalog = [
+    summary('workspace-a', 1, 100, 'Alpha'),
+    summary('workspace-b', 2, 300, 'Beta'),
+    summary('workspace-c', 3, 200, 'Gamma'),
+  ];
+  const coordinator = new WorkspaceCoordinator(
+    createPort({
+      loadCatalog: (request) =>
+        Promise.resolve({ requestId: request.requestId, workspaces: catalog }),
+      openWorkspace: (request) =>
+        Promise.resolve({
+          requestId: request.requestId,
+          workspace: catalog.find((project) => project.workspaceId === request.workspaceId)!,
+          header: header(
+            request.workspaceId,
+            catalog.find((project) => project.workspaceId === request.workspaceId)!.revision,
+            catalog.find((project) => project.workspaceId === request.workspaceId)!.name,
+          ),
+        }),
+    }),
+    { idFactory: sequenceIds() },
+  );
+
+  await coordinator.refreshCatalog();
+  const initialOrder = coordinator
+    .snapshot()
+    .library.projects.map((project) => project.workspaceId);
+  assert.deepEqual(initialOrder, ['workspace-a', 'workspace-b', 'workspace-c']);
+  assert.deepEqual(
+    coordinator.snapshot().library.recentProjects.map((project) => project.workspaceId),
+    ['workspace-b', 'workspace-c', 'workspace-a'],
+  );
+
+  await coordinator.openWorkspace('workspace-c');
+  const selected = coordinator.snapshot().library;
+  assert.deepEqual(
+    selected.projects.map((project) => project.workspaceId),
+    initialOrder,
+  );
+  assert.equal(
+    selected.projects.find((project) => project.workspaceId === 'workspace-c')?.active,
+    true,
+  );
+  assert.deepEqual(
+    selected.recentProjects.map((project) => project.workspaceId),
+    ['workspace-b', 'workspace-c', 'workspace-a'],
+  );
+
+  await coordinator.openWorkspace('workspace-a');
+  assert.deepEqual(
+    coordinator.snapshot().library.projects.map((project) => project.workspaceId),
+    initialOrder,
+  );
+});
+
 test('open cancellation and overlapping activation cannot replace the current workspace', async () => {
   const slow = deferred<OpenWorkspaceResponse>();
   let slowSignal: AbortSignal | undefined;

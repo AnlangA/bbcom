@@ -14,15 +14,19 @@ export function createProjectLibraryViewModel(input: {
   messageKey: string | null;
 }): WorkspaceLibraryViewModel {
   const busy = input.navigationAction !== null;
-  const projects = input.projects
-    .map((project) =>
-      Object.freeze({ ...project, active: project.workspaceId === input.activeWorkspaceId }),
-    )
+  // Library order is domain state owned by the coordinator. Selection is a
+  // projection only: it must never mutate or re-sort the navigation list.
+  const projects = input.projects.map((project) =>
+    Object.freeze({ ...project, active: project.workspaceId === input.activeWorkspaceId }),
+  );
+  // Recency is a separate shortcut projection. Keeping its sort isolated
+  // prevents activity timestamps from leaking into the stable sidebar order.
+  const recentProjects = [...projects]
     .sort(
       (left, right) =>
         right.updatedAtMs - left.updatedAtMs || left.workspaceId.localeCompare(right.workspaceId),
-    );
-  const recentProjects = projects.slice(0, WORKSPACE_RECENT_PROJECT_LIMIT);
+    )
+    .slice(0, WORKSPACE_RECENT_PROJECT_LIMIT);
   return Object.freeze({
     status: input.status,
     activeWorkspaceId: input.activeWorkspaceId,

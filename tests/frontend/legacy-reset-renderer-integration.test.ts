@@ -164,6 +164,27 @@ test('workspace target opens only the native journal fixed empty schema-v1 works
   });
   expect(restoreLastActiveWorkspace).toHaveBeenCalledWith('workspace-1', expect.any(AbortSignal));
 
+  const restoreNewerWorkspace = vi.fn(async () => ({
+    outcome: 'completed' as const,
+    value: {
+      ...(await openWorkspace('workspace-1')).value,
+      currentWorkspace: {
+        ...(await openWorkspace('workspace-1')).value.currentWorkspace!,
+        workspaceId: 'workspace-selected-after-reset',
+        name: 'Selected after reset',
+      },
+    },
+  }));
+  await expect(
+    new WorkspaceApplicationResetTarget({
+      openWorkspace,
+      restoreLastActiveWorkspace: restoreNewerWorkspace,
+    } as unknown as WorkspaceApplicationActivation).activateCompletedV1('workspace-1', {
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toBeUndefined();
+  expect(restoreNewerWorkspace).toHaveBeenCalledWith('workspace-1', expect.any(AbortSignal));
+
   const unsafeApplication = {
     openWorkspace: async () => ({
       outcome: 'completed' as const,
