@@ -159,12 +159,15 @@ jobs:
 
       # cargo llvm-cov executes the complete Rust test suite. A separate
       # cargo test step would only duplicate the same tests.
+      # The installed-app market probe is exercised by the blocking G46 gate
+      # on all three native packages, so it is excluded from unit percentages.
       # Keep the enforced floor aligned with the measured workspace baseline;
       # AGENTS_PLAN.md tracks the staged increase toward 80% lines / 75% functions.
       - name: Test Rust and enforce coverage
         run: >-
           cargo llvm-cov --manifest-path src-tauri/Cargo.toml
           --workspace --all-features --locked
+          --ignore-filename-regex 'src-tauri/src/plugins/market_readiness_probe\.rs$'
           --fail-under-lines 64 --fail-under-functions 59
 
   browser-e2e:

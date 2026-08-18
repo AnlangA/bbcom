@@ -543,10 +543,13 @@ pub fn activate_plugin_workspace<R: tauri::Runtime>(app: &AppHandle<R>) {
 fn app_data_roots<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> Result<PluginRuntimeRoots, PluginBootstrapError> {
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| PluginBootstrapError::MissingInstaller)?;
+    let app_data = match app.try_state::<PluginRuntimeDataRoot>() {
+        Some(root) => root.0.clone(),
+        None => app
+            .path()
+            .app_data_dir()
+            .map_err(|_| PluginBootstrapError::MissingInstaller)?,
+    };
     // An unresolvable or unwritable application-data root fails composition
     // with the first-dependency code; setup records only that code.
     fs::create_dir_all(&app_data).map_err(|_| PluginBootstrapError::MissingInstaller)?;
@@ -1092,6 +1095,10 @@ fn audit_line(event: &AuditEvent) -> String {
 /// dangling-reference risk.
 pub struct PluginLifecycleHandle(Mutex<Option<Arc<dyn PluginRuntimeLifecycle>>>);
 
+/// Private G46 override installed before composition. Normal application
+/// setup never manages this type and therefore always uses the OS data root.
+pub(crate) struct PluginRuntimeDataRoot(pub(crate) PathBuf);
+
 impl PluginLifecycleHandle {
     fn empty() -> Self {
         Self(Mutex::new(None))
@@ -1105,7 +1112,7 @@ impl PluginLifecycleHandle {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
 
-    fn current(&self) -> Option<Arc<dyn PluginRuntimeLifecycle>> {
+    pub(super) fn current(&self) -> Option<Arc<dyn PluginRuntimeLifecycle>> {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

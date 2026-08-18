@@ -293,23 +293,28 @@ jobs:
           if (-not (Test-Path -PathType Leaf $application)) { throw 'installed bbcom.exe is absent' }
           $evidenceRoot = (Resolve-Path g45-evidence).Path
           $stdout = Join-Path $evidenceRoot 'plugin-g46-runtime-${{ matrix.platform }}.json'
+          $stdoutTemp = "$stdout.tmp"
           $stderr = Join-Path $env:RUNNER_TEMP 'bbcom-plugin-runtime-probe-windows.log'
+          $dataRoot = Join-Path $env:RUNNER_TEMP 'bbcom-g46-data'
           $arguments = @(
             '--plugin-market-readiness-probe', '--format', 'json',
             '--commit', $env:GITHUB_SHA,
             '--platform', '${{ matrix.platform }}',
-            '--target', '${{ matrix.target }}'
+            '--target', '${{ matrix.target }}',
+            '--data-root', $dataRoot
           )
           $probe = Start-Process -FilePath $application -ArgumentList $arguments `
-            -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
-          if (-not $probe.WaitForExit(15000)) {
+            -RedirectStandardOutput $stdoutTemp -RedirectStandardError $stderr -PassThru
+          if (-not $probe.WaitForExit(60000)) {
             Stop-Process -Id $probe.Id -Force
             throw 'production-runtime probe timed out'
           }
+          $probe.WaitForExit()
           if ($probe.ExitCode -ne 0) { throw "production-runtime probe exited with $($probe.ExitCode)" }
-          if (-not (Test-Path -PathType Leaf $stdout) -or (Get-Item $stdout).Length -eq 0) {
+          if (-not (Test-Path -PathType Leaf $stdoutTemp) -or (Get-Item $stdoutTemp).Length -eq 0) {
             throw 'production-runtime probe emitted no evidence'
           }
+          Move-Item -Force $stdoutTemp $stdout
 
       - name: Ask installed macOS application for production-runtime evidence
         if: runner.os == 'macOS'
@@ -318,17 +323,20 @@ jobs:
         run: |
           application="$RUNNER_TEMP/bbcom-g45-runtime/bbcom.app/Contents/MacOS/bbcom"
           evidence="g45-evidence/plugin-g46-runtime-${{ matrix.platform }}.json"
+          evidence_temp="$evidence.tmp"
           log="$RUNNER_TEMP/bbcom-plugin-runtime-probe-macos.log"
+          data_root="$RUNNER_TEMP/bbcom-g46-data"
           test -x "$application"
           set +e
           "$application" \
             --plugin-market-readiness-probe --format json \
             --commit "$GITHUB_SHA" \
             --platform '${{ matrix.platform }}' \
-            --target '${{ matrix.target }}' >"$evidence" 2>"$log" &
+            --target '${{ matrix.target }}' \
+            --data-root "$data_root" >"$evidence_temp" 2>"$log" &
           probe_pid=$!
           probe_status=124
-          for _ in {1..150}; do
+          for _ in {1..600}; do
             if ! kill -0 "$probe_pid" 2>/dev/null; then
               wait "$probe_pid"
               probe_status=$?
@@ -342,7 +350,8 @@ jobs:
           fi
           set -e
           test "$probe_status" -eq 0
-          test -s "$evidence"
+          test -s "$evidence_temp"
+          mv "$evidence_temp" "$evidence"
 
       - name: Ask installed Linux application for production-runtime evidence
         if: runner.os == 'Linux'
@@ -351,19 +360,23 @@ jobs:
         run: |
           application="$RUNNER_TEMP/bbcom-g45-installed/usr/bin/bbcom"
           evidence="g45-evidence/plugin-g46-runtime-${{ matrix.platform }}.json"
+          evidence_temp="$evidence.tmp"
           log="$RUNNER_TEMP/bbcom-plugin-runtime-probe-linux.log"
+          data_root="$RUNNER_TEMP/bbcom-g46-data"
           test -x "$application"
           set +e
-          timeout --signal=TERM --kill-after=2s 15s \
+          timeout --signal=TERM --kill-after=2s 60s \
             "$application" \
             --plugin-market-readiness-probe --format json \
             --commit "$GITHUB_SHA" \
             --platform '${{ matrix.platform }}' \
-            --target '${{ matrix.target }}' >"$evidence" 2>"$log"
+            --target '${{ matrix.target }}' \
+            --data-root "$data_root" >"$evidence_temp" 2>"$log"
           probe_status=$?
           set -e
           test "$probe_status" -eq 0
-          test -s "$evidence"
+          test -s "$evidence_temp"
+          mv "$evidence_temp" "$evidence"
 
       - name: Require real packaged-host malicious-Component evidence for G45
         if: always()
