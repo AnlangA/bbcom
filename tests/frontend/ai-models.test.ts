@@ -5,7 +5,6 @@ import {
   AI_MODELS,
   DEFAULT_AI_MODEL,
   aiModelLabel,
-  aiModelOptions,
   getAiModelOptions,
   isValidAiModel,
 } from '../../src/lib/ai-models.ts';
@@ -21,5 +20,4 @@ test('AI model registry is the single source for defaults, validation, labels, a
     getAiModelOptions(),
     AI_MODELS.map((model) => ({ label: model.label, value: model.id })),
   );
-  assert.equal(aiModelOptions, getAiModelOptions);
 });

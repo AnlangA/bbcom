@@ -153,6 +153,3 @@ export const themeOverrides: GlobalThemeOverrides = {
     railColor: 'var(--bg-inset)',
   },
 };
-
-// API alias retained while both window roots select overrides by theme.
-export const lightThemeOverrides = themeOverrides;

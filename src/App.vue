@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider :theme-overrides="activeOverrides">
+  <n-config-provider :theme-overrides="themeOverrides">
     <n-message-provider>
       <n-dialog-provider>
         <LegacyResetGate>
@@ -12,22 +12,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onErrorCaptured, watch } from 'vue';
+import { onErrorCaptured, watch } from 'vue';
 import { NConfigProvider, NDialogProvider, NMessageProvider } from 'naive-ui';
 import AppShell from './components/app-shell/AppShell.vue';
 import LegacyResetGate from './components/migration/LegacyResetGate.vue';
 import ShutdownDialog from './components/app-shell/ShutdownDialog.vue';
 import { useAiSessionBridge } from './composables/useAiSessionBridge';
 import { useAppStore } from './stores/app';
-import { lightThemeOverrides, themeOverrides } from './styles/naive-theme';
+import { themeOverrides } from './styles/naive-theme';
 
 const appStore = useAppStore();
-// The explicit theme overrides already define both palettes. Avoid importing
-// naive-ui's aggregate dark theme, which includes styles for every component
-// (including controls bbcom does not ship) in the renderer output.
-const activeOverrides = computed(() =>
-  appStore.theme === 'light' ? lightThemeOverrides : themeOverrides,
-);
 
 // Reflect the theme onto <html data-theme> so the CSS variable palettes swap.
 watch(
