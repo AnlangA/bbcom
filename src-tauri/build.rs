@@ -36,6 +36,7 @@ fn main() {
             "workspace_catalog",
             "create_workspace",
             "open_workspace",
+            "delete_workspace",
             "apply_workspace_batch",
             "flush_workspace",
             "hydrate_workspace_sessions",

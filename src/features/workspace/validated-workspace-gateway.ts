@@ -5,6 +5,8 @@ import type {
   CancelWorkspaceOperationResponse,
   CreateWorkspaceCommandRequest,
   CreateWorkspaceCommandResponse,
+  DeleteWorkspaceRequest,
+  DeleteWorkspaceResponse,
   ExportProjectRequest,
   ExportProjectResponse,
   FlushWorkspaceRequest,
@@ -98,6 +100,25 @@ export class ValidatedWorkspaceGateway implements WorkspaceCoordinatorPort {
     this.validateActivationResponse(response, safe.requestId);
     if (response.workspace.name !== safe.name || response.header.name !== safe.name) {
       throw new InvalidWorkspaceResponseError('name');
+    }
+    return response;
+  }
+
+  async deleteWorkspace(
+    request: DeleteWorkspaceRequest,
+    context: WorkspacePortCallContext,
+  ): Promise<DeleteWorkspaceResponse> {
+    const safe = {
+      requestId: validateRequestId(request.requestId),
+      workspaceId: validateWorkspaceId(request.workspaceId),
+    };
+    const response = await this.nativeCall(
+      () => this.transport.deleteWorkspace(safe, context),
+      context,
+    );
+    requireMatchingRequestId(response.requestId, safe.requestId);
+    if (validateWorkspaceId(response.workspaceId) !== safe.workspaceId) {
+      throw new InvalidWorkspaceResponseError('workspaceId');
     }
     return response;
   }

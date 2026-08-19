@@ -75,6 +75,34 @@ fn managed_identifiers_are_canonical_and_cannot_traverse() {
     }
 }
 
+#[test]
+fn managed_project_deletion_is_exact_and_missing_ids_fail_closed() {
+    let temp = tempfile::tempdir().unwrap();
+    let library = library(&temp);
+    let workspace_id = id(WORKSPACE_ID);
+    let other_id = id(SECOND_WORKSPACE_ID);
+    drop(
+        library
+            .create_project(&workspace_id, "delete me", 1)
+            .unwrap(),
+    );
+    drop(
+        library
+            .create_project(&other_id, "keep me", 1)
+            .unwrap(),
+    );
+
+    library.delete_project(&workspace_id).unwrap();
+    assert!(!library.contains(&workspace_id));
+    assert!(library.contains(&other_id));
+    assert!(matches!(
+        library.delete_project(&workspace_id),
+        Err(ProjectContainerError::InvalidInput {
+            field: "workspaceId"
+        })
+    ));
+}
+
 #[cfg(unix)]
 #[test]
 fn import_copies_to_private_staging_and_commits_only_after_validation() {

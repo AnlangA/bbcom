@@ -244,6 +244,10 @@ export type OpenWorkspaceRequest = { requestId: string, workspaceId: string, };
 
 export type OpenWorkspaceResponse = { requestId: string, workspace: WorkspaceSummary, header: WorkspaceDocumentHeader, };
 
+export type DeleteWorkspaceRequest = { requestId: string, workspaceId: string, };
+
+export type DeleteWorkspaceResponse = { requestId: string, workspaceId: string, };
+
 export type HydrateWorkspaceSessionsRequest = { requestId: string, workspaceId: string, offset: number, limit: number, };
 
 export type WorkspaceSessionSnapshot = { id: string, sortOrder: number, kind: WorkspaceSessionKind, name: string, needsRebind: boolean, lastPortHint?: WorkspacePortHint | null, portConfig: Record<string, unknown>, document: Record<string, unknown>, displayPreferences: Record<string, unknown>, sendPreferences: Record<string, unknown>, parserState: Record<string, unknown>, featureState: Record<string, unknown>, modbusConfig: Record<string, unknown>, };

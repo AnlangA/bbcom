@@ -194,6 +194,7 @@ pub fn run() {
             commands::workspace::workspace_catalog,
             commands::workspace::create_workspace,
             commands::workspace::open_workspace,
+            commands::workspace::delete_workspace,
             commands::workspace::apply_workspace_batch,
             commands::workspace::flush_workspace,
             commands::workspace::hydrate_workspace_sessions,

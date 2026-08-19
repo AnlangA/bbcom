@@ -49,6 +49,7 @@ const zh: Catalog = {
   'workspace.open': '打开项目',
   'workspace.import': '导入项目',
   'workspace.export': '导出项目',
+  'workspace.delete.failed': '无法删除项目。',
   'workspace.name': '项目名称',
   'workspace.current': '当前项目：{name}',
   'workspace.save.clean': '已保存',

@@ -72,6 +72,20 @@ pub struct OpenWorkspaceResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteWorkspaceRequest {
+    pub request_id: String,
+    pub workspace_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteWorkspaceResponse {
+    pub request_id: String,
+    pub workspace_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HydrateWorkspaceSessionsRequest {
     pub request_id: String,
     pub workspace_id: String,

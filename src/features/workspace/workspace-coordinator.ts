@@ -96,9 +96,11 @@ export class WorkspaceCoordinator {
   private navigationAction: WorkspaceNavigationAction | null = null;
   private catalogGeneration = 0;
   private activationGeneration = 0;
+  private deleteGeneration = 0;
   private exportGeneration = 0;
   private catalogCall: PendingCall | null = null;
   private activationCall: PendingCall | null = null;
+  private deleteCall: PendingCall | null = null;
   private exportCall: PendingCall | null = null;
   private readonly writeEngine: WorkspaceWriteEpochEngine;
 
@@ -168,6 +170,7 @@ export class WorkspaceCoordinator {
   }
 
   async refreshCatalog(): Promise<WorkspaceActionOutcome<WorkspaceCoordinatorSnapshot>> {
+    if (this.navigationAction !== null) return failed('workspace.activation.in_progress');
     const call = this.beginCall('catalog', ++this.catalogGeneration);
     this.catalogCall?.controller.abort();
     this.catalogCall = call;
@@ -234,6 +237,56 @@ export class WorkspaceCoordinator {
       );
       return { response, expectedRequestId: call.requestId, expectedName: validatedName };
     });
+  }
+
+  async deleteWorkspace(workspaceId: string): Promise<WorkspaceActionOutcome<string>> {
+    const validatedWorkspaceId = validateWorkspaceId(workspaceId);
+    if (
+      validatedWorkspaceId === this.active?.workspaceId ||
+      validatedWorkspaceId === this.catalogActiveWorkspaceId
+    ) {
+      return failed('workspace.delete.failed');
+    }
+    if (this.navigationAction !== null) return failed('workspace.activation.in_progress');
+
+    const call = this.beginCall('delete', ++this.deleteGeneration);
+    this.deleteCall = call;
+    this.navigationAction = 'delete';
+    this.libraryStatus = 'loading';
+    this.libraryMessageKey = null;
+    this.catalogCall?.controller.abort();
+    this.catalogCall = null;
+    this.catalogGeneration += 1;
+    this.notify();
+    try {
+      const response = await this.port.deleteWorkspace(
+        { requestId: call.requestId, workspaceId: validatedWorkspaceId },
+        contextFor(call),
+      );
+      if (!this.isCurrentDelete(call)) return staleOutcome(call);
+      requireMatchingRequestId(response.requestId, call.requestId);
+      if (validateWorkspaceId(response.workspaceId) !== validatedWorkspaceId) {
+        throw new InvalidWorkspaceResponseError('workspaceId');
+      }
+      this.projects = Object.freeze(
+        this.projects.filter((project) => project.workspaceId !== validatedWorkspaceId),
+      );
+      this.deleteCall = null;
+      this.navigationAction = null;
+      this.libraryStatus = 'ready';
+      this.libraryMessageKey = null;
+      this.notify();
+      return completed(validatedWorkspaceId);
+    } catch (error) {
+      if (!this.isCurrentDelete(call)) return staleOutcome(call);
+      this.deleteCall = null;
+      this.navigationAction = null;
+      this.libraryStatus = this.projects.length > 0 ? 'ready' : 'failed';
+      const failure = safeFailure(error, 'workspace.delete.failed');
+      this.libraryMessageKey = failure.messageKey;
+      this.notify();
+      return failure;
+    }
   }
 
   /** Select, stage, import, and then open a `.bbcom` project through opaque grants only. */
@@ -591,7 +644,10 @@ export class WorkspaceCoordinator {
     this.projects = Object.freeze(projects);
   }
 
-  private beginCall(scope: 'catalog' | 'activate' | 'export', generation: number): PendingCall {
+  private beginCall(
+    scope: 'catalog' | 'activate' | 'delete' | 'export',
+    generation: number,
+  ): PendingCall {
     return {
       generation,
       requestId: this.nextId(scope),
@@ -613,7 +669,7 @@ export class WorkspaceCoordinator {
     call.controller.abort();
   }
 
-  private nextId(scope: 'catalog' | 'activate' | 'export' | 'batch' | 'flush'): string {
+  private nextId(scope: 'catalog' | 'activate' | 'delete' | 'export' | 'batch' | 'flush'): string {
     return validateRequestId(this.idFactory(scope));
   }
 
@@ -623,6 +679,10 @@ export class WorkspaceCoordinator {
 
   private isCurrentActivation(call: PendingCall): boolean {
     return this.activationCall === call && call.generation === this.activationGeneration;
+  }
+
+  private isCurrentDelete(call: PendingCall): boolean {
+    return this.deleteCall === call && call.generation === this.deleteGeneration;
   }
 
   private isCurrentExport(call: PendingCall): boolean {

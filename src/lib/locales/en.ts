@@ -54,6 +54,7 @@ const en: Catalog = {
   'workspace.open': 'Open project',
   'workspace.import': 'Import project',
   'workspace.export': 'Export project',
+  'workspace.delete.failed': 'The project could not be deleted.',
   'workspace.name': 'Project name',
   'workspace.current': 'Current project: {name}',
   'workspace.save.clean': 'Saved',

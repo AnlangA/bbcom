@@ -6,6 +6,8 @@ import type {
   CancelWorkspaceOperationResponse,
   CreateWorkspaceCommandRequest,
   CreateWorkspaceCommandResponse,
+  DeleteWorkspaceRequest,
+  DeleteWorkspaceResponse,
   ExportProjectRequest,
   ExportProjectResponse,
   FlushWorkspaceRequest,
@@ -55,6 +57,13 @@ export class TauriWorkspacePort implements WorkspaceCoordinatorPort, WorkspaceHy
     context: WorkspacePortCallContext,
   ): Promise<CreateWorkspaceCommandResponse> {
     return invokeNativeOperation('create_workspace', request, context);
+  }
+
+  deleteWorkspace(
+    request: DeleteWorkspaceRequest,
+    context: WorkspacePortCallContext,
+  ): Promise<DeleteWorkspaceResponse> {
+    return invokeNativeOperation('delete_workspace', request, context);
   }
 
   requestProjectSourceGrant(

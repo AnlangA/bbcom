@@ -186,6 +186,13 @@ function createSystem(
         header: { ...documentHeader(project), name: request.name },
       });
     },
+    deleteWorkspace: (request) => {
+      projects.delete(request.workspaceId);
+      return Promise.resolve({
+        requestId: request.requestId,
+        workspaceId: request.workspaceId,
+      });
+    },
     requestProjectSourceGrant: (request) =>
       Promise.resolve({
         requestId: request.requestId,

@@ -33,18 +33,34 @@
     </div>
 
     <div v-if="librarySnapshot.library.projects.length" class="workspace-project-list">
-      <button
+      <div
         v-for="project in librarySnapshot.library.projects"
         :key="project.workspaceId"
-        type="button"
-        class="workspace-project-item"
+        class="workspace-project-row"
         :class="{ active: project.active }"
-        :disabled="busy || project.active"
-        @click="openProject(project.workspaceId)"
       >
-        <span>{{ project.name }}</span>
-        <small>{{ saveHealthText(project.saveHealth) }}</small>
-      </button>
+        <button
+          type="button"
+          class="workspace-project-item"
+          :disabled="busy || project.active"
+          @click="openProject(project.workspaceId)"
+        >
+          <span>{{ project.name }}</span>
+          <small>{{ saveHealthText(project.saveHealth) }}</small>
+        </button>
+        <n-button
+          class="workspace-project-delete"
+          size="tiny"
+          text
+          type="error"
+          :disabled="busy"
+          @click="requestDelete(project.workspaceId)"
+        >
+          {{
+            armedDeleteId === project.workspaceId ? t('common.confirmDelete') : t('common.delete')
+          }}
+        </n-button>
+      </div>
     </div>
 
     <n-modal
@@ -176,6 +192,7 @@ const passphrase = ref('');
 const passphraseConfirmation = ref('');
 let stopApplication: (() => void) | null = null;
 let stopCoordinator: (() => void) | null = null;
+const armedDeleteId = ref<string | null>(null);
 
 const busy = computed(
   () =>
@@ -224,6 +241,32 @@ async function createProject(): Promise<void> {
   const outcome = await workspace.application.createWorkspace(name);
   if (outcome.outcome === 'completed') showCreate.value = false;
   reportFailure(outcome);
+}
+
+async function deleteProject(workspaceId: string): Promise<void> {
+  if (!workspace) return;
+  if (applicationSnapshot.value.currentWorkspace?.workspaceId === workspaceId) {
+    const replacement = librarySnapshot.value.library.projects.find(
+      (project) => project.workspaceId !== workspaceId,
+    );
+    const transition = replacement
+      ? await workspace.application.openWorkspace(replacement.workspaceId)
+      : await workspace.application.createWorkspace(t('workspace.new'));
+    if (transition.outcome !== 'completed') {
+      reportFailure(transition);
+      return;
+    }
+  }
+  reportFailure(await workspace.coordinator.deleteWorkspace(workspaceId));
+}
+
+function requestDelete(workspaceId: string): void {
+  if (armedDeleteId.value !== workspaceId) {
+    armedDeleteId.value = workspaceId;
+    return;
+  }
+  armedDeleteId.value = null;
+  void deleteProject(workspaceId);
 }
 
 function beginImport(): void {
@@ -374,7 +417,7 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
 
 .workspace-save-health,
 .workspace-current,
-.workspace-project-item small {
+.workspace-project-row small {
   color: var(--text-muted);
   font-size: var(--font-size-data);
 }
@@ -398,22 +441,35 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
   gap: 4px;
 }
 
+.workspace-project-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
 .workspace-project-item {
   display: flex;
+  min-width: 0;
+  flex: 1;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  width: 100%;
   padding: 6px 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
+  border: 0;
   color: var(--text-primary);
   background: transparent;
   text-align: left;
 }
 
-.workspace-project-item.active {
+.workspace-project-row.active {
   border-color: var(--color-primary);
+}
+
+.workspace-project-delete {
+  flex: none;
+  margin-right: 2px;
 }
 
 .workspace-field {
