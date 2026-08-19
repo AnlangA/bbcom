@@ -1107,6 +1107,13 @@ mod tests {
 
     use super::*;
 
+    fn delete_request(request_id: &str, workspace_id: &str) -> DeleteWorkspaceRequest {
+        DeleteWorkspaceRequest {
+            request_id: request_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
+        }
+    }
+
     #[test]
     fn last_active_workspace_survives_manager_restart() {
         let root = temporary_root("last-active");
@@ -1231,13 +1238,122 @@ mod tests {
     }
 
     #[test]
-    fn deletion_removes_only_closed_workspaces_and_rejects_the_active_writer() {
-        let root = temporary_root("delete-workspace");
+    fn deletion_removes_a_closed_workspace_and_echoes_the_request_identity() {
+        let root = temporary_root("delete-closed-workspace");
+        let manager = WorkspaceManager::open(&root).expect("open manager");
+        let workspace_id =
+            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000031").expect("workspace id");
+        drop(
+            manager
+                .library
+                .create_project(&workspace_id, "closed", 1)
+                .expect("create closed"),
+        );
+
+        let response = delete_workspace_from_label(
+            &manager,
+            "main",
+            delete_request("delete-closed", workspace_id.as_str()),
+        )
+        .expect("delete closed workspace");
+        assert_eq!(response.request_id, "delete-closed");
+        assert_eq!(response.workspace_id, workspace_id.as_str());
+        assert!(!manager.library.contains(&workspace_id));
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn deletion_rejects_the_active_workspace_writer() {
+        let root = temporary_root("delete-active-workspace");
+        let manager = WorkspaceManager::open(&root).expect("open manager");
+        let workspace_id =
+            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000032").expect("workspace id");
+        let active = manager
+            .library
+            .create_project(&workspace_id, "active", 1)
+            .expect("create active");
+        commit_active_workspace(&manager, workspace_id.as_str(), active, "test")
+            .expect("commit active");
+
+        let error = delete_workspace_from_label(
+            &manager,
+            "main",
+            delete_request("delete-active", workspace_id.as_str()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::Busy);
+        assert_eq!(error.message_key, "workspace.delete.failed");
+        assert!(manager.library.contains(&workspace_id));
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn deletion_requires_the_main_window_capability() {
+        let root = temporary_root("delete-window-capability");
+        let manager = WorkspaceManager::open(&root).expect("open manager");
+        let error = delete_workspace_from_label(
+            &manager,
+            "ai-terminal",
+            delete_request("delete-denied", "00000000-0000-4000-8000-000000000033"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::SecurityDenied);
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn deletion_rejects_an_invalid_request_id_before_parsing_the_workspace() {
+        let root = temporary_root("delete-request-id");
+        let manager = WorkspaceManager::open(&root).expect("open manager");
+        let error = delete_workspace_from_label(
+            &manager,
+            "main",
+            delete_request("invalid request", "not-a-workspace"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::InvalidInput);
+        assert_eq!(error.field, Some("requestId"));
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn deletion_rejects_an_invalid_workspace_id() {
+        let root = temporary_root("delete-workspace-id");
+        let manager = WorkspaceManager::open(&root).expect("open manager");
+        let error = delete_workspace_from_label(
+            &manager,
+            "main",
+            delete_request("delete-invalid", "not-a-workspace"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::InvalidInput);
+        assert_eq!(error.field, Some("workspaceId"));
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn deletion_rejects_a_missing_managed_workspace() {
+        let root = temporary_root("delete-missing-workspace");
+        let manager = WorkspaceManager::open(&root).expect("open manager");
+        let error = delete_workspace_from_label(
+            &manager,
+            "main",
+            delete_request("delete-missing", "00000000-0000-4000-8000-000000000034"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::InvalidInput);
+        assert_eq!(error.field, Some("workspaceId"));
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn deletion_preserves_an_unrelated_active_workspace() {
+        let root = temporary_root("delete-preserve-active");
         let manager = WorkspaceManager::open(&root).expect("open manager");
         let active_id =
-            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000031").expect("active id");
+            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000035").expect("active id");
         let closed_id =
-            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000032").expect("closed id");
+            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000036").expect("closed id");
         let active = manager
             .library
             .create_project(&active_id, "active", 1)
@@ -1251,31 +1367,119 @@ mod tests {
                 .expect("create closed"),
         );
 
-        let response = delete_workspace_from_label(
+        delete_workspace_from_label(
             &manager,
             "main",
-            DeleteWorkspaceRequest {
-                request_id: "delete-closed".to_owned(),
-                workspace_id: closed_id.as_str().to_owned(),
-            },
+            delete_request("delete-closed", closed_id.as_str()),
         )
         .expect("delete closed workspace");
-        assert_eq!(response.workspace_id, closed_id.as_str());
-        assert!(!manager.library.contains(&closed_id));
         assert!(manager.library.contains(&active_id));
+        assert!(!manager.library.contains(&closed_id));
+        assert_eq!(
+            lock_active(&manager, "test")
+                .expect("active lock")
+                .as_ref()
+                .expect("active workspace")
+                .summary()
+                .expect("active summary")
+                .workspace_id,
+            active_id.as_str()
+        );
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn repeated_deletion_fails_closed_after_the_first_commit() {
+        let root = temporary_root("delete-repeated");
+        let manager = WorkspaceManager::open(&root).expect("open manager");
+        let workspace_id =
+            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000037").expect("workspace id");
+        drop(
+            manager
+                .library
+                .create_project(&workspace_id, "closed", 1)
+                .expect("create closed"),
+        );
+
+        delete_workspace_from_label(
+            &manager,
+            "main",
+            delete_request("delete-first", workspace_id.as_str()),
+        )
+        .expect("first delete");
+        let error = delete_workspace_from_label(
+            &manager,
+            "main",
+            delete_request("delete-second", workspace_id.as_str()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::InvalidInput);
+        assert_eq!(error.field, Some("workspaceId"));
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn deletion_rejects_an_oversized_request_id() {
+        let root = temporary_root("delete-oversized-request");
+        let manager = WorkspaceManager::open(&root).expect("open manager");
+        let error = delete_workspace_from_label(
+            &manager,
+            "main",
+            delete_request(&"a".repeat(129), "00000000-0000-4000-8000-000000000038"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::InvalidInput);
+        assert_eq!(error.field, Some("requestId"));
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn deletion_rejects_a_noncanonical_workspace_uuid() {
+        let root = temporary_root("delete-noncanonical-workspace");
+        let manager = WorkspaceManager::open(&root).expect("open manager");
+        let error = delete_workspace_from_label(
+            &manager,
+            "main",
+            delete_request("delete-noncanonical", "00000000000040008000000000000039"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::InvalidInput);
+        assert_eq!(error.field, Some("workspaceId"));
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn deletion_fails_busy_without_committing_when_the_active_lock_is_poisoned() {
+        let root = temporary_root("delete-poisoned-active");
+        let manager = WorkspaceManager::open(&root).expect("open manager");
+        let workspace_id =
+            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000040").expect("workspace id");
+        drop(
+            manager
+                .library
+                .create_project(&workspace_id, "closed", 1)
+                .expect("create closed"),
+        );
+        std::thread::scope(|scope| {
+            assert!(
+                scope
+                    .spawn(|| {
+                        let _active = manager.active.lock().expect("active lock");
+                        panic!("poison active lock");
+                    })
+                    .join()
+                    .is_err()
+            );
+        });
 
         let error = delete_workspace_from_label(
             &manager,
             "main",
-            DeleteWorkspaceRequest {
-                request_id: "delete-active".to_owned(),
-                workspace_id: active_id.as_str().to_owned(),
-            },
+            delete_request("delete-poisoned", workspace_id.as_str()),
         )
         .unwrap_err();
         assert_eq!(error.code, AppErrorCode::Busy);
-        assert_eq!(error.message_key, "workspace.delete.failed");
-        assert!(manager.library.contains(&active_id));
+        assert!(manager.library.contains(&workspace_id));
         fs::remove_dir_all(root).expect("remove test root");
     }
 
