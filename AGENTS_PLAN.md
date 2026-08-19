@@ -1,12 +1,18 @@
 # BBCOM 优化与功能完善执行计划
 
+> 插件协议说明（2026-08-19）：插件系统仅接受
+> [ADR-0005](docs/ADR-0005-PLUGIN-PROTOCOL-V2.md) 定义的 v2 契约。插件 v2
+> 以首次启用/新增能力确认、串口事务
+> 租约、富声明式 surface 和 opaque file grant 为当前执行基线。
+>
 > 状态：本地可执行范围已收口，发布验收尚未完成。
 > 已完成：G-00～G-01、A-01～A-14、P-01～P-02、P-04、P-06～P-07、
 > P-09～P-10、U-01～U-08。部分完成：P-03、P-05、P-08、P-11～P-12、
 > U-09、Q-01、Q-03。外部阻塞：Q-02。
 > 具体差距和恢复条件见“当前收口矩阵”；不得把部分完成项或平台外部验收标记为 `DONE`。
 >
-> 用途：本文件是插件完善、架构优化和 UI 去重的唯一实施与验收清单。
+> 用途：本文件保留既有架构优化和 UI 去重清单；插件 v2 的规范与发布条件以
+> ADR-0005 及其协议测试为准。
 
 ## 1. 总体目标与固定决策
 
@@ -19,8 +25,11 @@
 以下决策已经锁定，实施时不得再次自行变更：
 
 - 不实现插件包签名、TUF、Ed25519、发布者身份认证。
-- 不保留插件能力审批、授权弹窗或授权存储。
-- Manifest 声明且宿主已支持的能力自动授予；未知能力拒绝加载，已知但尚未实现的能力返回 `unavailable`。
+- 首次启用必须展示排序后的完整能力集合；拒绝时插件保持禁用。授权按
+  `plugin ID + capability set` 持久化，版本或 digest 变化但能力未增加时不重复询问，
+  新增能力必须重新确认；卸载删除授权，禁用保留授权。
+- Manifest v2 声明且用户已批准的能力才可进入宿主网关；未知能力拒绝安装或启动，
+  已知但当前平台不可用的操作返回 `unavailable`。
 - 保留包和 Wasm 组件 SHA-256 完整性检查；SHA 不代表发布者身份。
 - 保留 Wasm 沙箱、OS 沙箱、内存、fuel、epoch、调用超时和应用自身的安装包签名/公证。
 - 支持本地包、开发目录和用户配置的无签名 HTTPS 插件源。
@@ -28,8 +37,10 @@
 - 开发目录 watcher 默认关闭，仅对用户明确启用的开发来源生效。
 - 插件全局安装；启用状态和项目状态按 workspace 保存。
 - 新安装插件默认不启用；进入 workspace 时自动启动该 workspace 中 `expected_enabled=true` 的插件。
-- 串口写入对每个 `workspace + plugin + instance + generation` 只询问一次；批准或拒绝都缓存至该实例结束。
-- Disable、崩溃重启、升级、热重载、workspace 切换和卸载都会创建新 generation，并清除旧串口决定。
+- 非 v2 包在 manifest 边界直接拒绝，不进入库存或 runtime。
+- 串口访问只通过主程序事务租约和写调度器；租约绑定
+  `workspace + plugin + instance + generation`，不能绕过物理 drain、自动化暂停或 generation 校验。
+- Disable、崩溃重启、升级、热重载、workspace 切换、窗口关闭、取消和卸载均撤销旧租约与运行资源。
 - 卸载清除包、watcher 和全部私有 `plugin.storage`，并将 workspace 启用状态复位；保留 workspace 中可移植的插件 project state。
 - 插件中心是 AppShell 顶层主内容工作区，不再嵌入 Settings。
 - 主窗口最低尺寸固定为 960×640；本轮不实现移动端布局。
@@ -37,14 +48,22 @@
 
 首版插件能力范围固定为：
 
-- `ui.panel`
-- `plugin.storage`
-- `project.settings.read-write`，其展示名称改为“插件项目状态读写”
-- `session.metadata.read`
+- `ui.workspace`
+- `ui.detached-window`
+- `serial.ports.read`
+- `serial.sessions.manage`
+- `serial.io`
+- `serial.control-lines`
 - `session.capture.read`
-- `serial.write-proposal`
+- `session.commands.read-write`
+- `file.open-read`
+- `file.save-write`
+- `plugin.storage`
+- `project.state.read-write`
 
-AI、任意文件访问、剪贴板、通知、直接串口控制等现有已知能力暂不实现，只返回 `unavailable`。
+插件没有 AI、任意路径文件、剪贴板、通知、网络、BLE 或 UDP 权限。完整用户级串口
+能力仍受主程序会话、租约、写调度、workspace mutation gate 与 shutdown 协议约束；
+不会暴露原生串口对象、系统路径、Tauri API、`forceClose/closeAll` 或内部恢复接口。
 
 明确不在本轮范围：
 
@@ -82,11 +101,11 @@ AI、任意文件访问、剪贴板、通知、直接串口控制等现有已知
 | 状态          | 工作包                                   | 证据或剩余条件                                                                                                                                                                                                                      |
 | ------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DONE`        | G-00～G-01、A-01～A-14                   | 架构硬门禁扫描 255 个模块、零违规、零循环；Settings、serial、session runtime、workspace gateway/save/transition/UI state 均已收敛为单一 owner；旧 façade、worker persistence 和重复 runtime 已删除。                                |
-| `DONE`        | P-01～P-02、P-04、P-06～P-07、P-09～P-10 | Trust/authorization 生产链已删除；无签名 SHA 完整性模型、进程 actor、sidecar 1.2 双向 RPC、instance/generation 绑定 panel/串口真实结果、HTTPS source 与仅 index 自动检查已接通。                                                    |
-| `DONE`        | U-01～U-08                               | 统一 token/基础组件、顶层插件中心、全局 PromptHost、会话入口去重、列表组件化、960×640 最低尺寸、focus trap/tab/ARIA/live-region 与 axe gate 已完成。                                                                                |
+| `DONE`        | P-01～P-02、P-04、P-06～P-07、P-09～P-10 | 旧 trust/authorization 链已删除；无签名 SHA 完整性模型、v2 授权 gate、进程 actor、typed 双向 RPC、generation-bound surface/task/lease、HTTPS source 与仅 index 自动检查已接通。                                                     |
+| `DONE`        | U-01～U-08                               | 统一 token/基础组件、顶层插件中心、授权与任务中心、会话入口去重、列表组件化、960×640 最低尺寸、focus trap/tab/ARIA/live-region 与 axe gate 已完成。                                                                                 |
 | `IN_PROGRESS` | P-03、P-05、P-08                         | 热安装/启停/升级/卸载和回滚主链已实现，但仓储仍使用 installer 自身的 `plugins/.staging` 布局，尚未完全迁移为第 3.5 节 `objects/records/journals/tombstones` 固定布局；因此逐 journal 阶段 production 故障注入不能标记完成。         |
 | `IN_PROGRESS` | P-11                                     | Native-only dev source watcher、500 ms 稳定读取、SHA 校验、断连健康状态、卸载清理均已实现；当前 installer 仍拒绝“同版本、不同 digest”，稳定热重载需要 manifest 版本增加，尚未满足同版本 dev digest 验收。                           |
-| `IN_PROGRESS` | P-12                                     | 旧 publisher 字段仅兼容读取并忽略，旧授权链已删除；旧安装/private state/autostart 到 v2 的带 marker、幂等 journal 全量迁移尚未实现。                                                                                                |
+| `DONE`        | P-12                                     | 旧插件包、状态、授权和 autostart 兼容路径已删除；非 v2 manifest 在进入库存前直接拒绝。                                                                                                                                              |
 | `IN_PROGRESS` | U-09、Q-01、Q-03                         | Browser mock 两条 Chrome E2E 与真实 axe gate通过；全局覆盖率和 P0 覆盖率通过。Rust workspace coverage 当前为 lines 65.54%、functions 59.97%，未达到 80%/75% 门禁；仍需确定性视觉截图基线及与未完成插件迁移/磁盘事务一致的发布文档。 |
 | `BLOCKED`     | Q-02                                     | 当前 Linux 环境不能证明 Windows NSIS、macOS DMG/App 签名/公证和三平台 packaged sidecar；24 小时 soak 也未执行。恢复条件：三平台签名 runner、真实打包产物与连续 24 小时测试窗口。                                                    |
 
@@ -179,7 +198,7 @@ WorkspacePluginContext {
 }
 ```
 
-`publisher.name` 和 `publisher.website` 仅作为插件自述信息。旧 `publisher_identity` 可兼容读取，但必须忽略，且不得参与安装、更新、状态判断或 UI 徽标。
+`publisher.name` 和 `publisher.website` 仅作为插件自述信息。未知发布者身份字段直接拒绝，且不得参与安装、更新、状态判断或 UI 徽标。
 
 ### 3.3 插件快照
 
@@ -193,8 +212,8 @@ WorkspacePluginContext {
 - 当前 workspace 的启用状态。
 - 每个插件的 lifecycle、原因、当前版本、待切换版本、来源、摘要和 watcher 状态。
 - 有界 operation 列表及进度。
-- 当前 generation 的首次串口写确认队列。
-- 带 `RuntimeInstanceKey` 的声明式 panels。
+- 当前 generation 的能力授权请求和任务终态。
+- 带 `RuntimeInstanceKey` 的声明式 surfaces。
 - 稳定错误码，不包含原生路径、串口 handle 或敏感 project state。
 
 Lifecycle 状态固定为：
@@ -204,7 +223,7 @@ disabled | stopped | starting | running |
 updating | rolling-back | failed
 ```
 
-删除 `approval-required` 以及所有 authorization 状态。
+授权请求与 lifecycle 分离，拒绝授权时插件保持 disabled。
 
 ### 3.4 Tauri 插件命令
 
@@ -223,10 +242,18 @@ plugin_source_update
 plugin_source_remove
 plugin_source_refresh
 plugin_set_watch_enabled
-plugin_resolve_first_write
-plugin_emit_panel_event
-plugin_serial_action_result
+plugin_emit_surface_event_v2
+plugin_resolve_authorization_v2
+plugin_cancel_task_v2
+plugin_run_command_v2
+plugin_set_surface_placement_v2
+plugin_detached_surface_snapshot_v2
+plugin_detached_emit_surface_event_v2
+plugin_detached_cancel_task_v2
 plugin_cancel_operation
+plugin_serial_capability_reply_v2
+plugin_notify_port_catalog_changed_v2
+plugin_update_host_context_v2
 ```
 
 规则：
@@ -234,8 +261,8 @@ plugin_cancel_operation
 - `plugin_request_local_source_grant` 调用原生目录/文件选择器，只返回短期 opaque grant、显示名称和来源类型。
 - `plugin_install_local` 只接受 grant ID，renderer 不传真实路径。
 - 只有 source add/update 命令可接收 HTTPS URL；安装和更新只接受 `source_id`、`catalog_id`、`plugin_id` 和版本。
-- `plugin_serial_action_result` 返回真实 serial scheduler 的成功、失败、部分写入和 runtime generation，不再使用无结果的 ACK。
-- 删除 `plugin_submit_authorization`、`plugin_dismiss_authorization` 及对应 DTO。
+- `plugin_serial_capability_reply_v2` 返回 typed capability result；串口写入结果包含真实 requested/sent/outcome。
+- 授权、surface、任务和 detached-window 命令只接受 v2 generation-bound DTO。
 - 所有命令仅允许主窗口，并加入 `plugin-main-window.toml` capability。
 
 ### 3.5 插件磁盘布局
@@ -308,7 +335,7 @@ Repository index 保持 JSON schema 1，移除发布者身份要求：
 - `WorkspaceSaveCoordinator`：唯一 revision、save queue、save health 权威。
 - `SessionRuntimeStatusRegistry`：唯一运行状态权威。
 - `WorkspaceTransitionParticipant`：session/plugin 在 workspace 切换中的事务参与者。
-- `PluginRuntimeActor`：唯一插件生命周期、operation、panel、proposal 和 revision 写入者。
+- `PluginRuntimeActor`：唯一插件生命周期、operation、surface、task 和 revision 写入者。
 
 ## 4. 总体依赖关系
 
@@ -364,7 +391,7 @@ flowchart TD
   P11 --> P12
 
   P07 --> U02["U-02 Plugin presenter"]
-  U01 --> U03["U-03 全局首次写入 PromptHost"]
+  U01 --> U03["U-03 全局授权与任务交互"]
   U02 --> U03
   P06 --> U03
   U01 --> U04["U-04 顶层插件工作区"]
@@ -1016,14 +1043,13 @@ A-01、A-11、A-12、A-13、P-07、U-06、U-07。
 
 **实现**
 
-- `PluginArtifact` 改用包 SHA、组件 SHA、来源和能力计划。
-- 引入 `CapabilityPlan { effective, unavailable }`。
-- 支持能力自动进入 HostHello grants。
-- 已知未实现能力进入 unavailable，未知能力拒绝 manifest。
-- 旧 `publisher_identity` 兼容读取但忽略。
+- `PluginArtifact` 使用包 SHA、组件 SHA、来源和 v2 capability 集合。
+- 首次启用通过授权 gate 生成精确 launch ticket；新增能力必须重新确认。
+- 已知未实现操作返回 unavailable，未知能力拒绝 manifest。
+- 未知 publisher 字段拒绝解析。
 - 从 workspace、Cargo 依赖和生产组合删除 `bbcom-plugin-trust`。
-- 删除 `AuthorizationKey`、`AuthorizationBroker`、授权 receipt、revocation store、security store。
-- `bbcom-plugin-broker` 只保留 panel、proposal、validation 和 audit。
+- 删除旧 authorization/trust 类型；v2 receipt 只表示用户批准能力，不表示发布者身份。
+- `bbcom-plugin-broker` 只保留 typed capability gateway、stream mux、limits 和 error model。
 - 应用安装包签名和 sandbox 配置不变。
 
 **依赖**
@@ -1082,7 +1108,7 @@ P-01。
 - Workspace A/B 启用状态互不影响。
 - Workspace 切换后 revision 严格递增。
 - 无 workspace 时仍能浏览、安装和卸载。
-- Actor 外没有 lifecycle、panel、proposal 或 enabled 可变缓存。
+- Actor 外没有 lifecycle、surface、task 或 enabled 可变缓存。
 - 5000 次完成操作不会耗尽 operation registry。
 - Sandbox self-test 每进程只执行一次。
 
@@ -1127,23 +1153,22 @@ P-01。
 - 卸载不先丢失安装记录。
 - Project state 在卸载后保持。
 
-### P-04 — Sidecar 双向能力 RPC
+### P-04 — Sidecar v2 双向能力 RPC
 
 **目标**
 
-接通真实 session、capture、serial proposal、初始 panel 和 panel-event 回程。
+接通 typed session、capture、serial lease、初始 surface、task 和 command 回程。
 
 **实现**
 
-- Host protocol minor 递增。
+- Hello 协商同 major 的最高公共 minor，非 v2 major 直接拒绝。
 - 所有请求携带 `RuntimeInstanceKey`。
-- Transport 多路复用 guest response 与 HostCall。
+- Transport 多路复用 request/response/event/cancel/stream envelope。
 - 增加：
-  - `session-list`
-  - `capture-read`
-  - `propose-serial-send`
-  - `initialize`
-  - `invoke-panel-event`
+  - session/port/capture capability RPC。
+  - serial acquire/read/write/control/release。
+  - surface snapshot/patch/event。
+  - task progress/cancel/terminal state。
 - 每个调用设置 deadline、消息大小、分页、HostCall 次数和取消限制。
 - Actor 等待 guest 时仍能处理 HostCall，避免双向 RPC 死锁。
 - Session/capture 只能读取当前 workspace 已提交数据。
@@ -1157,9 +1182,9 @@ P-02、P-03。
 **验收**
 
 - Real sidecar 能读到非空 session metadata 和 capture page。
-- Initialize panel 直接出现在 snapshot。
-- Panel event 到达准确 instance 并返回新 panel/state。
-- Serial proposal 到达 actor。
+- Initialize surfaces 直接出现在 snapshot。
+- Surface event 到达准确 instance 并返回新 surface/state。
+- Serial lease 和 RX 只到达准确 runtime generation。
 - Timeout、乱序、超限和 stale instance 全部 fail closed。
 - 新旧协议不兼容时握手失败，不降级为 stub。
 
@@ -1187,7 +1212,7 @@ P-02、P-03。
 - 远程更新要求版本增加。
 - Dev-directory 允许同版本、不同 package SHA。
 - 每次启动、崩溃恢复、升级、watch reload 均创建新 generation。
-- Disable/uninstall 清理旧 panel、proposal 和 runtime consent。
+- Disable/uninstall 清理旧 surface、task、lease、grant 和 runtime authorization。
 
 **依赖**
 
@@ -1203,28 +1228,20 @@ P-02、P-03、P-04。
 - 同版本不同 SHA 仅 dev-directory 可接受。
 - 卸载后重装可重新读取保留的 workspace project state。
 
-### P-06 — Panel 实例绑定与首次串口写确认
+### P-06 — Surface 实例绑定与串口事务租约
 
 **目标**
 
-阻止 stale UI 操作新实例，并实现每 generation 仅确认一次的串口写入。
+阻止 stale UI 操作新实例，并确保插件串口访问只能经过 generation-bound 事务租约。
 
 **实现**
 
-- Panel、event、proposal 都携带完整 `RuntimeInstanceKey`。
+- Surface、event、task 和 lease 都携带完整 `RuntimeInstanceKey`。
 - Actor 只接受当前 instance/generation。
-- 每个 generation 的第一条有效 proposal 进入全局确认队列。
-- 批准和拒绝都缓存：
-  - 批准后后续 proposal 自动进入 serial scheduler。
-  - 拒绝后后续 proposal 自动拒绝，不重复弹窗。
-- 用户可通过 disable→enable 创建新 generation 重新决定。
-- 每次 proposal 仍校验：
-  - 载荷和帧数上限。
-  - Session 存在且已连接。
-  - Serial runtime generation。
-  - Operation/correlation。
-- Renderer 完成真实写入后，通过 `plugin_serial_action_result` 返回结果。
-- Disable、crash、update、reload、workspace switch、uninstall 立即撤销旧决定。
+- 获取租约前等待物理写 drain，并暂停宏、循环发送、Modbus 和触发响应。
+- 插件写入必须携带当前 lease token，经统一 scheduler 返回真实 requested/sent/outcome。
+- RX 同时进入终端、捕获和有界插件缓冲；溢出时撤销租约并返回明确错误。
+- Disable、crash、update、reload、workspace switch、cancel 和 uninstall 立即撤销旧租约与资源句柄。
 
 **依赖**
 
@@ -1232,12 +1249,10 @@ P-04、P-05、A-09。
 
 **验收**
 
-- 同 generation 连续两次写只弹一次。
-- 首次拒绝后同 generation 不再弹窗且不发送。
-- 新 generation 再次提示。
-- Stale proposal/event、重复 resolve、过期 review 均不能执行。
-- Session 断开或 generation 变化后自动通过的 proposal 仍被拒绝。
-- Panel 在停用或卸载后的同一快照 revision 中消失。
+- 同一会话只能有一个协议租约，其他写入源在租约期间不能交叉写。
+- Stale lease/event、重复 release 和旧 generation 资源全部拒绝。
+- Session 断开或 generation 变化必定撤销租约。
+- Surface 在停用或卸载后的同一快照 revision 中消失。
 
 ### P-07 — IPC、Tauri capability 与前端领域契约
 
@@ -1247,9 +1262,9 @@ P-04、P-05、A-09。
 
 **实现**
 
-- 删除 authorization review、decision、risk combination 和相关状态。
+- 删除旧 authorization review、decision 和 risk-combination DTO，保留 v2 capability receipt。
 - 更新 Rust DTO、生成 TypeScript、frontend port 和 service。
-- 增加 source、watch、update、operation、instance-bound panel、first-write review。
+- 增加 source、watch、update、operation、instance-bound surface、authorization 和 task projection。
 - 补齐所有命令的 main-window capability。
 - `plugin-center-changed` 成为 revisioned snapshot 推送事件。
 - Renderer 不接收真实路径、sidecar handle、SQLite connection 或任意临时安装 URL。
@@ -1265,8 +1280,8 @@ P-02、P-05、P-06。
 - 非主窗口调用全部拒绝。
 - Workspace 切换后 frontend 接受更高 revision。
 - Generated bindings check 通过。
-- 源码中 authorization 命令、类型、store、dialog 均不可达。
-- `plugin-main-window.toml` 不再遗漏 install、update、uninstall 和 serial result。
+- 源码中旧 authorization 命令、类型和 store 均不可达。
+- `plugin-main-window.toml` 不再遗漏 install、update、uninstall 和 v2 capability result。
 
 ### P-08 — 本地热插拔生产链门禁
 
@@ -1291,11 +1306,12 @@ P-02、P-05、P-06。
 选择来源
 → 安装
 → workspace 启用
-→ initial panel
-→ panel event
+→ capability authorization
+→ initial surfaces
+→ surface event / command
 → session/capture
-→ 首次串口确认
-→ 后续写入
+→ serial transaction lease
+→ typed read/write result
 → 停用
 → 重启应用恢复
 → 更新/回滚
@@ -1425,34 +1441,19 @@ P-05、P-08。
 - 重启应用可恢复仍启用的 watcher。
 - Watcher 可按 source 关闭。
 
-### P-12 — 旧插件数据迁移与收口
+### P-12 — v2-only 数据收口
 
 **目标**
 
-安全迁移现有安装、状态和 autostart，同时清理失效授权数据。
+删除旧插件安装、状态、授权和 autostart 兼容路径，只保留 v2 数据模型。
 
 **实现**
 
-迁移必须有持久 marker 和幂等 journal：
-
-- 旧安装记录迁移为：
-  - `source.kind=local-package`
-  - `source.id=local-legacy`
-  - 从实际包计算 SHA。
-  - 初始 lifecycle 为 stopped。
-- 旧 `plugin-state-v1` 的有效 private storage 迁入 v2。
-- Project state：
-  - Workspace SQLite 已有值时优先。
-  - 数据库无值时才导入旧副本。
-  - Workspace commit 成功后才删除旧副本。
-- 旧全局 autostart：
-  - 映射到迁移时第一个成功激活 workspace 的 `expected_enabled`。
-  - 其他 workspace 默认 false。
-  - 映射完成后不再读取全局 autostart。
-- 旧授权/keyring/security 数据不读取。
-- 迁移 marker 成功后清除旧授权数据。
-- v1 包和状态目录保留一个稳定版本作为降级保护。
-- 无法更新的 workspace 记录 pending normalization；重新打开时将已卸载插件的 `expected_enabled` 复位为 false。
+- Manifest 只接受 `bbcom:plugin@2`，其他 major 在安装边界返回不兼容错误。
+- 安装库存、private state、project state、授权 receipt 和 dev source 只读写 v2 目录/字段。
+- 不扫描、不导入、不保留旧插件包和旧状态目录。
+- 卸载通过持久 intent 原子清理 package、workspace contributions、private state 和授权。
+- Project state 仅按 v2 API/schema generation 迁移，失败保持原字节。
 
 **依赖**
 
@@ -1460,12 +1461,10 @@ P-10、P-11。
 
 **验收**
 
-- 所有迁移 fixture 可重复运行且结果相同。
-- 中途崩溃不会得到半迁移安装或状态。
-- 旧授权永不影响新 runtime。
-- 已卸载插件重装后不会因遗留 autostart 自动启用。
-- Project state 在迁移和卸载后保持。
-- 降级保护目录在本版本不会被提前删除。
+- 非 v2 包不会进入库存或 runtime。
+- 中途崩溃不会得到半安装、半卸载或跨存储错配。
+- 已卸载插件重装后不会继承旧授权或 private state。
+- Project state 在 v2 schema 迁移失败时保持原值。
 
 ## 8. UI 优化与重复 UI 清理工作包
 
@@ -1518,7 +1517,7 @@ G-01。
 
 - App bootstrap 只启动一次 `PluginCenterService`。
 - Presenter 只建立一次 snapshot subscription。
-- Workspace 和 PromptHost 使用同一 readonly snapshot/action façade。
+- Workspace、授权对话框和任务中心使用同一 readonly snapshot/action façade。
 - Action 带 target：
   - Plugin。
   - Source。
@@ -1538,23 +1537,19 @@ P-07。
 - 不产生重复提示、刷新或 action。
 - 不相关插件可以并行执行无冲突操作。
 
-### U-03 — 全局首次串口写入 PromptHost
+### U-03 — 全局授权与任务交互
 
 **目标**
 
-确保插件工作区关闭时仍能处理首次串口写确认。
+确保插件工作区关闭时仍能处理能力授权、危险操作确认和长期任务。
 
 **实现**
 
-- 在 AppShell 顶层常驻 `PluginPromptHost`。
-- 只处理 `firstWriteReviews`，不包含能力授权。
-- 多个插件 review 按 actor sequence FIFO。
-- 一次只显示一个 modal。
-- Busy 时禁止重复提交和误关闭。
-- Review 过期、实例退出或卸载后立即移除。
-- 使用 `AppModal/NModal`，删除自制 `AccessiblePluginDialog`。
-- 删除 `PluginAuthorizationDialog`。
-- 文案明确“仅适用于当前插件运行实例”。
+- 在 AppShell 顶层挂载 `PluginAuthorizationDialog` 和 `PluginTaskCenter`。
+- 授权按 plugin ID 与规范化能力集合持久化；新增能力必须再次确认。
+- 危险按钮由宿主渲染动作专属确认文案，插件不能注入 HTML/DOM。
+- 任务显示 progress、terminal state 和 cancel；实例退出或卸载后立即撤销运行资源。
+- 使用统一 AppModal、focus trap、ARIA live region 和键盘导航。
 
 **依赖**
 
@@ -1562,11 +1557,11 @@ U-01、U-02、P-06。
 
 **验收**
 
-- Settings 和插件工作区都关闭时仍可看到 first-write review。
-- 同一 generation 最多提示一次。
-- 多个 review 不堆叠、不跳序、不重复。
+- Settings 和插件工作区都关闭时仍可看到授权请求和任务状态。
+- 相同能力集合不重复询问，新增能力会再次提示。
+- 多个授权请求不堆叠、不跳序、不重复。
 - Enter、Escape、Tab、Shift+Tab 和焦点恢复正确。
-- Stale review 不可提交。
+- Stale authorization/task action 不可提交。
 - 卸载后不遗留 modal。
 
 ### U-04 — 顶层插件主内容工作区
@@ -1620,8 +1615,8 @@ U-01、U-02、P-09、P-10、P-11。
 **验收**
 
 - Settings 中不存在插件安装、启停、更新或面板。
-- 唯一插件工作区可完成全部 lifecycle/source/watch/panel 操作。
-- Disable/uninstall 后 panel 在同一 revision 消失。
+- 唯一插件工作区可完成全部 lifecycle/source/watch/surface/task 操作。
+- Disable/uninstall 后 surface 在同一 revision 消失。
 - 100 个插件不会撑破页面或触发全窗口滚动。
 - 操作失败只影响目标行。
 - Light/dark 和 960×640 均可使用。
@@ -1870,7 +1865,7 @@ A-14、P-12、U-09。
 - Sidecar crash、timeout、malformed HostCall。
 - Watcher 写入风暴、半写文件和来源消失。
 - Workspace 快速切换、取消和 rollback failure。
-- Stale panel/proposal/serial result。
+- Stale surface/task/lease/serial result。
 - 应用 shutdown 中途退出。
 
 压力矩阵：
@@ -1891,7 +1886,7 @@ Q-01。
 - 三平台 packaged sidecar 可启动。
 - OS sandbox self-test 通过。
 - 应用签名/公证流程不受影响。
-- 无线程、operation、proposal、panel、watcher、tombstone 泄漏。
+- 无线程、operation、task、surface、lease、watcher、tombstone 泄漏。
 - 无 unbounded collection。
 - Serial/frontend benchmark 退化不超过 10%。
 - 任一失败后得到完整旧状态或完整新状态，不出现半提交状态。
@@ -1920,7 +1915,7 @@ Q-01。
 - SHA 只验证完整性。
 - 支持的能力和 unavailable 能力。
 - 全局安装、workspace 启用规则。
-- 首次串口写确认范围。
+- 串口事务租约、控制线和取消语义。
 - HTTPS source 安全限制。
 - Watcher 仅用于显式 dev-directory。
 - 卸载数据策略和迁移策略。
@@ -1928,7 +1923,7 @@ Q-01。
 删除：
 
 - Trust crate 和文档。
-- Authorization UI、DTO、store、文案和测试。
+- 旧 authorization UI、DTO、store、文案和测试。
 - 旧 plugin autostart runtime。
 - 重复 UI 和 CSS。
 - 已无调用方的 compatibility exports。
@@ -1937,8 +1932,6 @@ Q-01。
 保留并标注 sunset：
 
 - v1 settings 只读 migration reader。
-- v1 plugin storage migration reader。
-- 旧 manifest/index 的 ignored publisher field reader。
 - v1 数据目录的一版本降级保护。
 
 **依赖**

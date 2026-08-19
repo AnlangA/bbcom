@@ -16,6 +16,8 @@ export interface Macro {
   id: string;
   name: string;
   steps: MacroStep[];
+  /** Native plugin contribution owner. Missing/null means a normal user item. */
+  ownerPluginId?: string | null;
 }
 
 /** Match mode for a scripted trigger: substring in decoded text, or a hex byte

@@ -4,10 +4,9 @@ use bbcom_plugin_contracts::{LONG_TASK_TIMEOUT_MS, MAX_FRAME_BYTES, MAX_QUEUE_BY
 
 use crate::{BrokerError, LimitKind, Result};
 
-/// The trusted broker allows up to five seconds for a normal mediation call.
-/// The plugin host's two-second Wasm deadline remains the stricter execution
-/// boundary and is not weakened by this value.
-pub const BROKER_NORMAL_TIMEOUT_MS: u64 = 5_000;
+/// Protocol-v2 normal calls share the host's two-second deadline. Long-running
+/// work is admitted only through the separately bounded task path.
+pub const BROKER_NORMAL_TIMEOUT_MS: u64 = 2_000;
 pub const BROKER_LONG_TIMEOUT_MS: u64 = LONG_TASK_TIMEOUT_MS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

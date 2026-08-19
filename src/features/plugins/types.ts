@@ -2,82 +2,85 @@ import type {
   InstalledPluginView as GeneratedInstalledPluginView,
   PluginCatalogItem as GeneratedPluginCatalogItem,
   PluginCenterData as GeneratedPluginCenterData,
-  PluginDeclarativePanel as GeneratedPluginDeclarativePanel,
   PluginFailure as GeneratedPluginFailure,
   PluginFailureCode as GeneratedPluginFailureCode,
   PluginLifecycleStatus as GeneratedPluginLifecycleStatus,
-  PluginPanelEvent as GeneratedPluginPanelEvent,
-  PluginPanelField as GeneratedPluginPanelField,
-  PluginPanelFieldKind as GeneratedPluginPanelFieldKind,
-  PluginPermission as GeneratedPluginPermission,
-  PluginSerialProposal as GeneratedPluginSerialProposal,
   PluginSourceHealth as GeneratedPluginSourceHealth,
   PluginSourceKind as GeneratedPluginSourceKind,
   PluginSourceView as GeneratedPluginSourceView,
   PluginStatusReason as GeneratedPluginStatusReason,
-  PluginUnavailableCapability as GeneratedPluginUnavailableCapability,
+  PluginAuthorizationRequestV2 as GeneratedPluginAuthorizationRequestV2,
+  PluginCapabilityV2 as GeneratedPluginCapabilityV2,
+  PluginCommandContributionV2 as GeneratedPluginCommandContributionV2,
+  PluginContributionDisposition as GeneratedPluginContributionDisposition,
+  PluginSurfaceEventV2 as GeneratedPluginSurfaceEventV2,
+  PluginSurfacePatch as GeneratedPluginSurfacePatch,
+  PluginSurfaceSnapshot as GeneratedPluginSurfaceSnapshot,
+  PluginTaskViewV2 as GeneratedPluginTaskViewV2,
+  PluginUiNode as GeneratedPluginUiNode,
 } from '../../generated/ipc-contracts';
 
 // Renderer domain names alias the generated Rust contract. This file adds
 // only application-service ports and view state, never a second wire schema.
-export type PluginPermission = GeneratedPluginPermission;
 export type PluginLifecycleStatus = GeneratedPluginLifecycleStatus;
 export type PluginStatusReason = GeneratedPluginStatusReason;
-export type PluginUnavailableCapability = GeneratedPluginUnavailableCapability;
 export type PluginFailureCode = GeneratedPluginFailureCode;
-export type PluginPanelFieldKind = GeneratedPluginPanelFieldKind;
 export type PluginSourceKind = GeneratedPluginSourceKind;
 export type PluginSourceHealth = GeneratedPluginSourceHealth;
+export type PluginCapabilityV2 = GeneratedPluginCapabilityV2;
+export type PluginUiNode = GeneratedPluginUiNode;
+export type PluginSurfaceSnapshot = Readonly<GeneratedPluginSurfaceSnapshot>;
+export type PluginSurfacePatch = Readonly<GeneratedPluginSurfacePatch>;
+export type PluginSurfaceEventV2 = Readonly<GeneratedPluginSurfaceEventV2>;
+export type PluginTaskViewV2 = Readonly<GeneratedPluginTaskViewV2>;
+export type PluginAuthorizationRequestV2 = Readonly<GeneratedPluginAuthorizationRequestV2>;
+export type PluginCommandContributionV2 = Readonly<GeneratedPluginCommandContributionV2>;
+export type PluginContributionDisposition = GeneratedPluginContributionDisposition;
 
 export type PluginCatalogItem = Readonly<GeneratedPluginCatalogItem>;
-export type PluginSerialProposal = Readonly<GeneratedPluginSerialProposal>;
-export type PluginPanelEvent = Readonly<GeneratedPluginPanelEvent>;
 export type PluginFailure = Readonly<GeneratedPluginFailure>;
 export type PluginSourceView = Readonly<GeneratedPluginSourceView>;
 export type InstalledPluginView = Readonly<
-  Omit<
-    GeneratedInstalledPluginView,
-    'declaredCapabilities' | 'effectiveCapabilities' | 'unavailableCapabilities'
-  > & {
-    declaredCapabilities: readonly PluginPermission[];
-    effectiveCapabilities: readonly PluginPermission[];
-    unavailableCapabilities: readonly PluginUnavailableCapability[];
+  Omit<GeneratedInstalledPluginView, 'requestedCapabilities' | 'effectiveCapabilities'> & {
+    requestedCapabilities: readonly PluginCapabilityV2[];
+    effectiveCapabilities: readonly PluginCapabilityV2[];
   }
->;
-export type PluginPanelField = Readonly<
-  Omit<GeneratedPluginPanelField, 'options'> & { options: readonly string[] }
->;
-export type PluginDeclarativePanel = Readonly<
-  Omit<GeneratedPluginDeclarativePanel, 'fields'> & { fields: readonly PluginPanelField[] }
 >;
 export type PluginCenterData = Readonly<
   Omit<
     GeneratedPluginCenterData,
-    'catalog' | 'installed' | 'serialProposals' | 'panels' | 'sources'
+    | 'catalog'
+    | 'installed'
+    | 'sources'
+    | 'surfaces'
+    | 'tasks'
+    | 'authorizationRequests'
+    | 'commandContributions'
   > & {
     catalog: readonly PluginCatalogItem[];
     installed: readonly InstalledPluginView[];
-    serialProposals: readonly PluginSerialProposal[];
-    panels: readonly PluginDeclarativePanel[];
     sources: readonly PluginSourceView[];
+    surfaces?: readonly PluginSurfaceSnapshot[];
+    tasks?: readonly PluginTaskViewV2[];
+    authorizationRequests?: readonly PluginAuthorizationRequestV2[];
+    commandContributions?: readonly PluginCommandContributionV2[];
   }
 >;
 
-export const PLUGIN_PERMISSIONS = [
-  'ui.panel',
-  'plugin.storage',
-  'session.metadata.read',
-  'session.capture.read',
-  'project.settings.read-write',
+export const PLUGIN_CAPABILITIES_V2 = [
+  'ui.workspace',
+  'ui.detached-window',
   'serial.ports.read',
-  'serial.control',
-  'serial.write-proposal',
-  'ai.conversation.read',
-  'ai.request',
-  'file.open-save',
-  'clipboard',
-  'notification',
-] as const satisfies readonly PluginPermission[];
+  'serial.sessions.manage',
+  'serial.io',
+  'serial.control-lines',
+  'session.capture.read',
+  'session.commands.read-write',
+  'file.open-read',
+  'file.save-write',
+  'plugin.storage',
+  'project.state.read-write',
+] as const satisfies readonly PluginCapabilityV2[];
 
 export type PluginPortOutcome =
   | { readonly outcome: 'completed'; readonly data: PluginCenterData }
@@ -96,7 +99,11 @@ export interface PluginCenterPort {
   snapshot(signal: AbortSignal): Promise<PluginPortOutcome>;
   install(catalogId: string, signal: AbortSignal): Promise<PluginPortOutcome>;
   installLocal(grantId: string, signal: AbortSignal): Promise<PluginPortOutcome>;
-  uninstall(pluginId: string, signal: AbortSignal): Promise<PluginPortOutcome>;
+  uninstall(
+    pluginId: string,
+    signal: AbortSignal,
+    contributionDisposition?: PluginContributionDisposition,
+  ): Promise<PluginPortOutcome>;
   setEnabled(pluginId: string, enabled: boolean, signal: AbortSignal): Promise<PluginPortOutcome>;
   addSource(
     sourceId: string,
@@ -117,12 +124,22 @@ export interface PluginCenterPort {
     enabled: boolean,
     signal: AbortSignal,
   ): Promise<PluginPortOutcome>;
-  resolveSerialProposal(
-    proposal: PluginSerialProposal,
+  emitSurfaceEvent?(event: PluginSurfaceEventV2, signal: AbortSignal): Promise<PluginPortOutcome>;
+  resolveAuthorization?(
+    request: PluginAuthorizationRequestV2,
     decision: 'approve' | 'reject',
     signal: AbortSignal,
   ): Promise<PluginPortOutcome>;
-  emitPanelEvent(event: PluginPanelEvent, signal: AbortSignal): Promise<PluginPortOutcome>;
+  cancelTask?(task: PluginTaskViewV2, signal: AbortSignal): Promise<PluginPortOutcome>;
+  runCommand?(
+    command: PluginCommandContributionV2,
+    signal: AbortSignal,
+  ): Promise<PluginPortOutcome>;
+  setSurfacePlacement?(
+    surface: PluginSurfaceSnapshot,
+    placement: 'workspace' | 'detached-window',
+    signal: AbortSignal,
+  ): Promise<PluginPortOutcome>;
   subscribe(listener: (data: PluginCenterData) => void): () => void;
 }
 
@@ -139,8 +156,11 @@ export type PluginCenterActionKind =
   | 'source-remove'
   | 'source-refresh'
   | 'source-watch'
-  | 'serial-proposal'
-  | 'panel-event';
+  | 'surface-event'
+  | 'authorization'
+  | 'task-cancel'
+  | 'command-run'
+  | 'surface-placement';
 
 export interface PluginCenterAction {
   readonly kind: PluginCenterActionKind;

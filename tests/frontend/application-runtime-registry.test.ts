@@ -208,6 +208,7 @@ test('prepareShutdown shares in-flight preparation and aggregates failures', asy
     createRuntime: () => ({ id: 'unused' }),
     disposeRuntime: () => undefined,
   });
+  await noPrepare.ensure({ id: 'without-prepare-hook', label: 'resident' });
   await noPrepare.prepareShutdown();
 });
 

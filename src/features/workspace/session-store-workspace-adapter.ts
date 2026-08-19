@@ -123,6 +123,13 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
     if (this.persistenceDrain && !this.persistenceDrain.accepting) {
       this.persistenceDrain = null;
     }
+    if (
+      event.kind !== 'catalog-changed' &&
+      'sessionId' in event &&
+      !this.store.isPersistentSession(event.sessionId)
+    ) {
+      return;
+    }
     switch (event.kind) {
       case 'frame-added':
         this.queueFrame(event.sessionId, event.frame);
@@ -334,7 +341,8 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
     this.requireAccepted(registration);
     if (!registration.accepted) return;
     const commands: WorkspaceConfigMutationCommand[] = [];
-    for (const [sortOrder, candidate] of this.store.sessions.entries()) {
+    const persistentSessions = this.persistentSessions();
+    for (const [sortOrder, candidate] of persistentSessions.entries()) {
       if (candidate.id !== sessionId && this.projectedSortOrders.get(candidate.id) === sortOrder) {
         continue;
       }
@@ -350,8 +358,9 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
         if (upsert) commands.push(upsert);
       }
     }
-    if (this.projectedActiveSessionId !== this.store.activeSessionId) {
-      commands.push({ kind: 'set-active-session', sessionId: this.store.activeSessionId });
+    const persistentActiveSessionId = this.persistentActiveSessionId(persistentSessions);
+    if (this.projectedActiveSessionId !== persistentActiveSessionId) {
+      commands.push({ kind: 'set-active-session', sessionId: persistentActiveSessionId });
     }
     const outcome = this.persistenceDrain
       ? this.persistenceDrain.queueOrderedMutations(commands)
@@ -363,9 +372,9 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
     }
     this.projectedSessionIds.add(sessionId);
     this.projectedSortOrders = new Map(
-      this.store.sessions.map((candidate, sortOrder) => [candidate.id, sortOrder]),
+      persistentSessions.map((candidate, sortOrder) => [candidate.id, sortOrder]),
     );
-    this.projectedActiveSessionId = this.store.activeSessionId;
+    this.projectedActiveSessionId = persistentActiveSessionId;
   }
 
   private requireAccepted(
@@ -377,7 +386,8 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
   private projectCatalog(): void {
     const activeWorkspace = this.application.snapshot().currentWorkspace;
     if (!activeWorkspace) return;
-    const liveIds = new Set(this.store.sessions.map((session) => session.id));
+    const persistentSessions = this.persistentSessions();
+    const liveIds = new Set(persistentSessions.map((session) => session.id));
     const commands: WorkspaceConfigMutationCommand[] = [];
     const removedIds: string[] = [];
     const addedIds: string[] = [];
@@ -388,7 +398,7 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
         removedIds.push(persistedId);
       }
     }
-    for (const [sortOrder, session] of this.store.sessions.entries()) {
+    for (const [sortOrder, session] of persistentSessions.entries()) {
       const commandsForSession = projectSessionCommands(session, this.store, sortOrder);
       if (!this.projectedSessionIds.has(session.id)) {
         commands.push(...commandsForSession);
@@ -403,8 +413,9 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
         if (catalogCommand) commands.push(catalogCommand);
       }
     }
-    if (this.projectedActiveSessionId !== this.store.activeSessionId) {
-      commands.push({ kind: 'set-active-session', sessionId: this.store.activeSessionId });
+    const persistentActiveSessionId = this.persistentActiveSessionId(persistentSessions);
+    if (this.projectedActiveSessionId !== persistentActiveSessionId) {
+      commands.push({ kind: 'set-active-session', sessionId: persistentActiveSessionId });
     }
     const registeredIds: string[] = [];
     for (const sessionId of addedIds) {
@@ -430,13 +441,14 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
     for (const sessionId of removedIds) this.application.forgetSession(sessionId);
     this.projectedSessionIds = liveIds;
     this.projectedSortOrders = new Map(
-      this.store.sessions.map((session, sortOrder) => [session.id, sortOrder]),
+      persistentSessions.map((session, sortOrder) => [session.id, sortOrder]),
     );
-    this.projectedActiveSessionId = this.store.activeSessionId;
+    this.projectedActiveSessionId = persistentActiveSessionId;
   }
 
   private projectSession(sessionId: string): void {
     if (this.projectionInFlight.has(sessionId)) return;
+    if (!this.store.isPersistentSession(sessionId)) return;
     const session = this.store.sessions.find((candidate) => candidate.id === sessionId);
     if (!session) return;
     this.projectionInFlight.add(sessionId);
@@ -444,7 +456,7 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
       const commands = projectSessionCommands(
         session,
         this.store,
-        this.store.sessions.findIndex((candidate) => candidate.id === sessionId),
+        this.persistentSessions().findIndex((candidate) => candidate.id === sessionId),
       );
       const outcome = this.persistenceDrain
         ? this.persistenceDrain.queueConfigMutations(commands)
@@ -453,6 +465,22 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
     } finally {
       this.projectionInFlight.delete(sessionId);
     }
+  }
+
+  private persistentSessions(): readonly SerialSession[] {
+    return this.store.sessions.filter((session) => this.store.isPersistentSession(session.id));
+  }
+
+  private persistentActiveSessionId(sessions: readonly SerialSession[]): string | null {
+    const active = this.store.activeSessionId;
+    if (active && this.store.isPersistentSession(active)) return active;
+    if (
+      this.projectedActiveSessionId &&
+      sessions.some((session) => session.id === this.projectedActiveSessionId)
+    ) {
+      return this.projectedActiveSessionId;
+    }
+    return sessions[0]?.id ?? null;
   }
 }
 
@@ -512,6 +540,7 @@ function safePortHint(
 }
 
 function displaySessionName(session: SerialSession, sortOrder: number): string {
+  if (session.displayName?.trim()) return session.displayName.trim();
   const portName = session.portName.trim();
   if (portName && !portName.startsWith('/') && !/^\\\\[.?]\\/u.test(portName)) return portName;
   return `Session ${sortOrder + 1}`;

@@ -10,14 +10,12 @@ pub use error::{ManagerError, ManagerErrorCode, Result};
 pub use manager::PluginManager;
 pub use model::{
     ArtifactSlot, CrashKind, DisableReason, HostHandle, HostLaunchMode, HostLaunchRequest,
-    HostPanel, HostPanelField, HostPanelFieldKind, HostPublishedPanel, HostReport,
-    ManualPackageRequest, OpaqueProjectPluginState, PluginArtifact, PluginArtifactSource,
-    PluginSnapshot, PluginSourceKind, PluginStatus, PluginStatusCode, PreparationKind,
-    PreparationToken, PreparedInstallation, WorkspacePluginBinding,
+    HostReport, ManualPackageRequest, OpaqueProjectPluginState, PluginArtifact,
+    PluginArtifactSource, PluginSnapshot, PluginSourceKind, PluginStatus, PluginStatusCode,
+    PreparationKind, PreparationToken, PreparedInstallation, WorkspacePluginBinding,
 };
 pub use ports::{
-    Clock, HostFailure, HostLauncher, HostPushSink, InstallationFailure, InstallationPort,
-    SystemClock,
+    Clock, HostFailure, HostLauncher, InstallationFailure, InstallationPort, SystemClock,
 };
 pub use project_state::{MAX_PLUGIN_PROJECT_STATE_BYTES, MAX_PROJECT_PLUGIN_STATE_BYTES};
 

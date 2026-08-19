@@ -1,20 +1,22 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type {
   AddPluginSourceRequest,
+  CancelPluginTaskRequestV2,
   CancelPluginOperationRequest,
-  EmitPluginPanelEventRequest,
+  EmitPluginSurfaceEventRequestV2,
   InstallLocalPluginRequest,
   InstallPluginRequest,
   PluginCenterData as GeneratedPluginCenterData,
   PluginCommandResponse,
   PluginFailureCode,
-  PluginSerialProposalDecision,
   PluginSnapshotRequest,
   PluginLocalSourceGrantResponse,
+  ResolvePluginAuthorizationRequestV2,
   RequestPluginLocalSourceGrantRequest,
   RefreshPluginSourceRequest,
   RemovePluginSourceRequest,
-  ResolvePluginSerialProposalRequest,
+  RunPluginCommandRequestV2,
+  SetPluginSurfacePlacementRequestV2,
   SetPluginEnabledRequest,
   SetPluginWatchEnabledRequest,
   UninstallPluginRequest,
@@ -23,9 +25,13 @@ import type {
 import type {
   PluginCenterData,
   PluginCenterPort,
-  PluginPanelEvent,
+  PluginAuthorizationRequestV2,
+  PluginCommandContributionV2,
+  PluginContributionDisposition,
   PluginPortOutcome,
-  PluginSerialProposal,
+  PluginSurfaceEventV2,
+  PluginSurfaceSnapshot,
+  PluginTaskViewV2,
 } from './types';
 
 export const PLUGIN_CENTER_SNAPSHOT_COMMAND = 'plugin_center_snapshot';
@@ -39,22 +45,21 @@ export const PLUGIN_SOURCE_UPDATE_COMMAND = 'plugin_source_update';
 export const PLUGIN_SOURCE_REMOVE_COMMAND = 'plugin_source_remove';
 export const PLUGIN_SOURCE_REFRESH_COMMAND = 'plugin_source_refresh';
 export const PLUGIN_SET_WATCH_ENABLED_COMMAND = 'plugin_set_watch_enabled';
-export const PLUGIN_RESOLVE_SERIAL_PROPOSAL_COMMAND = 'plugin_resolve_serial_proposal';
-export const PLUGIN_EMIT_PANEL_EVENT_COMMAND = 'plugin_emit_panel_event';
+export const PLUGIN_EMIT_SURFACE_EVENT_V2_COMMAND = 'plugin_emit_surface_event_v2';
+export const PLUGIN_RESOLVE_AUTHORIZATION_V2_COMMAND = 'plugin_resolve_authorization_v2';
+export const PLUGIN_CANCEL_TASK_V2_COMMAND = 'plugin_cancel_task_v2';
+export const PLUGIN_RUN_COMMAND_V2_COMMAND = 'plugin_run_command_v2';
+export const PLUGIN_SET_SURFACE_PLACEMENT_V2_COMMAND = 'plugin_set_surface_placement_v2';
 export const PLUGIN_CANCEL_OPERATION_COMMAND = 'plugin_cancel_operation';
 
 const FAILURE_CODES = new Set<PluginFailureCode>([
   'unavailable',
   'invalid-response',
-  'invalid-panel',
+  'invalid-surface',
   'invalid-input',
   'operation-conflict',
   'installation-failed',
   'host-failed',
-  'proposal-expired',
-  'proposal-context-changed',
-  'proposal-consumed',
-  'panel-event-rejected',
   'cancel-failed',
   'workspace-missing',
 ]);
@@ -125,8 +130,16 @@ export class TauriPluginCenterPort implements PluginCenterPort {
     return this.execute(PLUGIN_INSTALL_LOCAL_COMMAND, request, signal);
   }
 
-  uninstall(pluginId: string, signal: AbortSignal): Promise<PluginPortOutcome> {
-    const request: UninstallPluginRequest = { ...this.correlation(), pluginId };
+  uninstall(
+    pluginId: string,
+    signal: AbortSignal,
+    contributionDisposition: PluginContributionDisposition = 'delete',
+  ): Promise<PluginPortOutcome> {
+    const request: UninstallPluginRequest = {
+      ...this.correlation(),
+      pluginId,
+      contributionDisposition,
+    };
     return this.execute(PLUGIN_UNINSTALL_COMMAND, request, signal);
   }
 
@@ -188,26 +201,63 @@ export class TauriPluginCenterPort implements PluginCenterPort {
     return this.execute(PLUGIN_SET_WATCH_ENABLED_COMMAND, request, signal);
   }
 
-  resolveSerialProposal(
-    proposal: PluginSerialProposal,
-    decision: PluginSerialProposalDecision,
-    signal: AbortSignal,
-  ): Promise<PluginPortOutcome> {
-    const request: ResolvePluginSerialProposalRequest = {
+  emitSurfaceEvent(event: PluginSurfaceEventV2, signal: AbortSignal): Promise<PluginPortOutcome> {
+    const request: EmitPluginSurfaceEventRequestV2 = {
       ...this.correlation(),
-      proposalId: proposal.proposalId,
-      runtime: { ...proposal.runtime },
-      decision,
+      event: { ...event, runtime: { ...event.runtime } },
     };
-    return this.execute(PLUGIN_RESOLVE_SERIAL_PROPOSAL_COMMAND, request, signal);
+    return this.execute(PLUGIN_EMIT_SURFACE_EVENT_V2_COMMAND, request, signal);
   }
 
-  emitPanelEvent(event: PluginPanelEvent, signal: AbortSignal): Promise<PluginPortOutcome> {
-    const request: EmitPluginPanelEventRequest = {
+  resolveAuthorization(
+    authorization: PluginAuthorizationRequestV2,
+    decision: 'approve' | 'reject',
+    signal: AbortSignal,
+  ): Promise<PluginPortOutcome> {
+    const request: ResolvePluginAuthorizationRequestV2 = {
       ...this.correlation(),
-      event: { ...event },
+      pluginId: authorization.pluginId,
+      version: authorization.version,
+      digestSha256: authorization.digestSha256,
+      requestedCapabilities: [...authorization.requestedCapabilities],
+      decision,
     };
-    return this.execute(PLUGIN_EMIT_PANEL_EVENT_COMMAND, request, signal);
+    return this.execute(PLUGIN_RESOLVE_AUTHORIZATION_V2_COMMAND, request, signal);
+  }
+
+  cancelTask(task: PluginTaskViewV2, signal: AbortSignal): Promise<PluginPortOutcome> {
+    const request: CancelPluginTaskRequestV2 = {
+      ...this.correlation(),
+      runtime: { ...task.runtime },
+      taskId: task.taskId,
+    };
+    return this.execute(PLUGIN_CANCEL_TASK_V2_COMMAND, request, signal);
+  }
+
+  runCommand(
+    command: PluginCommandContributionV2,
+    signal: AbortSignal,
+  ): Promise<PluginPortOutcome> {
+    const request: RunPluginCommandRequestV2 = {
+      ...this.correlation(),
+      runtime: { ...command.runtime },
+      commandId: command.commandId,
+    };
+    return this.execute(PLUGIN_RUN_COMMAND_V2_COMMAND, request, signal);
+  }
+
+  setSurfacePlacement(
+    surface: PluginSurfaceSnapshot,
+    placement: 'workspace' | 'detached-window',
+    signal: AbortSignal,
+  ): Promise<PluginPortOutcome> {
+    const request: SetPluginSurfacePlacementRequestV2 = {
+      ...this.correlation(),
+      runtime: { ...surface.runtime },
+      surfaceId: surface.surfaceId,
+      placement,
+    };
+    return this.execute(PLUGIN_SET_SURFACE_PLACEMENT_V2_COMMAND, request, signal);
   }
 
   subscribe(listener: (data: PluginCenterData) => void): () => void {
@@ -375,8 +425,6 @@ function validCenterData(value: unknown, revision: number): PluginCenterData | n
     !validRevision(value.revision) ||
     !Array.isArray(value.catalog) ||
     !Array.isArray(value.installed) ||
-    !Array.isArray(value.serialProposals) ||
-    !Array.isArray(value.panels) ||
     !Array.isArray(value.sources)
   )
     return null;

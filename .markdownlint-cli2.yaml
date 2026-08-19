@@ -10,3 +10,4 @@ config:
 # Local agent session artifacts are machine-generated, not project docs.
 ignores:
   - .zcode/
+  - '**/target/**'

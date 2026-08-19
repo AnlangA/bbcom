@@ -10,8 +10,8 @@ use atomic_write_file::AtomicWriteFile;
 use std::io::Cursor;
 
 use bbcom_plugin_contracts::{
-    MAX_PACKAGE_EXPANDED_BYTES, MAX_PACKAGE_FILES, Permission, PluginManifest, RepositoryPackage,
-    Sha256Digest,
+    MAX_PACKAGE_EXPANDED_BYTES, MAX_PACKAGE_FILES, PluginManifest, RepositoryPackage, Sha256Digest,
+    generated_v2::Capability, parse_v2_capability, v2_capability_name,
 };
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -90,7 +90,7 @@ pub struct PreparedPluginInstallation {
     package_sha256: String,
     component_sha256: String,
     repository_origin: String,
-    requested_permissions: BTreeSet<Permission>,
+    requested_capabilities: BTreeSet<Capability>,
     kind: PreparedInstallationKind,
 }
 
@@ -126,8 +126,8 @@ impl PreparedPluginInstallation {
     }
 
     #[must_use]
-    pub fn requested_permissions(&self) -> &BTreeSet<Permission> {
-        &self.requested_permissions
+    pub fn requested_capabilities(&self) -> &BTreeSet<Capability> {
+        &self.requested_capabilities
     }
 
     #[must_use]
@@ -143,30 +143,32 @@ struct PreparedInstallationJournal {
     token: String,
     plugin_id: String,
     version: String,
-    /// Legacy self-asserted identity retained only for v1 journal decoding.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    publisher_identity: Option<String>,
     repository_origin: String,
     package_sha256: String,
     component_sha256: String,
-    requested_permissions: BTreeSet<Permission>,
+    requested_capabilities: BTreeSet<String>,
     kind: PreparedInstallationKind,
     previous_version: Option<String>,
     has_data_snapshot: bool,
 }
 
 impl PreparedInstallationJournal {
-    fn descriptor(&self) -> PreparedPluginInstallation {
-        PreparedPluginInstallation {
+    fn descriptor(&self) -> Result<PreparedPluginInstallation> {
+        let requested_capabilities = self
+            .requested_capabilities
+            .iter()
+            .map(|name| parse_v2_capability(name))
+            .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+        Ok(PreparedPluginInstallation {
             token: self.token.clone(),
             plugin_id: self.plugin_id.clone(),
             version: self.version.clone(),
             package_sha256: self.package_sha256.clone(),
             component_sha256: self.component_sha256.clone(),
             repository_origin: self.repository_origin.clone(),
-            requested_permissions: self.requested_permissions.clone(),
+            requested_capabilities,
             kind: self.kind,
-        }
+        })
     }
 }
 
@@ -297,7 +299,7 @@ impl PluginInstaller {
         let staged_package = staging.path.join("package");
         fs::create_dir(&staged_package)?;
         let verified = extract_and_verify(download, &staged_package)?;
-        let requested_permissions = verified.manifest.permissions()?.into_iter().collect();
+        let requested_capabilities = manifest_capabilities(&verified.manifest)?;
         let has_data_snapshot = previous_version.is_some()
             && self
                 .stage_plugin_data(download.plugin_id(), &staging)?
@@ -314,11 +316,10 @@ impl PluginInstaller {
             token: staging.token.clone(),
             plugin_id: download.plugin_id().to_owned(),
             version: download.package().version.clone(),
-            publisher_identity: None,
             repository_origin: download.repository_origin().to_owned(),
             package_sha256: download.package().sha256.clone(),
             component_sha256: verified.manifest.component.sha256.clone(),
-            requested_permissions,
+            requested_capabilities: capability_names(&requested_capabilities),
             kind,
             previous_version,
             has_data_snapshot,
@@ -327,7 +328,7 @@ impl PluginInstaller {
         sync_directory(&staged_package)?;
         write_json_atomic(&staging.path.join(PREPARED_JOURNAL_FILE), &journal)?;
         sync_directory(&self.package_root.join(".staging"))?;
-        let descriptor = journal.descriptor();
+        let descriptor = journal.descriptor()?;
         staging.persist();
         Ok(descriptor)
     }
@@ -369,16 +370,16 @@ impl PluginInstaller {
         if manifest.id != plugin_id || manifest.version != target.version {
             return Err(RepositoryError::CorruptInstallState);
         }
+        let requested_capabilities = manifest_capabilities(&manifest)?;
         let journal = PreparedInstallationJournal {
             schema: INSTALL_STATE_SCHEMA,
             token: staging.token.clone(),
             plugin_id: plugin_id.to_owned(),
             version: target.version.clone(),
-            publisher_identity: None,
             repository_origin: target.repository_origin.clone(),
             package_sha256: target.package_sha256.clone(),
             component_sha256: manifest.component.sha256.clone(),
-            requested_permissions: manifest.permissions()?.into_iter().collect(),
+            requested_capabilities: capability_names(&requested_capabilities),
             kind: PreparedInstallationKind::Rollback,
             previous_version: Some(current_version.to_owned()),
             has_data_snapshot: target.data_snapshot_token.is_some(),
@@ -386,7 +387,7 @@ impl PluginInstaller {
         validate_prepared_journal(&journal)?;
         write_json_atomic(&staging.path.join(PREPARED_JOURNAL_FILE), &journal)?;
         sync_directory(&self.package_root.join(".staging"))?;
-        let descriptor = journal.descriptor();
+        let descriptor = journal.descriptor()?;
         staging.persist();
         Ok(Some(descriptor))
     }
@@ -397,7 +398,7 @@ impl PluginInstaller {
             .gate
             .lock()
             .map_err(|_| RepositoryError::CorruptInstallState)?;
-        Ok(self.load_prepared_journal(token)?.descriptor())
+        self.load_prepared_journal(token)?.descriptor()
     }
 
     /// Resolves a verified prepared package. All path components come from the
@@ -411,7 +412,7 @@ impl PluginInstaller {
             .lock()
             .map_err(|_| RepositoryError::CorruptInstallState)?;
         let journal = self.load_prepared_journal(prepared.token())?;
-        if journal.descriptor() != *prepared {
+        if journal.descriptor()? != *prepared {
             return Err(RepositoryError::PreparedDescriptorMismatch);
         }
         let package = self.prepared_root(&journal.token).join("package");
@@ -451,7 +452,7 @@ impl PluginInstaller {
             .lock()
             .map_err(|_| RepositoryError::CorruptInstallState)?;
         let journal = self.load_prepared_journal(prepared.token())?;
-        if journal.descriptor() != *prepared {
+        if journal.descriptor()? != *prepared {
             return Err(RepositoryError::PreparedDescriptorMismatch);
         }
         let active = match journal.kind {
@@ -494,7 +495,7 @@ impl PluginInstaller {
             return Ok(());
         }
         let journal = self.load_prepared_journal(prepared.token())?;
-        if journal.descriptor() != *prepared {
+        if journal.descriptor()? != *prepared {
             return Err(RepositoryError::PreparedDescriptorMismatch);
         }
         self.remove_prepared(&journal.token)
@@ -994,14 +995,11 @@ impl PluginInstaller {
         .map_err(|_| RepositoryError::PreparedInstallationUnavailable)?;
         let manifest = load_package_manifest(&package)
             .map_err(|_| RepositoryError::PreparedInstallationUnavailable)?;
-        let permissions: BTreeSet<_> = manifest
-            .permissions()
-            .map_err(|_| RepositoryError::PreparedInstallationUnavailable)?
-            .into_iter()
-            .collect();
+        let capabilities = manifest_capabilities(&manifest)
+            .map_err(|_| RepositoryError::PreparedInstallationUnavailable)?;
         if manifest.id != journal.plugin_id
             || manifest.version != journal.version
-            || permissions != journal.requested_permissions
+            || capability_names(&capabilities) != journal.requested_capabilities
         {
             return Err(RepositoryError::PreparedDescriptorMismatch);
         }
@@ -1224,9 +1222,6 @@ fn remove_optional_snapshot(plugin_root: &Path, token: Option<&str>) {
 struct InstallState {
     schema: u32,
     plugin_id: String,
-    /// Legacy self-asserted identity; never consulted or generated.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    publisher_identity: Option<String>,
     next_sequence: u64,
     active_version: Option<String>,
     verified: Vec<VerifiedVersion>,
@@ -1237,7 +1232,6 @@ impl InstallState {
         Self {
             schema: INSTALL_STATE_SCHEMA,
             plugin_id: plugin_id.to_owned(),
-            publisher_identity: None,
             next_sequence: 1,
             active_version: None,
             verified: Vec::new(),
@@ -1408,6 +1402,7 @@ fn validate_prepared_journal(journal: &PreparedInstallationJournal) -> Result<()
         || journal.repository_origin.is_empty()
         || !is_sha256(&journal.package_sha256)
         || !is_sha256(&journal.component_sha256)
+        || !valid_journal_capabilities(journal)
         || journal
             .previous_version
             .as_deref()
@@ -1422,6 +1417,27 @@ fn validate_prepared_journal(journal: &PreparedInstallationJournal) -> Result<()
         return Err(RepositoryError::PreparedInstallationUnavailable);
     }
     Ok(())
+}
+
+fn manifest_capabilities(manifest: &PluginManifest) -> Result<BTreeSet<Capability>> {
+    Ok(manifest.v2_capabilities()?.into_iter().collect())
+}
+
+fn capability_names(capabilities: &BTreeSet<Capability>) -> BTreeSet<String> {
+    capabilities
+        .iter()
+        .copied()
+        .map(v2_capability_name)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn valid_journal_capabilities(journal: &PreparedInstallationJournal) -> bool {
+    journal.requested_capabilities.len() <= 12
+        && journal
+            .requested_capabilities
+            .iter()
+            .all(|name| parse_v2_capability(name).is_ok() && !name.is_empty())
 }
 
 fn load_package_manifest(package_directory: &Path) -> Result<PluginManifest> {

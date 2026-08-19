@@ -438,9 +438,11 @@ fn upsert_feature_state(
                 )?;
             }
             connection.execute(
-                "INSERT INTO plugin_project_state(plugin_id, state, state_version)
-                 VALUES (?1, ?2, 1)
-                 ON CONFLICT(plugin_id) DO UPDATE SET state = excluded.state",
+                "INSERT INTO plugin_project_state(plugin_id, state, state_version, schema_version)
+                 VALUES (?1, ?2, 1, NULL)
+                 ON CONFLICT(plugin_id) DO UPDATE SET state = excluded.state,
+                                                      state_version = 1,
+                                                      schema_version = NULL",
                 params![entity_id, state],
             )?;
         }
@@ -463,6 +465,11 @@ fn validate_session_collections(payload: &WorkspaceSessionCollectionsPayload) ->
             MAX_WORKSPACE_BATCH_BYTES,
         )?;
         ensure_unique_id(&mut quick_ids, &command.id, "quickCommand.id")?;
+        validate_plugin_owner(
+            command.owner_plugin_id.as_deref(),
+            &command.id,
+            "quickCommand.ownerPluginId",
+        )?;
     }
 
     let mut macro_ids = BTreeSet::new();
@@ -470,6 +477,11 @@ fn validate_session_collections(payload: &WorkspaceSessionCollectionsPayload) ->
         validate_identifier(&macro_item.id, "macro.id")?;
         validate_named_value(&macro_item.name, "macro.name")?;
         ensure_unique_id(&mut macro_ids, &macro_item.id, "macro.id")?;
+        validate_plugin_owner(
+            macro_item.owner_plugin_id.as_deref(),
+            &macro_item.id,
+            "macro.ownerPluginId",
+        )?;
         for step in &macro_item.steps {
             validate_bounded_text(&step.data, "macroStep.data", MAX_WORKSPACE_BATCH_BYTES)?;
         }
@@ -516,8 +528,9 @@ fn replace_session_collections(
         ])?;
     }
     let mut insert = connection.prepare_cached(
-        "INSERT INTO quick_commands(session_id, id, position, name, data, is_hex)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO quick_commands(
+           session_id, id, position, name, data, is_hex, owner_plugin_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
     for (position, command) in payload.quick_commands.iter().enumerate() {
         insert.execute(params![
@@ -526,11 +539,13 @@ fn replace_session_collections(
             usize_to_i64(position)?,
             command.name,
             command.data,
-            command.is_hex
+            command.is_hex,
+            command.owner_plugin_id,
         ])?;
     }
     let mut insert = connection.prepare_cached(
-        "INSERT INTO macros(session_id, id, position, name) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO macros(session_id, id, position, name, owner_plugin_id)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
     let mut insert_step = connection.prepare_cached(
         "INSERT INTO macro_steps(
@@ -542,7 +557,8 @@ fn replace_session_collections(
             session_id,
             macro_item.id,
             usize_to_i64(position)?,
-            macro_item.name
+            macro_item.name,
+            macro_item.owner_plugin_id,
         ])?;
         for (step_position, step) in macro_item.steps.iter().enumerate() {
             insert_step.execute(params![
@@ -570,6 +586,22 @@ fn replace_session_collections(
         &payload.modbus_registers,
         true,
     )?;
+    Ok(())
+}
+
+fn validate_plugin_owner(
+    owner_plugin_id: Option<&str>,
+    item_id: &str,
+    field: &'static str,
+) -> Result<()> {
+    let Some(owner_plugin_id) = owner_plugin_id else {
+        return Ok(());
+    };
+    validate_identifier(owner_plugin_id, field)?;
+    let prefix = format!("plugin:{owner_plugin_id}:");
+    if item_id.len() <= prefix.len() || !item_id.starts_with(&prefix) {
+        return Err(crate::WorkspaceError::InvalidInput { field });
+    }
     Ok(())
 }
 

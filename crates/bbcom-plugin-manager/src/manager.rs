@@ -82,7 +82,6 @@ where
             }
             return Err(ManagerErrorCode::PluginAlreadyInstalled.into());
         }
-        let status = PluginStatus::Stopped;
         let plugin_id = artifact.plugin_id.clone();
         self.records.insert(
             plugin_id.clone(),
@@ -90,7 +89,7 @@ where
                 artifact,
                 expected_enabled: false,
                 generation: 0,
-                status,
+                status: PluginStatus::Stopped,
                 pending: None,
                 crash_times: VecDeque::new(),
                 last_error: None,
@@ -174,7 +173,7 @@ where
         self.install_local_fresh(package_root)?;
         let record = self.record_mut(plugin_id)?;
         record.expected_enabled = expected_enabled;
-        if expected_enabled && self.workspace_id.is_some() {
+        if record.expected_enabled && self.workspace_id.is_some() {
             return self.enable(plugin_id);
         }
         self.snapshot(plugin_id)
@@ -188,7 +187,9 @@ where
         Some(manifest.id)
     }
 
-    fn local_probe_manifest(package_root: &std::path::Path) -> Option<bbcom_plugin_contracts::PluginManifest> {
+    fn local_probe_manifest(
+        package_root: &std::path::Path,
+    ) -> Option<bbcom_plugin_contracts::PluginManifest> {
         let manifest_text = std::fs::read_to_string(package_root.join("plugin.toml")).ok()?;
         let manifest = bbcom_plugin_contracts::PluginManifest::parse(&manifest_text).ok()?;
         Some(manifest)
@@ -318,7 +319,6 @@ where
     }
 
     pub fn disable(&mut self, plugin_id: &str) -> Result<PluginSnapshot> {
-        self.record(plugin_id)?;
         self.record_mut(plugin_id)?.expected_enabled = false;
         let stop_result = self.stop_running(plugin_id);
         let record = self.record_mut(plugin_id)?;
@@ -525,6 +525,7 @@ where
             record.crash_times.clear();
             record.status = PluginStatus::Stopped;
             record.expected_enabled = false;
+            record.last_error = None;
         }
     }
 
@@ -578,45 +579,6 @@ where
             .keys()
             .filter_map(|plugin_id| self.snapshot(plugin_id).ok())
             .collect()
-    }
-
-    pub fn take_published_panels(&mut self) -> Result<Vec<crate::HostPublishedPanel>> {
-        let handles = self
-            .running
-            .values()
-            .map(|running| running.handle.clone())
-            .collect::<Vec<_>>();
-        let mut panels = Vec::new();
-        for handle in handles {
-            if let Some(panel) = self
-                .hosts
-                .take_published_panel(&handle)
-                .map_err(|_| ManagerErrorCode::HostInitializationFailed)?
-            {
-                panels.push(crate::HostPublishedPanel {
-                    plugin_id: handle.plugin_id,
-                    instance_id: handle.instance_id,
-                    panel,
-                });
-            }
-        }
-        Ok(panels)
-    }
-
-    pub fn invoke_panel_event(
-        &mut self,
-        plugin_id: &str,
-        field_id: &str,
-        value: &str,
-    ) -> Result<Option<crate::HostPanel>> {
-        let handle = self
-            .running
-            .get(plugin_id)
-            .map(|running| running.handle.clone())
-            .ok_or(ManagerErrorCode::InvalidStateTransition)?;
-        self.hosts
-            .invoke_panel_event(&handle, field_id, value)
-            .map_err(|_| ManagerErrorCode::HostInitializationFailed.into())
     }
 
     fn finish_pending_upgrade(&mut self, plugin_id: &str) -> Result<PluginSnapshot> {
@@ -808,17 +770,11 @@ where
         mode: HostLaunchMode,
     ) -> Result<HostLaunchRequest> {
         let workspace_id = self.require_workspace()?.to_owned();
-        let granted_permissions = artifact.effective_capabilities.clone();
         Ok(HostLaunchRequest {
             artifact: artifact.clone(),
             artifact_slot,
             workspace_id,
-            granted_permissions,
-            project_state: self
-                .project_states
-                .iter()
-                .find(|state| state.plugin_id == artifact.plugin_id)
-                .map(|state| state.bytes.clone()),
+            requested_capabilities: artifact.requested_capabilities.clone(),
             mode,
         })
     }
@@ -865,12 +821,11 @@ where
         }
     }
 
-    /// Push an unsolicited envelope (proposal decision, session-query data)
-    /// to a running plugin's sidecar.
+    /// Push one typed protocol-v2 payload to a running plugin's sidecar.
     pub fn deliver_envelope(
         &mut self,
         plugin_id: &str,
-        payload: bbcom_plugin_contracts::generated::envelope::Payload,
+        payload: bbcom_plugin_contracts::generated_v2::envelope::Payload,
     ) -> Result<()> {
         let handle = self
             .running
@@ -881,6 +836,101 @@ where
             .deliver_envelope(&handle, payload)
             .map_err(|_| ManagerError::from(ManagerErrorCode::HostProtocolFailure))?;
         Ok(())
+    }
+
+    /// Broadcasts a path-free membership signal only to active v2 runtimes
+    /// whose approved launch capability set includes serial port discovery.
+    pub fn notify_port_catalog_changed(&mut self) -> Result<usize> {
+        use bbcom_plugin_contracts::generated_v2 as wire;
+        use wire::{envelope, plugin_event, request};
+
+        let plugin_ids = self
+            .running
+            .keys()
+            .filter(|plugin_id| {
+                self.records.get(*plugin_id).is_some_and(|record| {
+                    record
+                        .artifact
+                        .requested_capabilities
+                        .contains(&wire::Capability::SerialPortsRead)
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut failed = false;
+        let mut delivered = 0;
+        for plugin_id in plugin_ids {
+            let payload = envelope::Payload::Request(wire::Request {
+                operation: Some(request::Operation::HandleEvent(wire::HandleEventRequest {
+                    event: Some(wire::PluginEvent {
+                        item: Some(plugin_event::Item::PortCatalogChanged(
+                            wire::PortCatalogChangedEvent {},
+                        )),
+                    }),
+                })),
+            });
+            if self.deliver_envelope(&plugin_id, payload).is_ok() {
+                delivered += 1;
+            } else {
+                failed = true;
+            }
+        }
+        if failed {
+            return Err(ManagerErrorCode::HostProtocolFailure.into());
+        }
+        Ok(delivered)
+    }
+
+    /// Broadcasts trusted application appearance changes to every active v2
+    /// runtime. Values originate from the validated main-window context store;
+    /// no renderer-selected runtime identity is accepted.
+    pub fn notify_host_context_changed(
+        &mut self,
+        locale: Option<String>,
+        theme: Option<bbcom_plugin_contracts::generated_v2::ColorScheme>,
+    ) -> Result<usize> {
+        use bbcom_plugin_contracts::generated_v2 as wire;
+        use wire::{envelope, plugin_event, request};
+
+        if locale.as_deref().is_some_and(str::is_empty)
+            || theme.is_some_and(|value| value == wire::ColorScheme::Unspecified)
+        {
+            return Err(ManagerErrorCode::InvalidStateTransition.into());
+        }
+        let plugin_ids = self.running.keys().cloned().collect::<Vec<_>>();
+        let mut delivered = 0;
+        let mut failed = false;
+        for plugin_id in plugin_ids {
+            let items = [
+                locale.as_ref().map(|locale| {
+                    plugin_event::Item::LocaleChanged(wire::LocaleChangedEvent {
+                        locale: locale.clone(),
+                    })
+                }),
+                theme.map(|theme| {
+                    plugin_event::Item::ThemeChanged(wire::ThemeChangedEvent {
+                        theme: theme as i32,
+                    })
+                }),
+            ];
+            for item in items.into_iter().flatten() {
+                let payload = envelope::Payload::Request(wire::Request {
+                    operation: Some(request::Operation::HandleEvent(wire::HandleEventRequest {
+                        event: Some(wire::PluginEvent { item: Some(item) }),
+                    })),
+                });
+                if self.deliver_envelope(&plugin_id, payload).is_ok() {
+                    delivered += 1;
+                } else {
+                    failed = true;
+                }
+            }
+        }
+        if failed {
+            Err(ManagerErrorCode::HostProtocolFailure.into())
+        } else {
+            Ok(delivered)
+        }
     }
 
     fn commit_exact(&mut self, prepared: &PreparedInstallation) -> Result<PluginArtifact> {

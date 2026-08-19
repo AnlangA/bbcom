@@ -14,9 +14,10 @@
   never require permission changes under the application install directory.
 - Keep project state in workspace persistence and private `plugin.storage`
   below the application-data state root.
-- Validate panel publications and panel events through the declarative broker.
-- Route serial proposals through the global first-write prompt and return the
-  real session scheduler result with the exact runtime instance generation.
+- Validate revisioned surface publications and events through the typed
+  capability gateway.
+- Route serial access through generation-bound transaction leases and return
+  the real scheduler result after physical completion.
 - Fetch remote indexes for update discovery only; downloading, installing, and
   switching a version always requires a user command.
 - Close or rebind plugin runtimes during workspace transitions and stop them

@@ -1,0 +1,16 @@
+[package]
+name = "bbcom-plugin-packager"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+publish = false
+description = "shared digest-pinned directory packager for BBCOM v2 components"
+license = "MIT"
+
+# Shared by standalone plugin workspaces without making those plugins members
+# of BBCOM's root Cargo workspace.
+[workspace]
+
+[dependencies]
+bbcom-plugin-contracts = { path = "../../crates/bbcom-plugin-contracts" }
+sha2 = "=0.10.9"

@@ -181,23 +181,23 @@ function validateHostEvidence(item, packageEvidence, platform, layout) {
   const classifications = item?.classifications;
   const expectedClassificationKeys = ['ambient', 'memory', 'runaway', 'trap'];
   const expectedLimitations = [
-    'v1 Component links no WASI, socket, process, filesystem, device, environment, WebView, DOM or Tauri import',
+    'v2 Component links no WASI, socket, process, filesystem, device, environment, WebView, DOM or Tauri import',
     'native sandbox observations are not relabelled as Component resource attempts',
     'this probe never self-authorizes market release; only the aggregate G45/G46 gate may promote evidence',
   ];
   if (
     item?.schemaVersion !== 1 ||
     item?.evidenceKind !== 'bbcom-packaged-host-malicious-component' ||
-    item?.probeProtocol !== 'bbcom-plugin-host-g45/v1' ||
+    item?.probeProtocol !== 'bbcom-plugin-host-g45/v2' ||
     item?.commitSha !== commitSha ||
     item?.platform !== platform ||
     item?.target !== layout.target ||
     item?.execution !== 'real-wasm-component' ||
     item?.hostExecutable !== 'packaged-bbcom-plugin-host' ||
     item?.marketReady !== false ||
-    item?.fixture?.componentPackage !== 'bbcom:g45-malicious-fixture@1.0.0' ||
+    item?.fixture?.componentPackage !== 'bbcom:g45-malicious-fixture@2.0.0' ||
     item?.fixture?.sha256 !== fixtureSha256 ||
-    item?.fixture?.digestAlgorithm !== 'sha256(length-prefixed-name-and-source-v1)' ||
+    item?.fixture?.digestAlgorithm !== 'sha256(length-prefixed-name-and-source-v2)' ||
     !Array.isArray(artifacts) ||
     artifacts.length !== expectedArtifacts.length ||
     artifacts.some((artifact, index) => {

@@ -96,14 +96,16 @@ typed command surfaces.
   updater plugin is shipped.
 - **Native plugin runtime:** `plugins/runtime_wiring.rs` is the single
   composition root. Application setup installs the fail-closed unavailable
-  service first and swaps in the real `ProductionPluginRuntimeBuilder` graph
-  (installer, host, sandbox, broker, state persistence, audit, webview serial
-  scheduler/upstream) only when every port resolves; composition failure keeps
-  the unavailable service and logs only the stable error code. Until reviewed
-  repository metadata exists, the repository and catalog ports are empty
-  fail-closed adapters, so nothing is fetchable or installable while the host,
-  sandbox, and lifecycle machinery is live. Workspace switches and native
-  shutdown call `close_plugin_project` through the retained lifecycle handle.
+  service first and swaps in the real protocol-v2 graph only when installer,
+  authorization, sidecar, sandbox, typed capability gateway, private/project
+  state, opaque file grants, surface/task projection, detached windows, and
+  the main-window serial lease bridge all resolve. Every guest resource binds
+  workspace, plugin, instance, and generation. Non-v2 packages are rejected at
+  manifest validation and never enter inventory or runtime. Configured unsigned HTTPS sources
+  and package SHA-256 provide integrity, not publisher identity; TUF/signature
+  verification remains a future stable-marketplace gate. Workspace switches
+  and native shutdown revoke leases, grants, surfaces, and runtime state before
+  closing the retained lifecycle handle.
 - **Bulk IPC payloads are base64-first.** Export batches, workspace frame
   hydration, and checksum inputs use dual-channel DTOs (`data` number array or
   `dataB64` string, validators enforce exactly one). The frontend converts at

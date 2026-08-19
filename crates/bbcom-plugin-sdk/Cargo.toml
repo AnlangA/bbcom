@@ -1,0 +1,15 @@
+[package]
+name = "bbcom-plugin-sdk"
+version = "0.1.0"
+description = "no_std guest-side building blocks for bbcom plugin protocol v2"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+
+[dev-dependencies]
+wit-parser = "=0.252.0"

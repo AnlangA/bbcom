@@ -10,6 +10,7 @@ import type {
   WorkspaceSessionChangeEvent,
   WorkspaceSessionChangeListener,
   WorkspaceSessionMutationPermissions,
+  SessionCreationOptions,
 } from '../../stores/session-core';
 
 /** Public application port consumed by workspace persistence projection. */
@@ -33,6 +34,31 @@ export interface WorkspaceSessionPort {
   ): ReturnType<ReturnType<typeof useSessionCoreStore>['replaceWorkspaceSessions']>;
   markWorkspacePersisted(): void;
   subscribeWorkspaceChanges(listener: WorkspaceSessionChangeListener): () => void;
+  createSession(
+    portName: string,
+    portConfig: PortConfig,
+    options?: SessionCreationOptions,
+  ): string | null;
+  createRuntimeSession(
+    portName: string,
+    portConfig: PortConfig,
+    displayName?: string,
+  ): string | null;
+  removeSession(sessionId: string): Promise<DeletedSessionSnapshot | null>;
+  removeRuntimeSession(sessionId: string): Promise<DeletedSessionSnapshot | null>;
+  updateSessionConnectionSettings(
+    sessionId: string,
+    portName: string,
+    portConfig: PortConfig,
+    displayName?: string,
+  ): boolean;
+  updateRuntimeSessionConnectionSettings(
+    sessionId: string,
+    portName: string,
+    portConfig: PortConfig,
+    displayName?: string,
+  ): boolean;
+  isPersistentSession(sessionId: string): boolean;
 }
 
 export type { WorkspaceSessionChangeEvent, WorkspaceSessionChangeListener };

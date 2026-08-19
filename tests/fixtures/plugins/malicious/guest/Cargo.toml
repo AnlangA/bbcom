@@ -1,0 +1,31 @@
+[package]
+name = "g45-v2-fixture-guest"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.97"
+publish = false
+description = "reproducible source for the reviewed protocol-v2 G45 Components"
+license = "MIT"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["primary"]
+primary = []
+trap = []
+runaway = []
+memory = []
+std = []
+
+[dependencies]
+bbcom-plugin-guest-runtime = { path = "../../../../../plugins/plugin-guest-runtime" }
+wit-bindgen = { version = "=0.43.0", default-features = false, features = ["macros", "realloc"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true

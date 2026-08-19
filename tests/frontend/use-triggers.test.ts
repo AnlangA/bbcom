@@ -14,6 +14,14 @@ function rxFrame(data: Uint8Array | number[], id = 1): DataFrame {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function textTrigger(
   id: string,
   pattern: string,
@@ -208,6 +216,72 @@ test('useTriggers: reset clears matcher state', async () => {
     0,
     'reset drops the partial match so the split pattern no longer fires',
   );
+});
+
+test('useTriggers: pause drains an active response and suppresses replies until resume', async () => {
+  const activeSend = deferred<boolean>();
+  const sent: string[] = [];
+  const triggerList = ref<Trigger[]>([textTrigger('t1', 'OK', 'response')]);
+  const runtime = useTriggers({
+    triggers: triggerList,
+    send: async (data) => {
+      sent.push(data);
+      return sent.length === 1 ? activeSend.promise : true;
+    },
+  });
+  const first = runtime.feedBytes(toBytes('OK'));
+  await Promise.resolve();
+  const pause = runtime.pause();
+  activeSend.resolve(true);
+  await first;
+  await pause;
+
+  await runtime.feedBytes(toBytes('OK'));
+  assert.deepEqual(sent, ['response']);
+  runtime.resume();
+  await runtime.feedBytes(toBytes('OK'));
+  assert.deepEqual(sent, ['response', 'response']);
+});
+
+test('useTriggers: pausing between two matches prevents the queued suffix from writing', async () => {
+  const activeSend = deferred<boolean>();
+  const sent: string[] = [];
+  const runtime = useTriggers({
+    triggers: ref<Trigger[]>([
+      textTrigger('first', 'OK', 'first-response'),
+      textTrigger('second', 'OK', 'second-response'),
+    ]),
+    send: async (data) => {
+      sent.push(data);
+      return activeSend.promise;
+    },
+  });
+
+  const feeding = runtime.feedBytes(toBytes('OK'));
+  await Promise.resolve();
+  const pause = runtime.pause();
+  activeSend.resolve(true);
+  await feeding;
+  await pause;
+
+  assert.deepEqual(sent, ['first-response']);
+});
+
+test('useTriggers: an already-aborted pause never leaves trigger replies disabled', async () => {
+  const sent: string[] = [];
+  const runtime = useTriggers({
+    triggers: ref<Trigger[]>([textTrigger('trigger', 'OK', 'response')]),
+    send: async (data) => {
+      sent.push(data);
+      return true;
+    },
+  });
+  const abort = new AbortController();
+  abort.abort();
+
+  await assert.rejects(runtime.pause(abort.signal), /trigger pause cancelled/);
+  await runtime.feedBytes(toBytes('OK'));
+  assert.deepEqual(sent, ['response']);
 });
 
 function toBytes(text: string): Uint8Array {

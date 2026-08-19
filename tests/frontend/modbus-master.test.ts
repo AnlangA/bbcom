@@ -303,6 +303,29 @@ test('PDU exception responses surface as exception status without waiting for ti
   }
 });
 
+test('periodic read exceptions surface through the batch status projection', async () => {
+  vi.useFakeTimers();
+  let h: Harness | null = null;
+  try {
+    h = createHarness(
+      (_payload, reply) => {
+        reply(frameRequest('rtu', 1, new Uint8Array([0x83, 0x02])));
+        return true;
+      },
+      { enabled: true, pollIntervalMs: 100 },
+    );
+    addRegister(h, { id: 'periodic-exception', address: 0 });
+    h.master.start();
+
+    await vi.advanceTimersByTimeAsync(100);
+    assert.ok(h.statuses.some((status) => status.kind === 'exception' && status.code === 0x02));
+    h.master.stop();
+  } finally {
+    h?.scope.stop();
+    vi.useRealTimers();
+  }
+});
+
 test('send failures clear the pending transaction and emit error status', async () => {
   const h = createHarness(() => {
     throw new Error('port closed');
@@ -408,6 +431,55 @@ test('stop resolves an in-flight transaction and releases the RX listener', asyn
     assert.equal(await resolvesWithin(pending, 80), null);
     assert.equal(h.master.status.value.kind, 'idle');
     assert.equal(h.unlistenCount(), 1);
+  } finally {
+    h.scope.stop();
+  }
+});
+
+test('serial transaction pause cancels bus work and gates every imperative Modbus writer', async () => {
+  const h = createHarness(() => true, { enabled: true, timeoutMs: 1000 });
+  try {
+    const read = addRegister(h, { id: 'lease-read', address: 9 });
+    const write = addRegister(h, {
+      id: 'lease-write',
+      fc: 0x06,
+      address: 10,
+      value: 7,
+      periodicRead: false,
+    });
+    h.master.start();
+
+    const pending = h.master.readOnce(read);
+    await waitFor(() => h.sent.length === 1, 80, 'manual read did not enter the bus');
+    const abort = new AbortController();
+    const abortedPause = h.master.pauseForSerialTransaction(abort.signal);
+    abort.abort();
+    await assert.rejects(abortedPause, /Modbus pause cancelled/);
+    assert.equal(await resolvesWithin(pending, 80), null);
+
+    await h.master.pauseForSerialTransaction();
+    assert.equal(await h.master.readOnce(read), null);
+    await h.master.readAll();
+    assert.equal(await h.master.sendRow(write), false);
+    assert.deepEqual(await h.master.sendAll(), { sent: 0, ok: 0 });
+    h.master.startReplay([{ t: 0, slave: 1, fc: 0x03, addr: 10, type: 'uint16', value: 8 }]);
+    assert.equal(h.sent.length, 1);
+    h.master.resumeAfterSerialTransaction();
+    h.master.resumeAfterSerialTransaction();
+
+    await h.master.pauseForSerialTransaction();
+    h.setConnected(false);
+    h.master.resumeAfterSerialTransaction();
+    h.setConnected(true);
+
+    await h.master.pauseForSerialTransaction();
+    h.store.setModbusConfig(h.sessionId, { enabled: false });
+    h.master.resumeAfterSerialTransaction();
+    h.store.setModbusConfig(h.sessionId, { enabled: true });
+
+    await h.master.pauseForSerialTransaction();
+    h.master.stop();
+    h.master.resumeAfterSerialTransaction();
   } finally {
     h.scope.stop();
   }

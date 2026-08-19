@@ -1,30 +1,39 @@
+import { safeDisplayText } from './display-text-validation';
 import {
-  safeDisplayText,
-  validateDeclarativePanel,
-  validPanelEventValue,
-} from './panel-validation';
+  createPluginSurfaceEvent,
+  freezeSurface,
+  validatePluginSurface,
+} from './domain/plugin-surface-v2';
+import {
+  normalizePluginAuthorizationRequests,
+  normalizePluginCommandContributions,
+  normalizePluginTasks,
+} from './domain/plugin-runtime-v2';
+import { PluginSurfaceRegistry } from './application/plugin-surface-registry';
+import type { PluginSurfaceUpdateV2, RuntimeInstanceKey } from '../../generated/ipc-contracts';
 import { logger } from '../../lib/logger';
 import { listenNativeEvent } from '../native';
 import {
-  PLUGIN_PERMISSIONS,
+  PLUGIN_CAPABILITIES_V2,
   type InstalledPluginView,
   type PluginCatalogItem,
+  type PluginAuthorizationRequestV2,
   type PluginCenterActionKind,
   type PluginCenterData,
   type PluginCenterListener,
   type PluginCenterPort,
   type PluginCenterSnapshot,
-  type PluginDeclarativePanel,
+  type PluginCommandContributionV2,
   type PluginFailure,
-  type PluginPanelEvent,
-  type PluginPermission,
   type PluginPortOutcome,
   type PluginRuntimeStatus,
-  type PluginSerialProposal,
   type PluginSourceView,
+  type PluginSurfaceEventV2,
+  type PluginSurfaceSnapshot,
+  type PluginTaskViewV2,
 } from './types';
 
-const PERMISSIONS = new Set<string>(PLUGIN_PERMISSIONS);
+const CAPABILITIES_V2 = new Set<string>(PLUGIN_CAPABILITIES_V2);
 const IDENTITY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/u;
 
@@ -32,14 +41,16 @@ const EMPTY_DATA: PluginCenterData = Object.freeze({
   revision: 0,
   catalog: Object.freeze([]),
   installed: Object.freeze([]),
-  serialProposals: Object.freeze([]),
-  panels: Object.freeze([]),
   sources: Object.freeze([]),
+  surfaces: Object.freeze([]),
+  tasks: Object.freeze([]),
+  authorizationRequests: Object.freeze([]),
+  commandContributions: Object.freeze([]),
 });
 
 interface NormalizedData {
   readonly data: PluginCenterData;
-  readonly panelRejected: boolean;
+  readonly surfaceRejected: boolean;
 }
 
 /**
@@ -49,6 +60,7 @@ interface NormalizedData {
  */
 export class PluginCenterService {
   private readonly listeners = new Set<PluginCenterListener>();
+  private readonly surfaceRegistry = new PluginSurfaceRegistry();
   private data = EMPTY_DATA;
   private started = false;
   private action: PluginCenterSnapshot['action'] = null;
@@ -58,6 +70,7 @@ export class PluginCenterService {
   private detachPort: (() => void) | null = null;
   private detachRuntimeStatus: (() => void) | null = null;
   private detachSnapshotChanged: (() => void) | null = null;
+  private detachSurfaceUpdates: (() => void) | null = null;
 
   constructor(private readonly port: PluginCenterPort) {}
 
@@ -103,13 +116,31 @@ export class PluginCenterService {
       .catch(() => {
         // Browser-only shells provide no native event API.
       });
-    // Host-side proposals arrive between renderer commands; nudge a refresh
-    // so the confirmation prompt appears without a user action.
+    // Host-side lifecycle changes can arrive between renderer commands; nudge
+    // a refresh so the task and authorization views stay current.
     void listenNativeEvent('plugin-snapshot-changed', () => {
       if (!this.action) void this.refresh();
     })
       .then((unlisten) => {
         this.detachSnapshotChanged = unlisten;
+      })
+      .catch(() => {
+        // Browser-only shells provide no native event API.
+      });
+    void listenNativeEvent<PluginSurfaceUpdateV2>('plugin-surface-update-v2', (event) => {
+      const result = this.surfaceRegistry.apply(event.payload);
+      if (!result.ok) {
+        this.failure = Object.freeze({ code: 'invalid-surface' });
+      } else if (result.changed) {
+        this.data = Object.freeze({
+          ...this.data,
+          surfaces: this.surfaceRegistry.snapshot(),
+        });
+      }
+      this.notify();
+    })
+      .then((unlisten) => {
+        this.detachSurfaceUpdates = unlisten;
       })
       .catch(() => {
         // Browser-only shells provide no native event API.
@@ -146,10 +177,17 @@ export class PluginCenterService {
     });
   }
 
-  uninstall(pluginId: string): Promise<void> {
+  uninstall(
+    pluginId: string,
+    contributionDisposition: import('./types').PluginContributionDisposition = 'delete',
+  ): Promise<void> {
     const installed = this.data.installed.some((candidate) => candidate.pluginId === pluginId);
     if (!installed) return this.rejectInvalidResponse();
-    return this.run('uninstall', (signal) => this.port.uninstall(pluginId, signal));
+    return this.run('uninstall', (signal) =>
+      contributionDisposition === 'delete'
+        ? this.port.uninstall(pluginId, signal)
+        : this.port.uninstall(pluginId, signal, contributionDisposition),
+    );
   }
 
   setEnabled(pluginId: string, enabled: boolean): Promise<void> {
@@ -201,21 +239,99 @@ export class PluginCenterService {
     );
   }
 
-  resolveSerialProposal(proposalId: string, decision: 'approve' | 'reject'): Promise<void> {
-    const proposal = this.data.serialProposals.find((item) => item.proposalId === proposalId);
-    if (!proposal) return this.rejectInvalidResponse();
-    return this.run('serial-proposal', (signal) =>
-      this.port.resolveSerialProposal(proposal, decision, signal),
+  emitSurfaceEvent(event: PluginSurfaceEventV2): Promise<void> {
+    const surface = this.data.surfaces?.find(
+      (candidate) =>
+        runtimeEquals(candidate.runtime, event.runtime) &&
+        candidate.surfaceId === event.surfaceId &&
+        candidate.revision === event.revision,
+    );
+    const validated = surface
+      ? createPluginSurfaceEvent(surface, event.nodeId, event.event, event.value)
+      : null;
+    if (!validated || !surfaceEventEquals(validated, event)) return this.rejectInvalidResponse();
+    return this.run(
+      'surface-event',
+      (signal) =>
+        this.port.emitSurfaceEvent?.(validated, signal) ??
+        Promise.resolve(failedPortOutcome('unavailable')),
     );
   }
 
-  emitPanelEvent(event: PluginPanelEvent): Promise<void> {
-    const panel = this.data.panels.find((candidate) =>
-      runtimeEquals(candidate.runtime, event.runtime),
+  resolveAuthorization(
+    request: PluginAuthorizationRequestV2,
+    decision: 'approve' | 'reject',
+  ): Promise<void> {
+    const pending = this.data.authorizationRequests?.find(
+      (candidate) =>
+        candidate.pluginId === request.pluginId &&
+        candidate.version === request.version &&
+        candidate.digestSha256 === request.digestSha256,
     );
-    const field = panel?.fields.find((candidate) => candidate.id === event.fieldId);
-    if (!field || !validPanelEventValue(field, event.value)) return this.rejectInvalidResponse();
-    return this.run('panel-event', (signal) => this.port.emitPanelEvent(event, signal));
+    if (!pending || (decision !== 'approve' && decision !== 'reject')) {
+      return this.rejectInvalidResponse();
+    }
+    return this.run(
+      'authorization',
+      (signal) =>
+        this.port.resolveAuthorization?.(pending, decision, signal) ??
+        Promise.resolve(failedPortOutcome('unavailable')),
+    );
+  }
+
+  cancelTask(task: PluginTaskViewV2): Promise<void> {
+    const current = this.data.tasks?.find(
+      (candidate) =>
+        runtimeEquals(candidate.runtime, task.runtime) && candidate.taskId === task.taskId,
+    );
+    if (!current?.cancellable || !['running', 'cancelling'].includes(current.status)) {
+      return this.rejectInvalidResponse();
+    }
+    return this.run(
+      'task-cancel',
+      (signal) =>
+        this.port.cancelTask?.(current, signal) ??
+        Promise.resolve(failedPortOutcome('unavailable')),
+    );
+  }
+
+  runCommand(command: PluginCommandContributionV2): Promise<void> {
+    const current = this.data.commandContributions?.find(
+      (candidate) =>
+        runtimeEquals(candidate.runtime, command.runtime) &&
+        candidate.commandId === command.commandId,
+    );
+    if (!current) return this.rejectInvalidResponse();
+    return this.run(
+      'command-run',
+      (signal) =>
+        this.port.runCommand?.(current, signal) ??
+        Promise.resolve(failedPortOutcome('unavailable')),
+    );
+  }
+
+  setSurfacePlacement(
+    surface: PluginSurfaceSnapshot,
+    placement: 'workspace' | 'detached-window',
+  ): Promise<void> {
+    const current = this.data.surfaces?.find(
+      (candidate) =>
+        runtimeEquals(candidate.runtime, surface.runtime) &&
+        candidate.surfaceId === surface.surfaceId,
+    );
+    if (
+      !current ||
+      current.placement === placement ||
+      (placement === 'detached-window' && !current.detachedAllowed)
+    ) {
+      return this.rejectInvalidResponse();
+    }
+    return this.run(
+      'surface-placement',
+      (signal) =>
+        this.port.setSurfacePlacement?.(current, placement, signal) ??
+        Promise.resolve(failedPortOutcome('unavailable')),
+    );
   }
 
   cancelAction(): void {
@@ -240,6 +356,8 @@ export class PluginCenterService {
     this.detachRuntimeStatus = null;
     this.detachSnapshotChanged?.();
     this.detachSnapshotChanged = null;
+    this.detachSurfaceUpdates?.();
+    this.detachSurfaceUpdates = null;
     this.started = false;
     this.notify();
   }
@@ -310,7 +428,13 @@ export class PluginCenterService {
       return;
     }
     this.data = normalized.data;
-    if (normalized.panelRejected) this.failure = Object.freeze({ code: 'invalid-panel' });
+    const surfaces = this.surfaceRegistry.replaceAll(normalized.data.surfaces ?? []);
+    if (!surfaces.ok) {
+      this.failure = Object.freeze({ code: 'invalid-surface' });
+      return;
+    }
+    this.data = Object.freeze({ ...this.data, surfaces: this.surfaceRegistry.snapshot() });
+    if (normalized.surfaceRejected) this.failure = Object.freeze({ code: 'invalid-surface' });
   }
 
   private rejectInvalidResponse(): Promise<void> {
@@ -349,28 +473,41 @@ function normalizeData(candidate: PluginCenterData): NormalizedData | null {
   if (!Number.isSafeInteger(candidate.revision) || candidate.revision < 0) return null;
   const catalog = normalizeList(candidate.catalog, normalizeCatalogItem);
   const installed = normalizeList(candidate.installed, normalizeInstalledPlugin);
-  const proposals = normalizeList(candidate.serialProposals, normalizeProposal);
   const sources = normalizeList(candidate.sources, normalizeSource);
-  if (!catalog || !installed || !proposals || !sources) return null;
-  const panels: PluginDeclarativePanel[] = [];
-  let panelRejected = false;
-  for (const panel of candidate.panels) {
-    if (!validateDeclarativePanel(panel)) {
-      panelRejected = true;
+  if (!catalog || !installed || !sources) return null;
+  const surfaces: PluginSurfaceSnapshot[] = [];
+  let surfaceRejected = false;
+  const surfaceIdentities = new Set<string>();
+  for (const surface of candidate.surfaces ?? []) {
+    const validated = validatePluginSurface(surface);
+    const identity = `${surface.runtime.workspaceId}:${surface.runtime.pluginId}:${surface.runtime.instanceId}:${surface.runtime.generation}:${surface.surfaceId}`;
+    if (!validated.ok || surfaceIdentities.has(identity)) {
+      surfaceRejected = true;
       continue;
     }
-    panels.push(clonePanel(panel));
+    surfaceIdentities.add(identity);
+    surfaces.push(freezeSurface(surface));
   }
+  const tasks = normalizePluginTasks(candidate.tasks ?? []);
+  const authorizationRequests = normalizePluginAuthorizationRequests(
+    candidate.authorizationRequests ?? [],
+  );
+  const commandContributions = normalizePluginCommandContributions(
+    candidate.commandContributions ?? [],
+  );
+  if (!tasks || !authorizationRequests || !commandContributions) return null;
   return {
     data: Object.freeze({
       revision: candidate.revision,
       catalog: Object.freeze(catalog),
       installed: Object.freeze(installed),
-      serialProposals: Object.freeze(proposals),
-      panels: Object.freeze(panels),
       sources: Object.freeze(sources),
+      surfaces: Object.freeze(surfaces),
+      tasks,
+      authorizationRequests,
+      commandContributions,
     }),
-    panelRejected,
+    surfaceRejected,
   };
 }
 
@@ -413,11 +550,12 @@ function normalizeInstalledPlugin(plugin: InstalledPluginView): InstalledPluginV
     !safeDisplayText(plugin.displayName, 128) ||
     !validVersion(plugin.version) ||
     (plugin.pendingVersion !== null && !validVersion(plugin.pendingVersion)) ||
-    !plugin.declaredCapabilities.every(isPermission) ||
-    !plugin.effectiveCapabilities.every(isPermission) ||
-    !plugin.unavailableCapabilities.every(
-      (capability) => capability === 'network' || isPermission(capability),
+    !plugin.requestedCapabilities.every(isCapabilityV2) ||
+    !plugin.effectiveCapabilities.every(isCapabilityV2) ||
+    plugin.effectiveCapabilities.some(
+      (capability) => !plugin.requestedCapabilities.includes(capability),
     ) ||
+    (plugin.runtime === null && plugin.effectiveCapabilities.length > 0) ||
     (plugin.runtime !== null && !validRuntime(plugin.runtime, plugin.pluginId))
   ) {
     return null;
@@ -425,41 +563,8 @@ function normalizeInstalledPlugin(plugin: InstalledPluginView): InstalledPluginV
   return Object.freeze({
     ...plugin,
     runtime: plugin.runtime ? Object.freeze({ ...plugin.runtime }) : null,
-    declaredCapabilities: Object.freeze([...new Set(plugin.declaredCapabilities)]),
+    requestedCapabilities: Object.freeze([...new Set(plugin.requestedCapabilities)]),
     effectiveCapabilities: Object.freeze([...new Set(plugin.effectiveCapabilities)]),
-    unavailableCapabilities: Object.freeze([...new Set(plugin.unavailableCapabilities)]),
-  });
-}
-
-function normalizeProposal(proposal: PluginSerialProposal): PluginSerialProposal | null {
-  if (
-    !validIdentity(proposal.proposalId) ||
-    !validIdentity(proposal.pluginId) ||
-    !validRuntime(proposal.runtime, proposal.pluginId) ||
-    !safeDisplayText(proposal.pluginName, 128) ||
-    !safeDisplayText(proposal.sessionLabel, 128) ||
-    !safeDisplayText(proposal.displayLabel, 128) ||
-    !Number.isSafeInteger(proposal.byteCount) ||
-    proposal.byteCount <= 0 ||
-    proposal.byteCount > 2 * 1024 * 1024 ||
-    !/^[0-9A-F ]+(?: … \(\+\d+ bytes\))?$/u.test(proposal.hexPreview) ||
-    !Number.isSafeInteger(proposal.expiresAtMs) ||
-    proposal.expiresAtMs < 0
-  ) {
-    return null;
-  }
-  return Object.freeze({ ...proposal, runtime: Object.freeze({ ...proposal.runtime }) });
-}
-
-function clonePanel(panel: PluginDeclarativePanel): PluginDeclarativePanel {
-  return Object.freeze({
-    runtime: Object.freeze({ ...panel.runtime }),
-    title: panel.title,
-    fields: Object.freeze(
-      panel.fields.map((field) =>
-        Object.freeze({ ...field, options: Object.freeze([...field.options]) }),
-      ),
-    ),
   });
 }
 
@@ -489,7 +594,7 @@ function identityOf(value: unknown): string | null {
   ) {
     return `runtime:${runtime.pluginId}:${runtime.instanceId}:${runtime.generation}`;
   }
-  for (const key of ['catalogId', 'pluginId', 'proposalId', 'sourceId']) {
+  for (const key of ['catalogId', 'pluginId', 'sourceId']) {
     if (typeof record[key] === 'string') return `${key}:${record[key]}`;
   }
   return null;
@@ -528,10 +633,7 @@ function validVersion(value: string): boolean {
   return VERSION_PATTERN.test(value) && safeDisplayText(value, 128);
 }
 
-function validRuntime(
-  runtime: PluginSerialProposal['runtime'],
-  expectedPluginId?: string,
-): boolean {
+function validRuntime(runtime: RuntimeInstanceKey, expectedPluginId?: string): boolean {
   return (
     validIdentity(runtime.workspaceId) &&
     validIdentity(runtime.pluginId) &&
@@ -543,10 +645,7 @@ function validRuntime(
   );
 }
 
-function runtimeEquals(
-  left: PluginSerialProposal['runtime'],
-  right: PluginSerialProposal['runtime'],
-): boolean {
+function runtimeEquals(left: RuntimeInstanceKey, right: RuntimeInstanceKey): boolean {
   return (
     left.workspaceId === right.workspaceId &&
     left.pluginId === right.pluginId &&
@@ -555,6 +654,17 @@ function runtimeEquals(
   );
 }
 
-function isPermission(value: string): value is PluginPermission {
-  return PERMISSIONS.has(value);
+function surfaceEventEquals(left: PluginSurfaceEventV2, right: PluginSurfaceEventV2): boolean {
+  return (
+    runtimeEquals(left.runtime, right.runtime) &&
+    left.surfaceId === right.surfaceId &&
+    left.revision === right.revision &&
+    left.nodeId === right.nodeId &&
+    left.event === right.event &&
+    left.value === right.value
+  );
+}
+
+function isCapabilityV2(value: string): value is import('./types').PluginCapabilityV2 {
+  return CAPABILITIES_V2.has(value);
 }

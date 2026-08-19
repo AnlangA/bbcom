@@ -1,6 +1,7 @@
 //! Native isolation boundary for one bbcom Wasm Component plugin.
 
 pub mod artifact;
+pub mod authorization;
 pub mod bindings;
 pub mod error;
 pub mod handshake;
@@ -16,9 +17,13 @@ pub mod transport;
 pub mod uplink;
 
 pub use artifact::TrustedPluginArtifact;
+pub use authorization::{
+    AuthorizationRequest, ExactLaunchTicketGate, PluginAuthorizationGate, PluginLaunchContext,
+    authorization_request, authorization_ticket,
+};
 pub use error::{ExecutionFailure, ExecutionFailureKind, HostError, Result};
 pub use handshake::{HandshakeExpectation, HandshakeMachine};
 pub use policy::{AmbientAuthorityPolicy, HostPlatform, HostPolicy, ProcessLimitPolicy};
 pub use runtime::{CallKind, PluginEngineFactory, PluginRuntime, RuntimeInterruptHandle};
 pub use sidecar::{PluginExecutor, PluginInterrupt, Sidecar, SidecarExit};
-pub use uplink::{ProposalOutcome, Uplink};
+pub use uplink::{CapabilityRpc, MessageIdSequence, RpcFailure};

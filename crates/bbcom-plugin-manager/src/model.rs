@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use bbcom_plugin_contracts::{Permission, Sha256Digest, capability_plan};
+use bbcom_plugin_contracts::{Sha256Digest, generated_v2::Capability};
 use semver::Version;
 
 use crate::{ManagerErrorCode, Result};
@@ -12,9 +12,9 @@ pub struct PluginArtifact {
     pub package_sha256: String,
     pub component_sha256: String,
     pub source: PluginArtifactSource,
-    pub declared_capabilities: BTreeSet<Permission>,
-    pub effective_capabilities: BTreeSet<Permission>,
-    pub unavailable_capabilities: BTreeSet<Permission>,
+    /// Canonical manifest-declared capability set. This is a request, not
+    /// an authorization receipt; the native launch gate remains authoritative.
+    pub requested_capabilities: BTreeSet<Capability>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,19 +37,33 @@ impl PluginArtifact {
         package_sha256: impl Into<String>,
         component_sha256: impl Into<String>,
         source: PluginArtifactSource,
-        declared_capabilities: impl IntoIterator<Item = Permission>,
+        requested_capabilities: impl IntoIterator<Item = Capability>,
     ) -> Result<Self> {
-        let declared_capabilities: BTreeSet<_> = declared_capabilities.into_iter().collect();
-        let plan = capability_plan(&declared_capabilities.iter().copied().collect::<Vec<_>>());
+        Self::build(
+            plugin_id,
+            version,
+            package_sha256,
+            component_sha256,
+            source,
+            requested_capabilities,
+        )
+    }
+
+    fn build(
+        plugin_id: impl Into<String>,
+        version: impl Into<String>,
+        package_sha256: impl Into<String>,
+        component_sha256: impl Into<String>,
+        source: PluginArtifactSource,
+        requested_capabilities: impl IntoIterator<Item = Capability>,
+    ) -> Result<Self> {
         let artifact = Self {
             plugin_id: plugin_id.into(),
             version: version.into(),
             package_sha256: package_sha256.into(),
             component_sha256: component_sha256.into(),
             source,
-            declared_capabilities,
-            effective_capabilities: plan.effective,
-            unavailable_capabilities: plan.unavailable,
+            requested_capabilities: requested_capabilities.into_iter().collect(),
         };
         artifact.validate()?;
         Ok(artifact)
@@ -61,6 +75,9 @@ impl PluginArtifact {
             || Sha256Digest::parse_hex(&self.package_sha256, "packageSha256").is_err()
             || Sha256Digest::parse_hex(&self.component_sha256, "componentSha256").is_err()
             || !valid_source_id(&self.source.source_id)
+            || self
+                .requested_capabilities
+                .contains(&Capability::Unspecified)
         {
             return Err(ManagerErrorCode::InvalidPluginArtifact.into());
         }
@@ -166,8 +183,9 @@ pub struct HostLaunchRequest {
     pub artifact: PluginArtifact,
     pub artifact_slot: ArtifactSlot,
     pub workspace_id: String,
-    pub granted_permissions: BTreeSet<Permission>,
-    pub project_state: Option<Vec<u8>>,
+    /// Manifest-requested capabilities. The launcher must compare this to the
+    /// verified package manifest and then consult its authorization gate.
+    pub requested_capabilities: BTreeSet<Capability>,
     pub mode: HostLaunchMode,
 }
 
@@ -187,38 +205,6 @@ impl HostHandle {
             version: version.into(),
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostPanelFieldKind {
-    Text,
-    Number,
-    Toggle,
-    Select,
-    Button,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostPanelField {
-    pub id: String,
-    pub label: String,
-    pub kind: HostPanelFieldKind,
-    pub value: String,
-    pub options: Vec<String>,
-    pub disabled: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostPanel {
-    pub title: String,
-    pub fields: Vec<HostPanelField>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostPublishedPanel {
-    pub plugin_id: String,
-    pub instance_id: u64,
-    pub panel: HostPanel,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -354,15 +340,33 @@ impl WorkspacePluginBinding {
 pub struct OpaqueProjectPluginState {
     pub plugin_id: String,
     pub bytes: Vec<u8>,
+    pub api_generation: u32,
+    pub schema_version: Option<u32>,
 }
 
 impl OpaqueProjectPluginState {
     pub fn new(plugin_id: impl Into<String>, bytes: Vec<u8>) -> Result<Self> {
+        Self::new_with_versions(plugin_id, bytes, 2, Some(1))
+    }
+
+    pub fn new_with_versions(
+        plugin_id: impl Into<String>,
+        bytes: Vec<u8>,
+        api_generation: u32,
+        schema_version: Option<u32>,
+    ) -> Result<Self> {
         let state = Self {
             plugin_id: plugin_id.into(),
             bytes,
+            api_generation,
+            schema_version,
         };
-        if !valid_plugin_id(&state.plugin_id) {
+        if !valid_plugin_id(&state.plugin_id)
+            || !matches!(
+                (state.api_generation, state.schema_version),
+                (2, Some(1..=u32::MAX))
+            )
+        {
             return Err(ManagerErrorCode::ProjectStateInvalid.into());
         }
         Ok(state)
@@ -427,14 +431,14 @@ mod tests {
             sha('a'),
             sha('b'),
             source(),
-            [Permission::SessionMetadataRead],
+            [Capability::SessionCaptureRead],
         )
         .unwrap();
         assert_eq!(artifact.version().unwrap(), Version::new(1, 2, 3));
         assert!(
             artifact
-                .effective_capabilities
-                .contains(&Permission::SessionMetadataRead)
+                .requested_capabilities
+                .contains(&Capability::SessionCaptureRead)
         );
         assert!(PluginArtifact::new("invalid", "1.0.0", sha('a'), sha('b'), source(), []).is_err());
         assert!(
@@ -458,6 +462,21 @@ mod tests {
             PreparedInstallation::new(token, artifact, PreparationKind::InitialInstall).is_ok()
         );
         assert!(OpaqueProjectPluginState::new("dev.bbcom.fixture", vec![1]).is_ok());
+        let versioned =
+            OpaqueProjectPluginState::new_with_versions("dev.bbcom.fixture", vec![1], 2, Some(73))
+                .unwrap();
+        assert_eq!(versioned.schema_version, Some(73));
+        for (api_generation, schema_version) in [(1, None), (1, Some(1)), (2, None), (2, Some(0))] {
+            assert!(
+                OpaqueProjectPluginState::new_with_versions(
+                    "dev.bbcom.fixture",
+                    vec![1],
+                    api_generation,
+                    schema_version,
+                )
+                .is_err()
+            );
+        }
         assert!(OpaqueProjectPluginState::new("invalid", vec![1]).is_err());
         assert!(valid_workspace_id(WORKSPACE_ID));
         assert!(!valid_workspace_id("8E7B84CF-35F4-45CD-BAF0-55D94EBF0213"));

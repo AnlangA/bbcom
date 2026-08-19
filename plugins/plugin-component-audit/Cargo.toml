@@ -1,0 +1,18 @@
+[package]
+name = "bbcom-plugin-component-audit"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+publish = false
+description = "shared no-ambient-authority Component audit for BBCOM v2 guests"
+license = "MIT"
+
+[workspace]
+
+[dependencies]
+wasmparser = "=0.252.0"
+wasmprinter = "=0.252.0"
+
+[[bin]]
+name = "bbcom-component-to-wat"
+path = "src/bin/component-to-wat.rs"

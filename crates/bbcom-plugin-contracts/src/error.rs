@@ -20,10 +20,6 @@ pub enum ContractError {
     UnknownPayload,
     #[error("plugin protocol frame is truncated")]
     TruncatedFrame,
-    #[error("plugin capability is unavailable in v1: {capability}")]
-    UnsupportedCapability { capability: String },
-    #[error("serial send proposals require confirmation for every request")]
-    SerialProposalNotPersistable,
     #[error("plugin manifest is invalid TOML")]
     ManifestSyntax,
     #[error("plugin repository index is invalid JSON")]

@@ -52,4 +52,6 @@ export interface QuickCommand {
   name: string;
   data: string;
   isHex: boolean;
+  /** Native plugin contribution owner. Missing/null means a normal user item. */
+  ownerPluginId?: string | null;
 }

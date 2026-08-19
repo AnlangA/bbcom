@@ -4,10 +4,10 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
-use bbcom_plugin_contracts::{
-    FRAME_LENGTH_PREFIX_BYTES, MAX_FRAME_BYTES, MAX_QUEUE_BYTES, decode_frame, encode_frame,
-    generated::{Envelope, envelope},
-    validate_queue_bytes,
+use bbcom_plugin_contracts::FRAME_LENGTH_PREFIX_BYTES;
+use bbcom_plugin_contracts::generated_v2::{Envelope, envelope, request};
+use bbcom_plugin_contracts::v2::{
+    MAX_FRAME_BYTES, MAX_QUEUE_BYTES, MessageIdTracker, decode_frame, encode_frame,
 };
 
 use crate::{HostError, Result};
@@ -109,7 +109,14 @@ impl BoundedFrameQueue {
                 actual: u64::MAX,
             },
         )?;
-        validate_queue_bytes(next)?;
+        if next > MAX_QUEUE_BYTES {
+            return Err(bbcom_plugin_contracts::ContractError::LimitExceeded {
+                field: "queueBytes",
+                limit: MAX_QUEUE_BYTES as u64,
+                actual: next as u64,
+            }
+            .into());
+        }
         self.queued_bytes = next;
         self.frames.push_back(frame);
         Ok(())
@@ -130,20 +137,20 @@ impl BoundedFrameQueue {
 pub(crate) enum PumpEvent {
     Envelope(Envelope, ByteQueuePermit),
     Cancel(Envelope, ByteQueuePermit, bool),
+    Busy(Envelope, ByteQueuePermit),
     Eof,
     Failed(HostError),
 }
 
 pub(crate) trait InputOperationControl: Send + Sync + 'static {
-    fn register(&self, request_id: u64);
-    fn cancel(&self, target_request_id: u64) -> bool;
+    fn register(&self, message_id: u64) -> bool;
+    fn cancel(&self, target_message_id: u64) -> bool;
 }
 
-/// Side-channel routing for pushed replies (proposal decisions, session
-/// query data) that are awaited by parked WIT host imports rather than the
-/// main envelope loop. Returning `None` consumes the envelope; `Some`
-/// hands it back to the normal pump path. Public because the sidecar's
-/// `run_with_dispatcher` accepts it from embedders.
+/// Routes correlated capability-RPC replies awaited by parked WIT host imports
+/// rather than the main guest-operation loop. Returning `None` consumes the
+/// envelope; `Some` hands it back to the normal pump path. Public because the
+/// sidecar's `run_with_dispatcher` accepts it from embedders.
 pub trait EnvelopeDispatcher: Send + Sync + 'static {
     fn dispatch(&self, envelope: Envelope) -> Option<Envelope>;
 }
@@ -169,9 +176,7 @@ impl FramePump {
         let byte_budget = Arc::new(ByteQueueBudget::default());
         let join = thread::Builder::new()
             .name("bbcom-plugin-input".to_owned())
-            .spawn(move || {
-                pump_frames(reader, sender, byte_budget, operations, dispatcher)
-            })
+            .spawn(move || pump_frames(reader, sender, byte_budget, operations, dispatcher))
             .map_err(|_| HostError::Transport)?;
         Ok(Self {
             receiver,
@@ -205,9 +210,14 @@ fn pump_frames<R: Read>(
     dispatcher: Option<Arc<dyn EnvelopeDispatcher>>,
 ) {
     let mut reader = FrameReader::new(reader);
+    let mut message_ids = MessageIdTracker::new();
     loop {
         let event = match reader.read_envelope_with_size() {
             Ok(Some((envelope, bytes))) => {
+                if let Err(error) = message_ids.observe(envelope.message_id) {
+                    let _ = sender.send(PumpEvent::Failed(error.into()));
+                    return;
+                }
                 let permit = byte_budget.reserve(bytes);
                 // Push replies awaited by parked host imports bypass the
                 // main queue entirely; their permit is released on drop here.
@@ -222,16 +232,17 @@ fn pump_frames<R: Read>(
                     }
                 }
                 match envelope.payload.as_ref() {
-                    Some(
-                        envelope::Payload::InvokeRequest(_)
-                        | envelope::Payload::InitializeRequest(_)
-                        | envelope::Payload::ShutdownRequest(_),
-                    ) => {
-                        operations.register(envelope.request_id);
-                        PumpEvent::Envelope(envelope, permit)
+                    Some(envelope::Payload::Request(request))
+                        if request.operation.as_ref().is_some_and(is_guest_operation) =>
+                    {
+                        if operations.register(envelope.message_id) {
+                            PumpEvent::Envelope(envelope, permit)
+                        } else {
+                            PumpEvent::Busy(envelope, permit)
+                        }
                     }
-                    Some(envelope::Payload::CancelRequest(request)) => {
-                        let accepted = operations.cancel(request.target_request_id);
+                    Some(envelope::Payload::Cancel(request)) => {
+                        let accepted = operations.cancel(request.target_message_id);
                         PumpEvent::Cancel(envelope, permit, accepted)
                     }
                     _ => PumpEvent::Envelope(envelope, permit),
@@ -245,6 +256,17 @@ fn pump_frames<R: Read>(
             return;
         }
     }
+}
+
+fn is_guest_operation(operation: &request::Operation) -> bool {
+    matches!(
+        operation,
+        request::Operation::Initialize(_)
+            | request::Operation::HandleEvent(_)
+            | request::Operation::RunCommand(_)
+            | request::Operation::MigrateState(_)
+            | request::Operation::Shutdown(_)
+    )
 }
 
 #[derive(Default)]

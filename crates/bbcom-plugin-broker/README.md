@@ -1,25 +1,22 @@
-# bbcom plugin broker
+# bbcom plugin broker v2
 
-`bbcom-plugin-broker` is the bounded mediation core. It exposes no filesystem,
-network, keyring, Tauri, WebView, serial handle, or device API.
+`bbcom-plugin-broker` is the typed, bounded mediation core. It exposes no
+filesystem, network, keyring, Tauri, WebView, serial handle, path, or device API.
 
-Manifest-declared capabilities that the host implements are granted
-automatically. Unknown capabilities are rejected by the contracts layer;
-known but unwired capabilities are reported as unavailable.
+The broker validates every v2 Envelope before application dispatch:
 
-`serial.write-proposal` never grants direct serial access. The broker creates a
-bounded proposal, validates it against the current operation/session context,
-and produces a single-use action only after the current runtime generation has
-been accepted. Panels use only the bounded declarative controls: text, number,
-toggle, select, and button.
+- non-zero monotonic message IDs and exact reply correlation;
+- the capability required by the concrete Protobuf operation;
+- workspace/plugin/instance/generation bindings on every resource;
+- request/response oneof shape agreement;
+- UI document/revision limits and file/serial chunk limits;
+- at most 32 pending host requests and four bounded streams per runtime.
 
-Audit events contain only plugin ID, a fixed operation, a stable error code,
-and a byte count. They cannot contain payload bytes, AI content, tokens, paths,
-publisher data, or handles.
+Capability authorization happens before a component is instantiated and is
+rechecked at the gateway. Serial I/O uses an exclusive transaction lease; queue
+admission is never reported as physical completion. UI is a revisioned node
+tree rendered by the trusted host, and file operations use opaque native grants.
 
-Fixed limits:
-
-- One broker frame: 1 MiB.
-- One direction's admitted queue: 16 MiB.
-- Normal mediation: 5 seconds; sidecar calls remain bounded to 2 seconds.
-- Long-running mediation and serial confirmation: 60 seconds.
+Audit events contain only plugin identity, a fixed operation, stable error code,
+and byte count. They never contain payload bytes, AI content, tokens, paths,
+publisher data, or native handles.

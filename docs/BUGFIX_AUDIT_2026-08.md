@@ -209,10 +209,14 @@
 
 ## 3. 插件平台（PLG）
 
+> 本节记录 2026-08-16 的历史实现。生产插件系统现已由 ADR-0005 的
+> v2-only 协议替代；本节提到的 v1 面板、串口提案、会话查询桥和示例插件均已删除，
+> 不再构成当前接口或兼容承诺。
+
 ### PLG-01（高）串口审批：按世代缓存符合锁定决策，但存在次序缺陷与三方文案矛盾
 
 - 事实：`AGENTS_PLAN.md:31` 锁定「每个 `workspace+plugin+instance+generation` 只询问一次，批准/拒绝缓存至实例结束」；代码按此实现（`src-tauri/src/plugins/command_service/mod.rs:939-973` 缓存命中即自动 resolve，`:1281-1282` 写入，`:1448-1451` 世代切换清除；测试 `:273-301` 断言该行为）。
-- **矛盾**：`wit/bbcom-plugin-v1/plugin.wit:85-86`「always requires a new user confirmation」、`docs/ADR-0001...md:66-68`「every send requires confirmation / No persistent grant」、`PluginSerialProposalDialog.vue:28,34`（`one_time_warning` + `approve_once`）三方均与锁定决策不符，UI 对用户存在误导。
+- **历史结论**：v1 的逐次确认与按 generation 缓存语义互相矛盾；v2 已以授权清单和串口事务租约替代该路径。
 - **次序缺陷**：`:1281-1293` 先写缓存 `true` 再执行 `execute_serial_action`；执行失败缓存仍在，后续发送继续被自动批准。
 - 决策（2026-08-16，用户确认）：**以锁定决策为准**——保留按世代缓存；修 WIT 注释、ADR-0001 措辞、弹窗文案为「本实例内记住批准」；执行成功后才写缓存。
 
@@ -225,7 +229,7 @@
 ### PLG-03（高）`session-list` 恒空、`capture-read` 恒空页
 
 - 位置：`crates/bbcom-plugin-host/src/host_state.rs:28,41,220-250`；`HostLaunchRequest` 无会话数据字段；注释自认"supplied by the broker in G43"。
-- 影响：counter-plugin 的 "Open sessions" 恒 0；未授权 `session.metadata.read` 时 initialize 失败但重渲染路径 `unwrap_or(0)` 静默吞错，行为不一致。
+- 影响：旧示例插件的 "Open sessions" 恒 0；该示例及旧权限已删除。
 - 修复：后续阶段（G43 数据供给）。
 
 ### PLG-04（高）本地/dev 目录重装永远失败（热重载不可用）
@@ -256,7 +260,7 @@
 
 ### PLG-09（中）过期提案永不驱逐 + 弹窗「批准成功」假象
 
-- 位置：`crates/bbcom-plugin-broker/src/proposal.rs:7,176-177`（60s TTL 仅 resolve 时惰性检查）；`command_service/mod.rs:923-927` 上限 1024 可被塞满；`PluginPromptHost.vue:28-30` 无过期计时，过期后批准 → `NoAction(Expired)` → Completed，UI 显示成功但什么都没发。
+- 历史位置：旧 broker proposal registry 和全局 prompt host；两者已由 v2 task/authorization/lease 模型替代。
 - 修复：broker `retain_active(now)` 清扫 + 前端按剩余 TTL 过期并提示。
 
 ### PLG-10（中）workspace 激活静默跳过与锁竞态
@@ -271,7 +275,7 @@
 
 ### PLG-12（中）串口动作 2s 超时与前端实际发送的双写竞态（当前因 PLG-02 不可达）
 
-- 位置：`src-tauri/src/plugins/runtime_wiring.rs:67,622-637`（超时 discard）vs `src/features/plugins/plugin-serial-action-bridge.ts:46-70`（仍会执行真实写）；迟到结果在 `commands/plugin.rs:530-535` 被忽略；插件误判失败重试 → 设备收到重复帧。
+- 历史位置：旧串口 action bridge；v2 以 typed outcome、cancel 和 unknown-outcome 处理迟到结果。
 - 修复：后续阶段与 PLG-02 一并设计（在途取消/幂等）。
 
 ### PLG-13（中）单一进程表互斥锁上的长阻塞 IO（队头阻塞）
@@ -303,9 +307,9 @@
 
 - 位置：`src-tauri/src/plugins/source_registry.rs:414-432`（每源 24h 一次自动抓 index）。ADR-0004 只约束安装/下载，抓 index 处于边界；记录在案，暂不改（如需收紧再立决策）。
 
-### PLG-20（低）counter-plugin `panic_handler` 内 `unreachable!()`
+### PLG-20（低）旧示例插件 `panic_handler` 内 `unreachable!()`
 
-- 位置：`plugins/counter-plugin/src/lib.rs:82-87`，依赖 panic=abort，注释已自述；列为已知设计。
+- 旧示例依赖 panic=abort；该实现已删除。
 
 ### 插件域正面结论
 
@@ -325,7 +329,7 @@
 | 后续-阶段 3 | PLG-03 G43 数据供给（session-list/capture-read）                                                             | 待立项    |
 | 持续        | UI 现代化 M-2~M-8（见现代化计划；M-1 代码部分与 M-5 首批、M-6 子集已随本轮落地）                             | 滚动      |
 
-> PLG-01 的文档同步范围：`wit/bbcom-plugin-v1/plugin.wit:85` 注释（无 ABI 变更）、`docs/ADR-0001` 措辞、`AGENTS_PLAN.md` 保持不动（即决策源）。
+> PLG-01 的历史文档同步范围已由 ADR-0005 整体取代，不再保留 v1 契约。
 
 ## 5. 实施记录（2026-08-16 收口）
 
@@ -359,7 +363,7 @@
 
 - **PLG-02 串口提案端到端**：协议 v3 新增 `SerialProposalEvent`（sidecar→main）与 `ProposalResult`（main→sidecar）；sidecar 的 `propose-serial-send` 上报事件后挂起 guest 调用（oneshot + 60s TTL+5s 余量，超时 resolve cancelled）；reader 线程经 `HostPushSink` 转发，专用 worker 经 actor `RegisterProposal` 进入既有 `register_proposal`（带 sidecar 关联 id），决策/执行结果按关联 id 推回 sidecar；`plugin-snapshot-changed` 事件让前端免手动刷新即可见提示。
 - **PLG-12**：调度器等待 2s→10s，迟到完成记 warn；WIT 注释载明超时重试的重复写风险。
-- **PLG-03 G43**：sidecar `session-list`/`capture-read` 经同一 uplink 上报；`WebviewSessionQueryScheduler`（镜像串口桥，10s 界限）发 `plugin-session-query` 到主窗口，前端 `PluginSessionQueryBridge` 从 session catalog/capture 取数（分页 ≤256 帧/512KiB），`plugin_session_query_result` 命令回填，回应经 `deliver_envelope` 推回 sidecar。
+- **PLG-03 G43（历史）**：旧 session-query bridge 曾补全会话与捕获查询；v2 已改为 typed、generation-bound capability RPC。
 
 ### 其余工作包
 
@@ -369,4 +373,4 @@ WP4 本地替换先验后删（manifest+组件 sha256 预检，坏包保留旧�
 
 - **CreateSessionDialog 测试**：VTU 的 Teleport stub 下 AppModal 内容按父渲染重挂载（生产 Teleport 原地 patch，无此问题）；测试改为每次交互前重新查询元素并注明原因。
 - **协议 minor 2→3**：契约 golden fixture 与 `PROTOCOL_MINOR` 断言同步更新。
-- **测试总量**：前端 1073→1078（新增 plugin-session-query-bridge 3 例、correlated proposal 1 例等），Rust 342→350（state store 自愈/符号链接 2 例、本地替换 2 例、uplink 3 例、契约 golden 更新）。
+- **测试总量**：前端 1073→1078，Rust 342→350；这些历史 v1 测试随后与实现一并删除。

@@ -1,0 +1,14 @@
+[package]
+name = "bbcom-mcumgr-packager"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+publish = false
+description = "build-time packager for the BBCOM MCUmgr component"
+license = "MIT"
+
+[dependencies]
+bbcom-plugin-packager = { path = "../../plugin-packager" }
+
+[dev-dependencies]
+bbcom-plugin-contracts = { path = "../../../crates/bbcom-plugin-contracts" }

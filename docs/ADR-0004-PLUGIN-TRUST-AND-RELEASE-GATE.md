@@ -1,9 +1,18 @@
 # ADR-0004: Plugin trust and release gate
 
-- Status: Accepted
+- Status: Superseded as an implementation description; retained as a future
+  stable-marketplace release-gate proposal
 - Date: 2026-08-13
 - Decision owners: bbcom maintainers
 - Supersedes: the repository-trust paragraph in ADR-0001
+- Superseded by: [ADR-0005](ADR-0005-PLUGIN-PROTOCOL-V2.md) for the current
+  production trust statement and protocol-v2 authorization model
+
+> Implementation correction (2026-08-19): the shipped repository verifies
+> bounded package downloads and SHA-256 integrity, but does not currently
+> implement TUF roles or publisher Ed25519 verification. The decisions below
+> are mandatory before a stable public marketplace may claim verified
+> publishers; they are not claims about the current production code.
 
 ## Context
 
@@ -12,7 +21,7 @@ a plugin publisher. The stable plugin surface also depends on native process
 isolation whose guarantees differ by operating system. Treating either boundary
 as optional would make the market appear safer than the installed application.
 
-## Decisions
+## Future stable-marketplace release decisions
 
 - Stable repository metadata uses the four TUF roles. Root rotation is
   sequential and double-threshold verified; timestamp, snapshot, and targets
@@ -27,7 +36,7 @@ as optional would make the market appear safer than the installed application.
   to its already-reviewed public DNS results, disables implicit redirects, and
   gives every redirect back to the TUF trust core for same-origin validation.
 - Updates are manual. Opening a project does not fetch, install, enable, or run a
-  plugin. Protocol v1 has no plugin network capability.
+  plugin. Protocol v2 has no plugin network capability.
 - Plugin packages contain WebAssembly Components, manifests, and resources only.
   Repository-provided executables, native libraries, scripts, links, and ambient
   host access remain forbidden.
@@ -38,7 +47,7 @@ as optional would make the market appear safer than the installed application.
 - Linux, macOS, and Windows each have an independent blocking G45 gate. A real
   reviewed Component must execute through the packaged sidecar and prove the
   typed permission, memory, trap, runaway-code, and oversized-IPC boundaries.
-  Protocol v1 deliberately links no WASI/filesystem/network/process/device
+  Protocol v2 deliberately links no WASI/filesystem/network/process/device
   imports, so ambient OS denial is proven separately by the platform driver's
   native sandbox self-test and is never relabelled as a Component action. Both
   evidence scopes are required. A platform without either proof cannot enable

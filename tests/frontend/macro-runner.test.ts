@@ -7,6 +7,14 @@ function macro(steps: Macro['steps']): Macro {
   return { id: 'm1', name: 'test', steps };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 test('clampDelayMs clamps to [0, 3600000] and floors non-integers', () => {
   assert.equal(clampDelayMs(-100), 0, 'negative -> 0');
   assert.equal(clampDelayMs(0), 0);
@@ -114,4 +122,36 @@ test('skips the trailing delay on the last step', async () => {
   // If the last-step delay were NOT skipped we'd see no difference here (last
   // delay is 0 anyway); this test guards the inter-step gap itself.
   assert.ok(elapsed >= 150, `inter-step delay honored (~200ms): ${elapsed}ms`);
+});
+
+test('pause waits for an active send and resume continues at the next step', async () => {
+  const firstSend = deferred<boolean>();
+  const sent: string[] = [];
+  const runner = useMacroRunner({
+    send: async (data) => {
+      sent.push(data);
+      return sent.length === 1 ? firstSend.promise : true;
+    },
+  });
+  const running = runner.run(
+    macro([
+      { data: 'first', isHex: false, delayMs: 0 },
+      { data: 'second', isHex: false, delayMs: 0 },
+    ]),
+  );
+  await Promise.resolve();
+  let paused = false;
+  const pause = runner.pause().then(() => {
+    paused = true;
+  });
+  await Promise.resolve();
+  assert.equal(paused, false);
+
+  firstSend.resolve(true);
+  await pause;
+  await Promise.resolve();
+  assert.deepEqual(sent, ['first']);
+  runner.resume();
+  assert.equal((await running).completed, 2);
+  assert.deepEqual(sent, ['first', 'second']);
 });

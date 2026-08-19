@@ -4,7 +4,8 @@ use std::path::{Component, Path};
 use semver::{Version, VersionReq};
 use serde::Deserialize;
 
-use crate::{ContractError, Permission, Result, Sha256Digest, parse_permission};
+use crate::generated_v2::Capability;
+use crate::{ContractError, Result, Sha256Digest};
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,9 +31,6 @@ pub struct ComponentManifest {
 #[serde(deny_unknown_fields)]
 pub struct PublisherManifest {
     pub name: String,
-    /// Legacy self-asserted identity. Parsed for compatibility and ignored.
-    #[serde(default)]
-    pub identity: Option<String>,
     pub website: String,
 }
 
@@ -48,11 +46,7 @@ impl PluginManifest {
         validate_display_text(&self.name, "name", 128)?;
         Version::parse(&self.version)
             .map_err(|_| ContractError::InvalidField { field: "version" })?;
-        let requirement = VersionReq::parse(&self.api)
-            .map_err(|_| ContractError::InvalidField { field: "api" })?;
-        if !requirement.matches(&Version::new(1, 0, 0)) {
-            return Err(ContractError::InvalidField { field: "api" });
-        }
+        self.require_v2()?;
         validate_component_path(&self.component.path)?;
         validate_sha256(&self.component.sha256, "component.sha256")?;
         validate_display_text(&self.publisher.name, "publisher.name", 128)?;
@@ -60,25 +54,92 @@ impl PluginManifest {
 
         let mut unique = BTreeSet::new();
         for value in &self.requested_capabilities {
-            let permission = parse_permission(value)?;
-            if !unique.insert(permission) {
-                return Err(ContractError::InvalidField {
-                    field: "requestedCapabilities",
-                });
+            if !unique.insert(parse_v2_capability(value)?) {
+                return duplicate_capability();
             }
         }
         Ok(())
     }
 
-    pub fn permissions(&self) -> Result<Vec<Permission>> {
-        self.requested_capabilities
+    /// The host has one executable plugin API. Older and future majors are
+    /// rejected during manifest parsing rather than retained as inventory.
+    pub fn require_v2(&self) -> Result<()> {
+        let requirement = VersionReq::parse(&self.api)
+            .map_err(|_| ContractError::InvalidField { field: "api" })?;
+        if requirement.matches(&Version::new(2, 0, 0))
+            && !requirement.matches(&Version::new(1, 0, 0))
+            && !requirement.matches(&Version::new(3, 0, 0))
+        {
+            Ok(())
+        } else {
+            Err(ContractError::InvalidField { field: "api" })
+        }
+    }
+
+    /// Returns the canonical, sorted v2 capability set used by authorization
+    /// and Hello. Unknown capability strings are never forwarded.
+    pub fn v2_capabilities(&self) -> Result<Vec<Capability>> {
+        self.require_v2()?;
+        let mut capabilities = self
+            .requested_capabilities
             .iter()
-            .map(|value| parse_permission(value))
-            .collect()
+            .map(|value| parse_v2_capability(value))
+            .collect::<Result<Vec<_>>>()?;
+        capabilities.sort_unstable();
+        Ok(capabilities)
     }
 
     pub fn version(&self) -> Result<Version> {
         Version::parse(&self.version).map_err(|_| ContractError::InvalidField { field: "version" })
+    }
+}
+
+fn duplicate_capability() -> Result<()> {
+    Err(ContractError::InvalidField {
+        field: "requestedCapabilities",
+    })
+}
+
+/// Strict v2 manifest spelling. This deliberately does not accept enum names,
+/// aliases, prefixes, or future values on an older host.
+pub fn parse_v2_capability(value: &str) -> Result<Capability> {
+    Ok(match value {
+        "ui.workspace" => Capability::UiWorkspace,
+        "ui.detached-window" => Capability::UiDetachedWindow,
+        "serial.ports.read" => Capability::SerialPortsRead,
+        "serial.sessions.manage" => Capability::SerialSessionsManage,
+        "serial.io" => Capability::SerialIo,
+        "serial.control-lines" => Capability::SerialControlLines,
+        "session.capture.read" => Capability::SessionCaptureRead,
+        "session.commands.read-write" => Capability::SessionCommandsReadWrite,
+        "file.open-read" => Capability::FileOpenRead,
+        "file.save-write" => Capability::FileSaveWrite,
+        "plugin.storage" => Capability::PluginStorage,
+        "project.state.read-write" => Capability::ProjectStateReadWrite,
+        _ => {
+            return Err(ContractError::InvalidField {
+                field: "requestedCapabilities",
+            });
+        }
+    })
+}
+
+#[must_use]
+pub const fn v2_capability_name(value: Capability) -> &'static str {
+    match value {
+        Capability::Unspecified => "",
+        Capability::UiWorkspace => "ui.workspace",
+        Capability::UiDetachedWindow => "ui.detached-window",
+        Capability::SerialPortsRead => "serial.ports.read",
+        Capability::SerialSessionsManage => "serial.sessions.manage",
+        Capability::SerialIo => "serial.io",
+        Capability::SerialControlLines => "serial.control-lines",
+        Capability::SessionCaptureRead => "session.capture.read",
+        Capability::SessionCommandsReadWrite => "session.commands.read-write",
+        Capability::FileOpenRead => "file.open-read",
+        Capability::FileSaveWrite => "file.save-write",
+        Capability::PluginStorage => "plugin.storage",
+        Capability::ProjectStateReadWrite => "project.state.read-write",
     }
 }
 

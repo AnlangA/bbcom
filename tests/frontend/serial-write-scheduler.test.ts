@@ -31,6 +31,13 @@ const CANCELLED_ERROR = {
   operation: 'serial_send',
 } as const;
 
+const SECURITY_DENIED_ERROR = {
+  code: 'SECURITY_DENIED',
+  messageKey: 'error.security_denied',
+  retryable: false,
+  operation: 'serial_send',
+} as const;
+
 test('writes one logical payload in ordered chunks of at most 4096 bytes', async () => {
   const payload = Uint8Array.from({ length: 10_000 }, (_, index) => index & 0xff);
   const written: number[] = [];
@@ -179,6 +186,115 @@ test('copies a queued payload so caller mutation cannot alter the later driver w
   assert.equal((await second).outcome, 'complete');
   assert.deepEqual(received, [[1], [2, 3, 4]]);
 });
+
+test('waitForIdle proves both the queued FIFO and active physical call are drained', async () => {
+  const physical = deferred<number>();
+  const scheduler = new SerialWriteScheduler(() => physical.promise);
+  const write = scheduler.enqueue(Uint8Array.of(1));
+  let drained = false;
+  const idle = scheduler.waitForIdle().then(() => {
+    drained = true;
+  });
+
+  await Promise.resolve();
+  assert.equal(drained, false);
+  physical.resolve(1);
+  assert.equal((await write).outcome, 'complete');
+  await idle;
+  assert.equal(drained, true);
+  await scheduler.waitForIdle();
+});
+
+test('waitForIdle cancellation detaches only that waiter and never cancels the write', async () => {
+  const physical = deferred<number>();
+  const scheduler = new SerialWriteScheduler(() => physical.promise);
+  const write = scheduler.enqueue(Uint8Array.of(1));
+  const cancellation = new AbortController();
+  const cancelled = scheduler.waitForIdle(cancellation.signal);
+  const surviving = scheduler.waitForIdle();
+  cancellation.abort();
+
+  await assert.rejects(cancelled, /drain cancelled/u);
+  physical.resolve(1);
+  assert.equal((await write).outcome, 'complete');
+  await surviving;
+
+  const alreadyCancelled = new AbortController();
+  const secondPhysical = deferred<number>();
+  const secondScheduler = new SerialWriteScheduler(() => secondPhysical.promise);
+  const secondWrite = secondScheduler.enqueue(Uint8Array.of(2));
+  alreadyCancelled.abort();
+  await assert.rejects(secondScheduler.waitForIdle(alreadyCancelled.signal), /drain cancelled/u);
+  secondPhysical.resolve(1);
+  await secondWrite;
+});
+
+test('admission gate rejects missing or forged provenance and revalidates every physical chunk', async () => {
+  let leaseToken = 'lease-1';
+  const chunks: number[][] = [];
+  const scheduler = new SerialWriteScheduler(
+    async (chunk) => {
+      chunks.push(Array.from(chunk));
+      leaseToken = 'revoked';
+      return chunk.length;
+    },
+    { chunkBytes: 2 },
+    {
+      authorize(admission) {
+        return (
+          admission.source === 'plugin' &&
+          admission.ownerId === 'plugin.mcumgr' &&
+          admission.generation === 7 &&
+          admission.leaseToken === leaseToken
+        );
+      },
+    },
+  );
+
+  await expectDenied(scheduler.enqueue(Uint8Array.of(1)));
+  await expectDenied(
+    scheduler.enqueue(
+      Uint8Array.of(1),
+      {},
+      {
+        source: 'plugin',
+        ownerId: 'plugin.mcumgr',
+        generation: 7,
+        leaseToken: 'forged',
+      },
+    ),
+  );
+
+  leaseToken = 'lease-1';
+  assert.deepEqual(
+    await scheduler.enqueue(
+      Uint8Array.of(1, 2, 3),
+      {},
+      {
+        source: 'plugin',
+        ownerId: 'plugin.mcumgr',
+        generation: 7,
+        leaseToken: 'lease-1',
+      },
+    ),
+    {
+      outcome: 'partial',
+      requestedBytes: 3,
+      sentBytes: 2,
+      error: SECURITY_DENIED_ERROR,
+    },
+  );
+  assert.deepEqual(chunks, [[1, 2]]);
+});
+
+async function expectDenied(result: Promise<unknown>): Promise<void> {
+  assert.deepEqual(await result, {
+    outcome: 'failed',
+    requestedBytes: 1,
+    sentBytes: 0,
+    error: SECURITY_DENIED_ERROR,
+  });
+}
 
 test('reports a callback failure without attempting a device write', async () => {
   let calls = 0;

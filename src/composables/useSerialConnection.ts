@@ -123,6 +123,7 @@ export function useSerialConnection(
       controller.sendBytes(payload, writeOptions),
     sendBreak: (durationMs?: number) => controller.sendBreak(durationMs),
     rawBytes: (callback: (bytes: Uint8Array) => void) => controller.rawBytes(callback),
+    serialTransactions: controller.serialTransactions,
     stop: () => controller.stop(),
   };
 }

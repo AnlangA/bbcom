@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
-use bbcom_plugin_contracts::Permission;
+use bbcom_plugin_contracts::generated_v2::{self as wire, Capability};
 use bbcom_plugin_manager::{
     Clock, HostFailure, HostHandle, HostLaunchRequest, HostLauncher, InstallationFailure,
     InstallationPort, ManualPackageRequest, PluginArtifact, PluginArtifactSource, PluginManager,
@@ -21,9 +22,9 @@ fn artifact() -> PluginArtifact {
             kind: PluginSourceKind::Https,
         },
         [
-            Permission::SessionMetadataRead,
-            Permission::SerialControl,
-            Permission::SerialWriteProposal,
+            Capability::UiWorkspace,
+            Capability::SerialIo,
+            Capability::SessionCaptureRead,
         ],
     )
     .unwrap()
@@ -110,12 +111,15 @@ impl InstallationPort for Installer {
 
 #[derive(Default)]
 struct Hosts {
-    last_grants: BTreeSet<Permission>,
+    last_requests: BTreeSet<Capability>,
+    launches: usize,
+    delivered: Arc<Mutex<Vec<(String, wire::envelope::Payload)>>>,
 }
 
 impl HostLauncher for Hosts {
     fn launch(&mut self, request: &HostLaunchRequest) -> Result<HostHandle, HostFailure> {
-        self.last_grants = request.granted_permissions.clone();
+        self.last_requests = request.requested_capabilities.clone();
+        self.launches += 1;
         Ok(HostHandle::new(
             1,
             &request.artifact.plugin_id,
@@ -132,6 +136,18 @@ impl HostLauncher for Hosts {
     }
 
     fn terminate(&mut self, _handle: &HostHandle) {}
+
+    fn deliver_envelope(
+        &mut self,
+        handle: &HostHandle,
+        payload: wire::envelope::Payload,
+    ) -> Result<(), HostFailure> {
+        self.delivered
+            .lock()
+            .map_err(|_| HostFailure::Transport)?
+            .push((handle.plugin_id.clone(), payload));
+        Ok(())
+    }
 }
 
 struct FixedClock;
@@ -142,7 +158,7 @@ impl Clock for FixedClock {
 }
 
 #[test]
-fn declared_implemented_capabilities_are_granted_without_authorization() {
+fn manifest_capabilities_reach_launch_as_requests_not_automatic_grants() {
     let mut manager = PluginManager::new(Installer, Hosts::default(), FixedClock);
     manager
         .open_project(WORKSPACE.to_owned(), Vec::new())
@@ -150,29 +166,132 @@ fn declared_implemented_capabilities_are_granted_without_authorization() {
     manager.observe_installed(artifact()).unwrap();
     let running = manager.enable("dev.bbcom.fixture").unwrap();
     assert_eq!(running.status.code().as_str(), "running");
-    assert!(
-        running
-            .artifact
-            .effective_capabilities
-            .contains(&Permission::SessionMetadataRead)
+    assert_eq!(
+        running.artifact.requested_capabilities,
+        artifact().requested_capabilities
     );
-    assert!(
-        running
-            .artifact
-            .effective_capabilities
-            .contains(&Permission::SerialWriteProposal)
+}
+
+#[test]
+fn port_catalog_events_target_only_active_runtimes_with_port_read_capability() {
+    use wire::{envelope, plugin_event, request};
+
+    let delivered = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = PluginManager::new(
+        Installer,
+        Hosts {
+            delivered: Arc::clone(&delivered),
+            ..Hosts::default()
+        },
+        FixedClock,
     );
-    assert!(
-        running
-            .artifact
-            .unavailable_capabilities
-            .contains(&Permission::SerialControl)
+    manager
+        .open_project(WORKSPACE.to_owned(), Vec::new())
+        .unwrap();
+    let mut with_port_read = artifact();
+    with_port_read
+        .requested_capabilities
+        .insert(Capability::SerialPortsRead);
+    manager.observe_installed(with_port_read).unwrap();
+
+    assert_eq!(manager.notify_port_catalog_changed().unwrap(), 0);
+    manager.enable("dev.bbcom.fixture").unwrap();
+    assert_eq!(manager.notify_port_catalog_changed().unwrap(), 1);
+    let events = delivered.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].0, "dev.bbcom.fixture");
+    assert!(matches!(
+        &events[0].1,
+        envelope::Payload::Request(wire::Request {
+            operation: Some(request::Operation::HandleEvent(wire::HandleEventRequest {
+                event: Some(wire::PluginEvent {
+                    item: Some(plugin_event::Item::PortCatalogChanged(_)),
+                }),
+            })),
+        })
+    ));
+    drop(events);
+
+    manager.disable("dev.bbcom.fixture").unwrap();
+    assert_eq!(manager.notify_port_catalog_changed().unwrap(), 0);
+    assert_eq!(delivered.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn port_catalog_events_do_not_reach_running_plugins_without_port_read_capability() {
+    let delivered = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = PluginManager::new(
+        Installer,
+        Hosts {
+            delivered: Arc::clone(&delivered),
+            ..Hosts::default()
+        },
+        FixedClock,
     );
-    assert!(
-        running
-            .artifact
-            .effective_capabilities
-            .is_disjoint(&running.artifact.unavailable_capabilities)
+    manager
+        .open_project(WORKSPACE.to_owned(), Vec::new())
+        .unwrap();
+    manager.observe_installed(artifact()).unwrap();
+    manager.enable("dev.bbcom.fixture").unwrap();
+
+    assert_eq!(manager.notify_port_catalog_changed().unwrap(), 0);
+    assert!(delivered.lock().unwrap().is_empty());
+}
+
+#[test]
+fn hydrated_locale_and_theme_changes_reach_each_active_runtime_as_typed_events() {
+    use wire::{envelope, plugin_event, request};
+
+    let delivered = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = PluginManager::new(
+        Installer,
+        Hosts {
+            delivered: Arc::clone(&delivered),
+            ..Hosts::default()
+        },
+        FixedClock,
+    );
+    manager
+        .open_project(WORKSPACE.to_owned(), Vec::new())
+        .unwrap();
+    manager.observe_installed(artifact()).unwrap();
+    manager.enable("dev.bbcom.fixture").unwrap();
+
+    assert_eq!(
+        manager
+            .notify_host_context_changed(Some("zh-CN".to_owned()), Some(wire::ColorScheme::Dark))
+            .unwrap(),
+        2
+    );
+    let events = delivered.lock().unwrap();
+    assert!(matches!(
+        &events[0].1,
+        envelope::Payload::Request(wire::Request {
+            operation: Some(request::Operation::HandleEvent(wire::HandleEventRequest {
+                event: Some(wire::PluginEvent {
+                    item: Some(plugin_event::Item::LocaleChanged(wire::LocaleChangedEvent { locale })),
+                }),
+            })),
+        }) if locale == "zh-CN"
+    ));
+    assert!(matches!(
+        &events[1].1,
+        envelope::Payload::Request(wire::Request {
+            operation: Some(request::Operation::HandleEvent(wire::HandleEventRequest {
+                event: Some(wire::PluginEvent {
+                    item: Some(plugin_event::Item::ThemeChanged(wire::ThemeChangedEvent { theme })),
+                }),
+            })),
+        }) if *theme == wire::ColorScheme::Dark as i32
+    ));
+    drop(events);
+
+    manager.disable("dev.bbcom.fixture").unwrap();
+    assert_eq!(
+        manager
+            .notify_host_context_changed(Some("en-US".to_owned()), None)
+            .unwrap(),
+        0
     );
 }
 
@@ -238,7 +357,7 @@ fn local_package(root: &std::path::Path, declared_sha256: &str) {
     std::fs::write(
         root.join("plugin.toml"),
         format!(
-            "id = \"dev.bbcom.fixture\"\nname = \"Fixture\"\nversion = \"2.0.0\"\napi = \"^1\"\n\n\
+            "id = \"dev.bbcom.fixture\"\nname = \"Fixture\"\nversion = \"2.0.0\"\napi = \"^2.0\"\nrequested-capabilities = []\n\n\
              [component]\npath = \"component/plugin.wasm\"\nsha256 = \"{declared_sha256}\"\n\n\
              [publisher]\nname = \"fixture\"\nwebsite = \"https://example.invalid\"\n"
         ),

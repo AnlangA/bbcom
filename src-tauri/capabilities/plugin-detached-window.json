@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "plugin-detached-window",
+  "description": "Least-privilege host-rendered plugin surface windows",
+  "windows": ["plugin-surface-*"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "plugin-detached-window-commands"
+  ]
+}

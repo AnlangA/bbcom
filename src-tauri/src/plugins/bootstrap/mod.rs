@@ -7,15 +7,14 @@
 //! the current workspace and the sidecar constructor has executed the platform
 //! sandbox self-test.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use bbcom_contracts::RuntimeInstanceKey;
-use bbcom_plugin_broker::{
-    BrokerAction, PanelEvent, PanelEventAction, ProposalContext, ProposalDecision,
-    SerialProposalView,
-};
+use bbcom_contracts::PluginContributionDisposition;
+use bbcom_plugin_broker::PluginCapabilityGateway;
+use bbcom_plugin_host::PluginAuthorizationGate;
 use bbcom_plugin_manager::{
     ManualPackageRequest, OpaqueProjectPluginState, PluginArtifact, PluginManager, PluginSnapshot,
     SystemClock, WorkspacePluginBinding,
@@ -26,11 +25,13 @@ use crate::commands::plugin::PluginCommandService as IpcPluginCommandService;
 
 use super::command_adapter::{CatalogViewPort, NativePluginCommandAdapter};
 use super::command_service::{
-    PanelBrokerPort, PluginCommandError, PluginCommandService, PluginCommandSnapshot,
-    PluginCommandUpstreamPort, PluginLifecyclePort, PluginOperationSnapshot, PluginUpstreamFailure,
-    ProposalBrokerPort,
+    PluginCommandError, PluginCommandService, PluginCommandSnapshot, PluginContributionCleanupPort,
+    PluginLifecyclePort, PluginOperationFailure, PluginOperationSnapshot,
 };
-use super::host_launcher::{HostLauncherBuildError, PrivateArtifactRoot, SidecarHostLauncher};
+use super::host_launcher::{
+    HostLauncherBuildError, PluginHostContextProviderV2, PluginHostServicesV2,
+    PluginProjectStateProviderV2, PrivateArtifactRoot, SidecarHostLauncher,
+};
 use super::installation::{
     NativeRepositoryStagingBackend, RepositoryArtifactPathResolver, RepositoryInstallationPort,
     VerifiedPackageProvider,
@@ -38,7 +39,55 @@ use super::installation::{
 use super::runtime_actor::{PluginRuntimeActorHandle, PluginWorkspaceBindingPort};
 use super::sandbox::PlatformSandboxDriver;
 use super::service::{PluginService, PluginServiceError};
-use super::state::NativePluginStatePersistencePort;
+use super::state::SharedNativePluginStatePersistencePort;
+
+struct WorkspaceContributionCleanup(Arc<dyn PluginWorkspaceBindingPort>);
+
+impl PluginContributionCleanupPort for WorkspaceContributionCleanup {
+    fn uninstall_with_contribution_cleanup(
+        &self,
+        plugin_id: &str,
+        disposition: PluginContributionDisposition,
+        uninstall: &mut dyn FnMut() -> Result<PluginSnapshot, PluginOperationFailure>,
+    ) -> Result<PluginSnapshot, PluginOperationFailure> {
+        let mut uninstall_outcome = None;
+        let staged =
+            self.0
+                .uninstall_with_contribution_cleanup(plugin_id, disposition, &mut || {
+                    let outcome = uninstall();
+                    let succeeded = outcome.is_ok();
+                    uninstall_outcome = Some(outcome);
+                    succeeded
+                });
+        match (staged, uninstall_outcome) {
+            (Ok(true), Some(Ok(snapshot))) => Ok(snapshot),
+            (Ok(false), Some(Err(failure))) => Err(failure),
+            (Err(()), None) => Err(PluginOperationFailure {
+                code: "PLUGIN_CONTRIBUTION_CLEANUP_FAILED",
+                message_key: "plugin.error.contributionCleanupFailed",
+            }),
+            (Err(()), Some(Err(_))) => Err(PluginOperationFailure {
+                code: "PLUGIN_CONTRIBUTION_ROLLBACK_FAILED",
+                message_key: "plugin.error.contributionCleanupFailed",
+            }),
+            // Package removal is the irreversible commit point. If a later
+            // workspace commit reports an I/O failure, the durable intent is
+            // retained and startup finishes cleanup before any guest launch;
+            // never report Failed and invite outer authorization/state undo.
+            (Err(()), Some(Ok(snapshot))) => {
+                tracing::warn!(
+                    plugin_id,
+                    "plugin contribution cleanup deferred to recovery"
+                );
+                Ok(snapshot)
+            }
+            _ => Err(PluginOperationFailure {
+                code: "PLUGIN_CONTRIBUTION_CLEANUP_FAILED",
+                message_key: "plugin.error.contributionCleanupFailed",
+            }),
+        }
+    }
+}
 
 /// Exact native workspace state used during plugin bootstrap.
 ///
@@ -84,31 +133,6 @@ impl CurrentPluginWorkspace {
     }
 }
 
-/// Application-owned data required by plugin hosts, excluding serial writes.
-///
-/// Keeping serial execution out of this port makes it impossible to construct
-/// the production runtime without a separately reviewed serial scheduler.
-pub trait PluginHostUpstreamPort: Send + 'static {
-    fn current_proposal_context(
-        &mut self,
-        proposal: &SerialProposalView,
-    ) -> Result<ProposalContext, PluginUpstreamFailure>;
-
-    fn deliver_panel_event(
-        &mut self,
-        action: PanelEventAction,
-    ) -> Result<(), PluginUpstreamFailure>;
-}
-
-/// The only production boundary allowed to execute an approved serial action.
-pub trait PluginSerialSchedulerPort: Send + 'static {
-    fn execute(
-        &mut self,
-        runtime: RuntimeInstanceKey,
-        action: BrokerAction,
-    ) -> Result<(), PluginUpstreamFailure>;
-}
-
 /// Process-lifetime lifecycle hooks retained by native application runtime.
 pub trait PluginRuntimeLifecycle: Send + Sync + 'static {
     fn poll_host_exits(&self) -> Vec<Result<PluginSnapshot, PluginServiceError>>;
@@ -119,19 +143,24 @@ pub trait PluginRuntimeLifecycle: Send + Sync + 'static {
         states: Vec<OpaqueProjectPluginState>,
     ) -> Result<(), PluginServiceError>;
     fn close_project(&self) -> Result<(), PluginServiceError>;
-    /// Trusted host ingress for a parked sidecar proposal call. Default
-    /// no-op: embedders without the pipeline keep old behavior.
-    fn register_serial_proposal(
-        &self,
-        _event: bbcom_plugin_contracts::generated::SerialProposalEvent,
-    ) {
-    }
-    /// Push an unsolicited envelope into a running plugin's sidecar.
+    /// Push a protocol-v2 event/cancel/stream payload into a running sidecar.
     fn deliver_envelope(
         &self,
         _plugin_id: &str,
-        _payload: bbcom_plugin_contracts::generated::envelope::Payload,
+        _payload: bbcom_plugin_contracts::generated_v2::envelope::Payload,
     ) -> Result<(), PluginServiceError> {
+        Err(PluginServiceError::StatePoisoned)
+    }
+    /// Sends a path-free serial-port membership event only to authorized,
+    /// currently running runtimes. Target selection is native-owned.
+    fn notify_port_catalog_changed(&self) -> Result<usize, PluginServiceError> {
+        Err(PluginServiceError::StatePoisoned)
+    }
+    fn notify_host_context_changed(
+        &self,
+        _locale: Option<String>,
+        _theme: Option<bbcom_plugin_contracts::generated_v2::ColorScheme>,
+    ) -> Result<usize, PluginServiceError> {
         Err(PluginServiceError::StatePoisoned)
     }
 }
@@ -141,6 +170,7 @@ pub trait PluginRuntimeLifecycle: Send + Sync + 'static {
 pub struct ProductionPluginRuntime {
     command_service: Arc<dyn IpcPluginCommandService>,
     lifecycle: Arc<dyn PluginRuntimeLifecycle>,
+    private_state: SharedNativePluginStatePersistencePort,
 }
 
 impl ProductionPluginRuntime {
@@ -153,6 +183,11 @@ impl ProductionPluginRuntime {
     pub fn lifecycle(&self) -> Arc<dyn PluginRuntimeLifecycle> {
         Arc::clone(&self.lifecycle)
     }
+
+    #[must_use]
+    pub fn private_state(&self) -> SharedNativePluginStatePersistencePort {
+        self.private_state.clone()
+    }
 }
 
 /// Stable fail-closed bootstrap failures. Missing dependencies are reported in
@@ -164,13 +199,12 @@ pub enum PluginBootstrapError {
     MissingCatalog,
     MissingWorkspace,
     MissingStatePersistence,
-    MissingSerialScheduler,
-    MissingHostUpstream,
-    MissingProposalBroker,
-    MissingPanelBroker,
     MissingSandbox,
     MissingSidecarExecutable,
     MissingPrivateArtifactRoot,
+    MissingAuthorizationGate,
+    MissingCapabilityGateway,
+    MissingHostContext,
     SidecarUnavailable,
     InstalledArtifactRejected,
     WorkspaceRejected,
@@ -186,13 +220,12 @@ impl PluginBootstrapError {
             Self::MissingCatalog => "PLUGIN_BOOTSTRAP_CATALOG_MISSING",
             Self::MissingWorkspace => "PLUGIN_BOOTSTRAP_WORKSPACE_MISSING",
             Self::MissingStatePersistence => "PLUGIN_BOOTSTRAP_STATE_STORE_MISSING",
-            Self::MissingSerialScheduler => "PLUGIN_BOOTSTRAP_SERIAL_SCHEDULER_MISSING",
-            Self::MissingHostUpstream => "PLUGIN_BOOTSTRAP_HOST_UPSTREAM_MISSING",
-            Self::MissingProposalBroker => "PLUGIN_BOOTSTRAP_PROPOSAL_BROKER_MISSING",
-            Self::MissingPanelBroker => "PLUGIN_BOOTSTRAP_PANEL_BROKER_MISSING",
             Self::MissingSandbox => "PLUGIN_BOOTSTRAP_SANDBOX_MISSING",
             Self::MissingSidecarExecutable => "PLUGIN_BOOTSTRAP_SIDECAR_MISSING",
             Self::MissingPrivateArtifactRoot => "PLUGIN_BOOTSTRAP_PRIVATE_ROOT_MISSING",
+            Self::MissingAuthorizationGate => "PLUGIN_BOOTSTRAP_AUTHORIZATION_GATE_MISSING",
+            Self::MissingCapabilityGateway => "PLUGIN_BOOTSTRAP_CAPABILITY_GATEWAY_MISSING",
+            Self::MissingHostContext => "PLUGIN_BOOTSTRAP_HOST_CONTEXT_MISSING",
             Self::SidecarUnavailable => "PLUGIN_BOOTSTRAP_SIDECAR_UNAVAILABLE",
             Self::InstalledArtifactRejected => "PLUGIN_BOOTSTRAP_ARTIFACT_REJECTED",
             Self::WorkspaceRejected => "PLUGIN_BOOTSTRAP_WORKSPACE_REJECTED",
@@ -216,16 +249,15 @@ pub struct ProductionPluginRuntimeBuilder {
     repository: Option<DynVerifiedPackageProvider>,
     catalog: Option<Box<dyn CatalogViewPort>>,
     workspace: Option<CurrentPluginWorkspace>,
-    state: Option<NativePluginStatePersistencePort>,
-    serial: Option<DynSerialScheduler>,
-    host_upstream: Option<DynHostUpstream>,
-    push_sink: Option<Arc<dyn bbcom_plugin_manager::HostPushSink>>,
-    proposals: Option<Box<dyn ProposalBrokerPort + Send>>,
-    panels: Option<Box<dyn PanelBrokerPort + Send>>,
+    state: Option<SharedNativePluginStatePersistencePort>,
     sandbox: Option<PlatformSandboxDriver>,
     sidecar_executable: Option<PathBuf>,
     private_artifact_root: Option<PrivateArtifactRoot>,
     workspace_bindings: Option<Arc<dyn PluginWorkspaceBindingPort>>,
+    authorization_gate: Option<Arc<dyn PluginAuthorizationGate>>,
+    capability_gateway: Option<Arc<dyn PluginCapabilityGateway>>,
+    host_context: Option<Arc<dyn PluginHostContextProviderV2>>,
+    project_state: Option<Arc<dyn PluginProjectStateProviderV2>>,
 }
 
 impl ProductionPluginRuntimeBuilder {
@@ -267,44 +299,8 @@ impl ProductionPluginRuntimeBuilder {
     }
 
     #[must_use]
-    pub fn state_persistence(mut self, state: NativePluginStatePersistencePort) -> Self {
+    pub fn state_persistence(mut self, state: SharedNativePluginStatePersistencePort) -> Self {
         self.state = Some(state);
-        self
-    }
-
-    #[must_use]
-    pub fn serial_scheduler<S>(mut self, serial: S) -> Self
-    where
-        S: PluginSerialSchedulerPort,
-    {
-        self.serial = Some(DynSerialScheduler(Box::new(serial)));
-        self
-    }
-
-    #[must_use]
-    pub fn host_upstream<U>(mut self, upstream: U) -> Self
-    where
-        U: PluginHostUpstreamPort,
-    {
-        self.host_upstream = Some(DynHostUpstream(Box::new(upstream)));
-        self
-    }
-
-    #[must_use]
-    pub fn proposal_broker<P>(mut self, proposals: P) -> Self
-    where
-        P: ProposalBrokerPort + Send + 'static,
-    {
-        self.proposals = Some(Box::new(proposals));
-        self
-    }
-
-    #[must_use]
-    pub fn panel_broker<P>(mut self, panels: P) -> Self
-    where
-        P: PanelBrokerPort + Send + 'static,
-    {
-        self.panels = Some(Box::new(panels));
         self
     }
 
@@ -336,8 +332,29 @@ impl ProductionPluginRuntimeBuilder {
     }
 
     #[must_use]
-    pub fn push_sink(mut self, sink: Arc<dyn bbcom_plugin_manager::HostPushSink>) -> Self {
-        self.push_sink = Some(sink);
+    pub fn authorization_gate(mut self, gate: Arc<dyn PluginAuthorizationGate>) -> Self {
+        self.authorization_gate = Some(gate);
+        self
+    }
+
+    #[must_use]
+    pub fn capability_gateway(mut self, gateway: Arc<dyn PluginCapabilityGateway>) -> Self {
+        self.capability_gateway = Some(gateway);
+        self
+    }
+
+    #[must_use]
+    pub fn host_context_provider(mut self, provider: Arc<dyn PluginHostContextProviderV2>) -> Self {
+        self.host_context = Some(provider);
+        self
+    }
+
+    #[must_use]
+    pub fn project_state_provider(
+        mut self,
+        provider: Arc<dyn PluginProjectStateProviderV2>,
+    ) -> Self {
+        self.project_state = Some(provider);
         self
     }
 
@@ -357,18 +374,6 @@ impl ProductionPluginRuntimeBuilder {
         let state = self
             .state
             .ok_or(PluginBootstrapError::MissingStatePersistence)?;
-        let serial = self
-            .serial
-            .ok_or(PluginBootstrapError::MissingSerialScheduler)?;
-        let host_upstream = self
-            .host_upstream
-            .ok_or(PluginBootstrapError::MissingHostUpstream)?;
-        let proposals = self
-            .proposals
-            .ok_or(PluginBootstrapError::MissingProposalBroker)?;
-        let panels = self
-            .panels
-            .ok_or(PluginBootstrapError::MissingPanelBroker)?;
         let sandbox = self.sandbox.ok_or(PluginBootstrapError::MissingSandbox)?;
         let sidecar_executable = self
             .sidecar_executable
@@ -379,44 +384,68 @@ impl ProductionPluginRuntimeBuilder {
         let workspace_bindings = self
             .workspace_bindings
             .ok_or(PluginBootstrapError::MissingWorkspace)?;
+        let authorization_gate = self
+            .authorization_gate
+            .ok_or(PluginBootstrapError::MissingAuthorizationGate)?;
+        let capability_gateway = self
+            .capability_gateway
+            .ok_or(PluginBootstrapError::MissingCapabilityGateway)?;
+        let host_context = self
+            .host_context
+            .ok_or(PluginBootstrapError::MissingHostContext)?;
+        let project_state = self
+            .project_state
+            .ok_or(PluginBootstrapError::MissingWorkspace)?;
 
         let resolver = RepositoryArtifactPathResolver::new(Arc::clone(&installer));
-        let (mut hosts, exits) = SidecarHostLauncher::new(
+        let private_state = state.clone();
+        let (hosts, exits) = SidecarHostLauncher::new_with_v2_services(
             sidecar_executable,
             private_artifact_root,
             resolver,
             sandbox,
             state,
+            PluginHostServicesV2::new(
+                authorization_gate,
+                capability_gateway,
+                host_context,
+                project_state,
+            ),
         )
         .map_err(map_sidecar_error)?;
-        if let Some(sink) = &self.push_sink {
-            use bbcom_plugin_manager::HostLauncher as _;
-            hosts.attach_push_sink(Arc::clone(sink));
-        }
-
         let backend = NativeRepositoryStagingBackend::new(installer, repository);
         let installation = RepositoryInstallationPort::new(backend);
         let manager = PluginManager::new(installation, hosts, SystemClock);
         let lifecycle = Arc::new(PluginService::new(manager, exits));
 
+        let installed_plugin_ids = workspace
+            .installed_artifacts
+            .iter()
+            .map(|artifact| artifact.plugin_id.clone())
+            .collect::<BTreeSet<_>>();
         for artifact in workspace.installed_artifacts {
             lifecycle
                 .observe_installed(artifact)
                 .map_err(|_| PluginBootstrapError::InstalledArtifactRejected)?;
         }
+        workspace_bindings
+            .recover_contribution_uninstall(&installed_plugin_ids)
+            .map_err(|()| PluginBootstrapError::WorkspaceRejected)?;
         if let Some(workspace_id) = workspace.workspace_id {
             lifecycle
                 .open_workspace(workspace_id, workspace.bindings, workspace.project_states)
                 .map_err(|_| PluginBootstrapError::WorkspaceRejected)?;
         }
 
-        let upstream = SplitPluginUpstream {
-            host: host_upstream,
-            serial,
-        };
         let lifecycle_port: Arc<dyn PluginLifecyclePort + Send + Sync> = lifecycle.clone();
-        let core = PluginCommandService::new(lifecycle_port, Box::new(upstream), proposals, panels)
-            .map_err(|_| PluginBootstrapError::CommandServiceUnavailable)?;
+        let contribution_cleanup: Arc<dyn PluginContributionCleanupPort> = Arc::new(
+            WorkspaceContributionCleanup(Arc::clone(&workspace_bindings)),
+        );
+        let core = PluginCommandService::new_with_contribution_cleanup(
+            lifecycle_port,
+            contribution_cleanup,
+        )
+        .map_err(|_| PluginBootstrapError::CommandServiceUnavailable)?;
         let core = RefreshingCommandCore::new(core);
         let adapter = NativePluginCommandAdapter::new(Box::new(core), catalog, SystemClock);
         let lifecycle: Arc<dyn PluginRuntimeLifecycle> = lifecycle;
@@ -427,6 +456,7 @@ impl ProductionPluginRuntimeBuilder {
         Ok(ProductionPluginRuntime {
             command_service,
             lifecycle,
+            private_state,
         })
     }
 }
@@ -440,7 +470,7 @@ type ProductionInstallation =
 type ProductionHost = SidecarHostLauncher<
     RepositoryArtifactPathResolver,
     PlatformSandboxDriver,
-    NativePluginStatePersistencePort,
+    SharedNativePluginStatePersistencePort,
 >;
 type ProductionLifecycle = PluginService<ProductionInstallation, ProductionHost, SystemClock>;
 
@@ -465,9 +495,21 @@ impl PluginRuntimeLifecycle for ProductionLifecycle {
     fn deliver_envelope(
         &self,
         plugin_id: &str,
-        payload: bbcom_plugin_contracts::generated::envelope::Payload,
+        payload: bbcom_plugin_contracts::generated_v2::envelope::Payload,
     ) -> Result<(), PluginServiceError> {
         PluginService::deliver_envelope(self, plugin_id, payload)
+    }
+
+    fn notify_port_catalog_changed(&self) -> Result<usize, PluginServiceError> {
+        PluginService::notify_port_catalog_changed(self)
+    }
+
+    fn notify_host_context_changed(
+        &self,
+        locale: Option<String>,
+        theme: Option<bbcom_plugin_contracts::generated_v2::ColorScheme>,
+    ) -> Result<usize, PluginServiceError> {
+        PluginService::notify_host_context_changed(self, locale, theme)
     }
 }
 
@@ -493,22 +535,6 @@ impl RefreshingCommandCore {
 }
 
 impl super::command_adapter::PluginCommandCorePort for RefreshingCommandCore {
-    fn register_proposal(
-        &mut self,
-        plugin_id: &str,
-        declared: &std::collections::BTreeSet<bbcom_plugin_contracts::Permission>,
-        request: bbcom_plugin_broker::SerialProposalRequest,
-        correlation: Option<String>,
-    ) -> Result<bbcom_plugin_broker::SerialProposalView, super::command_service::PluginCommandError>
-    {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|since| since.as_millis() as u64)
-            .unwrap_or_default();
-        self.mutable()
-            .register_proposal(plugin_id, declared, request, correlation, now)
-    }
-
     fn snapshot(&self) -> PluginCommandSnapshot {
         let mut core = self
             .inner
@@ -536,28 +562,6 @@ impl super::command_adapter::PluginCommandCorePort for RefreshingCommandCore {
     ) -> Result<PluginOperationSnapshot, PluginCommandError> {
         self.mutable()
             .queue_set_enabled(revision, request_id, plugin_id, enabled)
-    }
-
-    fn queue_proposal_decision(
-        &mut self,
-        revision: u64,
-        request_id: String,
-        proposal_id: String,
-        decision: ProposalDecision,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-        self.mutable()
-            .queue_proposal_decision(revision, request_id, proposal_id, decision)
-    }
-
-    fn queue_panel_event(
-        &mut self,
-        revision: u64,
-        request_id: String,
-        plugin_id: String,
-        event: PanelEvent,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-        self.mutable()
-            .queue_panel_event(revision, request_id, plugin_id, event)
     }
 
     fn execute_operation(
@@ -591,9 +595,10 @@ impl super::command_adapter::PluginCommandCorePort for RefreshingCommandCore {
         revision: u64,
         request_id: String,
         plugin_id: String,
+        contribution_disposition: PluginContributionDisposition,
     ) -> Result<PluginOperationSnapshot, PluginCommandError> {
         self.mutable()
-            .queue_uninstall(revision, request_id, plugin_id)
+            .queue_uninstall(revision, request_id, plugin_id, contribution_disposition)
     }
 }
 
@@ -628,37 +633,5 @@ impl VerifiedPackageProvider for DynVerifiedPackageProvider {
         request: &ManualPackageRequest,
     ) -> Result<DownloadedPackage, Self::Error> {
         self.0.download_verified(request)
-    }
-}
-
-struct DynHostUpstream(Box<dyn PluginHostUpstreamPort>);
-struct DynSerialScheduler(Box<dyn PluginSerialSchedulerPort>);
-
-struct SplitPluginUpstream {
-    host: DynHostUpstream,
-    serial: DynSerialScheduler,
-}
-
-impl PluginCommandUpstreamPort for SplitPluginUpstream {
-    fn current_proposal_context(
-        &mut self,
-        proposal: &SerialProposalView,
-    ) -> Result<ProposalContext, PluginUpstreamFailure> {
-        self.host.0.current_proposal_context(proposal)
-    }
-
-    fn execute_serial_action(
-        &mut self,
-        runtime: RuntimeInstanceKey,
-        action: BrokerAction,
-    ) -> Result<(), PluginUpstreamFailure> {
-        self.serial.0.execute(runtime, action)
-    }
-
-    fn deliver_panel_event(
-        &mut self,
-        action: PanelEventAction,
-    ) -> Result<(), PluginUpstreamFailure> {
-        self.host.0.deliver_panel_event(action)
     }
 }
