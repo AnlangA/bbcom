@@ -18,8 +18,8 @@ use bbcom_plugin_contracts::{
 use bbcom_plugin_host::transport::{BoundedFrameQueue, FrameReader, FrameWriter};
 use bbcom_plugin_host::{
     AmbientAuthorityPolicy, CallKind, HandshakeExpectation, HandshakeMachine, HostError,
-    HostPlatform, PluginEngineFactory, PluginExecutor, PluginInterrupt, ProcessLimitPolicy,
-    Sidecar, SidecarExit, TrustedPluginArtifact,
+    HostPlatform, HostPolicy, PluginEngineFactory, PluginExecutor, PluginInterrupt,
+    ProcessLimitPolicy, Sidecar, SidecarExit, TrustedPluginArtifact,
 };
 use sha2::{Digest, Sha256};
 
@@ -690,6 +690,7 @@ fn factory_accepts_only_components_and_exposes_no_ambient_authority() {
 
 #[test]
 fn process_limit_policy_requires_all_platform_controls() {
+    assert_eq!(HostPolicy::default(), HostPolicy::fixed());
     let valid = ProcessLimitPolicy {
         platform: HostPlatform::Linux,
         memory_limit_bytes: HOST_PROCESS_MEMORY_LIMIT_BYTES,

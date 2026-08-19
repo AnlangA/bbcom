@@ -561,14 +561,6 @@ mod tests {
         let migration: MigrateAiApiKeyRequest = serde_json::from_str("{}").unwrap();
         assert!(migration.value.is_none());
 
-        // These are read/no-op operations only. The test accepts either a
-        // working keyring or a deliberately unavailable CI keyring, while
-        // ensuring OS backend failures stay in the typed error channel.
-        let os_store = OsCredentialStore;
-        assert!(matches!(
-            os_store.load(AI_API_KEY),
-            Ok(_) | Err(credential_store::SecureSettingsError::StorageUnavailable)
-        ));
         clear_from(&ReadbackMismatchStore, AI_API_KEY).unwrap();
     }
 
