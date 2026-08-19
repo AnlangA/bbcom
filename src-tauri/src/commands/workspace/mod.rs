@@ -366,32 +366,33 @@ fn delete_workspace_from_label(
     let workspace_id = WorkspaceUuid::parse(&request.workspace_id)
         .map_err(|error| project_error(error, OPERATION))?;
 
-    // Deleting the live SQLite writer would bypass the renderer's runtime and
-    // save transition. Users can switch projects first, then delete the closed
-    // project from the library.
-    let active = lock_active(manager, OPERATION)?;
+    // Keep the active lock through the library commit. The application service
+    // quiesces persistence before requesting deletion; taking the service out
+    // of this slot closes the SQLite writer before Windows removes the file.
+    let mut active = lock_active(manager, OPERATION)?;
     let active_workspace_id = active
         .as_ref()
         .map(WorkspaceService::summary)
         .transpose()
         .map_err(|error| error.to_ipc_error(OPERATION))?
         .map(|summary| summary.workspace_id);
-    if active_workspace_id.as_deref() == Some(request.workspace_id.as_str()) {
-        return Err(IpcError::new(
-            AppErrorCode::Busy,
-            "workspace.delete.failed",
-            false,
-            OPERATION,
-        )
-        .with_field("workspaceId"));
+    let deletes_active = active_workspace_id.as_deref() == Some(request.workspace_id.as_str());
+    let closed_active = deletes_active.then(|| active.take()).flatten();
+    drop(closed_active);
+    if let Err(error) = manager.library.delete_project(&workspace_id) {
+        if deletes_active && manager.library.contains(&workspace_id) {
+            *active = manager.library.open_project(&workspace_id).ok();
+        }
+        return Err(project_error(error, OPERATION));
     }
-    // Keep the active lock through the library commit. A concurrent open that
-    // already acquired a SQLite handle cannot publish it as active until this
-    // deletion finishes and `commit_active_workspace` rechecks existence.
-    manager
-        .library
-        .delete_project(&workspace_id)
-        .map_err(|error| project_error(error, OPERATION))?;
+    if deletes_active {
+        // A stale marker is harmless (startup validates existence), but remove
+        // it eagerly so the empty-library state survives a clean restart.
+        let _ = fs::remove_file(&manager.active_marker);
+        if let Some(parent) = manager.active_marker.parent() {
+            let _ = sync_native_directory(parent);
+        }
+    }
     drop(active);
     Ok(DeleteWorkspaceResponse {
         request_id: request.request_id,
@@ -1263,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn deletion_rejects_the_active_workspace_writer() {
+    fn deletion_closes_and_removes_the_active_workspace_writer() {
         let root = temporary_root("delete-active-workspace");
         let manager = WorkspaceManager::open(&root).expect("open manager");
         let workspace_id =
@@ -1275,15 +1276,16 @@ mod tests {
         commit_active_workspace(&manager, workspace_id.as_str(), active, "test")
             .expect("commit active");
 
-        let error = delete_workspace_from_label(
+        let response = delete_workspace_from_label(
             &manager,
             "main",
             delete_request("delete-active", workspace_id.as_str()),
         )
-        .unwrap_err();
-        assert_eq!(error.code, AppErrorCode::Busy);
-        assert_eq!(error.message_key, "workspace.delete.failed");
-        assert!(manager.library.contains(&workspace_id));
+        .expect("delete active workspace");
+        assert_eq!(response.workspace_id, workspace_id.as_str());
+        assert!(!manager.library.contains(&workspace_id));
+        assert!(lock_active(&manager, "test").unwrap().is_none());
+        assert!(!manager.active_marker.exists());
         fs::remove_dir_all(root).expect("remove test root");
     }
 

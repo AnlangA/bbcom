@@ -51,14 +51,19 @@
         <n-button
           class="workspace-project-delete"
           size="tiny"
-          text
+          quaternary
           type="error"
           :disabled="busy"
+          :title="
+            armedDeleteId === project.workspaceId ? t('common.confirmDelete') : t('common.delete')
+          "
+          :aria-label="
+            armedDeleteId === project.workspaceId ? t('common.confirmDelete') : t('common.delete')
+          "
           @click="requestDelete(project.workspaceId)"
         >
-          {{
-            armedDeleteId === project.workspaceId ? t('common.confirmDelete') : t('common.delete')
-          }}
+          <template #icon><Trash2 class="icon-sm" /></template>
+          <span v-if="armedDeleteId === project.workspaceId">{{ t('common.confirmDelete') }}</span>
         </n-button>
       </div>
     </div>
@@ -167,6 +172,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { NButton, NInput, NModal, useMessage } from 'naive-ui';
+import { Trash2 } from '@lucide/vue';
 import { t } from '../../lib/i18n';
 import type { WorkspaceSaveHealth } from '../../generated/ipc-contracts';
 import {
@@ -245,19 +251,7 @@ async function createProject(): Promise<void> {
 
 async function deleteProject(workspaceId: string): Promise<void> {
   if (!workspace) return;
-  if (applicationSnapshot.value.currentWorkspace?.workspaceId === workspaceId) {
-    const replacement = librarySnapshot.value.library.projects.find(
-      (project) => project.workspaceId !== workspaceId,
-    );
-    const transition = replacement
-      ? await workspace.application.openWorkspace(replacement.workspaceId)
-      : await workspace.application.createWorkspace(t('workspace.new'));
-    if (transition.outcome !== 'completed') {
-      reportFailure(transition);
-      return;
-    }
-  }
-  reportFailure(await workspace.coordinator.deleteWorkspace(workspaceId));
+  reportFailure(await workspace.application.deleteWorkspace(workspaceId));
 }
 
 function requestDelete(workspaceId: string): void {
@@ -442,7 +436,8 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
 }
 
 .workspace-project-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 2px;
   border: 1px solid var(--border-subtle);
@@ -461,6 +456,13 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
   color: var(--text-primary);
   background: transparent;
   text-align: left;
+}
+
+.workspace-project-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workspace-project-row.active {

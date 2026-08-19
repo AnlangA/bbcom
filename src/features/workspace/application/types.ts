@@ -50,6 +50,7 @@ export interface WorkspaceFacadeSnapshot {
  */
 export interface WorkspaceSessionFacade {
   replaceWorkspace(snapshot: WorkspaceFacadeSnapshot): void;
+  clearWorkspace(): void;
 }
 
 export type WorkspaceApplicationStatus = 'idle' | 'loading' | 'ready' | 'failed';
@@ -137,7 +138,7 @@ export interface WorkspaceRuntimeQuiesceContext {
 export interface WorkspaceRuntimeDisposeContext {
   readonly transitionId: string;
   readonly previousWorkspaceId: string;
-  readonly nextWorkspaceId: string;
+  readonly nextWorkspaceId: string | null;
 }
 
 export interface WorkspaceRuntimeRestoreContext {
@@ -208,6 +209,7 @@ export type WorkspaceQueueOutcome =
 
 export interface WorkspaceApplicationActivation {
   openWorkspace(workspaceId: string): Promise<WorkspaceApplicationOutcome>;
+  deleteWorkspace(workspaceId: string): Promise<WorkspaceApplicationOutcome>;
   /** Cancel the currently reversible native activation/hydration attempt. */
   cancelActivation(): boolean;
   /** Restore the native last-active project, falling back to the reset

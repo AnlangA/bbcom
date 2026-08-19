@@ -193,6 +193,9 @@ if (!isAiWindow) {
       workspaceAdapter.replaceWorkspace(snapshot);
       workspaceUi.apply(snapshot.layout);
     },
+    clearWorkspace() {
+      workspaceAdapter.clearWorkspace();
+    },
   });
   runtimeContext.adapter = workspaceAdapter;
   workspaceAdapter.start();

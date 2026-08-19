@@ -526,6 +526,7 @@ test('facade bridge keeps hydration baseline and deletion projection on the same
   const harness = createAdapterHarness([alpha]);
   const bridge = new WorkspaceSessionFacadeBridge();
   assert.throws(() => bridge.replaceWorkspace(facadeSnapshot([alpha], 'alpha')), /not bound/);
+  assert.throws(() => bridge.clearWorkspace(), /not bound/);
 
   harness.adapter.start();
   bridge.bind(harness.adapter);
@@ -545,6 +546,8 @@ test('facade bridge keeps hydration baseline and deletion projection on the same
     harness.calls.filter((call) => call.method === 'forgetSession').map((call) => call.args[0]),
     ['alpha'],
   );
+  bridge.clearWorkspace();
+  assert.deepEqual(harness.replaceWorkspaceSessions.mock.calls.at(-1), [[], null]);
 
   const other = createAdapterHarness([]).adapter;
   assert.throws(() => bridge.bind(other), /already bound/);

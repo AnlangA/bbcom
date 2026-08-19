@@ -223,6 +223,25 @@ export class WorkspaceApplicationService {
     return this.activate(() => this.coordinator.openWorkspace(workspaceId));
   }
 
+  async deleteWorkspace(workspaceId: string): Promise<WorkspaceApplicationOutcome> {
+    const current = this.currentWorkspaceView();
+    if (current?.workspaceId !== workspaceId) {
+      const outcome = await this.coordinator.deleteWorkspace(workspaceId);
+      return outcome.outcome === 'completed' ? completed(this.snapshot()) : outcome;
+    }
+
+    const replacement = this.coordinator
+      .snapshot()
+      .library.projects.find((project) => project.workspaceId !== workspaceId);
+    if (replacement) {
+      const transition = await this.openWorkspace(replacement.workspaceId);
+      if (transition.outcome !== 'completed') return transition;
+      const outcome = await this.coordinator.deleteWorkspace(workspaceId);
+      return outcome.outcome === 'completed' ? completed(this.snapshot()) : outcome;
+    }
+    return this.deleteCurrentWorkspace(workspaceId);
+  }
+
   async restoreLastActiveWorkspace(
     fallbackWorkspaceId: string,
     signal?: AbortSignal,
@@ -776,6 +795,124 @@ export class WorkspaceApplicationService {
     const outcome = await this.coordinator.flush();
     this.applySaveOutcome(outcome);
     return outcome;
+  }
+
+  private deleteCurrentWorkspace(workspaceId: string): Promise<WorkspaceApplicationOutcome> {
+    const predecessor = this.activations.attempt;
+    if (predecessor && predecessor.phase !== 'committing' && predecessor.phase !== 'terminal') {
+      predecessor.controller.abort();
+      if (predecessor.phase === 'activating') this.coordinator.cancelActivation();
+    }
+    const attempt: ActivationAttempt = {
+      generation: this.activations.nextGeneration(),
+      controller: new AbortController(),
+      previousWorkspaceId: null,
+      nativeActivationStarted: false,
+      cancelledByUser: false,
+      activatedWorkspaceId: null,
+      phase: 'queued',
+    };
+    this.activations.attempt = attempt;
+    this.switching = true;
+    this.hydrating = false;
+    this.applicationStatus = 'loading';
+    this.applicationMessageKey = null;
+    this.notify();
+    const execution = this.activations.tail.then(
+      () => this.performCurrentDeletion(attempt, workspaceId),
+      () => this.performCurrentDeletion(attempt, workspaceId),
+    );
+    this.activations.tail = execution.then(
+      () => undefined,
+      () => undefined,
+    );
+    return execution;
+  }
+
+  private async performCurrentDeletion(
+    attempt: ActivationAttempt,
+    workspaceId: string,
+  ): Promise<WorkspaceApplicationOutcome> {
+    if (this.recoveryRequired || this.current?.workspaceId !== workspaceId) {
+      const failure = failed(
+        this.recoveryRequired ? 'workspace.activation.rollback_failed' : 'workspace.delete.failed',
+      );
+      this.finishActivationFailure(attempt, failure);
+      return failure;
+    }
+    attempt.previousWorkspaceId = workspaceId;
+    const transition = this.ensureRuntimeTransition(workspaceId);
+    attempt.phase = 'draining';
+    const drainFailure = await this.drainBeforeActivation();
+    if (!this.activations.isActive(attempt)) {
+      return abortAndRecoverActivation(attempt, this.activations, this.activationRecoveryHost());
+    }
+    if (drainFailure) {
+      const restored = await this.restoreRuntimeAfterAbortedTransition(null);
+      const failure = restored ? drainFailure : failed('workspace.activation.rollback_failed');
+      if (!restored) markRecoveryRequired(attempt, this.activations, this.activationRecoveryHost());
+      this.finishActivationFailure(attempt, failure);
+      return failure;
+    }
+
+    attempt.phase = 'activating';
+    try {
+      const disposal = this.runtimeLifecycleTail.then(async () => {
+        this.assertAttemptOwnsRuntimeTransition(attempt, transition);
+        transition.disposeStarted = true;
+        await this.runtimeLifecycle.dispose({
+          transitionId: transition.id,
+          previousWorkspaceId: workspaceId,
+          nextWorkspaceId: null,
+        });
+        transition.disposeCompleted = true;
+      });
+      this.runtimeLifecycleTail = disposal.then(
+        () => undefined,
+        () => undefined,
+      );
+      await disposal;
+    } catch {
+      const restored = await this.restoreRuntimeAfterAbortedTransition(null);
+      const failure = restored
+        ? failed('workspace.delete.failed')
+        : failed('workspace.activation.rollback_failed');
+      if (!restored) markRecoveryRequired(attempt, this.activations, this.activationRecoveryHost());
+      this.finishActivationFailure(attempt, failure);
+      return failure;
+    }
+
+    const deletion = await this.coordinator.deleteWorkspace(workspaceId);
+    if (deletion.outcome !== 'completed') {
+      const restored = await this.restoreRuntimeAfterAbortedTransition(null);
+      if (!restored) {
+        const failure = failed('workspace.activation.rollback_failed');
+        markRecoveryRequired(attempt, this.activations, this.activationRecoveryHost());
+        this.finishActivationFailure(attempt, failure);
+        return failure;
+      }
+      this.finishActivationOutcome(attempt, deletion);
+      return deletion;
+    }
+
+    attempt.phase = 'committing';
+    this.sessionFacade.clearWorkspace();
+    this.current = null;
+    this.saves.openEpoch();
+    this.captureAccounting.replaceWorkspace([]);
+    this.undoCaptureState = null;
+    this.recoveryRequired = false;
+    this.runtimeLifecycle.commit?.({ transitionId: transition.id, workspaceId });
+    if (this.runtimeTransition === transition) this.runtimeTransition = null;
+    if (this.internalDrainTransition === transition) this.internalDrainTransition = null;
+    attempt.phase = 'terminal';
+    if (this.activations.attempt === attempt) this.activations.attempt = null;
+    this.switching = false;
+    this.hydrating = false;
+    this.applicationStatus = 'idle';
+    this.applicationMessageKey = null;
+    this.notify();
+    return completed(this.snapshot());
   }
 
   private activate(invoke: ActivateWorkspace): Promise<WorkspaceApplicationOutcome> {
