@@ -272,7 +272,7 @@ test('selecting a project changes only active state and never reorders the libra
   );
 });
 
-test('deleting a closed project removes only that catalog row and rejects the active project', async () => {
+test('deleting projects clears active state when the selected row is removed', async () => {
   const deleted: string[] = [];
   const coordinator = new WorkspaceCoordinator(
     createPort({
@@ -294,16 +294,17 @@ test('deleting a closed project removes only that catalog row and rejects the ac
   );
 
   await coordinator.refreshCatalog();
-  assert.deepEqual(await coordinator.deleteWorkspace('workspace-a'), {
-    outcome: 'failed',
-    messageKey: 'workspace.delete.failed',
-  });
   assert.equal((await coordinator.deleteWorkspace('workspace-b')).outcome, 'completed');
   assert.deepEqual(deleted, ['workspace-b']);
   assert.deepEqual(
     coordinator.snapshot().library.projects.map((project) => project.workspaceId),
     ['workspace-a'],
   );
+  assert.equal((await coordinator.deleteWorkspace('workspace-a')).outcome, 'completed');
+  assert.deepEqual(deleted, ['workspace-b', 'workspace-a']);
+  assert.equal(coordinator.activeWorkspaceId, null);
+  assert.deepEqual(coordinator.snapshot().library.projects, []);
+  assert.equal(coordinator.snapshot().library.status, 'idle');
 });
 
 test('open cancellation and overlapping activation cannot replace the current workspace', async () => {

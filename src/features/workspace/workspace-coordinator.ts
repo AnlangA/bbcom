@@ -241,12 +241,6 @@ export class WorkspaceCoordinator {
 
   async deleteWorkspace(workspaceId: string): Promise<WorkspaceActionOutcome<string>> {
     const validatedWorkspaceId = validateWorkspaceId(workspaceId);
-    if (
-      validatedWorkspaceId === this.active?.workspaceId ||
-      validatedWorkspaceId === this.catalogActiveWorkspaceId
-    ) {
-      return failed('workspace.delete.failed');
-    }
     if (this.navigationAction !== null) return failed('workspace.activation.in_progress');
 
     const call = this.beginCall('delete', ++this.deleteGeneration);
@@ -271,9 +265,17 @@ export class WorkspaceCoordinator {
       this.projects = Object.freeze(
         this.projects.filter((project) => project.workspaceId !== validatedWorkspaceId),
       );
+      if (
+        validatedWorkspaceId === this.active?.workspaceId ||
+        validatedWorkspaceId === this.catalogActiveWorkspaceId
+      ) {
+        this.active = null;
+        this.catalogActiveWorkspaceId = null;
+        this.writeEngine.clearEpoch();
+      }
       this.deleteCall = null;
       this.navigationAction = null;
-      this.libraryStatus = 'ready';
+      this.libraryStatus = this.projects.length > 0 ? 'ready' : 'idle';
       this.libraryMessageKey = null;
       this.notify();
       return completed(validatedWorkspaceId);

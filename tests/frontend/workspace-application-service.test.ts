@@ -77,6 +77,7 @@ interface TestSystem {
   readonly coordinator: WorkspaceCoordinator;
   readonly hydrationPort: WorkspaceHydrationPort;
   readonly replacements: WorkspaceFacadeSnapshot[];
+  readonly facadeClears: number[];
   readonly applyRequests: ApplyWorkspaceBatchRequest[];
   readonly flushTargets: number[];
   readonly persistenceEvents: string[];
@@ -151,6 +152,7 @@ function createSystem(
 ): TestSystem {
   const projects = new Map(definitions.map((project) => [project.workspaceId, project]));
   const replacements: WorkspaceFacadeSnapshot[] = [];
+  const facadeClears: number[] = [];
   const applyRequests: ApplyWorkspaceBatchRequest[] = [];
   const flushTargets: number[] = [];
   const persistenceEvents: string[] = [];
@@ -321,6 +323,9 @@ function createSystem(
     replaceWorkspace: (snapshot) => {
       replacements.push(snapshot);
     },
+    clearWorkspace: () => {
+      facadeClears.push(facadeClears.length + 1);
+    },
   };
   const coordinator = new WorkspaceCoordinator(coordinatorPort, {
     idFactory: (scope) => `${scope}-${++coordinatorId}`,
@@ -334,6 +339,7 @@ function createSystem(
     coordinator,
     hydrationPort,
     replacements,
+    facadeClears,
     applyRequests,
     flushTargets,
     persistenceEvents,
@@ -613,6 +619,48 @@ test('workspace replacement quiesces with an internal drain, flushes, then dispo
     system.replacements.map((snapshot) => snapshot.workspaceId),
     ['first', 'next'],
   );
+});
+
+test('deleting the final project drains and clears the active workspace without creating a replacement', async () => {
+  const events: string[] = [];
+  const lifecycle: WorkspaceRuntimeLifecycle = {
+    quiesce(context) {
+      events.push(`quiesce:${context.previousWorkspaceId}`);
+      return Promise.resolve();
+    },
+    dispose(context) {
+      events.push(`dispose:${context.previousWorkspaceId}->${context.nextWorkspaceId}`);
+      return Promise.resolve();
+    },
+    restore() {
+      events.push('restore');
+      return Promise.resolve();
+    },
+    activateStopped() {
+      events.push('activate-stopped');
+      return Promise.resolve();
+    },
+    commit(context) {
+      events.push(`commit:${context.workspaceId}`);
+    },
+  };
+  const system = createSystem([definition('only-project', 0)], lifecycle);
+  assert.equal((await system.application.openWorkspace('only-project')).outcome, 'completed');
+  events.length = 0;
+
+  const outcome = await system.application.deleteWorkspace('only-project');
+
+  assert.equal(outcome.outcome, 'completed');
+  assert.equal(system.application.snapshot().currentWorkspace, null);
+  assert.equal(system.application.snapshot().status, 'idle');
+  assert.equal(system.coordinator.activeWorkspaceId, null);
+  assert.deepEqual(system.coordinator.snapshot().library.projects, []);
+  assert.deepEqual(system.facadeClears, [1]);
+  assert.deepEqual(events, [
+    'quiesce:only-project',
+    'dispose:only-project->null',
+    'commit:only-project',
+  ]);
 });
 
 test('failed stopped-runtime staging rolls native state back and restores the prior runtime set', async () => {
@@ -1081,7 +1129,7 @@ test('idle save gates, restoration and subscriptions expose stable application o
   const applicationWithDefaultIds = new WorkspaceApplicationService(
     defaultIds.coordinator,
     defaultIds.hydrationPort,
-    { replaceWorkspace: () => undefined },
+    { replaceWorkspace: () => undefined, clearWorkspace: () => undefined },
   );
   assert.equal(
     (await applicationWithDefaultIds.openWorkspace('default-id-workspace')).outcome,

@@ -873,6 +873,7 @@ describe('WorkspacePanel', () => {
         return stopApplication;
       }),
       openWorkspace: vi.fn(),
+      deleteWorkspace: vi.fn(async () => ({ outcome: 'completed' })),
       createWorkspace: vi.fn(),
       importWorkspace: vi.fn(),
       exportWorkspace: vi.fn(),
@@ -900,8 +901,8 @@ describe('WorkspacePanel', () => {
     await deleteButtons[1].trigger('click');
     await deleteButtons[1].trigger('click');
     await flushPromises();
-    expect(coordinator.deleteWorkspace).toHaveBeenCalledWith('workspace-b');
-    coordinator.deleteWorkspace.mockResolvedValueOnce({
+    expect(application.deleteWorkspace).toHaveBeenCalledWith('workspace-b');
+    application.deleteWorkspace.mockResolvedValueOnce({
       outcome: 'failed',
       messageKey: 'workspace.delete.failed',
     });
@@ -915,10 +916,8 @@ describe('WorkspacePanel', () => {
     await setup.openProject('workspace-b');
     expect(uiMocks.messages.error).toHaveBeenCalled();
 
-    application.openWorkspace.mockResolvedValueOnce({ outcome: 'completed' });
     await setup.deleteProject('workspace-a');
-    expect(application.openWorkspace).toHaveBeenLastCalledWith('workspace-b');
-    expect(coordinator.deleteWorkspace).toHaveBeenCalledWith('workspace-a');
+    expect(application.deleteWorkspace).toHaveBeenCalledWith('workspace-a');
 
     setup.projectName = '   ';
     await setup.createProject();

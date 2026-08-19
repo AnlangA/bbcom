@@ -36,6 +36,12 @@ export class WorkspaceSessionFacadeBridge implements WorkspaceSessionFacade {
     if (!delegate) throw new Error('workspace session facade is not bound');
     delegate.replaceWorkspace(snapshot);
   }
+
+  clearWorkspace(): void {
+    const delegate = this.delegate;
+    if (!delegate) throw new Error('workspace session facade is not bound');
+    delegate.clearWorkspace();
+  }
 }
 
 /** Bridges the temporary Pinia compatibility facade to the application-owned
@@ -104,6 +110,13 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
       snapshot.sessions.map((entry) => [entry.session.id, entry.sortOrder]),
     );
     this.projectedActiveSessionId = snapshot.activeSessionId;
+  }
+
+  clearWorkspace(): void {
+    this.store.replaceWorkspaceSessions([], null);
+    this.projectedSessionIds.clear();
+    this.projectedSortOrders.clear();
+    this.projectedActiveSessionId = null;
   }
 
   private onChange(event: WorkspaceSessionChangeEvent): void {

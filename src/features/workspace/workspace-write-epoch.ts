@@ -101,6 +101,13 @@ export class WorkspaceWriteEpochEngine {
     };
   }
 
+  /** Abort every queued write when the active project is permanently removed. */
+  clearEpoch(): void {
+    this.writeEpoch?.controller.abort();
+    this.writeEpoch = null;
+    this.writeEpochNumber += 1;
+  }
+
   commitBatch(
     commands: readonly Readonly<WorkspaceMutationCommand>[],
   ): Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>> {
