@@ -10,8 +10,6 @@ pub mod native_sandbox_probe;
 pub mod policy;
 #[cfg(target_os = "windows")]
 pub mod process_child_policy;
-#[cfg(target_os = "macos")]
-pub mod process_memory_limit;
 pub mod runtime;
 pub mod sidecar;
 pub mod transport;

@@ -1,18 +1,26 @@
+use std::ffi::c_void;
 use std::fs;
+use std::io::{Read, Write};
+use std::mem::{size_of, zeroed};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{SandboxDriver, SandboxError, SandboxLaunch, SandboxSelfTest};
+use super::{
+    SandboxDriver, SandboxError, SandboxLaunch, SandboxSelfTest, SandboxedChild, SandboxedProcess,
+};
 
 const MAX_HOST_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 const SELF_TEST_MARKER: &str = "bbcom-native-sandbox-readable-package";
 const SELF_TEST_SECRET: &str = "bbcom-native-sandbox-sensitive-file";
 const PROCESS_PROBE_OBSERVATION: Duration = Duration::from_millis(200);
+const MEMORY_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const MEMORY_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -85,7 +93,10 @@ impl MacOsSandboxDriver {
             .status()
             .map_err(|_| SandboxError::new("macOS Seatbelt self-test could not start"))?;
         match status.code() {
-            Some(0) => self.run_process_resilience_probes(&sidecar, &fixture),
+            Some(0) => {
+                self.run_memory_limit_probe(&sidecar, &fixture)?;
+                self.run_process_resilience_probes(&sidecar, &fixture)
+            }
             Some(41) => Err(SandboxError::new(
                 "macOS Seatbelt self-test did not prove network denial",
             )),
@@ -115,6 +126,40 @@ impl MacOsSandboxDriver {
                 "macOS Seatbelt self-test ended without an exit code",
             )),
         }
+    }
+
+    fn run_memory_limit_probe(
+        &self,
+        sidecar: &Path,
+        fixture: &SelfTestFixture,
+    ) -> Result<(), SandboxError> {
+        let mut command = self.self_test_process_command(sidecar, fixture)?;
+        command
+            .arg("--native-sandbox-memory")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut process = spawn_monitored(command, MAX_HOST_MEMORY_BYTES)?;
+        let deadline = Instant::now() + MEMORY_PROBE_TIMEOUT;
+        while Instant::now() < deadline {
+            if process
+                .try_wait()
+                .map_err(|_| SandboxError::new("macOS memory probe could not be observed"))?
+            {
+                return if process.limit_exceeded() {
+                    Ok(())
+                } else {
+                    Err(SandboxError::new(
+                        "macOS memory probe exited without proving the process limit",
+                    ))
+                };
+            }
+            thread::sleep(MEMORY_POLL_INTERVAL);
+        }
+        process.terminate_and_wait();
+        Err(SandboxError::new(
+            "macOS memory probe did not enforce the process limit",
+        ))
     }
 
     fn run_process_resilience_probes(
@@ -220,6 +265,19 @@ impl SandboxDriver for MacOsSandboxDriver {
         self.build_command(launch)
     }
 
+    fn spawn(&self, launch: &SandboxLaunch<'_>) -> Result<SandboxedChild, SandboxError> {
+        let mut command = self.build_command(launch)?;
+        command
+            .env_clear()
+            .current_dir(launch.package_root)
+            .args(launch.arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let process = spawn_monitored(command, launch.memory_limit_bytes)?;
+        Ok(SandboxedChild::platform(Box::new(process)))
+    }
+
     fn platform_argument(&self) -> &'static str {
         "macos"
     }
@@ -297,6 +355,164 @@ fn self_test_profile(executable: &Path, package: &Path) -> Result<String, Sandbo
 (allow mach-lookup (global-name "com.apple.system.logger"))
 "#
     ))
+}
+
+fn spawn_monitored(
+    mut command: Command,
+    memory_limit_bytes: usize,
+) -> Result<MacOsSandboxedProcess, SandboxError> {
+    let child = command
+        .spawn()
+        .map_err(|_| SandboxError::new("sandboxed plugin host could not be spawned"))?;
+    MacOsSandboxedProcess::new(child, memory_limit_bytes)
+}
+
+/// Modern macOS maps the dyld shared cache into a virtual range far larger
+/// than the plugin contract, so `RLIMIT_AS` cannot express a useful absolute
+/// boundary. Track physical resident bytes instead and terminate the isolated
+/// sidecar as soon as it crosses the fixed 256 MiB process limit. Wasmtime
+/// independently limits untrusted guest linear memory to 64 MiB.
+struct MacOsSandboxedProcess {
+    child: Child,
+    stop: Arc<AtomicBool>,
+    limit_exceeded: Arc<AtomicBool>,
+    monitor: Option<JoinHandle<()>>,
+}
+
+impl MacOsSandboxedProcess {
+    fn new(mut child: Child, memory_limit_bytes: usize) -> Result<Self, SandboxError> {
+        let pid = child.id() as i32;
+        let stop = Arc::new(AtomicBool::new(false));
+        let limit_exceeded = Arc::new(AtomicBool::new(false));
+        let monitor_stop = Arc::clone(&stop);
+        let monitor_limit = Arc::clone(&limit_exceeded);
+        let monitor = thread::Builder::new()
+            .name("bbcom-plugin-memory".to_owned())
+            .spawn(move || {
+                while !monitor_stop.load(Ordering::Acquire) {
+                    let Some(bytes) = resident_bytes(pid) else {
+                        // A running sidecar must never continue without an
+                        // observable memory boundary. `kill` is harmless when
+                        // the process already exited between polls.
+                        if !monitor_stop.load(Ordering::Acquire) {
+                            unsafe {
+                                kill(pid, SIGKILL);
+                            }
+                        }
+                        break;
+                    };
+                    if bytes > memory_limit_bytes as u64 {
+                        monitor_limit.store(true, Ordering::Release);
+                        unsafe {
+                            kill(pid, SIGKILL);
+                        }
+                        break;
+                    }
+                    thread::sleep(MEMORY_POLL_INTERVAL);
+                }
+            });
+        let monitor = match monitor {
+            Ok(monitor) => monitor,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(SandboxError::new(
+                    "macOS plugin memory monitor could not start",
+                ));
+            }
+        };
+        Ok(Self {
+            child,
+            stop,
+            limit_exceeded,
+            monitor: Some(monitor),
+        })
+    }
+
+    fn limit_exceeded(&self) -> bool {
+        self.limit_exceeded.load(Ordering::Acquire)
+    }
+
+    fn stop_monitor(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(monitor) = self.monitor.take() {
+            let _ = monitor.join();
+        }
+    }
+}
+
+impl SandboxedProcess for MacOsSandboxedProcess {
+    fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
+        self.child
+            .stdin
+            .take()
+            .map(|stdin| Box::new(stdin) as Box<dyn Write + Send>)
+    }
+
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+        self.child
+            .stdout
+            .take()
+            .map(|stdout| Box::new(stdout) as Box<dyn Read + Send>)
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<bool> {
+        let exited = self.child.try_wait()?.is_some();
+        if exited {
+            self.stop_monitor();
+        }
+        Ok(exited)
+    }
+
+    fn terminate_and_wait(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.stop_monitor();
+    }
+}
+
+impl Drop for MacOsSandboxedProcess {
+    fn drop(&mut self) {
+        self.stop_monitor();
+    }
+}
+
+#[repr(C)]
+struct ProcTaskInfo {
+    virtual_size: u64,
+    resident_size: u64,
+    total_user: u64,
+    total_system: u64,
+    threads_user: u64,
+    threads_system: u64,
+    policy: i32,
+    faults: i32,
+    pageins: i32,
+    cow_faults: i32,
+    messages_sent: i32,
+    messages_received: i32,
+    syscalls_mach: i32,
+    syscalls_unix: i32,
+    context_switches: i32,
+    thread_count: i32,
+    running_threads: i32,
+    priority: i32,
+}
+
+fn resident_bytes(pid: i32) -> Option<u64> {
+    let mut info: ProcTaskInfo = unsafe { zeroed() };
+    let size = size_of::<ProcTaskInfo>() as i32;
+    let read = unsafe {
+        proc_pidinfo(
+            pid,
+            PROC_PIDTASKINFO,
+            0,
+            (&raw mut info).cast::<c_void>(),
+            size,
+        )
+    };
+    (read == size).then_some(info.resident_size)
 }
 
 struct SelfTestFixture {
@@ -380,6 +596,14 @@ fn escape_profile_literal(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+const PROC_PIDTASKINFO: i32 = 4;
+const SIGKILL: i32 = 9;
+
+unsafe extern "C" {
+    fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut c_void, size: i32) -> i32;
+    fn kill(pid: i32, signal: i32) -> i32;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,5 +638,10 @@ mod tests {
         assert!(profile.contains("plugin-package"));
         assert!(!profile.contains("Python"));
         assert!(profile.contains("(allow file-read-data (literal \"/\"))"));
+    }
+
+    #[test]
+    fn resident_memory_probe_reads_the_current_process() {
+        assert!(resident_bytes(std::process::id() as i32).is_some_and(|bytes| bytes > 0));
     }
 }

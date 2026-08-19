@@ -667,7 +667,7 @@ const zh: Catalog = {
   'plugins.serial.approve_once': '对此实例批准',
   'plugins.error.unavailable': '原生插件服务不可用。',
   'plugins.bootstrap.unavailable':
-    '插件运行时不可用（{code}）。切换或创建工作区时会自动重试；持续失败请检查应用数据目录权限与 bubblewrap/python3 依赖。',
+    '插件运行时不可用（{code}）。切换或创建工作区时会自动重试；持续失败请重启应用，并检查应用数据目录权限与系统沙箱组件。',
   'plugins.error.invalid-response': '插件服务返回了无效响应。',
   'plugins.error.invalid-input': '插件请求参数无效，请检查本地安装路径。',
   'plugins.error.invalid-panel': '已拒绝不安全或无效的插件面板。',
