@@ -286,6 +286,9 @@ mod tests {
 
     #[test]
     fn allowlisted_secret_round_trips_without_debugging_its_value() {
+        // Entry construction verifies the production keyring identity without
+        // reading a real credential, which can block on OS authorization UI.
+        assert!(OsCredentialStore::entry(AI_API_KEY).is_ok());
         let store = MemoryCredentialStore::default();
         save_to(&store, AI_API_KEY, "test-only-secret").unwrap();
         assert_eq!(
