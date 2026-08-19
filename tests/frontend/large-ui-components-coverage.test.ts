@@ -806,6 +806,7 @@ interface WorkspaceSetup {
   passphraseConfirmation: string;
   openProject: (workspaceId: string) => Promise<void>;
   createProject: () => Promise<void>;
+  deleteProject: (workspaceId: string) => Promise<void>;
   beginImport: () => void;
   cancelImport: () => void;
   importPlaintext: () => Promise<void>;
@@ -885,6 +886,7 @@ describe('WorkspacePanel', () => {
         return stopCoordinator;
       }),
       refreshCatalog: vi.fn(async () => undefined),
+      deleteWorkspace: vi.fn(async () => ({ outcome: 'completed' })),
     };
     uiMocks.workspace = { application, coordinator };
     const wrapper = mount(WorkspacePanel);
@@ -892,6 +894,19 @@ describe('WorkspacePanel', () => {
     const setup = componentSetup<WorkspaceSetup>(wrapper);
     expect(coordinator.refreshCatalog).toHaveBeenCalledOnce();
     expect(wrapper.findAll('.workspace-project-item')).toHaveLength(2);
+    const deleteButtons = wrapper.findAll('.workspace-project-delete');
+    expect(deleteButtons).toHaveLength(2);
+    expect(deleteButtons[0].attributes('disabled')).toBeUndefined();
+    await deleteButtons[1].trigger('click');
+    await deleteButtons[1].trigger('click');
+    await flushPromises();
+    expect(coordinator.deleteWorkspace).toHaveBeenCalledWith('workspace-b');
+    coordinator.deleteWorkspace.mockResolvedValueOnce({
+      outcome: 'failed',
+      messageKey: 'workspace.delete.failed',
+    });
+    await setup.deleteProject('workspace-b');
+    expect(uiMocks.messages.error).toHaveBeenCalled();
 
     application.openWorkspace.mockResolvedValueOnce({
       outcome: 'failed',
@@ -899,6 +914,11 @@ describe('WorkspacePanel', () => {
     });
     await setup.openProject('workspace-b');
     expect(uiMocks.messages.error).toHaveBeenCalled();
+
+    application.openWorkspace.mockResolvedValueOnce({ outcome: 'completed' });
+    await setup.deleteProject('workspace-a');
+    expect(application.openWorkspace).toHaveBeenLastCalledWith('workspace-b');
+    expect(coordinator.deleteWorkspace).toHaveBeenCalledWith('workspace-a');
 
     setup.projectName = '   ';
     await setup.createProject();
@@ -1010,6 +1030,7 @@ describe('WorkspacePanel', () => {
     await setup.openProject('workspace-a');
     setup.projectName = 'Name';
     await setup.createProject();
+    await setup.deleteProject('workspace-a');
     setup.beginImport();
     setup.cancelImport();
     await setup.importPlaintext();

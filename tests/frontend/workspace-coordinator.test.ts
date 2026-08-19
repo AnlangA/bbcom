@@ -7,6 +7,8 @@ import type {
   CancelWorkspaceOperationResponse,
   CreateWorkspaceCommandRequest,
   CreateWorkspaceCommandResponse,
+  DeleteWorkspaceRequest,
+  DeleteWorkspaceResponse,
   ExportProjectRequest,
   ExportProjectResponse,
   FlushWorkspaceRequest,
@@ -70,7 +72,9 @@ function openResponse(requestId: string, workspaceId: string, revision = 0): Ope
   };
 }
 
-function sequenceIds(): (scope: 'catalog' | 'activate' | 'export' | 'batch' | 'flush') => string {
+function sequenceIds(): (
+  scope: 'catalog' | 'activate' | 'delete' | 'export' | 'batch' | 'flush',
+) => string {
   let sequence = 0;
   return (scope) => `${scope}-${++sequence}`;
 }
@@ -79,6 +83,7 @@ interface PortOverrides {
   loadCatalog?: WorkspaceCoordinatorPort['loadCatalog'];
   openWorkspace?: WorkspaceCoordinatorPort['openWorkspace'];
   createWorkspace?: WorkspaceCoordinatorPort['createWorkspace'];
+  deleteWorkspace?: WorkspaceCoordinatorPort['deleteWorkspace'];
   requestProjectSourceGrant?: WorkspaceCoordinatorPort['requestProjectSourceGrant'];
   requestProjectTargetGrant?: WorkspaceCoordinatorPort['requestProjectTargetGrant'];
   importProject?: WorkspaceCoordinatorPort['importProject'];
@@ -106,6 +111,10 @@ function createPort(overrides: PortOverrides = {}): WorkspaceCoordinatorPort {
           workspace: summary('created', 0, 1, request.name),
           header: header('created', 0, request.name),
         })),
+    deleteWorkspace:
+      overrides.deleteWorkspace ??
+      ((request: DeleteWorkspaceRequest): Promise<DeleteWorkspaceResponse> =>
+        Promise.resolve({ requestId: request.requestId, workspaceId: request.workspaceId })),
     requestProjectSourceGrant:
       overrides.requestProjectSourceGrant ??
       ((request: RequestProjectSourceGrantRequest): Promise<ProjectSourceGrantResponse> =>
@@ -260,6 +269,40 @@ test('selecting a project changes only active state and never reorders the libra
   assert.deepEqual(
     coordinator.snapshot().library.projects.map((project) => project.workspaceId),
     initialOrder,
+  );
+});
+
+test('deleting a closed project removes only that catalog row and rejects the active project', async () => {
+  const deleted: string[] = [];
+  const coordinator = new WorkspaceCoordinator(
+    createPort({
+      loadCatalog: (request) =>
+        Promise.resolve({
+          requestId: request.requestId,
+          workspaces: [summary('workspace-a'), summary('workspace-b')],
+          activeWorkspaceId: 'workspace-a',
+        }),
+      deleteWorkspace: (request) => {
+        deleted.push(request.workspaceId);
+        return Promise.resolve({
+          requestId: request.requestId,
+          workspaceId: request.workspaceId,
+        });
+      },
+    }),
+    { idFactory: sequenceIds() },
+  );
+
+  await coordinator.refreshCatalog();
+  assert.deepEqual(await coordinator.deleteWorkspace('workspace-a'), {
+    outcome: 'failed',
+    messageKey: 'workspace.delete.failed',
+  });
+  assert.equal((await coordinator.deleteWorkspace('workspace-b')).outcome, 'completed');
+  assert.deepEqual(deleted, ['workspace-b']);
+  assert.deepEqual(
+    coordinator.snapshot().library.projects.map((project) => project.workspaceId),
+    ['workspace-a'],
   );
 });
 

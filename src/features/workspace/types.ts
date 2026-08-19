@@ -5,6 +5,8 @@ import type {
   CancelWorkspaceOperationResponse,
   CreateWorkspaceCommandRequest,
   CreateWorkspaceCommandResponse,
+  DeleteWorkspaceRequest,
+  DeleteWorkspaceResponse,
   ExportProjectRequest,
   ExportProjectResponse,
   FlushWorkspaceRequest,
@@ -55,6 +57,10 @@ export interface WorkspaceCoordinatorPort {
     request: CreateWorkspaceCommandRequest,
     context: WorkspacePortCallContext,
   ): Promise<CreateWorkspaceCommandResponse>;
+  deleteWorkspace(
+    request: DeleteWorkspaceRequest,
+    context: WorkspacePortCallContext,
+  ): Promise<DeleteWorkspaceResponse>;
   requestProjectSourceGrant(
     request: RequestProjectSourceGrantRequest,
     context: WorkspacePortCallContext,
@@ -93,7 +99,7 @@ export type WorkspaceMutationCommand = WorkspaceMutation extends infer TMutation
   : never;
 
 export type WorkspaceLibraryStatus = 'idle' | 'loading' | 'ready' | 'failed';
-export type WorkspaceNavigationAction = 'create' | 'open' | 'import';
+export type WorkspaceNavigationAction = 'create' | 'open' | 'import' | 'delete';
 
 export interface WorkspaceLibraryActionViewModel {
   readonly id: 'new-project' | 'open-project' | 'import-project';
@@ -169,7 +175,9 @@ export type WorkspaceActionOutcome<T> =
 export type WorkspaceExportCancellationStatus = 'not-active' | 'cancelled' | 'completed' | 'failed';
 
 export interface WorkspaceCoordinatorOptions {
-  readonly idFactory?: (scope: 'catalog' | 'activate' | 'export' | 'batch' | 'flush') => string;
+  readonly idFactory?: (
+    scope: 'catalog' | 'activate' | 'delete' | 'export' | 'batch' | 'flush',
+  ) => string;
   readonly operations?: WorkspaceOperationLifecyclePort;
 }
 

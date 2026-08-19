@@ -46,11 +46,11 @@ use crate::utils::window::require_main_window_label;
 use bbcom_contracts::{
     AppErrorCode, ApplyWorkspaceBatchRequest, ApplyWorkspaceBatchResponse,
     CancelWorkspaceOperationRequest, CancelWorkspaceOperationResponse,
-    CreateWorkspaceCommandRequest, CreateWorkspaceCommandResponse, ExportProjectRequest,
-    ExportProjectResponse, FlushWorkspaceRequest, FlushWorkspaceResponse, ImportProjectRequest,
-    ImportProjectResponse, IpcError, OpenWorkspaceRequest, OpenWorkspaceResponse,
-    ProjectEncryptionMode, ProjectEncryptionOptions, WorkspaceCatalogRequest,
-    WorkspaceCatalogResponse,
+    CreateWorkspaceCommandRequest, CreateWorkspaceCommandResponse, DeleteWorkspaceRequest,
+    DeleteWorkspaceResponse, ExportProjectRequest, ExportProjectResponse, FlushWorkspaceRequest,
+    FlushWorkspaceResponse, ImportProjectRequest, ImportProjectResponse, IpcError,
+    OpenWorkspaceRequest, OpenWorkspaceResponse, ProjectEncryptionMode, ProjectEncryptionOptions,
+    WorkspaceCatalogRequest, WorkspaceCatalogResponse,
 };
 use bbcom_workspace::WorkspaceService;
 use bbcom_workspace::container::{
@@ -338,6 +338,64 @@ fn workspace_catalog_from_label(
         request_id: request.request_id,
         workspaces,
         active_workspace_id,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_workspace(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+    request: DeleteWorkspaceRequest,
+) -> Result<DeleteWorkspaceResponse, IpcError> {
+    const OPERATION: &str = "delete_workspace";
+    let label = window.label().to_string();
+    dispatch_workspace_core(app, label, OPERATION, |manager, label| {
+        delete_workspace_from_label(manager, label, request)
+    })
+    .await
+}
+
+fn delete_workspace_from_label(
+    manager: &WorkspaceManager,
+    label: &str,
+    request: DeleteWorkspaceRequest,
+) -> Result<DeleteWorkspaceResponse, IpcError> {
+    const OPERATION: &str = "delete_workspace";
+    require_main_window_label(label, OPERATION)?;
+    validate_opaque_id(&request.request_id, "requestId", OPERATION)?;
+    let workspace_id = WorkspaceUuid::parse(&request.workspace_id)
+        .map_err(|error| project_error(error, OPERATION))?;
+
+    // Deleting the live SQLite writer would bypass the renderer's runtime and
+    // save transition. Users can switch projects first, then delete the closed
+    // project from the library.
+    let active = lock_active(manager, OPERATION)?;
+    let active_workspace_id = active
+        .as_ref()
+        .map(WorkspaceService::summary)
+        .transpose()
+        .map_err(|error| error.to_ipc_error(OPERATION))?
+        .map(|summary| summary.workspace_id);
+    if active_workspace_id.as_deref() == Some(request.workspace_id.as_str()) {
+        return Err(IpcError::new(
+            AppErrorCode::Busy,
+            "workspace.delete.failed",
+            false,
+            OPERATION,
+        )
+        .with_field("workspaceId"));
+    }
+    // Keep the active lock through the library commit. A concurrent open that
+    // already acquired a SQLite handle cannot publish it as active until this
+    // deletion finishes and `commit_active_workspace` rechecks existence.
+    manager
+        .library
+        .delete_project(&workspace_id)
+        .map_err(|error| project_error(error, OPERATION))?;
+    drop(active);
+    Ok(DeleteWorkspaceResponse {
+        request_id: request.request_id,
+        workspace_id: request.workspace_id,
     })
 }
 
@@ -701,6 +759,9 @@ fn commit_active_workspace(
     let workspace_id =
         WorkspaceUuid::parse(workspace_id).map_err(|error| project_error(error, operation))?;
     let mut active = lock_active(manager, operation)?;
+    if !manager.library.contains(&workspace_id) {
+        return Err(IpcError::invalid_input(operation, "workspaceId"));
+    }
     persist_active_workspace(&manager.active_marker, &workspace_id)
         .map_err(|error| io_error_kind(error.kind(), operation))?;
     *active = Some(service);
@@ -1166,6 +1227,55 @@ mod tests {
                 .field,
             Some("workspaceId")
         );
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn deletion_removes_only_closed_workspaces_and_rejects_the_active_writer() {
+        let root = temporary_root("delete-workspace");
+        let manager = WorkspaceManager::open(&root).expect("open manager");
+        let active_id =
+            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000031").expect("active id");
+        let closed_id =
+            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000032").expect("closed id");
+        let active = manager
+            .library
+            .create_project(&active_id, "active", 1)
+            .expect("create active");
+        commit_active_workspace(&manager, active_id.as_str(), active, "test")
+            .expect("commit active");
+        drop(
+            manager
+                .library
+                .create_project(&closed_id, "closed", 1)
+                .expect("create closed"),
+        );
+
+        let response = delete_workspace_from_label(
+            &manager,
+            "main",
+            DeleteWorkspaceRequest {
+                request_id: "delete-closed".to_owned(),
+                workspace_id: closed_id.as_str().to_owned(),
+            },
+        )
+        .expect("delete closed workspace");
+        assert_eq!(response.workspace_id, closed_id.as_str());
+        assert!(!manager.library.contains(&closed_id));
+        assert!(manager.library.contains(&active_id));
+
+        let error = delete_workspace_from_label(
+            &manager,
+            "main",
+            DeleteWorkspaceRequest {
+                request_id: "delete-active".to_owned(),
+                workspace_id: active_id.as_str().to_owned(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, AppErrorCode::Busy);
+        assert_eq!(error.message_key, "workspace.delete.failed");
+        assert!(manager.library.contains(&active_id));
         fs::remove_dir_all(root).expect("remove test root");
     }
 

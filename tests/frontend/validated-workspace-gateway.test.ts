@@ -39,6 +39,7 @@ function port(overrides: Partial<WorkspaceCoordinatorPort> = {}): WorkspaceCoord
     loadCatalog: unsupported,
     openWorkspace: unsupported,
     createWorkspace: unsupported,
+    deleteWorkspace: unsupported,
     requestProjectSourceGrant: unsupported,
     requestProjectTargetGrant: unsupported,
     importProject: unsupported,
@@ -78,6 +79,20 @@ describe('ValidatedWorkspaceGateway', () => {
       name: 'InvalidWorkspaceResponseError',
       stableField: 'requestId',
     });
+  });
+
+  test('validates both identities on destructive project deletion', async () => {
+    const gateway = new ValidatedWorkspaceGateway(
+      port({
+        deleteWorkspace: async (request) => ({
+          requestId: request.requestId,
+          workspaceId: 'workspace-other',
+        }),
+      }),
+    );
+    await expect(
+      gateway.deleteWorkspace({ requestId: 'delete-a', workspaceId: 'workspace-a' }, context()),
+    ).rejects.toMatchObject({ name: 'InvalidWorkspaceResponseError', stableField: 'workspaceId' });
   });
 
   test('honors cancellation for reads without rewriting a dispatched native terminal outcome', async () => {

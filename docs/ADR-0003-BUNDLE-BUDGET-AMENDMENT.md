@@ -65,6 +65,20 @@ window, chunk, and bootstrap ceiling remained satisfied. Following the plugin
 boundary precedent, the total-only ceiling is amended once more to 380 KiB
 (389,120 bytes); all other ceilings are unchanged.
 
+### 2026-08-19 managed project deletion addendum
+
+The managed-project deletion flow adds a generated request/response boundary,
+validated coordinator state, native SQLite deletion safeguards, and a
+localized two-step sidebar action. After removing an avoidable eager icon
+dependency, the complete build measured 380.25 KiB total and 290.27 KiB for
+the main-window startup graph. Those accepted protocol and transaction paths
+cannot fit under the previous 380/290 KiB ceilings without the byte-level
+optimization work excluded by this ADR.
+
+The ceilings are therefore amended to 381 KiB (390,144 bytes) for all
+JavaScript and 291 KiB (297,984 bytes) for the main-window startup graph. The
+145 KiB AI-window, 85 KiB bootstrap, and 105 KiB chunk ceilings are unchanged.
+
 ## Regression rules
 
 - CI measures binary gzip sizes from the production Vite manifest using the
@@ -82,6 +96,6 @@ boundary precedent, the total-only ceiling is amended once more to 380 KiB
 
 ## Consequences
 
-The implemented 376/290/145 KiB limits now have an explicit architecture record,
+The implemented 381/291/145 KiB limits now have an explicit architecture record,
 while the stricter 85/105 KiB startup and chunk protections continue unchanged.
 The earlier 320/255/145 KiB plan values are superseded by this amendment.

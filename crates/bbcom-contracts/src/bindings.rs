@@ -133,6 +133,8 @@ pub fn render_typescript() -> String {
     declaration!(CreateWorkspaceCommandResponse);
     declaration!(OpenWorkspaceRequest);
     declaration!(OpenWorkspaceResponse);
+    declaration!(DeleteWorkspaceRequest);
+    declaration!(DeleteWorkspaceResponse);
     declaration!(HydrateWorkspaceSessionsRequest);
     declaration!(WorkspaceSessionSnapshot);
     declaration!(HydrateWorkspaceSessionsResponse);

@@ -88,6 +88,27 @@ impl ProjectLibrary {
         self.open_project(&file_name.workspace_id()?)
     }
 
+    /// Remove one closed managed project and its SQLite sidecars. The caller
+    /// owns active-project policy; this layer only accepts a validated UUID and
+    /// serializes the destructive commit with create/import/export commits.
+    pub fn delete_project(&self, workspace_id: &WorkspaceUuid) -> ProjectContainerResult<()> {
+        let _commit = self.lock_commits()?;
+        let path = self.managed_path(workspace_id);
+        if !path.is_file() {
+            return Err(ProjectContainerError::InvalidInput {
+                field: "workspaceId",
+            });
+        }
+        fs::remove_file(&path)?;
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let _ = fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        // The primary file removal is authoritative. Directory sync is best
+        // effort so a post-commit failure cannot invite a destructive retry.
+        let _ = sync_directory(&self.root);
+        Ok(())
+    }
+
     #[must_use]
     pub fn contains(&self, workspace_id: &WorkspaceUuid) -> bool {
         self.managed_path(workspace_id).is_file()
