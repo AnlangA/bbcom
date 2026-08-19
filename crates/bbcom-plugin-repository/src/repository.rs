@@ -95,7 +95,6 @@ impl DownloadedPackage {
                 id: plugin_id.clone(),
                 name: None,
                 description: None,
-                publisher_identity: None,
                 packages: vec![package.clone()],
             }],
         }
@@ -141,7 +140,6 @@ impl DownloadedPackage {
                 id: plugin_id.clone(),
                 name: None,
                 description: None,
-                publisher_identity: None,
                 packages: vec![package.clone()],
             }],
         }

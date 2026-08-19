@@ -23,6 +23,11 @@ export class ModbusLoopCoordinator {
   private stopped = false;
   private readDueWhileBusy = false;
   private writeDueWhileBusy = false;
+  private readonly idleWaiters = new Set<{
+    readonly resolve: () => void;
+    readonly reject: (error: Error) => void;
+    detachAbort: () => void;
+  }>();
   private readonly options: ModbusLoopCoordinatorOptions;
 
   constructor(options: ModbusLoopCoordinatorOptions) {
@@ -67,8 +72,32 @@ export class ModbusLoopCoordinator {
       return await fn();
     } finally {
       this.busy = false;
+      this.resolveIdleWaiters();
       this.resume();
     }
+  }
+
+  waitForIdle(signal?: AbortSignal): Promise<void> {
+    if (!this.busy) return Promise.resolve();
+    if (signal?.aborted) return Promise.reject(new Error('Modbus pause cancelled'));
+    return new Promise<void>((resolve, reject) => {
+      const waiter: {
+        readonly resolve: () => void;
+        readonly reject: (error: Error) => void;
+        detachAbort: () => void;
+      } = { resolve, reject, detachAbort: () => undefined };
+      const onAbort = () => {
+        if (!this.idleWaiters.delete(waiter)) return;
+        waiter.detachAbort();
+        reject(new Error('Modbus pause cancelled'));
+      };
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true });
+        waiter.detachAbort = () => signal.removeEventListener('abort', onAbort);
+      }
+      this.idleWaiters.add(waiter);
+      this.resolveIdleWaiters();
+    });
   }
 
   scheduleRead(delayMs = this.readIntervalMs()): void {
@@ -141,6 +170,16 @@ export class ModbusLoopCoordinator {
 
   private writeIntervalMs(): number {
     return Math.max(100, this.options.getWriteIntervalMs());
+  }
+
+  private resolveIdleWaiters(): void {
+    if (this.busy || this.idleWaiters.size === 0) return;
+    const waiters = Array.from(this.idleWaiters);
+    this.idleWaiters.clear();
+    for (const waiter of waiters) {
+      waiter.detachAbort();
+      waiter.resolve();
+    }
   }
 }
 

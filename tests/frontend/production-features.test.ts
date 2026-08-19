@@ -86,6 +86,38 @@ test('file-writing commands stay registered behind main-window-only native servi
   assert.equal(handlers.includes('commands::log::append_log'), false);
 });
 
+test('detached plugin windows expose only their token-bound surface boundary', () => {
+  const capability = JSON.parse(
+    readFileSync('src-tauri/capabilities/plugin-detached-window.json', 'utf8'),
+  ) as { windows: string[]; permissions: string[] };
+  const permission = readFileSync('src-tauri/permissions/plugin-detached-window.toml', 'utf8');
+
+  assert.deepEqual(capability.windows, ['plugin-surface-*']);
+  assert.deepEqual(capability.permissions, [
+    'core:event:allow-listen',
+    'core:event:allow-unlisten',
+    'plugin-detached-window-commands',
+  ]);
+  assert.equal(
+    capability.permissions.some((item) => item.startsWith('serialplugin:')),
+    false,
+  );
+  assert.equal(
+    capability.permissions.some((item) => item.startsWith('dialog:')),
+    false,
+  );
+  assert.equal(capability.permissions.includes('plugin-main-window-commands'), false);
+  for (const command of [
+    'plugin_detached_surface_snapshot_v2',
+    'plugin_detached_emit_surface_event_v2',
+    'plugin_detached_cancel_task_v2',
+  ]) {
+    assert.ok(permission.includes(`"${command}"`), `${command} must be explicitly granted`);
+  }
+  assert.equal(permission.includes('plugin_serial_capability_reply_v2'), false);
+  assert.equal(permission.includes('plugin_center_snapshot'), false);
+});
+
 // ---- F-h: HEX+ASCII dual display mode ----
 
 test('formatHexAscii: renders hex pairs + ASCII side by side, 16 per line', () => {

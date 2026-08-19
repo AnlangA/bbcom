@@ -1,4 +1,4 @@
-import { createApp } from 'vue';
+import { createApp, watch } from 'vue';
 import { createPinia } from 'pinia';
 import { settingsService } from './features/settings';
 import './styles/variables.css';
@@ -11,16 +11,19 @@ settingsService.hydrate();
 
 const params = new URLSearchParams(window.location.search);
 const isAiWindow = params.get('window') === 'ai';
+const isPluginWindow = params.get('window') === 'plugin';
 
 const RootComponent = isAiWindow
   ? (await import('./AiWindow.vue')).default
-  : (await import('./App.vue')).default;
+  : isPluginWindow
+    ? (await import('./PluginWindow.vue')).default
+    : (await import('./App.vue')).default;
 
 const app = createApp(RootComponent);
 const pinia = createPinia();
 app.use(pinia);
 
-if (!isAiWindow) {
+if (!isAiWindow && !isPluginWindow) {
   const [
     application,
     serialApplication,
@@ -54,62 +57,9 @@ if (!isAiWindow) {
     portLeaseRegistry,
     notifications,
   );
-  const pluginSerialActionBridge = new pluginsModule.PluginSerialActionBridge((sessionId) =>
-    baseApplicationServices.runtimeRegistry.get(sessionId),
-  );
-  await pluginSerialActionBridge.start();
-  // G43: plugins read session metadata and bounded capture pages from the
-  // renderer-owned catalog through the same trusted event/answer bridge.
-  const sessionCatalog = sessions.useSessionCatalog();
-  const pluginSessionQueryBridge = new pluginsModule.PluginSessionQueryBridge({
-    listSessions: () =>
-      sessionCatalog.sessions.value.map((session) => ({
-        sessionId: session.id,
-        name: session.portName,
-        kind: 'serial',
-        connected:
-          baseApplicationServices.runtimeRegistry.get(session.id)?.isConnected.value === true,
-        rxBytes: session.rxBytes,
-        txBytes: session.txBytes,
-      })),
-    readCapture: ({ sessionId, fromSequence, maxFrames, maxBytes }) => {
-      const session = sessionCatalog.sessions.value.find((candidate) => candidate.id === sessionId);
-      if (!session) return null;
-      const frames: {
-        sequence: number;
-        timestampMs: number;
-        tx: boolean;
-        bytes: number[];
-      }[] = [];
-      let budget = maxBytes;
-      let index = fromSequence;
-      for (; index < session.frames.length && frames.length < maxFrames; index += 1) {
-        const frame = session.frames[index];
-        if (!frame) break;
-        if (frame.data.length > budget) break;
-        budget -= frame.data.length;
-        frames.push({
-          sequence: index,
-          timestampMs: frame.timestamp,
-          tx: frame.direction === 'TX',
-          bytes: Array.from(frame.data),
-        });
-      }
-      return {
-        frames,
-        nextSequence: index < session.frames.length ? index : null,
-      };
-    },
-  });
-  await pluginSessionQueryBridge.start();
   const applicationServices = Object.freeze({
     ...baseApplicationServices,
     runtimeStatusRegistry,
-    async shutdown(): Promise<void> {
-      pluginSerialActionBridge.stop();
-      pluginSessionQueryBridge.stop();
-      await baseApplicationServices.shutdown();
-    },
   });
   app.provide(sessions.SESSION_APPLICATION_SERVICES_KEY, applicationServices);
   // The plugin center renders in Settings once the native runtime is wired;
@@ -118,7 +68,9 @@ if (!isAiWindow) {
     new pluginsModule.TauriPluginCenterPort(),
   );
   app.provide(pluginsModule.PLUGIN_CENTER_KEY, pluginCenterService);
-  void pluginCenterService.start();
+  let pluginSerialCapabilityGateway: ReturnType<
+    typeof pluginsModule.createPluginSerialCapabilityGateway
+  > | null = null;
   sessions.enterWorkspaceSessionPersistenceMode();
   const sessionStore = sessions.useWorkspaceSessionPort();
   const sessionMutationPolicy = sessions.useSessionMutationPolicy();
@@ -152,10 +104,13 @@ if (!isAiWindow) {
       runtimeContext.application?.preflightCapturedFrame(sessionId, frame).accepted === true,
   });
   const pluginParticipant = new workspace.PluginRuntimeWorkspaceParticipant({
-    quiesce() {
+    async quiesce() {
       pluginCenterService.cancelAction();
+      await pluginSerialCapabilityGateway?.revokeAll();
     },
-    dispose() {},
+    async dispose() {
+      await pluginSerialCapabilityGateway?.revokeAll();
+    },
     restore() {
       return pluginCenterService.refresh();
     },
@@ -184,6 +139,79 @@ if (!isAiWindow) {
     },
   );
   runtimeContext.application = workspaceApplication;
+  pluginSerialCapabilityGateway = pluginsModule.createPluginSerialCapabilityGateway({
+    pluginCenter: pluginCenterService,
+    workspace: workspaceApplication,
+    workspaceFrames: workspacePort,
+    sessions: sessionStore,
+    runtimes: applicationServices.runtimeRegistry,
+    ports: serialStore,
+  });
+  const pluginSerialCapabilityTransport = new pluginsModule.TauriPluginSerialCapabilityTransport();
+  const pluginHostContextTransport = new pluginsModule.TauriPluginHostContextTransport();
+  const updatePluginHostContext = () =>
+    pluginHostContextTransport.update({
+      locale: appStore.locale,
+      theme: appStore.theme,
+      sessions: sessionStore.sessions.map((session, index) => {
+        const connection = applicationServices.runtimeRegistry
+          .get(session.id)
+          ?.serialTransactions.connectionSnapshot() ?? { connected: false, generation: 0 };
+        const preferredName = session.displayName?.trim() ?? '';
+        return {
+          sessionId: session.id,
+          name: pluginsModule.safeDisplayText(preferredName, 1_024)
+            ? preferredName
+            : `Session ${index + 1}`,
+          connected: connection.connected,
+          rxBytes: session.rxBytes,
+          txBytes: session.txBytes,
+          generation: connection.generation,
+        };
+      }),
+    });
+  await updatePluginHostContext().catch(() => undefined);
+  watch(
+    () => ({
+      locale: appStore.locale,
+      theme: appStore.theme,
+      sessions: sessionStore.sessions.map((session) => ({
+        id: session.id,
+        displayName: session.displayName,
+        connected: session.isConnected,
+        rxBytes: session.rxBytes,
+        txBytes: session.txBytes,
+      })),
+    }),
+    () => void updatePluginHostContext().catch(() => undefined),
+    { deep: true, flush: 'post' },
+  );
+  watch(
+    () => [...serialStore.availablePorts],
+    () => {
+      if (pluginSerialCapabilityGateway?.refreshPortCatalog() !== true) return;
+      void pluginSerialCapabilityTransport.notifyPortCatalogChanged().catch(() => undefined);
+    },
+    { flush: 'sync' },
+  );
+  watch(
+    () =>
+      JSON.stringify(
+        sessionStore.sessions.map((session) => [
+          session.id,
+          session.displayName,
+          session.isConnected,
+        ]),
+      ),
+    () => void pluginSerialCapabilityTransport.notifyPortCatalogChanged().catch(() => undefined),
+    { flush: 'post' },
+  );
+  const pluginSerialCapabilityBridge = new pluginsModule.PluginSerialCapabilityBridge(
+    pluginSerialCapabilityGateway,
+    pluginSerialCapabilityTransport,
+  );
+  await pluginSerialCapabilityBridge.start().catch(() => false);
+  void pluginCenterService.start();
   const workspaceAdapter = new workspace.SessionStoreWorkspaceAdapter(
     sessionStore,
     workspaceApplication,
@@ -219,6 +247,7 @@ if (!isAiWindow) {
         workspaceApplication.preflightSessionRegistration(sessionId, frameCount, captureBytes)
           .accepted,
     });
+    void updatePluginHostContext().catch(() => undefined);
   });
   app.provide(workspace.WORKSPACE_APPLICATION_KEY, {
     coordinator: workspaceCoordinator,
@@ -236,7 +265,12 @@ if (!isAiWindow) {
   app.provide(migration.LEGACY_RESET_CONTEXT_KEY, legacyReset);
   const tauriShutdown = new shutdown.TauriShutdownPort();
   const applicationShutdown = await shutdown.bootstrapApplicationShutdown({
-    application: applicationServices,
+    application: {
+      async prepareShutdown() {
+        await pluginSerialCapabilityGateway?.revokeAll();
+        await applicationServices.prepareShutdown();
+      },
+    },
     appSettings: appStore,
     serialSettings: serialStore,
     workspacePersistence: workspaceApplication,

@@ -212,6 +212,22 @@
     </div>
 
     <div
+      v-else-if="activeTab === 'tasks'"
+      :id="`${headingId}-tasks-panel`"
+      role="tabpanel"
+      :aria-labelledby="`${headingId}-tasks`"
+      tabindex="0"
+      class="plugin-center__tasks"
+    >
+      <PluginTaskCenter :tasks="snapshot.tasks ?? []" :busy="busy" @cancel="cancelPluginTask" />
+      <PluginCommandList
+        :commands="snapshot.commandContributions ?? []"
+        :busy="busy"
+        @run="runPluginCommand"
+      />
+    </div>
+
+    <div
       v-else
       :id="`${headingId}-panels-panel`"
       role="tabpanel"
@@ -219,25 +235,36 @@
       tabindex="0"
       class="plugin-center__panels"
     >
-      <EmptyState v-if="snapshot.panels.length === 0" :title="t('plugins.panels.empty')" />
-      <PluginDeclarativePanel
-        v-for="panel in snapshot.panels"
-        v-else
-        :key="`${panel.runtime.pluginId}:${panel.runtime.instanceId}:${panel.runtime.generation}`"
-        :panel="panel"
+      <EmptyState
+        v-if="(snapshot.surfaces?.length ?? 0) === 0"
+        :title="t('plugins.panels.empty')"
+      />
+      <PluginSurfaceRenderer
+        v-for="surface in snapshot.surfaces ?? []"
+        :key="`${surface.runtime.pluginId}:${surface.runtime.instanceId}:${surface.runtime.generation}:${surface.surfaceId}`"
+        :surface="surface"
         :busy="busy"
-        @event="emitPanelEvent"
+        :confirm-dangerous="confirmDangerousSurfaceAction"
+        @event="emitSurfaceEvent"
+        @detach="service.setSurfacePlacement(surface, 'detached-window')"
+        @attach="service.setSurfacePlacement(surface, 'workspace')"
       />
     </div>
 
     <button v-if="busy" type="button" class="plugin-center__cancel" @click="service.cancelAction()">
       {{ t(snapshot.action?.status === 'cancelling' ? 'common.cancelling' : 'common.cancel') }}
     </button>
+
+    <PluginAuthorizationDialog
+      :request="snapshot.authorizationRequests?.[0] ?? null"
+      :busy="busy"
+      @resolve="resolveAuthorization"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, getCurrentInstance, onMounted, onUnmounted, reactive, ref, useId } from 'vue';
+import { computed, getCurrentInstance, h, onMounted, onUnmounted, reactive, ref, useId } from 'vue';
 import { useDialog } from 'naive-ui';
 import { Pencil, RefreshCw, Trash2 } from '@lucide/vue';
 import { t } from '../../lib/i18n';
@@ -250,17 +277,24 @@ import {
   useOptionalPluginCenter,
   type InstalledPluginView,
   type PluginCenterSnapshot,
+  type PluginAuthorizationRequestV2,
+  type PluginCommandContributionV2,
+  type PluginContributionDisposition,
   type PluginLifecycleStatus,
-  type PluginPanelEvent,
+  type PluginSurfaceEventV2,
+  type PluginTaskViewV2,
   type PluginSourceView,
 } from '../../features/plugins';
-import PluginDeclarativePanel from './PluginDeclarativePanel.vue';
+import PluginSurfaceRenderer from './PluginSurfaceRenderer.vue';
+import PluginAuthorizationDialog from './PluginAuthorizationDialog.vue';
+import PluginCommandList from './PluginCommandList.vue';
+import PluginTaskCenter from './PluginTaskCenter.vue';
 
-type PluginTab = 'installed' | 'catalog' | 'sources' | 'panels';
+type PluginTab = 'installed' | 'catalog' | 'sources' | 'tasks' | 'panels';
 
 const service = useOptionalPluginCenter();
 const headingId = `plugin-center-${useId()}`;
-const tabs: readonly PluginTab[] = ['installed', 'catalog', 'sources', 'panels'];
+const tabs: readonly PluginTab[] = ['installed', 'catalog', 'sources', 'tasks', 'panels'];
 const activeTab = ref<PluginTab>('installed');
 const snapshot = ref<PluginCenterSnapshot>(service?.snapshot() ?? emptySnapshot());
 let detach: (() => void) | null = null;
@@ -309,6 +343,52 @@ onUnmounted(() => detach?.());
 
 function refresh(): void {
   void service?.refresh();
+}
+
+function emitSurfaceEvent(event: PluginSurfaceEventV2): void {
+  void service?.emitSurfaceEvent(event);
+}
+
+function resolveAuthorization(
+  request: PluginAuthorizationRequestV2,
+  decision: 'approve' | 'reject',
+): void {
+  void service?.resolveAuthorization(request, decision);
+}
+
+function cancelPluginTask(task: PluginTaskViewV2): void {
+  void service?.cancelTask(task);
+}
+
+function runPluginCommand(command: PluginCommandContributionV2): void {
+  if (!command.dangerous) {
+    void service?.runCommand(command);
+    return;
+  }
+  if (!dialog) return;
+  dialog.warning({
+    title: t('plugins.commands.confirm_title'),
+    content: command.confirmation,
+    positiveText: t('plugins.commands.run'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => void service?.runCommand(command),
+  });
+}
+
+function confirmDangerousSurfaceAction(message: string): Promise<boolean> {
+  if (!dialog) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title: t('plugins.surface.dangerous_title'),
+      content: message,
+      positiveText: t('plugins.commands.run'),
+      negativeText: t('common.cancel'),
+      closable: false,
+      maskClosable: false,
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+    });
+  });
 }
 
 function installLocal(): void {
@@ -395,23 +475,57 @@ function requestUninstall(plugin: InstalledPluginView): void {
     logger.warn('plugin uninstall confirmation is unavailable without a dialog provider');
     return;
   }
+  const contributionDisposition = ref<PluginContributionDisposition>('delete');
+  const choiceName = `${headingId}-uninstall-${plugin.pluginId}`;
   dialog.warning({
     title: t('plugins.uninstall_confirm.title'),
-    content: t('plugins.uninstall_confirm.content', { name: plugin.displayName }),
+    content: () =>
+      h('div', { class: 'plugin-center__uninstall-confirmation' }, [
+        h('p', t('plugins.uninstall_confirm.content', { name: plugin.displayName })),
+        h('fieldset', [
+          h('legend', t('plugins.uninstall_confirm.contributions.legend')),
+          h('label', [
+            h('input', {
+              type: 'radio',
+              name: choiceName,
+              value: 'delete',
+              checked: contributionDisposition.value === 'delete',
+              onChange: () => {
+                contributionDisposition.value = 'delete';
+              },
+            }),
+            h('span', [
+              h('strong', t('plugins.uninstall_confirm.contributions.delete')),
+              h('small', t('plugins.uninstall_confirm.contributions.delete_description')),
+            ]),
+          ]),
+          h('label', [
+            h('input', {
+              type: 'radio',
+              name: choiceName,
+              value: 'convert-to-user',
+              checked: contributionDisposition.value === 'convert-to-user',
+              onChange: () => {
+                contributionDisposition.value = 'convert-to-user';
+              },
+            }),
+            h('span', [
+              h('strong', t('plugins.uninstall_confirm.contributions.convert')),
+              h('small', t('plugins.uninstall_confirm.contributions.convert_description')),
+            ]),
+          ]),
+        ]),
+      ]),
     positiveText: t('plugins.uninstall'),
     negativeText: t('common.cancel'),
     onPositiveClick: () => {
-      void service?.uninstall(plugin.pluginId);
+      void service?.uninstall(plugin.pluginId, contributionDisposition.value);
     },
   });
 }
 
 function setEnabled(pluginId: string, enabled: boolean): void {
   void service?.setEnabled(pluginId, enabled);
-}
-
-function emitPanelEvent(event: PluginPanelEvent): void {
-  void service?.emitPanelEvent(event);
 }
 
 function moveTab(current: PluginTab, event: KeyboardEvent): void {
@@ -435,9 +549,11 @@ function emptySnapshot(): PluginCenterSnapshot {
     revision: 0,
     catalog: Object.freeze([]),
     installed: Object.freeze([]),
-    serialProposals: Object.freeze([]),
-    panels: Object.freeze([]),
     sources: Object.freeze([]),
+    surfaces: Object.freeze([]),
+    tasks: Object.freeze([]),
+    authorizationRequests: Object.freeze([]),
+    commandContributions: Object.freeze([]),
     started: false,
     action: null,
     failure: null,
@@ -523,6 +639,36 @@ function emptySnapshot(): PluginCenterSnapshot {
   border-left-color: var(--color-error);
 }
 
+.plugin-center__uninstall-confirmation,
+.plugin-center__uninstall-confirmation fieldset {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.plugin-center__uninstall-confirmation p {
+  margin: 0;
+}
+
+.plugin-center__uninstall-confirmation fieldset {
+  margin: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 0.4rem;
+  padding: 0.65rem;
+}
+
+.plugin-center__uninstall-confirmation label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.plugin-center__uninstall-confirmation small {
+  display: block;
+  color: var(--text-muted);
+}
+
 .plugin-center__local-install {
   display: flex;
   align-items: center;
@@ -544,7 +690,8 @@ function emptySnapshot(): PluginCenterSnapshot {
   font: inherit;
 }
 
-.plugin-center__panels {
+.plugin-center__panels,
+.plugin-center__tasks {
   display: grid;
   gap: 0.75rem;
 }

@@ -5,11 +5,14 @@
 //! escape the actor thread, so their internal synchronous APIs cannot be
 //! raced by renderer commands or native supervisors.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 
-use bbcom_contracts::{AppErrorCode, IpcError, PluginCommandResponse};
+use bbcom_contracts::{
+    AppErrorCode, IpcError, PluginCommandResponse, PluginContributionDisposition,
+};
 use bbcom_plugin_manager::{OpaqueProjectPluginState, PluginSnapshot, WorkspacePluginBinding};
 
 use crate::commands::plugin::{PluginCommand, PluginCommandService};
@@ -22,6 +25,16 @@ const ACTOR_MAILBOX_CAPACITY: usize = 256;
 
 pub trait PluginWorkspaceBindingPort: Send + Sync + 'static {
     fn set_expected_enabled(&self, plugin_id: &str, expected_enabled: bool) -> Result<(), ()>;
+    fn uninstall_with_contribution_cleanup(
+        &self,
+        plugin_id: &str,
+        disposition: PluginContributionDisposition,
+        uninstall: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()>;
+    fn recover_contribution_uninstall(
+        &self,
+        installed_plugin_ids: &BTreeSet<String>,
+    ) -> Result<(), ()>;
 }
 
 enum PluginRuntimeMessage {
@@ -29,16 +42,19 @@ enum PluginRuntimeMessage {
         command: PluginCommand,
         reply: SyncSender<Result<PluginCommandResponse, IpcError>>,
     },
-    /// Trusted host ingress: a sidecar serial-write proposal awaiting user
-    /// confirmation. Fire-and-forget from the host reader thread.
-    RegisterProposal {
-        event: bbcom_plugin_contracts::generated::SerialProposalEvent,
-    },
-    /// Push an unsolicited envelope (session-query data) into a sidecar.
+    /// Push a protocol-v2 event/cancel/stream payload into a sidecar.
     DeliverEnvelope {
         plugin_id: String,
-        payload: bbcom_plugin_contracts::generated::envelope::Payload,
+        payload: bbcom_plugin_contracts::generated_v2::envelope::Payload,
         reply: SyncSender<Result<(), PluginServiceError>>,
+    },
+    NotifyPortCatalogChanged {
+        reply: SyncSender<Result<usize, PluginServiceError>>,
+    },
+    NotifyHostContextChanged {
+        locale: Option<String>,
+        theme: Option<bbcom_plugin_contracts::generated_v2::ColorScheme>,
+        reply: SyncSender<Result<usize, PluginServiceError>>,
     },
     PollHostExits {
         reply: SyncSender<Vec<Result<PluginSnapshot, PluginServiceError>>>,
@@ -61,13 +77,6 @@ pub struct PluginRuntimeActorHandle {
 }
 
 impl PluginRuntimeActorHandle {
-    /// Forward a sidecar serial-write proposal into the command service.
-    /// Fire-and-forget: registration failures resolve the parked guest call
-    /// via the sidecar's own TTL, so no reply channel is needed.
-    pub fn register_proposal(&self, event: bbcom_plugin_contracts::generated::SerialProposalEvent) {
-        let _ = self.send(PluginRuntimeMessage::RegisterProposal { event });
-    }
-
     pub fn spawn(
         adapter: NativePluginCommandAdapter,
         lifecycle: Arc<dyn PluginRuntimeLifecycle>,
@@ -107,22 +116,43 @@ impl PluginCommandService for PluginRuntimeActorHandle {
 }
 
 impl PluginRuntimeLifecycle for PluginRuntimeActorHandle {
-    fn register_serial_proposal(
-        &self,
-        event: bbcom_plugin_contracts::generated::SerialProposalEvent,
-    ) {
-        PluginRuntimeActorHandle::register_proposal(self, event);
-    }
-
     fn deliver_envelope(
         &self,
         plugin_id: &str,
-        payload: bbcom_plugin_contracts::generated::envelope::Payload,
+        payload: bbcom_plugin_contracts::generated_v2::envelope::Payload,
     ) -> Result<(), PluginServiceError> {
         let (reply, response) = mpsc::sync_channel(1);
         if !self.send(PluginRuntimeMessage::DeliverEnvelope {
             plugin_id: plugin_id.to_owned(),
             payload,
+            reply,
+        }) {
+            return Err(PluginServiceError::StatePoisoned);
+        }
+        response
+            .recv()
+            .unwrap_or(Err(PluginServiceError::StatePoisoned))
+    }
+
+    fn notify_port_catalog_changed(&self) -> Result<usize, PluginServiceError> {
+        let (reply, response) = mpsc::sync_channel(1);
+        if !self.send(PluginRuntimeMessage::NotifyPortCatalogChanged { reply }) {
+            return Err(PluginServiceError::StatePoisoned);
+        }
+        response
+            .recv()
+            .unwrap_or(Err(PluginServiceError::StatePoisoned))
+    }
+
+    fn notify_host_context_changed(
+        &self,
+        locale: Option<String>,
+        theme: Option<bbcom_plugin_contracts::generated_v2::ColorScheme>,
+    ) -> Result<usize, PluginServiceError> {
+        let (reply, response) = mpsc::sync_channel(1);
+        if !self.send(PluginRuntimeMessage::NotifyHostContextChanged {
+            locale,
+            theme,
             reply,
         }) {
             return Err(PluginServiceError::StatePoisoned);
@@ -211,15 +241,22 @@ fn actor_loop(
                 };
                 let _ = reply.send(result);
             }
-            PluginRuntimeMessage::RegisterProposal { event } => {
-                adapter.register_serial_proposal(&event);
-            }
             PluginRuntimeMessage::DeliverEnvelope {
                 plugin_id,
                 payload,
                 reply,
             } => {
                 let _ = reply.send(lifecycle.deliver_envelope(&plugin_id, payload));
+            }
+            PluginRuntimeMessage::NotifyPortCatalogChanged { reply } => {
+                let _ = reply.send(lifecycle.notify_port_catalog_changed());
+            }
+            PluginRuntimeMessage::NotifyHostContextChanged {
+                locale,
+                theme,
+                reply,
+            } => {
+                let _ = reply.send(lifecycle.notify_host_context_changed(locale, theme));
             }
             PluginRuntimeMessage::PollHostExits { reply } => {
                 let _ = reply.send(lifecycle.poll_host_exits());

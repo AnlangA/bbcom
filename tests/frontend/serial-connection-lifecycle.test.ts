@@ -869,6 +869,33 @@ test('construction retains native dependencies until an explicit leased connecti
   scope.stop();
 });
 
+test('default visibility policy reads a live document when scheduling RX publication', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const listeners = new Map<string, EventListener>();
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      visibilityState: 'hidden',
+      addEventListener: (name: string, listener: EventListener) => listeners.set(name, listener),
+      removeEventListener: (name: string) => listeners.delete(name),
+    } as unknown as Document,
+  });
+  const fake = new FakePort();
+  try {
+    const { connection, scope } = createConnection([fake]);
+    assert.equal(await connection.start(), true);
+    fake.handlers?.onData(new Uint8Array([1]));
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(listeners.has('visibilitychange'), true);
+    await connection.stop();
+    scope.stop();
+    assert.equal(listeners.has('visibilitychange'), false);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'document', descriptor);
+    else Reflect.deleteProperty(globalThis, 'document');
+  }
+});
+
 test('raw callbacks precede capture, overflow is explicit, and recovery clears the transient error', async () => {
   const fake = new FakePort();
   const clock = fakeTimerScheduler();

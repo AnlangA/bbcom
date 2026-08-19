@@ -11,7 +11,12 @@ pub(crate) fn validate_project_states(states: &[OpaqueProjectPluginState]) -> Re
     let mut plugin_ids = BTreeSet::new();
     let mut total = 0_usize;
     for state in states {
-        OpaqueProjectPluginState::new(state.plugin_id.clone(), Vec::new())?;
+        OpaqueProjectPluginState::new_with_versions(
+            state.plugin_id.clone(),
+            Vec::new(),
+            state.api_generation,
+            state.schema_version,
+        )?;
         if !plugin_ids.insert(state.plugin_id.as_str()) {
             return Err(ManagerErrorCode::ProjectStateInvalid.into());
         }

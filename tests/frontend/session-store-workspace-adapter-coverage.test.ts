@@ -122,6 +122,9 @@ function createAdapterHarness(initialSessions: readonly SerialSession[]) {
       storeListener = listener;
       return storeDetach;
     },
+    isPersistentSession(sessionId: string) {
+      return sessions.some((session) => session.id === sessionId);
+    },
     replaceWorkspaceSessions,
     markWorkspacePersisted,
   } as unknown as ReturnType<typeof useSessionCoreStore>;

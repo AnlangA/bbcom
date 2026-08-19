@@ -574,6 +574,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bbcom-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "wit-parser",
+]
+
+[[package]]
 name = "bbcom-workspace"
 version = "0.1.0"
 dependencies = [

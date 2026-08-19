@@ -384,6 +384,9 @@ pub struct WorkspaceQuickCommand {
     pub name: String,
     pub data: String,
     pub is_hex: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub owner_plugin_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -400,6 +403,9 @@ pub struct WorkspaceMacro {
     pub id: String,
     pub name: String,
     pub steps: Vec<WorkspaceMacroStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub owner_plugin_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]

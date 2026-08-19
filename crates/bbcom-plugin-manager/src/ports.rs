@@ -1,8 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
-    HostHandle, HostLaunchRequest, HostPanel, ManualPackageRequest, PluginArtifact,
-    PreparedInstallation,
+    HostHandle, HostLaunchRequest, ManualPackageRequest, PluginArtifact, PreparedInstallation,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,51 +89,20 @@ pub trait HostLauncher {
 
     fn shutdown(&mut self, handle: &HostHandle) -> std::result::Result<(), HostFailure>;
 
-    fn take_published_panel(
-        &mut self,
-        _handle: &HostHandle,
-    ) -> std::result::Result<Option<HostPanel>, HostFailure> {
-        Ok(None)
-    }
-
-    fn invoke_panel_event(
-        &mut self,
-        _handle: &HostHandle,
-        _field_id: &str,
-        _value: &str,
-    ) -> std::result::Result<Option<HostPanel>, HostFailure> {
-        Err(HostFailure::Transport)
-    }
-
     /// Forcefully terminates an instance after graceful shutdown or protocol
     /// handling failed. This operation must be idempotent.
     fn terminate(&mut self, handle: &HostHandle);
 
-    /// Push an unsolicited envelope to the sidecar (proposal decisions,
-    /// session-query data) for a guest call parked inside the plugin's own
-    /// host process. The default fails closed: embedders without a real
-    /// sidecar never accept pushes.
+    /// Push a protocol-v2 request/event/cancel payload to one running sidecar.
+    /// The default fails closed: embedders without a typed v2 transport never
+    /// accept pushes.
     fn deliver_envelope(
         &mut self,
         _handle: &HostHandle,
-        _payload: bbcom_plugin_contracts::generated::envelope::Payload,
+        _payload: bbcom_plugin_contracts::generated_v2::envelope::Payload,
     ) -> std::result::Result<(), HostFailure> {
         Err(HostFailure::Transport)
     }
-
-    /// Stream sidecar-initiated push requests (serial write proposals, G43
-    /// session/capture queries) into the application. The default drops
-    /// them: embedders without the pipeline keep the old behavior.
-    fn attach_push_sink(&mut self, _sink: std::sync::Arc<dyn HostPushSink>) {}
-}
-
-/// Receiver for sidecar push requests routed out of the host reader thread.
-pub trait HostPushSink: Send + Sync + 'static {
-    fn serial_proposal(&self, event: bbcom_plugin_contracts::generated::SerialProposalEvent);
-    fn session_query(
-        &self,
-        request: bbcom_plugin_contracts::generated::SessionQueryRequest,
-    ) -> bbcom_plugin_contracts::generated::SessionQueryResponse;
 }
 
 pub trait Clock {

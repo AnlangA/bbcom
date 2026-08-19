@@ -86,11 +86,7 @@ fn managed_project_deletion_is_exact_and_missing_ids_fail_closed() {
             .create_project(&workspace_id, "delete me", 1)
             .unwrap(),
     );
-    drop(
-        library
-            .create_project(&other_id, "keep me", 1)
-            .unwrap(),
-    );
+    drop(library.create_project(&other_id, "keep me", 1).unwrap());
 
     library.delete_project(&workspace_id).unwrap();
     assert!(!library.contains(&workspace_id));

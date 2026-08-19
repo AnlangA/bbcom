@@ -1,0 +1,25 @@
+[package]
+name = "bbcom-mcumgr-guest"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.97"
+publish = false
+description = "no-WASI bbcom plugin v2 MCUmgr client component"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["component"]
+component = ["dep:wit-bindgen"]
+std = []
+
+[dependencies]
+bbcom-mcumgr-core = { path = ".." }
+bbcom-plugin-guest-runtime = { path = "../../plugin-guest-runtime" }
+bbcom-plugin-sdk = { path = "../../../crates/bbcom-plugin-sdk" }
+wit-bindgen = { version = "=0.43.0", default-features = false, features = ["macros", "realloc"], optional = true }
+
+[dev-dependencies]
+bbcom-plugin-component-audit = { path = "../../plugin-component-audit" }

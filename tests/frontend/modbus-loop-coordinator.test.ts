@@ -126,3 +126,30 @@ test('stop clears armed timers', async () => {
   await delay(140);
   assert.equal(reads, 0);
 });
+
+test('waitForIdle observes an exclusive operation and supports cancellation', async () => {
+  let finish!: () => void;
+  const coordinator = new ModbusLoopCoordinator({
+    shouldRunRead: () => false,
+    shouldRunWrite: () => false,
+    getReadIntervalMs: () => 100,
+    getWriteIntervalMs: () => 100,
+    runRead: async () => {},
+    runWrite: async () => {},
+  });
+  const operation = coordinator.runExclusive(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const cancellation = new AbortController();
+  const cancelled = coordinator.waitForIdle(cancellation.signal);
+  const idle = coordinator.waitForIdle();
+  cancellation.abort();
+  await assert.rejects(cancelled, /pause cancelled/u);
+  finish();
+  await operation;
+  await idle;
+  await coordinator.waitForIdle();
+});

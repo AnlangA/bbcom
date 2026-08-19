@@ -99,7 +99,8 @@ function layerOf(portablePath) {
     portablePath.startsWith('src/stores/') ||
     portablePath.startsWith('src/composables/') ||
     portablePath === 'src/App.vue' ||
-    portablePath === 'src/AiWindow.vue'
+    portablePath === 'src/AiWindow.vue' ||
+    portablePath === 'src/PluginWindow.vue'
   ) {
     return 'ui';
   }
@@ -228,6 +229,7 @@ function ruleReports(files, fileSet, resolveImport, displayPath) {
           specifier.startsWith('./styles/') ||
           targetPath === 'src/App.vue' ||
           targetPath === 'src/AiWindow.vue' ||
+          targetPath === 'src/PluginWindow.vue' ||
           targetPath?.startsWith('src/stores/') ||
           /^src\/features\/[^/]+\/index\.ts$/.test(targetPath ?? '') ||
           specifier === 'vue' ||

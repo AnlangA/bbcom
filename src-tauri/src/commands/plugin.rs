@@ -11,21 +11,19 @@ use std::time::{Duration, Instant};
 
 use crate::utils::window::require_main_window_label;
 use bbcom_contracts::{
-    AddPluginSourceRequest, AppErrorCode, CancelPluginOperationRequest,
-    EmitPluginPanelEventRequest, InstallLocalPluginRequest, InstallPluginRequest,
+    AddPluginSourceRequest, AppErrorCode, CancelPluginOperationRequest, CancelPluginTaskRequestV2,
+    EmitPluginSurfaceEventRequestV2, InstallLocalPluginRequest, InstallPluginRequest,
     InstalledPluginView, IpcError, MAX_INSTALLED_PLUGINS, MAX_PLUGIN_CATALOG_ITEMS,
-    MAX_PLUGIN_DESCRIPTION_BYTES, MAX_PLUGIN_DISPLAY_NAME_BYTES, MAX_PLUGIN_HEX_PREVIEW_BYTES,
-    MAX_PLUGIN_ID_BYTES, MAX_PLUGIN_PANEL_FIELD_ID_BYTES, MAX_PLUGIN_PANEL_FIELDS,
-    MAX_PLUGIN_PANEL_LABEL_BYTES, MAX_PLUGIN_PANEL_OPTION_BYTES, MAX_PLUGIN_PANEL_OPTIONS,
-    MAX_PLUGIN_PANEL_TEXT_BYTES, MAX_PLUGIN_PANEL_TITLE_BYTES, MAX_PLUGIN_PANEL_VALUE_BYTES,
-    MAX_PLUGIN_PANELS, MAX_PLUGIN_SERIAL_PROPOSALS, MAX_PLUGIN_VERSION_BYTES,
-    MAX_WORKSPACE_FRAME_BYTES, PluginCatalogItem, PluginCenterData, PluginCommandResponse,
-    PluginDeclarativePanel, PluginLocalSourceGrantResponse, PluginLocalSourceKind,
-    PluginPanelEvent, PluginPanelField, PluginPanelFieldKind, PluginPermission,
-    PluginSerialActionResultRequest, PluginSerialProposal, PluginSnapshotRequest, PluginSourceKind,
+    MAX_PLUGIN_DESCRIPTION_BYTES, MAX_PLUGIN_DISPLAY_NAME_BYTES, MAX_PLUGIN_ID_BYTES,
+    MAX_PLUGIN_VERSION_BYTES, PluginCatalogItem, PluginCenterData, PluginCommandResponse,
+    PluginDetachedSurfaceEventRequestV2, PluginDetachedSurfaceSnapshotRequestV2,
+    PluginDetachedSurfaceViewV2, PluginDetachedTaskCancelRequestV2,
+    PluginHostContextUpdateRequestV2, PluginLocalSourceGrantResponse, PluginLocalSourceKind,
+    PluginSerialCapabilityReplyRequestV2, PluginSnapshotRequest, PluginSourceKind,
     PluginSourceView, RefreshPluginSourceRequest, RemovePluginSourceRequest,
-    RequestPluginLocalSourceGrantRequest, ResolvePluginSerialProposalRequest, RuntimeInstanceKey,
-    SetPluginEnabledRequest, SetPluginWatchEnabledRequest, UninstallPluginRequest,
+    RequestPluginLocalSourceGrantRequest, ResolvePluginAuthorizationRequestV2,
+    RunPluginCommandRequestV2, RuntimeInstanceKey, SetPluginEnabledRequest,
+    SetPluginSurfacePlacementRequestV2, SetPluginWatchEnabledRequest, UninstallPluginRequest,
     UpdatePluginSourceRequest,
 };
 use tauri::{AppHandle, Manager, WebviewWindow};
@@ -116,8 +114,6 @@ pub enum PluginCommand {
     },
     Uninstall(UninstallPluginRequest),
     SetEnabled(SetPluginEnabledRequest),
-    ResolveSerialProposal(ResolvePluginSerialProposalRequest),
-    EmitPanelEvent(EmitPluginPanelEventRequest),
     CancelOperation(CancelPluginOperationRequest),
 }
 
@@ -137,12 +133,6 @@ impl PluginCommand {
                 (&request.request_id, request.revision, &request.operation_id)
             }
             Self::SetEnabled(request) => {
-                (&request.request_id, request.revision, &request.operation_id)
-            }
-            Self::ResolveSerialProposal(request) => {
-                (&request.request_id, request.revision, &request.operation_id)
-            }
-            Self::EmitPanelEvent(request) => {
                 (&request.request_id, request.revision, &request.operation_id)
             }
             Self::CancelOperation(request) => {
@@ -343,9 +333,11 @@ pub async fn plugin_uninstall(
         PluginCommand::Uninstall(request),
     )
     .await?;
-    let _ = app
-        .state::<Arc<crate::plugins::NativePluginSourceRegistry>>()
-        .remove_dev_directory(&plugin_id);
+    if matches!(response, PluginCommandResponse::Completed { .. }) {
+        let _ = app
+            .state::<Arc<crate::plugins::NativePluginSourceRegistry>>()
+            .remove_dev_directory(&plugin_id);
+    }
     attach_sources(&app, &mut response, "plugin_uninstall")?;
     Ok(response)
 }
@@ -466,31 +458,125 @@ pub async fn plugin_set_watch_enabled(
 }
 
 #[tauri::command]
-pub async fn plugin_resolve_serial_proposal(
+pub async fn plugin_emit_surface_event_v2(
     app: AppHandle,
     window: WebviewWindow,
-    request: ResolvePluginSerialProposalRequest,
+    request: EmitPluginSurfaceEventRequestV2,
 ) -> Result<PluginCommandResponse, IpcError> {
-    dispatch_async(
+    dispatch_v2_ui_action(
         app,
         window,
-        "plugin_resolve_serial_proposal",
-        PluginCommand::ResolveSerialProposal(request),
+        "plugin_emit_surface_event_v2",
+        crate::plugins::PluginUiActionV2::EmitSurfaceEvent(request),
     )
     .await
 }
 
 #[tauri::command]
-pub async fn plugin_emit_panel_event(
+pub async fn plugin_resolve_authorization_v2(
     app: AppHandle,
     window: WebviewWindow,
-    request: EmitPluginPanelEventRequest,
+    request: ResolvePluginAuthorizationRequestV2,
 ) -> Result<PluginCommandResponse, IpcError> {
-    dispatch_async(
+    dispatch_v2_ui_action(
         app,
         window,
-        "plugin_emit_panel_event",
-        PluginCommand::EmitPanelEvent(request),
+        "plugin_resolve_authorization_v2",
+        crate::plugins::PluginUiActionV2::ResolveAuthorization(request),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn plugin_cancel_task_v2(
+    app: AppHandle,
+    window: WebviewWindow,
+    request: CancelPluginTaskRequestV2,
+) -> Result<PluginCommandResponse, IpcError> {
+    dispatch_v2_ui_action(
+        app,
+        window,
+        "plugin_cancel_task_v2",
+        crate::plugins::PluginUiActionV2::CancelTask(request),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn plugin_run_command_v2(
+    app: AppHandle,
+    window: WebviewWindow,
+    request: RunPluginCommandRequestV2,
+) -> Result<PluginCommandResponse, IpcError> {
+    dispatch_v2_ui_action(
+        app,
+        window,
+        "plugin_run_command_v2",
+        crate::plugins::PluginUiActionV2::RunCommand(request),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn plugin_set_surface_placement_v2(
+    app: AppHandle,
+    window: WebviewWindow,
+    request: SetPluginSurfacePlacementRequestV2,
+) -> Result<PluginCommandResponse, IpcError> {
+    dispatch_v2_ui_action(
+        app,
+        window,
+        "plugin_set_surface_placement_v2",
+        crate::plugins::PluginUiActionV2::SetSurfacePlacement(request),
+    )
+    .await
+}
+
+/// Token-bound read model for a least-privilege detached plugin window. The
+/// exact window label is part of the grant and the command exposes no plugin
+/// catalog, serial, filesystem, or main-window capability.
+#[tauri::command]
+pub async fn plugin_detached_surface_snapshot_v2(
+    app: AppHandle,
+    window: WebviewWindow,
+    request: PluginDetachedSurfaceSnapshotRequestV2,
+) -> Result<PluginDetachedSurfaceViewV2, IpcError> {
+    const OPERATION: &str = "plugin_detached_surface_snapshot_v2";
+    app.state::<Arc<crate::plugins::PluginDetachedWindowServiceV2>>()
+        .snapshot(window.label(), &request.token)
+        .ok_or_else(|| IpcError::security_denied(OPERATION))
+}
+
+#[tauri::command]
+pub async fn plugin_detached_emit_surface_event_v2(
+    app: AppHandle,
+    window: WebviewWindow,
+    request: PluginDetachedSurfaceEventRequestV2,
+) -> Result<(), IpcError> {
+    let action = app
+        .state::<Arc<crate::plugins::PluginDetachedWindowServiceV2>>()
+        .surface_action(window.label(), &request)?;
+    dispatch_detached_v2_ui_action(
+        app,
+        "plugin_detached_emit_surface_event_v2",
+        crate::plugins::PluginUiActionV2::EmitSurfaceEvent(action),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn plugin_detached_cancel_task_v2(
+    app: AppHandle,
+    window: WebviewWindow,
+    request: PluginDetachedTaskCancelRequestV2,
+) -> Result<(), IpcError> {
+    let action = app
+        .state::<Arc<crate::plugins::PluginDetachedWindowServiceV2>>()
+        .task_cancel_action(window.label(), &request)?;
+    dispatch_detached_v2_ui_action(
+        app,
+        "plugin_detached_cancel_task_v2",
+        crate::plugins::PluginUiActionV2::CancelTask(action),
     )
     .await
 }
@@ -510,54 +596,103 @@ pub async fn plugin_cancel_operation(
     .await
 }
 
-/// Returns the real renderer-owned serial scheduler outcome for one approved
-/// action. The registry validates the exact runtime instance and generation.
+/// Completes one exact protocol-v2 serial capability correlation. Only the
+/// main window can answer; stale, duplicated, cross-runtime and malformed
+/// replies never wake a sidecar waiter.
 #[tauri::command]
-pub async fn plugin_serial_action_result(
+pub async fn plugin_serial_capability_reply_v2(
     app: AppHandle,
     window: WebviewWindow,
-    request: PluginSerialActionResultRequest,
+    request: PluginSerialCapabilityReplyRequestV2,
 ) -> Result<(), IpcError> {
-    const OPERATION: &str = "plugin_serial_action_result";
+    const OPERATION: &str = "plugin_serial_capability_reply_v2";
     require_main_window_label(window.label(), OPERATION)?;
-    validate_identity(&request.correlation_id, "correlationId", OPERATION)?;
-    validate_runtime_instance_key(&request.runtime, OPERATION)?;
-    if request.sent_bytes > request.requested_bytes
-        || request.requested_bytes > MAX_WORKSPACE_FRAME_BYTES
-    {
-        return Err(IpcError::invalid_input(OPERATION, "result"));
-    }
-    let Some(registry) = app.try_state::<crate::plugins::SerialActionResultRegistry>() else {
-        return Ok(());
-    };
-    registry.complete(request);
-    Ok(())
+    let registry = app
+        .try_state::<Arc<crate::plugins::SerialCapabilityCorrelationRegistryV2>>()
+        .ok_or_else(|| IpcError::security_denied(OPERATION))?;
+    registry
+        .complete(request.event)
+        .map_err(|error| match error {
+            crate::plugins::SerialCapabilityReplyErrorV2::Unavailable => {
+                IpcError::new(AppErrorCode::Busy, "error.busy", true, OPERATION)
+            }
+            crate::plugins::SerialCapabilityReplyErrorV2::UnknownCorrelation
+            | crate::plugins::SerialCapabilityReplyErrorV2::ContextMismatch
+            | crate::plugins::SerialCapabilityReplyErrorV2::InvalidShape => {
+                IpcError::invalid_input(OPERATION, "event")
+            }
+        })
 }
 
-/// Answers one G43 plugin session/capture query from the renderer-owned
-/// session catalog. Bound checks mirror the plugin capture-page limits.
+/// Signals only that physical port membership changed. The renderer supplies
+/// no runtime identity, opaque port identifier, or native system path; the
+/// manager derives the authorized active targets from native state.
 #[tauri::command]
-pub async fn plugin_session_query_result(
+pub async fn plugin_notify_port_catalog_changed_v2(
     app: AppHandle,
     window: WebviewWindow,
-    result: bbcom_contracts::PluginSessionQueryResult,
 ) -> Result<(), IpcError> {
-    const OPERATION: &str = "plugin_session_query_result";
+    const OPERATION: &str = "plugin_notify_port_catalog_changed_v2";
     require_main_window_label(window.label(), OPERATION)?;
-    validate_identity(&result.query_id, "queryId", OPERATION)?;
-    if result.frames.len() > 256
-        || result
-            .frames
-            .iter()
-            .any(|frame| frame.bytes.len() > MAX_WORKSPACE_FRAME_BYTES)
-    {
-        return Err(IpcError::invalid_input(OPERATION, "frames"));
+    let handle = app
+        .try_state::<crate::plugins::PluginLifecycleHandle>()
+        .ok_or_else(|| IpcError::security_denied(OPERATION))?;
+    let lifecycle = handle
+        .current()
+        .ok_or_else(|| IpcError::new(AppErrorCode::Busy, "error.busy", true, OPERATION))?;
+    tauri::async_runtime::spawn_blocking(move || lifecycle.notify_port_catalog_changed())
+        .await
+        .map_err(|_| IpcError::new(AppErrorCode::Busy, "error.busy", true, OPERATION))?
+        .map(|_| ())
+        .map_err(|_| IpcError::new(AppErrorCode::Busy, "error.busy", true, OPERATION))
+}
+
+/// Updates the native initialization projection from the real, hydrated main
+/// application state. Runtime identities are never supplied by the renderer;
+/// appearance changes are broadcast only through the manager's active set.
+#[tauri::command]
+pub async fn plugin_update_host_context_v2(
+    app: AppHandle,
+    window: WebviewWindow,
+    mut request: PluginHostContextUpdateRequestV2,
+) -> Result<(), IpcError> {
+    const OPERATION: &str = "plugin_update_host_context_v2";
+    require_main_window_label(window.label(), OPERATION)?;
+    let active_workspace = app
+        .try_state::<crate::commands::workspace::WorkspaceManager>()
+        .and_then(|manager| manager.plugin_workspace_snapshot())
+        .map(|snapshot| snapshot.workspace_id);
+    if request.workspace_id.is_some() && request.workspace_id != active_workspace {
+        return Err(IpcError::invalid_input(OPERATION, "workspaceId"));
     }
-    let Some(registry) = app.try_state::<crate::plugins::SessionQueryResultRegistry>() else {
+    request.workspace_id = active_workspace;
+    let context = app
+        .try_state::<Arc<crate::plugins::PluginHostContextStoreV2>>()
+        .ok_or_else(|| IpcError::security_denied(OPERATION))?;
+    let changes = context
+        .update(request)
+        .map_err(|_| IpcError::invalid_input(OPERATION, "context"))?;
+    // Runtime composition is intentionally deferred until this first trusted,
+    // hydrated main-window projection exists. Existing enabled plugins are
+    // therefore initialized with real locale/theme/session summaries instead
+    // of setup-time placeholders.
+    crate::plugins::ensure_plugin_runtime(&app);
+    if changes.locale.is_none() && changes.theme.is_none() {
+        return Ok(());
+    }
+    let Some(lifecycle) = app
+        .try_state::<crate::plugins::PluginLifecycleHandle>()
+        .and_then(|handle| handle.current())
+    else {
         return Ok(());
     };
-    registry.complete(result);
-    Ok(())
+    tauri::async_runtime::spawn_blocking(move || {
+        lifecycle.notify_host_context_changed(changes.locale, changes.theme)
+    })
+    .await
+    .map_err(|_| IpcError::new(AppErrorCode::Busy, "error.busy", true, OPERATION))?
+    .map(|_| ())
+    .map_err(|_| IpcError::new(AppErrorCode::Busy, "error.busy", true, OPERATION))
 }
 
 /// Runs one plugin command on a blocking thread so the injected service's
@@ -576,6 +711,127 @@ async fn dispatch_async(
             .map_err(|_| IpcError::new(AppErrorCode::Busy, "error.busy", true, operation))??;
     attach_sources(&app, &mut response, operation)?;
     Ok(response)
+}
+
+async fn dispatch_v2_ui_action(
+    app: AppHandle,
+    window: WebviewWindow,
+    operation: &'static str,
+    action: crate::plugins::PluginUiActionV2,
+) -> Result<PluginCommandResponse, IpcError> {
+    let service = app
+        .state::<crate::plugins::PluginUiActionStateV2>()
+        .current_service();
+    let label = window.label().to_owned();
+    let mut response = tauri::async_runtime::spawn_blocking(move || {
+        require_main_window_label(&label, operation)?;
+        validate_v2_ui_action(&action, operation)?;
+        let (request_id, revision, operation_id) = action.correlation();
+        let request_id = request_id.to_owned();
+        let operation_id = operation_id.to_owned();
+        let response =
+            service
+                .execute(action)
+                .map_err(|error| match error.request_id.as_deref() {
+                    None => error.with_request_id(&request_id),
+                    Some(error_request_id) if error_request_id == request_id => error,
+                    Some(_) => invalid_response(operation, "error.requestId", &request_id),
+                })?;
+        validate_response(&response, &request_id, revision, &operation_id, operation)?;
+        Ok::<_, IpcError>(response)
+    })
+    .await
+    .map_err(|_| IpcError::new(AppErrorCode::Busy, "error.busy", true, operation))??;
+    attach_sources(&app, &mut response, operation)?;
+    Ok(response)
+}
+
+async fn dispatch_detached_v2_ui_action(
+    app: AppHandle,
+    operation: &'static str,
+    action: crate::plugins::PluginUiActionV2,
+) -> Result<(), IpcError> {
+    validate_v2_ui_action(&action, operation)?;
+    let (request_id, revision, operation_id) = action.correlation();
+    let request_id = request_id.to_owned();
+    let operation_id = operation_id.to_owned();
+    let service = app
+        .state::<crate::plugins::PluginUiActionStateV2>()
+        .current_service();
+    let response = tauri::async_runtime::spawn_blocking(move || service.execute(action))
+        .await
+        .map_err(|_| IpcError::new(AppErrorCode::Busy, "error.busy", true, operation))??;
+    validate_response(&response, &request_id, revision, &operation_id, operation)?;
+    match response {
+        PluginCommandResponse::Completed { .. } => Ok(()),
+        PluginCommandResponse::Cancelled { .. } => Err(IpcError::new(
+            AppErrorCode::Cancelled,
+            "error.cancelled",
+            true,
+            operation,
+        )),
+        PluginCommandResponse::Failed { .. } => Err(IpcError::new(
+            AppErrorCode::Busy,
+            "error.busy",
+            true,
+            operation,
+        )),
+    }
+}
+
+fn validate_v2_ui_action(
+    action: &crate::plugins::PluginUiActionV2,
+    operation: &'static str,
+) -> Result<(), IpcError> {
+    let (request_id, revision, operation_id) = action.correlation();
+    validate_identity(request_id, "requestId", operation)?;
+    validate_identity(operation_id, "operationId", operation)?;
+    validate_revision(revision, "revision", operation)?;
+    match action {
+        crate::plugins::PluginUiActionV2::ResolveAuthorization(request) => {
+            validate_identity(&request.plugin_id, "pluginId", operation)?;
+            validate_version(&request.version, "version", operation)?;
+            if request.digest_sha256.len() != 64
+                || !request
+                    .digest_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                || request.requested_capabilities.len() > 12
+                || !request
+                    .requested_capabilities
+                    .windows(2)
+                    .all(|pair| pair[0] < pair[1])
+            {
+                return Err(IpcError::invalid_input(operation, "authorization"));
+            }
+            Ok(())
+        }
+        crate::plugins::PluginUiActionV2::EmitSurfaceEvent(request) => {
+            validate_runtime_instance_key(&request.event.runtime, operation)?;
+            validate_identity(&request.event.surface_id, "surfaceId", operation)?;
+            if request.event.revision == 0 {
+                return Err(IpcError::invalid_input(operation, "surfaceRevision"));
+            }
+            validate_revision(request.event.revision, "surfaceRevision", operation)?;
+            validate_identity(&request.event.node_id, "nodeId", operation)?;
+            if let Some(value) = &request.event.value {
+                validate_display_text(value, 4096, true, "event.value", operation)?;
+            }
+            Ok(())
+        }
+        crate::plugins::PluginUiActionV2::CancelTask(request) => {
+            validate_runtime_instance_key(&request.runtime, operation)?;
+            validate_identity(&request.task_id, "taskId", operation)
+        }
+        crate::plugins::PluginUiActionV2::RunCommand(request) => {
+            validate_runtime_instance_key(&request.runtime, operation)?;
+            validate_identity(&request.command_id, "commandId", operation)
+        }
+        crate::plugins::PluginUiActionV2::SetSurfacePlacement(request) => {
+            validate_runtime_instance_key(&request.runtime, operation)?;
+            validate_identity(&request.surface_id, "surfaceId", operation)
+        }
+    }
 }
 
 async fn mutate_source<F>(
@@ -740,11 +996,6 @@ fn validate_command(command: &PluginCommand, operation: &'static str) -> Result<
         PluginCommand::SetEnabled(request) => {
             validate_identity(&request.plugin_id, "pluginId", operation)
         }
-        PluginCommand::ResolveSerialProposal(request) => {
-            validate_identity(&request.proposal_id, "proposalId", operation)?;
-            validate_runtime_instance_key(&request.runtime, operation)
-        }
-        PluginCommand::EmitPanelEvent(request) => validate_panel_event(&request.event, operation),
     }
 }
 
@@ -801,19 +1052,6 @@ fn validate_center_data(data: &PluginCenterData, operation: &'static str) -> Res
         "data.installed",
         operation,
     )?;
-    validate_limit(
-        data.serial_proposals.len(),
-        MAX_PLUGIN_SERIAL_PROPOSALS,
-        "data.serialProposals",
-        operation,
-    )?;
-    validate_limit(
-        data.panels.len(),
-        MAX_PLUGIN_PANELS,
-        "data.panels",
-        operation,
-    )?;
-
     let mut catalog_ids = HashSet::new();
     for item in &data.catalog {
         validate_catalog_item(item, operation)?;
@@ -831,23 +1069,6 @@ fn validate_center_data(data: &PluginCenterData, operation: &'static str) -> Res
             ));
         }
     }
-    let mut proposal_ids = HashSet::new();
-    for proposal in &data.serial_proposals {
-        validate_serial_proposal(proposal, operation)?;
-        if !proposal_ids.insert(proposal.proposal_id.as_str()) {
-            return Err(IpcError::invalid_input(
-                operation,
-                "data.serialProposals.proposalId",
-            ));
-        }
-    }
-    let mut panel_plugin_ids = HashSet::new();
-    for panel in &data.panels {
-        validate_panel(panel, operation)?;
-        if !panel_plugin_ids.insert(panel.runtime.plugin_id.as_str()) {
-            return Err(IpcError::invalid_input(operation, "data.panels.pluginId"));
-        }
-    }
     validate_limit(
         data.sources.len(),
         MAX_PLUGIN_SOURCES,
@@ -861,6 +1082,8 @@ fn validate_center_data(data: &PluginCenterData, operation: &'static str) -> Res
             return Err(IpcError::invalid_input(operation, "data.sources.sourceId"));
         }
     }
+    crate::plugins::validate_plugin_center_extensions_v2(data)
+        .map_err(|field| IpcError::invalid_input(operation, field))?;
     Ok(())
 }
 
@@ -952,16 +1175,29 @@ fn validate_installed_plugin(
     if let Some(version) = &plugin.pending_version {
         validate_version(version, "installed.pendingVersion", operation)?;
     }
-    validate_unique_permissions(
-        &plugin.declared_capabilities,
-        "installed.declaredCapabilities",
+    validate_unique(
+        &plugin.requested_capabilities,
+        MAX_PLUGIN_CAPABILITIES,
+        "installed.requestedCapabilities",
         operation,
     )?;
-    validate_unique_permissions(
+    validate_unique(
         &plugin.effective_capabilities,
+        MAX_PLUGIN_CAPABILITIES,
         "installed.effectiveCapabilities",
         operation,
     )?;
+    if plugin
+        .effective_capabilities
+        .iter()
+        .any(|capability| !plugin.requested_capabilities.contains(capability))
+        || (plugin.runtime.is_none() && !plugin.effective_capabilities.is_empty())
+    {
+        return Err(IpcError::invalid_input(
+            operation,
+            "installed.effectiveCapabilities",
+        ));
+    }
     if let Some(runtime) = &plugin.runtime {
         validate_runtime_instance_key(runtime, operation)?;
         if runtime.plugin_id != plugin.plugin_id {
@@ -971,187 +1207,7 @@ fn validate_installed_plugin(
             ));
         }
     }
-    validate_unique(
-        &plugin.unavailable_capabilities,
-        MAX_PLUGIN_CAPABILITIES,
-        "installed.unavailableCapabilities",
-        operation,
-    )
-}
-
-fn validate_serial_proposal(
-    proposal: &PluginSerialProposal,
-    operation: &'static str,
-) -> Result<(), IpcError> {
-    validate_identity(
-        &proposal.proposal_id,
-        "serialProposal.proposalId",
-        operation,
-    )?;
-    validate_identity(&proposal.plugin_id, "serialProposal.pluginId", operation)?;
-    validate_runtime_instance_key(&proposal.runtime, operation)?;
-    if proposal.runtime.plugin_id != proposal.plugin_id {
-        return Err(IpcError::invalid_input(
-            operation,
-            "serialProposal.runtime.pluginId",
-        ));
-    }
-    for (value, field) in [
-        (&proposal.plugin_name, "serialProposal.pluginName"),
-        (&proposal.session_label, "serialProposal.sessionLabel"),
-        (&proposal.display_label, "serialProposal.displayLabel"),
-    ] {
-        validate_display_text(
-            value,
-            MAX_PLUGIN_DISPLAY_NAME_BYTES,
-            false,
-            field,
-            operation,
-        )?;
-    }
-    if proposal.byte_count == 0 || proposal.byte_count > MAX_WORKSPACE_FRAME_BYTES {
-        return Err(IpcError::invalid_input(
-            operation,
-            "serialProposal.byteCount",
-        ));
-    }
-    validate_display_text(
-        &proposal.hex_preview,
-        MAX_PLUGIN_HEX_PREVIEW_BYTES,
-        false,
-        "serialProposal.hexPreview",
-        operation,
-    )?;
-    if !valid_hex_preview(&proposal.hex_preview) {
-        return Err(IpcError::invalid_input(
-            operation,
-            "serialProposal.hexPreview",
-        ));
-    }
-    validate_revision(
-        proposal.expires_at_ms,
-        "serialProposal.expiresAtMs",
-        operation,
-    )
-}
-
-fn validate_panel(panel: &PluginDeclarativePanel, operation: &'static str) -> Result<(), IpcError> {
-    validate_runtime_instance_key(&panel.runtime, operation)?;
-    validate_display_text(
-        &panel.title,
-        MAX_PLUGIN_PANEL_TITLE_BYTES,
-        false,
-        "panel.title",
-        operation,
-    )?;
-    if panel.fields.is_empty() {
-        return Err(IpcError::invalid_input(operation, "panel.fields"));
-    }
-    validate_limit(
-        panel.fields.len(),
-        MAX_PLUGIN_PANEL_FIELDS,
-        "panel.fields",
-        operation,
-    )?;
-    let mut field_ids = HashSet::new();
-    let mut option_count = 0usize;
-    let mut text_bytes = panel.title.len();
-    for field in &panel.fields {
-        validate_panel_field(field, operation)?;
-        if !field_ids.insert(field.id.as_str()) {
-            return Err(IpcError::invalid_input(operation, "panel.fields.id"));
-        }
-        option_count = option_count.saturating_add(field.options.len());
-        text_bytes = text_bytes
-            .saturating_add(field.id.len())
-            .saturating_add(field.label.len())
-            .saturating_add(field.value.len())
-            .saturating_add(field.options.iter().map(String::len).sum::<usize>());
-    }
-    validate_limit(
-        option_count,
-        MAX_PLUGIN_PANEL_OPTIONS,
-        "panel.options",
-        operation,
-    )?;
-    validate_limit(
-        text_bytes,
-        MAX_PLUGIN_PANEL_TEXT_BYTES,
-        "panel.text",
-        operation,
-    )
-}
-
-fn validate_panel_field(field: &PluginPanelField, operation: &'static str) -> Result<(), IpcError> {
-    validate_panel_field_id(&field.id, "panel.field.id", operation)?;
-    validate_display_text(
-        &field.label,
-        MAX_PLUGIN_PANEL_LABEL_BYTES,
-        false,
-        "panel.field.label",
-        operation,
-    )?;
-    validate_display_text(
-        &field.value,
-        MAX_PLUGIN_PANEL_VALUE_BYTES,
-        true,
-        "panel.field.value",
-        operation,
-    )?;
-    validate_limit(
-        field.options.len(),
-        MAX_PLUGIN_PANEL_OPTIONS,
-        "panel.field.options",
-        operation,
-    )?;
-    let mut options = HashSet::new();
-    for option in &field.options {
-        validate_display_text(
-            option,
-            MAX_PLUGIN_PANEL_OPTION_BYTES,
-            false,
-            "panel.field.option",
-            operation,
-        )?;
-        if !options.insert(option.as_str()) {
-            return Err(IpcError::invalid_input(operation, "panel.field.options"));
-        }
-    }
-    let valid = match field.kind {
-        PluginPanelFieldKind::Text => field.options.is_empty(),
-        PluginPanelFieldKind::Number => {
-            field.options.is_empty()
-                && !field.value.trim().is_empty()
-                && field
-                    .value
-                    .parse::<f64>()
-                    .is_ok_and(|value| value.is_finite())
-        }
-        PluginPanelFieldKind::Toggle => {
-            field.options.is_empty() && matches!(field.value.as_str(), "true" | "false")
-        }
-        PluginPanelFieldKind::Select => {
-            !field.options.is_empty() && field.options.contains(&field.value)
-        }
-        PluginPanelFieldKind::Button => field.options.is_empty() && field.value.is_empty(),
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(IpcError::invalid_input(operation, "panel.field"))
-    }
-}
-
-fn validate_panel_event(event: &PluginPanelEvent, operation: &'static str) -> Result<(), IpcError> {
-    validate_runtime_instance_key(&event.runtime, operation)?;
-    validate_panel_field_id(&event.field_id, "event.fieldId", operation)?;
-    validate_display_text(
-        &event.value,
-        MAX_PLUGIN_PANEL_VALUE_BYTES,
-        true,
-        "event.value",
-        operation,
-    )
+    Ok(())
 }
 
 fn validate_runtime_instance_key(
@@ -1162,14 +1218,6 @@ fn validate_runtime_instance_key(
     validate_identity(&runtime.plugin_id, "runtime.pluginId", operation)?;
     validate_revision(runtime.instance_id, "runtime.instanceId", operation)?;
     validate_revision(runtime.generation, "runtime.generation", operation)
-}
-
-fn validate_unique_permissions(
-    permissions: &[PluginPermission],
-    field: &'static str,
-    operation: &'static str,
-) -> Result<(), IpcError> {
-    validate_unique(permissions, MAX_PLUGIN_CAPABILITIES, field, operation)
 }
 
 fn validate_unique<T: Eq + std::hash::Hash>(
@@ -1243,30 +1291,6 @@ fn validate_identity(
     }
 }
 
-fn validate_panel_field_id(
-    value: &str,
-    field: &'static str,
-    operation: &'static str,
-) -> Result<(), IpcError> {
-    let bytes = value.as_bytes();
-    let valid = !bytes.is_empty()
-        && bytes.len() <= MAX_PLUGIN_PANEL_FIELD_ID_BYTES
-        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
-        && bytes.iter().enumerate().all(|(index, byte)| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || (matches!(byte, b'-' | b'_')
-                    && index > 0
-                    && index + 1 < bytes.len()
-                    && (bytes[index + 1].is_ascii_lowercase() || bytes[index + 1].is_ascii_digit()))
-        });
-    if valid {
-        Ok(())
-    } else {
-        Err(IpcError::invalid_input(operation, field))
-    }
-}
-
 fn validate_version(
     value: &str,
     field: &'static str,
@@ -1299,25 +1323,6 @@ fn validate_version(
     } else {
         Err(IpcError::invalid_input(operation, field))
     }
-}
-
-fn valid_hex_preview(value: &str) -> bool {
-    let (hex, suffix_valid) = if let Some((hex, suffix)) = value.split_once(" … (+") {
-        let count = suffix.strip_suffix(" bytes)");
-        (
-            hex,
-            count.is_some_and(|count| {
-                !count.is_empty() && count.bytes().all(|byte| byte.is_ascii_digit())
-            }),
-        )
-    } else {
-        (value, true)
-    };
-    suffix_valid
-        && !hex.is_empty()
-        && hex
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte) || byte == b' ')
 }
 
 fn validate_display_text(
@@ -1480,5 +1485,79 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.field, Some("response.requestId"));
+    }
+
+    #[test]
+    fn v2_authorization_requires_lowercase_digest_and_canonical_capabilities() {
+        let base = ResolvePluginAuthorizationRequestV2 {
+            request_id: "request-1".to_owned(),
+            revision: 3,
+            operation_id: "operation-1".to_owned(),
+            plugin_id: "dev.bbcom.mcumgr".to_owned(),
+            version: "1.0.0".to_owned(),
+            digest_sha256: "a".repeat(64),
+            requested_capabilities: vec![
+                bbcom_contracts::PluginCapabilityV2::FileOpenRead,
+                bbcom_contracts::PluginCapabilityV2::SerialIo,
+            ],
+            decision: bbcom_contracts::PluginAuthorizationDecisionV2::Approve,
+        };
+        let unsorted = crate::plugins::PluginUiActionV2::ResolveAuthorization(base.clone());
+        assert!(validate_v2_ui_action(&unsorted, "authorization").is_err());
+
+        let mut valid = base;
+        valid.requested_capabilities.sort();
+        let valid = crate::plugins::PluginUiActionV2::ResolveAuthorization(valid.clone());
+        assert!(validate_v2_ui_action(&valid, "authorization").is_ok());
+
+        let crate::plugins::PluginUiActionV2::ResolveAuthorization(mut uppercase) = valid else {
+            unreachable!();
+        };
+        uppercase.digest_sha256 = "A".repeat(64);
+        assert!(
+            validate_v2_ui_action(
+                &crate::plugins::PluginUiActionV2::ResolveAuthorization(uppercase),
+                "authorization"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn v2_surface_events_require_a_live_runtime_revision_and_safe_value() {
+        let runtime = RuntimeInstanceKey {
+            workspace_id: "workspace-1".to_owned(),
+            plugin_id: "dev.bbcom.mcumgr".to_owned(),
+            instance_id: 1,
+            generation: 2,
+        };
+        let mut request = EmitPluginSurfaceEventRequestV2 {
+            request_id: "request-1".to_owned(),
+            revision: 3,
+            operation_id: "operation-1".to_owned(),
+            event: bbcom_contracts::PluginSurfaceEventV2 {
+                runtime,
+                surface_id: "main".to_owned(),
+                revision: 1,
+                node_id: "refresh".to_owned(),
+                event: bbcom_contracts::PluginSurfaceEventKind::Activate,
+                value: None,
+            },
+        };
+        assert!(
+            validate_v2_ui_action(
+                &crate::plugins::PluginUiActionV2::EmitSurfaceEvent(request.clone()),
+                "surface-event"
+            )
+            .is_ok()
+        );
+        request.event.revision = 0;
+        assert!(
+            validate_v2_ui_action(
+                &crate::plugins::PluginUiActionV2::EmitSurfaceEvent(request),
+                "surface-event"
+            )
+            .is_err()
+        );
     }
 }

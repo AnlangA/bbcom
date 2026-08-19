@@ -22,7 +22,7 @@ use crate::model::{
 use crate::mutation::{apply_mutations, validate_mutation_payload_limits};
 use crate::schema::{
     CREATE_FLAGS, READ_ONLY_FLAGS, READ_WRITE_FLAGS, configure_connection, create_schema,
-    validate_header,
+    migrate_schema, validate_header,
 };
 use crate::{Result, WorkspaceError};
 
@@ -39,6 +39,21 @@ const MAX_WAVEFORM_SAMPLE_GROUPS: usize = 600;
 const COMMITTED_BATCH_RETENTION_ROWS: i64 = 1024;
 const COMMITTED_BATCH_PRUNE_INTERVAL: i64 = 64;
 
+fn validate_plugin_owned_id(id: &str, owner: Option<&str>) -> Result<()> {
+    validate_identifier(id, "pluginContribution.id")?;
+    let owner = owner.ok_or(WorkspaceError::InvalidInput {
+        field: "pluginContribution.ownerPluginId",
+    })?;
+    validate_identifier(owner, "pluginContribution.ownerPluginId")?;
+    let prefix = format!("plugin:{owner}:");
+    if !id.starts_with(&prefix) || id.len() == prefix.len() {
+        return Err(WorkspaceError::InvalidInput {
+            field: "pluginContribution.id",
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceAiMessagePage {
     pub messages: Vec<WorkspaceAiMessage>,
@@ -50,6 +65,21 @@ pub struct WorkspaceWaveformPage {
     pub channels: Vec<WorkspaceWaveformChannel>,
     pub samples: Vec<WorkspaceWaveformSample>,
     pub next_offset: Option<usize>,
+}
+
+/// Policy applied to native quick-command and macro contributions when their
+/// owning plugin is uninstalled.  This is a native-only API: renderers cannot
+/// select arbitrary owners or mutate contribution ownership directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginContributionDisposition {
+    Delete,
+    ConvertToUser,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PluginContributionCleanupReport {
+    pub quick_commands: usize,
+    pub macros: usize,
 }
 
 #[derive(Debug)]
@@ -66,7 +96,7 @@ impl WorkspaceService {
     pub fn plugin_bindings(&self) -> Result<Vec<crate::WorkspacePluginBindingSnapshot>> {
         let mut statement = self.connection.prepare(
             "SELECT b.plugin_id, b.repository_origin, b.version_requirement,
-                    b.expected_enabled, s.state
+                    b.expected_enabled, s.state, s.state_version, s.schema_version
              FROM plugin_bindings b
              LEFT JOIN plugin_project_state s ON s.plugin_id = b.plugin_id
              ORDER BY b.plugin_id",
@@ -78,6 +108,8 @@ impl WorkspaceService {
                 version_requirement: row.get(2)?,
                 expected_enabled: row.get::<_, i64>(3)? != 0,
                 project_state: row.get(4)?,
+                project_state_api_generation: row.get(5)?,
+                project_state_schema_version: row.get(6)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -105,6 +137,243 @@ impl WorkspaceService {
             params![plugin_id, i64::from(expected_enabled)],
         )?;
         Ok(())
+    }
+
+    /// Native-only portable plugin state mutation. This deliberately does not
+    /// advance the renderer document revision: plugin bindings/state are an
+    /// application-owned workspace sub-domain.
+    pub fn set_plugin_project_state(
+        &mut self,
+        plugin_id: &str,
+        state: &[u8],
+        api_generation: u32,
+        schema_version: Option<u32>,
+    ) -> Result<()> {
+        if self.read_only {
+            return Err(WorkspaceError::ReadOnly);
+        }
+        validate_identifier(plugin_id, "pluginId")?;
+        if !matches!((api_generation, schema_version), (2, Some(1..=u32::MAX))) {
+            return Err(WorkspaceError::InvalidInput {
+                field: "pluginState.version",
+            });
+        }
+        if state.len() > bbcom_contracts::MAX_WORKSPACE_PLUGIN_STATE_BYTES {
+            return Err(WorkspaceError::LimitExceeded {
+                field: "pluginState",
+                limit: bbcom_contracts::MAX_WORKSPACE_PLUGIN_STATE_BYTES,
+                actual: state.len(),
+            });
+        }
+        self.connection.execute(
+            "INSERT INTO plugin_bindings (
+               plugin_id, repository_origin, version_requirement, expected_enabled
+             ) VALUES (?1, 'local', '*', 1)
+             ON CONFLICT(plugin_id) DO NOTHING",
+            [plugin_id],
+        )?;
+        self.connection.execute(
+            "INSERT INTO plugin_project_state(plugin_id, state, state_version, schema_version)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(plugin_id) DO UPDATE SET state = excluded.state,
+                                                  state_version = excluded.state_version,
+                                                  schema_version = excluded.schema_version",
+            params![plugin_id, state, api_generation, schema_version],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_plugin_quick_command(
+        &mut self,
+        session_id: &str,
+        command: &WorkspaceQuickCommand,
+    ) -> Result<()> {
+        if self.read_only {
+            return Err(WorkspaceError::ReadOnly);
+        }
+        crate::model::ensure_session_exists(&self.connection, session_id)?;
+        validate_plugin_owned_id(&command.id, command.owner_plugin_id.as_deref())?;
+        validate_identifier(session_id, "sessionId")?;
+        if command.name.is_empty() || command.name.len() > 256 {
+            return Err(WorkspaceError::InvalidInput {
+                field: "quickCommand.name",
+            });
+        }
+        let position: i64 = self.connection.query_row(
+            "SELECT COALESCE(
+               (SELECT position FROM quick_commands WHERE session_id = ?1 AND id = ?2),
+               (SELECT COALESCE(MAX(position) + 1, 0) FROM quick_commands WHERE session_id = ?1)
+             )",
+            params![session_id, command.id],
+            |row| row.get(0),
+        )?;
+        self.connection.execute(
+            "INSERT INTO quick_commands(
+               session_id, id, position, name, data, is_hex, owner_plugin_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(session_id, id) DO UPDATE SET
+               name = excluded.name,
+               data = excluded.data,
+               is_hex = excluded.is_hex,
+               owner_plugin_id = excluded.owner_plugin_id",
+            params![
+                session_id,
+                command.id,
+                position,
+                command.name,
+                command.data,
+                command.is_hex,
+                command.owner_plugin_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_plugin_quick_command(
+        &mut self,
+        session_id: &str,
+        contribution_id: &str,
+        owner_plugin_id: &str,
+    ) -> Result<()> {
+        if self.read_only {
+            return Err(WorkspaceError::ReadOnly);
+        }
+        let changed = self.connection.execute(
+            "DELETE FROM quick_commands
+             WHERE session_id = ?1 AND id = ?2 AND owner_plugin_id = ?3",
+            params![session_id, contribution_id, owner_plugin_id],
+        )?;
+        if changed == 0 {
+            return Err(WorkspaceError::NotFound);
+        }
+        Ok(())
+    }
+
+    pub fn upsert_plugin_macro(&mut self, session_id: &str, value: &WorkspaceMacro) -> Result<()> {
+        if self.read_only {
+            return Err(WorkspaceError::ReadOnly);
+        }
+        crate::model::ensure_session_exists(&self.connection, session_id)?;
+        validate_plugin_owned_id(&value.id, value.owner_plugin_id.as_deref())?;
+        if value.name.is_empty() || value.name.len() > 256 || value.steps.is_empty() {
+            return Err(WorkspaceError::InvalidInput { field: "macro" });
+        }
+        let transaction = self.connection.transaction()?;
+        let position: i64 = transaction.query_row(
+            "SELECT COALESCE(
+               (SELECT position FROM macros WHERE session_id = ?1 AND id = ?2),
+               (SELECT COALESCE(MAX(position) + 1, 0) FROM macros WHERE session_id = ?1)
+             )",
+            params![session_id, value.id],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            "INSERT INTO macros(session_id, id, position, name, owner_plugin_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(session_id, id) DO UPDATE SET
+               name = excluded.name,
+               owner_plugin_id = excluded.owner_plugin_id",
+            params![
+                session_id,
+                value.id,
+                position,
+                value.name,
+                value.owner_plugin_id,
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM macro_steps WHERE session_id = ?1 AND macro_id = ?2",
+            params![session_id, value.id],
+        )?;
+        for (position, step) in value.steps.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO macro_steps(
+                   session_id, macro_id, position, data, is_hex, delay_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    session_id,
+                    value.id,
+                    i64::try_from(position).map_err(|_| WorkspaceError::LimitExceeded {
+                        field: "macro.steps",
+                        limit: i64::MAX as usize,
+                        actual: position,
+                    })?,
+                    step.data,
+                    step.is_hex,
+                    i64::from(step.delay_ms),
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_plugin_macro(
+        &mut self,
+        session_id: &str,
+        contribution_id: &str,
+        owner_plugin_id: &str,
+    ) -> Result<()> {
+        if self.read_only {
+            return Err(WorkspaceError::ReadOnly);
+        }
+        let changed = self.connection.execute(
+            "DELETE FROM macros
+             WHERE session_id = ?1 AND id = ?2 AND owner_plugin_id = ?3",
+            params![session_id, contribution_id, owner_plugin_id],
+        )?;
+        if changed == 0 {
+            return Err(WorkspaceError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Atomically removes or converts every native contribution owned by one
+    /// plugin across all sessions in this workspace.
+    ///
+    /// Conversion strips the exact `plugin:<plugin-id>:` prefix and clears the
+    /// owner.  A deterministic numeric suffix is added when the resulting user
+    /// ID already exists in that session.  Macro steps are copied to the new
+    /// key before the owned row is removed, so foreign-key cascades cannot
+    /// discard them.
+    pub fn cleanup_plugin_contributions(
+        &mut self,
+        plugin_id: &str,
+        disposition: PluginContributionDisposition,
+    ) -> Result<PluginContributionCleanupReport> {
+        if self.read_only {
+            return Err(WorkspaceError::ReadOnly);
+        }
+        validate_identifier(plugin_id, "pluginId")?;
+        let transaction = self.connection.transaction()?;
+        let report = apply_plugin_contribution_cleanup(&transaction, plugin_id, disposition)?;
+        transaction.commit()?;
+        Ok(report)
+    }
+
+    /// Stages contribution cleanup while a native package-removal action
+    /// executes. A `false` action result rolls the SQLite transaction back
+    /// exactly (including deterministic conversion collision names); `true`
+    /// commits it. The transaction never escapes this native-only boundary.
+    pub fn with_staged_plugin_contribution_cleanup(
+        &mut self,
+        plugin_id: &str,
+        disposition: PluginContributionDisposition,
+        action: impl FnOnce() -> bool,
+    ) -> Result<(bool, PluginContributionCleanupReport)> {
+        if self.read_only {
+            return Err(WorkspaceError::ReadOnly);
+        }
+        validate_identifier(plugin_id, "pluginId")?;
+        let transaction = self.connection.transaction()?;
+        let report = apply_plugin_contribution_cleanup(&transaction, plugin_id, disposition)?;
+        let committed = action();
+        if committed {
+            transaction.commit()?;
+        } else {
+            transaction.rollback()?;
+        }
+        Ok((committed, report))
     }
 
     pub fn create(path: impl AsRef<Path>, request: CreateWorkspaceRequest) -> Result<Self> {
@@ -168,8 +437,9 @@ impl WorkspaceService {
             READ_WRITE_FLAGS
         };
         let connection = Connection::open_with_flags(&path, flags).map_err(map_database_error)?;
-        validate_header(&connection)?;
         configure_connection(&connection, !read_only)?;
+        migrate_schema(&connection, !read_only)?;
+        validate_header(&connection)?;
         validate_database_size(&path)?;
         read_header(&connection)?;
         Ok(Self {
@@ -760,6 +1030,153 @@ impl WorkspaceService {
     }
 }
 
+fn apply_plugin_contribution_cleanup(
+    transaction: &rusqlite::Transaction<'_>,
+    plugin_id: &str,
+    disposition: PluginContributionDisposition,
+) -> Result<PluginContributionCleanupReport> {
+    let prefix = format!("plugin:{plugin_id}:");
+    let quick_commands = owned_contribution_keys(transaction, "quick_commands", plugin_id)?;
+    let macros = owned_contribution_keys(transaction, "macros", plugin_id)?;
+    let report = PluginContributionCleanupReport {
+        quick_commands: quick_commands.len(),
+        macros: macros.len(),
+    };
+
+    match disposition {
+        PluginContributionDisposition::Delete => {
+            transaction.execute(
+                "DELETE FROM quick_commands WHERE owner_plugin_id = ?1",
+                [plugin_id],
+            )?;
+            transaction.execute("DELETE FROM macros WHERE owner_plugin_id = ?1", [plugin_id])?;
+        }
+        PluginContributionDisposition::ConvertToUser => {
+            for (session_id, owned_id) in quick_commands {
+                let local_id =
+                    owned_id
+                        .strip_prefix(&prefix)
+                        .ok_or(WorkspaceError::InvalidInput {
+                            field: "pluginContribution.id",
+                        })?;
+                let user_id = available_contribution_id(
+                    transaction,
+                    "quick_commands",
+                    &session_id,
+                    local_id,
+                )?;
+                transaction.execute(
+                    "UPDATE quick_commands
+                     SET id = ?1, owner_plugin_id = NULL
+                     WHERE session_id = ?2 AND id = ?3 AND owner_plugin_id = ?4",
+                    params![user_id, session_id, owned_id, plugin_id],
+                )?;
+            }
+            for (session_id, owned_id) in macros {
+                let local_id =
+                    owned_id
+                        .strip_prefix(&prefix)
+                        .ok_or(WorkspaceError::InvalidInput {
+                            field: "pluginContribution.id",
+                        })?;
+                let user_id =
+                    available_contribution_id(transaction, "macros", &session_id, local_id)?;
+                let (position, name): (i64, String) = transaction.query_row(
+                    "SELECT position, name FROM macros
+                     WHERE session_id = ?1 AND id = ?2 AND owner_plugin_id = ?3",
+                    params![session_id, owned_id, plugin_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let steps = {
+                    let mut statement = transaction.prepare(
+                        "SELECT position, data, is_hex, delay_ms FROM macro_steps
+                         WHERE session_id = ?1 AND macro_id = ?2 ORDER BY position",
+                    )?;
+                    let rows = statement.query_map(params![session_id, owned_id], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, bool>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    })?;
+                    rows.collect::<std::result::Result<Vec<_>, _>>()?
+                };
+                transaction.execute(
+                    "DELETE FROM macros
+                     WHERE session_id = ?1 AND id = ?2 AND owner_plugin_id = ?3",
+                    params![session_id, owned_id, plugin_id],
+                )?;
+                transaction.execute(
+                    "INSERT INTO macros(session_id, id, position, name, owner_plugin_id)
+                     VALUES (?1, ?2, ?3, ?4, NULL)",
+                    params![session_id, user_id, position, name],
+                )?;
+                for (step_position, data, is_hex, delay_ms) in steps {
+                    transaction.execute(
+                        "INSERT INTO macro_steps(
+                           session_id, macro_id, position, data, is_hex, delay_ms
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![session_id, user_id, step_position, data, is_hex, delay_ms],
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn owned_contribution_keys(
+    transaction: &rusqlite::Transaction<'_>,
+    table: &'static str,
+    plugin_id: &str,
+) -> Result<Vec<(String, String)>> {
+    debug_assert!(matches!(table, "quick_commands" | "macros"));
+    let mut statement = transaction.prepare(&format!(
+        "SELECT session_id, id FROM {table}\n         WHERE owner_plugin_id = ?1 ORDER BY session_id, id"
+    ))?;
+    let rows = statement.query_map([plugin_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(WorkspaceError::from)
+}
+
+fn available_contribution_id(
+    transaction: &rusqlite::Transaction<'_>,
+    table: &'static str,
+    session_id: &str,
+    desired: &str,
+) -> Result<String> {
+    debug_assert!(matches!(table, "quick_commands" | "macros"));
+    validate_identifier(desired, "pluginContribution.id")?;
+    for attempt in 1_u32..=10_000 {
+        let suffix = if attempt == 1 {
+            String::new()
+        } else {
+            format!("-{attempt}")
+        };
+        let max_base_bytes = 128_usize.saturating_sub(suffix.len());
+        let mut boundary = desired.len().min(max_base_bytes);
+        while !desired.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        let candidate = format!("{}{}", &desired[..boundary], suffix);
+        validate_identifier(&candidate, "pluginContribution.id")?;
+        let exists: bool = transaction.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE session_id = ?1 AND id = ?2)"),
+            params![session_id, candidate],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(candidate);
+        }
+    }
+    Err(WorkspaceError::LimitExceeded {
+        field: "pluginContribution.id",
+        limit: 10_000,
+        actual: 10_001,
+    })
+}
+
 pub(crate) fn purge_undo_slot_from_copy(path: &Path) -> Result<()> {
     let connection =
         Connection::open_with_flags(path, READ_WRITE_FLAGS).map_err(map_database_error)?;
@@ -847,7 +1264,7 @@ fn query_quick_commands(
     session_id: &str,
 ) -> Result<Vec<WorkspaceQuickCommand>> {
     let mut statement = connection.prepare(
-        "SELECT id, name, data, is_hex FROM quick_commands
+        "SELECT id, name, data, is_hex, owner_plugin_id FROM quick_commands
          WHERE session_id = ?1 ORDER BY position",
     )?;
     statement
@@ -857,6 +1274,7 @@ fn query_quick_commands(
                 name: row.get(1)?,
                 data: row.get(2)?,
                 is_hex: row.get(3)?,
+                owner_plugin_id: row.get(4)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()
@@ -864,15 +1282,21 @@ fn query_quick_commands(
 }
 
 fn query_macros(connection: &Connection, session_id: &str) -> Result<Vec<WorkspaceMacro>> {
-    let mut statement = connection
-        .prepare("SELECT id, name FROM macros WHERE session_id = ?1 ORDER BY position")?;
+    let mut statement = connection.prepare(
+        "SELECT id, name, owner_plugin_id FROM macros
+             WHERE session_id = ?1 ORDER BY position",
+    )?;
     let rows = statement
         .query_map([session_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     rows.into_iter()
-        .map(|(id, name)| {
+        .map(|(id, name, owner_plugin_id)| {
             let mut steps_statement = connection.prepare(
                 "SELECT data, is_hex, delay_ms FROM macro_steps
                  WHERE session_id = ?1 AND macro_id = ?2 ORDER BY position",
@@ -893,7 +1317,12 @@ fn query_macros(connection: &Connection, session_id: &str) -> Result<Vec<Workspa
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(WorkspaceMacro { id, name, steps })
+            Ok(WorkspaceMacro {
+                id,
+                name,
+                steps,
+                owner_plugin_id,
+            })
         })
         .collect()
 }

@@ -3,11 +3,12 @@ use std::fs::OpenOptions;
 use bbcom_contracts::{
     ApplyWorkspaceBatchRequest, MAX_WORKSPACE_AI_MESSAGE_BYTES, MAX_WORKSPACE_BATCH_BYTES,
     MAX_WORKSPACE_DATABASE_BYTES, MAX_WORKSPACE_FRAME_BYTES, MAX_WORKSPACE_MUTATIONS_PER_BATCH,
-    MAX_WORKSPACE_SESSIONS, WorkspaceMutation, WorkspaceMutationKind,
+    MAX_WORKSPACE_SESSIONS, WorkspaceMacro, WorkspaceMacroStep, WorkspaceMutation,
+    WorkspaceMutationKind, WorkspaceQuickCommand,
 };
 use bbcom_workspace::{
-    CreateWorkspaceRequest, WORKSPACE_APPLICATION_ID, WORKSPACE_SCHEMA_VERSION, WorkspaceError,
-    WorkspaceService,
+    CreateWorkspaceRequest, PluginContributionDisposition, WORKSPACE_APPLICATION_ID,
+    WORKSPACE_SCHEMA_VERSION, WorkspaceError, WorkspaceService,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -45,6 +46,411 @@ fn native_plugin_binding_intent_round_trips_without_document_revision_change() {
         .set_plugin_expected_enabled("dev.bbcom.fixture", false)
         .unwrap();
     assert!(!service.plugin_bindings().unwrap()[0].expected_enabled);
+}
+
+#[test]
+fn native_plugin_state_and_session_bound_contributions_are_exact_and_durable() {
+    let temp = tempfile::tempdir().unwrap();
+    let (path, mut service) = create(&temp);
+    service
+        .apply_batch(batch(
+            "plugin-sessions",
+            0,
+            vec![
+                upsert_session(1, "session-a", 0),
+                upsert_session(2, "session-b", 1),
+            ],
+        ))
+        .unwrap();
+    let revision = service.header().unwrap().revision;
+
+    service
+        .set_plugin_project_state("dev.bbcom.fixture", b"portable-state", 2, Some(73))
+        .unwrap();
+    let quick = WorkspaceQuickCommand {
+        id: "plugin:dev.bbcom.fixture:status".to_owned(),
+        name: "Status".to_owned(),
+        data: "status".to_owned(),
+        is_hex: false,
+        owner_plugin_id: Some("dev.bbcom.fixture".to_owned()),
+    };
+    service
+        .upsert_plugin_quick_command("session-a", &quick)
+        .unwrap();
+    let value = WorkspaceMacro {
+        id: "plugin:dev.bbcom.fixture:upgrade".to_owned(),
+        name: "Upgrade".to_owned(),
+        steps: vec![WorkspaceMacroStep {
+            data: "upload".to_owned(),
+            is_hex: false,
+            delay_ms: 10,
+        }],
+        owner_plugin_id: Some("dev.bbcom.fixture".to_owned()),
+    };
+    service.upsert_plugin_macro("session-a", &value).unwrap();
+    assert_eq!(service.header().unwrap().revision, revision);
+
+    assert!(matches!(
+        service.delete_plugin_quick_command("session-b", &quick.id, "dev.bbcom.fixture",),
+        Err(WorkspaceError::NotFound)
+    ));
+    assert!(matches!(
+        service.delete_plugin_macro("session-b", &value.id, "dev.bbcom.fixture"),
+        Err(WorkspaceError::NotFound)
+    ));
+    service
+        .delete_plugin_quick_command("session-a", &quick.id, "dev.bbcom.fixture")
+        .unwrap();
+    service
+        .delete_plugin_macro("session-a", &value.id, "dev.bbcom.fixture")
+        .unwrap();
+    drop(service);
+
+    let reopened = WorkspaceService::open(&path).unwrap();
+    let binding = reopened
+        .plugin_bindings()
+        .unwrap()
+        .into_iter()
+        .find(|binding| binding.plugin_id == "dev.bbcom.fixture")
+        .unwrap();
+    assert_eq!(
+        binding.project_state.as_deref(),
+        Some(b"portable-state".as_slice())
+    );
+    assert_eq!(binding.project_state_api_generation, Some(2));
+    assert_eq!(binding.project_state_schema_version, Some(73));
+    let collections = reopened.hydrate_session_collections("session-a").unwrap();
+    assert!(collections.quick_commands.is_empty());
+    assert!(collections.macros.is_empty());
+}
+
+#[test]
+fn native_project_state_rejects_zero_or_mismatched_schema_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_, mut service) = create(&temp);
+    for (api_generation, schema_version) in [(1, None), (1, Some(1)), (2, None), (2, Some(0))] {
+        assert!(matches!(
+            service.set_plugin_project_state(
+                "dev.bbcom.fixture",
+                b"state",
+                api_generation,
+                schema_version,
+            ),
+            Err(WorkspaceError::InvalidInput {
+                field: "pluginState.version"
+            })
+        ));
+    }
+}
+
+#[test]
+fn plugin_contribution_cleanup_is_atomic_scoped_and_collision_safe() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_path, mut service) = create(&temp);
+    service
+        .apply_batch(batch(
+            "cleanup-sessions",
+            0,
+            vec![
+                upsert_session(1, "session-a", 0),
+                upsert_session(2, "session-b", 1),
+            ],
+        ))
+        .unwrap();
+
+    let user_quick = WorkspaceQuickCommand {
+        id: "status".to_owned(),
+        name: "User status".to_owned(),
+        data: "user".to_owned(),
+        is_hex: false,
+        owner_plugin_id: None,
+    };
+    let user_macro = WorkspaceMacro {
+        id: "upgrade".to_owned(),
+        name: "User upgrade".to_owned(),
+        steps: vec![WorkspaceMacroStep {
+            data: "user-step".to_owned(),
+            is_hex: false,
+            delay_ms: 0,
+        }],
+        owner_plugin_id: None,
+    };
+    service
+        .apply_batch(batch(
+            "user-contributions",
+            1,
+            vec![mutation(
+                1,
+                WorkspaceMutationKind::ReplaceSessionCollections,
+                Some("session-a"),
+                json!({
+                    "sendHistory": [],
+                    "quickCommands": [user_quick],
+                    "macros": [user_macro],
+                    "triggers": [],
+                    "highlights": [],
+                    "modbusRegisters": []
+                }),
+            )],
+        ))
+        .unwrap();
+
+    for session_id in ["session-a", "session-b"] {
+        service
+            .upsert_plugin_quick_command(
+                session_id,
+                &WorkspaceQuickCommand {
+                    id: "plugin:dev.bbcom.fixture:status".to_owned(),
+                    name: "Plugin status".to_owned(),
+                    data: "plugin".to_owned(),
+                    is_hex: false,
+                    owner_plugin_id: Some("dev.bbcom.fixture".to_owned()),
+                },
+            )
+            .unwrap();
+        service
+            .upsert_plugin_macro(
+                session_id,
+                &WorkspaceMacro {
+                    id: "plugin:dev.bbcom.fixture:upgrade".to_owned(),
+                    name: "Plugin upgrade".to_owned(),
+                    steps: vec![WorkspaceMacroStep {
+                        data: format!("step-{session_id}"),
+                        is_hex: false,
+                        delay_ms: 7,
+                    }],
+                    owner_plugin_id: Some("dev.bbcom.fixture".to_owned()),
+                },
+            )
+            .unwrap();
+    }
+    service
+        .upsert_plugin_quick_command(
+            "session-a",
+            &WorkspaceQuickCommand {
+                id: "plugin:dev.bbcom.other:status".to_owned(),
+                name: "Other".to_owned(),
+                data: "other".to_owned(),
+                is_hex: false,
+                owner_plugin_id: Some("dev.bbcom.other".to_owned()),
+            },
+        )
+        .unwrap();
+
+    let report = service
+        .cleanup_plugin_contributions(
+            "dev.bbcom.fixture",
+            PluginContributionDisposition::ConvertToUser,
+        )
+        .unwrap();
+    assert_eq!(report.quick_commands, 2);
+    assert_eq!(report.macros, 2);
+
+    let session_a = service.hydrate_session_collections("session-a").unwrap();
+    assert!(
+        session_a
+            .quick_commands
+            .iter()
+            .any(|item| item.id == "status")
+    );
+    assert!(
+        session_a
+            .quick_commands
+            .iter()
+            .any(|item| item.id == "status-2" && item.owner_plugin_id.is_none())
+    );
+    assert!(
+        session_a
+            .quick_commands
+            .iter()
+            .any(|item| item.owner_plugin_id.as_deref() == Some("dev.bbcom.other"))
+    );
+    let converted_macro = session_a
+        .macros
+        .iter()
+        .find(|item| item.id == "upgrade-2")
+        .unwrap();
+    assert_eq!(converted_macro.owner_plugin_id, None);
+    assert_eq!(converted_macro.steps[0].data, "step-session-a");
+
+    let session_b = service.hydrate_session_collections("session-b").unwrap();
+    assert!(
+        session_b
+            .quick_commands
+            .iter()
+            .any(|item| item.id == "status" && item.owner_plugin_id.is_none())
+    );
+    assert!(
+        session_b
+            .macros
+            .iter()
+            .any(|item| item.id == "upgrade" && item.owner_plugin_id.is_none())
+    );
+
+    let deleted = service
+        .cleanup_plugin_contributions("dev.bbcom.other", PluginContributionDisposition::Delete)
+        .unwrap();
+    assert_eq!(deleted.quick_commands, 1);
+    assert_eq!(deleted.macros, 0);
+    let session_a = service.hydrate_session_collections("session-a").unwrap();
+    assert!(
+        session_a
+            .quick_commands
+            .iter()
+            .all(|item| item.owner_plugin_id.as_deref() != Some("dev.bbcom.other"))
+    );
+}
+
+#[test]
+fn staged_contribution_conversion_restores_exact_rows_when_action_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_, mut service) = create(&temp);
+    service
+        .apply_batch(batch(
+            "staged-cleanup-session",
+            0,
+            vec![upsert_session(1, "session-a", 0)],
+        ))
+        .unwrap();
+    service
+        .apply_batch(batch(
+            "staged-cleanup-user-collision",
+            1,
+            vec![mutation(
+                1,
+                WorkspaceMutationKind::ReplaceSessionCollections,
+                Some("session-a"),
+                json!({
+                    "sendHistory": [],
+                    "quickCommands": [{
+                        "id": "status",
+                        "name": "User status",
+                        "data": "user",
+                        "isHex": false
+                    }],
+                    "macros": [{
+                        "id": "upgrade",
+                        "name": "User upgrade",
+                        "steps": [{"data": "user", "isHex": false, "delayMs": 0}]
+                    }],
+                    "triggers": [],
+                    "highlights": [],
+                    "modbusRegisters": []
+                }),
+            )],
+        ))
+        .unwrap();
+    service
+        .upsert_plugin_quick_command(
+            "session-a",
+            &WorkspaceQuickCommand {
+                id: "plugin:dev.bbcom.fixture:status".to_owned(),
+                name: "Plugin status".to_owned(),
+                data: "plugin".to_owned(),
+                is_hex: false,
+                owner_plugin_id: Some("dev.bbcom.fixture".to_owned()),
+            },
+        )
+        .unwrap();
+    service
+        .upsert_plugin_macro(
+            "session-a",
+            &WorkspaceMacro {
+                id: "plugin:dev.bbcom.fixture:upgrade".to_owned(),
+                name: "Plugin upgrade".to_owned(),
+                steps: vec![WorkspaceMacroStep {
+                    data: "plugin".to_owned(),
+                    is_hex: false,
+                    delay_ms: 7,
+                }],
+                owner_plugin_id: Some("dev.bbcom.fixture".to_owned()),
+            },
+        )
+        .unwrap();
+
+    let before = service.hydrate_session_collections("session-a").unwrap();
+    let (committed, report) = service
+        .with_staged_plugin_contribution_cleanup(
+            "dev.bbcom.fixture",
+            PluginContributionDisposition::ConvertToUser,
+            || false,
+        )
+        .unwrap();
+    assert!(!committed);
+    assert_eq!(report.quick_commands, 1);
+    assert_eq!(report.macros, 1);
+    assert_eq!(
+        service.hydrate_session_collections("session-a").unwrap(),
+        before
+    );
+}
+
+#[test]
+fn failed_contribution_conversion_rolls_back_every_owned_row() {
+    let temp = tempfile::tempdir().unwrap();
+    let (path, mut service) = create(&temp);
+    service
+        .apply_batch(batch(
+            "cleanup-rollback-session",
+            0,
+            vec![upsert_session(1, "session-a", 0)],
+        ))
+        .unwrap();
+    for local_id in ["a", "z"] {
+        service
+            .upsert_plugin_quick_command(
+                "session-a",
+                &WorkspaceQuickCommand {
+                    id: format!("plugin:dev.bbcom.fixture:{local_id}"),
+                    name: local_id.to_owned(),
+                    data: local_id.to_owned(),
+                    is_hex: false,
+                    owner_plugin_id: Some("dev.bbcom.fixture".to_owned()),
+                },
+            )
+            .unwrap();
+    }
+    drop(service);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE quick_commands SET id = 'zzzz-corrupt'
+             WHERE id = 'plugin:dev.bbcom.fixture:z'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut service = WorkspaceService::open(&path).unwrap();
+    assert!(matches!(
+        service.cleanup_plugin_contributions(
+            "dev.bbcom.fixture",
+            PluginContributionDisposition::ConvertToUser,
+        ),
+        Err(WorkspaceError::InvalidInput {
+            field: "pluginContribution.id"
+        })
+    ));
+    drop(service);
+
+    let connection = Connection::open(path).unwrap();
+    let owned: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM quick_commands WHERE owner_plugin_id = 'dev.bbcom.fixture'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let converted: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM quick_commands WHERE id = 'a' AND owner_plugin_id IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(owned, 2);
+    assert_eq!(converted, 0);
 }
 
 fn mutation(
@@ -741,6 +1147,149 @@ fn row_collections_ai_and_waveform_round_trip_without_runtime_state() {
     assert_eq!(waveform.samples[0].seq, 7);
     assert_eq!(waveform.samples[0].value, 12.5);
     assert_eq!(waveform.next_offset, None);
+}
+
+#[test]
+fn plugin_owned_commands_and_macros_are_namespaced_and_round_trip() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_, mut service) = create(&temp);
+    service
+        .apply_batch(batch("session", 0, vec![upsert_session(1, "s1", 0)]))
+        .unwrap();
+    service
+        .apply_batch(batch(
+            "plugin-contributions",
+            1,
+            vec![mutation(
+                2,
+                WorkspaceMutationKind::ReplaceSessionCollections,
+                Some("s1"),
+                json!({
+                    "sendHistory": [],
+                    "quickCommands": [{
+                        "id": "plugin:dev.bbcom.mcumgr:image-state",
+                        "name": "Image state",
+                        "data": "image state",
+                        "isHex": false,
+                        "ownerPluginId": "dev.bbcom.mcumgr"
+                    }],
+                    "macros": [{
+                        "id": "plugin:dev.bbcom.mcumgr:upgrade",
+                        "name": "Upgrade",
+                        "ownerPluginId": "dev.bbcom.mcumgr",
+                        "steps": [{ "data": "upload", "isHex": false, "delayMs": 1 }]
+                    }],
+                    "triggers": [],
+                    "highlights": [],
+                    "modbusRegisters": []
+                }),
+            )],
+        ))
+        .unwrap();
+    let collections = service.hydrate_session_collections("s1").unwrap();
+    assert_eq!(
+        collections.quick_commands[0].owner_plugin_id.as_deref(),
+        Some("dev.bbcom.mcumgr")
+    );
+    assert_eq!(
+        collections.macros[0].owner_plugin_id.as_deref(),
+        Some("dev.bbcom.mcumgr")
+    );
+
+    let error = service
+        .apply_batch(batch(
+            "spoofed-contribution",
+            2,
+            vec![mutation(
+                3,
+                WorkspaceMutationKind::ReplaceSessionCollections,
+                Some("s1"),
+                json!({
+                    "sendHistory": [],
+                    "quickCommands": [{
+                        "id": "user-command", "name": "Spoofed", "data": "x",
+                        "isHex": false, "ownerPluginId": "dev.bbcom.mcumgr"
+                    }],
+                    "macros": [], "triggers": [], "highlights": [], "modbusRegisters": []
+                }),
+            )],
+        ))
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        WorkspaceError::InvalidInput {
+            field: "quickCommand.ownerPluginId"
+        }
+    ));
+    assert_eq!(service.header().unwrap().revision, 2);
+}
+
+#[test]
+fn schema_one_migrates_plugin_owners_to_nullable_columns() {
+    let temp = tempfile::tempdir().unwrap();
+    let (path, service) = create(&temp);
+    drop(service);
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "ALTER TABLE quick_commands DROP COLUMN owner_plugin_id;
+             ALTER TABLE macros DROP COLUMN owner_plugin_id;
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let service = WorkspaceService::open(&path).unwrap();
+    assert_eq!(service.header().unwrap().revision, 0);
+    drop(service);
+    let connection = Connection::open(path).unwrap();
+    let version: i32 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, WORKSPACE_SCHEMA_VERSION);
+    for table in ["quick_commands", "macros"] {
+        let mut columns = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        let names = columns
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(names.iter().any(|name| name == "owner_plugin_id"));
+    }
+}
+
+#[test]
+fn schema_two_migrates_v2_project_state_to_an_explicit_guest_schema() {
+    let temp = tempfile::tempdir().unwrap();
+    let (path, service) = create(&temp);
+    drop(service);
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DROP TABLE plugin_project_state;
+             CREATE TABLE plugin_project_state (
+               plugin_id TEXT PRIMARY KEY REFERENCES plugin_bindings(plugin_id) ON DELETE CASCADE,
+               state BLOB NOT NULL CHECK (length(state) <= 16777216),
+               state_version INTEGER NOT NULL DEFAULT 1 CHECK (state_version >= 1)
+             ) STRICT;
+             INSERT INTO plugin_bindings (
+               plugin_id, repository_origin, version_requirement, expected_enabled
+             ) VALUES ('dev.bbcom.fixture', 'local', '*', 1);
+             INSERT INTO plugin_project_state(plugin_id, state, state_version)
+             VALUES ('dev.bbcom.fixture', X'0102', 2);
+             PRAGMA user_version = 2;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let service = WorkspaceService::open(&path).unwrap();
+    let binding = service.plugin_bindings().unwrap().pop().unwrap();
+    assert_eq!(binding.project_state_api_generation, Some(2));
+    assert_eq!(binding.project_state_schema_version, Some(1));
+    assert_eq!(binding.project_state.as_deref(), Some([1_u8, 2].as_slice()));
 }
 
 #[test]

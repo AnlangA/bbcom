@@ -70,21 +70,6 @@ All notable changes to bbcom are documented here. The format is based on
 - The plugin center panel gained an "Install from local…" form and per-plugin
   uninstall buttons with confirmation dialogs.
 
-### Sample plugin and completed panel-event plumbing
-
-- Added `plugins/counter-plugin`, a real `no_std` guest for the plugin world:
-  a persistent counter panel using the `plugin.storage` and `session-list`
-  host imports plus `publish-panel`, packaged as a digest-pinned artifact
-  under `tests/fixtures/plugins/counter`.
-- Completed the panel-event surface in the host: `PluginRuntime` now exposes
-  `handle_panel_event` and `take_published_panel`, and the sidecar protocol
-  accepts a `panel-event` invoke whose response body carries the updated
-  panel as JSON.
-- Added end-to-end tests: an in-process contract test (lifecycle, storage
-  persistence across runtimes, capability denial) and a test that drives the
-  real sidecar binary through handshake, seeded state upload, a panel event,
-  shutdown, and state read-back.
-
 ### Runtime performance
 
 - Cut the waveform ingest hot path from a full sample rebuild per UI tick to
@@ -166,7 +151,7 @@ All notable changes to bbcom are documented here. The format is based on
 - Fixed the G45 fixture components failing validation on every platform: the
   hand-written fixtures exported bare root functions whose record/enum types
   never entered the exported type set. Types are now exported through a
-  `bbcom:plugin/types@1.0.0` instance and referenced through aliases, the
+  `bbcom:plugin/types@2.0.0` instance and referenced through aliases, the
   ambient WASI fixture imports a typed instance that can never link, and the
   two contract tests serialize on the process-wide host-store guard.
 - Fixed `pnpm test:rust` running only the `bbcom` package: it now passes

@@ -1,25 +1,20 @@
-//! Deny-by-default validation between plugins and bbcom capabilities.
+//! Deny-by-default protocol-v2 mediation between plugins and bbcom.
 //!
 //! This crate deliberately has no serial, filesystem, network, keyring, Tauri,
-//! or WebView dependency. It returns narrowly-scoped actions to trusted
-//! application code only after declaration checks and per-request safeguards.
+//! or WebView dependency. Concrete capabilities remain application-owned and
+//! are reached only through the typed gateway.
 
-mod audit;
 mod error;
+mod gateway;
 mod limits;
-mod panel;
-mod proposal;
+mod stream;
 
-pub use audit::{AuditEvent, AuditOperation, AuditSink, NoopAuditSink};
 pub use error::{BrokerError, BrokerErrorCode, LimitKind, Result};
+pub use gateway::{
+    GatewayContext, GatewayDispatch, GatewayFailure, GatewaySession, PendingGatewayRequest,
+    PluginCapabilityGateway, RuntimeBootstrapState, TaskTerminal,
+};
 pub use limits::{
     BROKER_LONG_TIMEOUT_MS, BROKER_NORMAL_TIMEOUT_MS, InvocationClass, validate_invocation,
 };
-pub use panel::{
-    DeclarativePanel, DeclarativePanelBroker, HostedPanel, PanelControlKind, PanelEvent,
-    PanelEventAction, PanelField, PanelValidation, validate_panel, validate_panel_event,
-};
-pub use proposal::{
-    BrokerAction, NoActionReason, ProposalContext, ProposalDecision, ProposalResolution,
-    SerialProposalBroker, SerialProposalRequest, SerialProposalView,
-};
+pub use stream::{StreamEvent, StreamMultiplexer};

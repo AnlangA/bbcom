@@ -14,6 +14,9 @@ export interface SessionParserState {
 /** A complete serial session — the central domain aggregate persisted per tab. */
 export interface SerialSession {
   id: string;
+  /** Optional host-rendered tab name. The native serial path is never used as
+   * a plugin-facing identity when this value is supplied. */
+  displayName?: string;
   portName: string;
   portConfig: PortConfig;
   isConnected: boolean;

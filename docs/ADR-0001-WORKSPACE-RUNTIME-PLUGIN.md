@@ -6,7 +6,9 @@
 - Amendment: the catalog-storage sentence below is superseded by
   [ADR-0002](ADR-0002-DERIVED-WORKSPACE-CATALOG.md); all other decisions remain
   in force except the repository-trust paragraph, which is superseded by
-  [ADR-0004](ADR-0004-PLUGIN-TRUST-AND-RELEASE-GATE.md).
+  [ADR-0004](ADR-0004-PLUGIN-TRUST-AND-RELEASE-GATE.md), and the complete
+  plugin isolation/capability protocol section is superseded by
+  [ADR-0005](ADR-0005-PLUGIN-PROTOCOL-V2.md).
 
 ## Context
 
@@ -58,16 +60,16 @@ owned task lifetimes, and an isolation boundary for untrusted extensions.
 - bbcom ships one trusted native `bbcom-plugin-host` sidecar. Every enabled
   plugin receives a separate host process and a separate Wasmtime Component
   Store. The plugin payload is a WebAssembly Component implementing
-  `bbcom:plugin@1.0.0` WIT interfaces.
+  `bbcom:plugin@2.0.0` WIT interfaces. Other API generations are rejected at
+  manifest validation and never become inventory entries.
 - The main process and sidecar use a versioned, length-prefixed Protobuf protocol.
   The plugin itself receives only explicitly linked WIT capabilities.
-- Version 1 plugins have no ambient filesystem, network, process, serial, Tauri,
-  keyring, or environment access. Panels are host-rendered declarative UI.
-- Serial output is a proposal confirmed by the user and executed through
-  bbcom's existing serial write scheduler. The decision is remembered only for
-  the current plugin runtime instance (one prompt per
-  workspace+plugin+instance+generation, per AGENTS_PLAN); no persistent
-  `always allow serial send` grant exists.
+- Version 2 plugins have no ambient filesystem, network, process, native serial,
+  Tauri, keyring, or environment access. UI surfaces are host-rendered from a
+  bounded declarative tree; files and serial sessions use opaque resources.
+- First enable or capability expansion requires an explicit persisted grant.
+  Serial output uses a generation-bound transaction lease through the existing
+  scheduler.
 - Repository trust is HTTPS plus pinned size and SHA-256. This protects transfer
   integrity, not publisher identity; the market UI must state that limitation.
   Updates are notification-only and require explicit user installation.

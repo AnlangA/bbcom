@@ -13,7 +13,6 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 const PLUGIN_ID: &str = "dev.bbcom.fixture";
-const PUBLISHER: &str = "publisher:bbcom-fixtures";
 
 #[derive(Debug)]
 struct PackageFixture {
@@ -61,7 +60,6 @@ fn multiple_https_repositories_are_manual_and_redirects_are_same_origin() {
         "https://repo-one.test",
         "https://repo-one.test/packages/plugin-1.1.0.zip",
         "1.1.0",
-        PUBLISHER,
         &first,
         None,
     );
@@ -69,7 +67,6 @@ fn multiple_https_repositories_are_manual_and_redirects_are_same_origin() {
         "https://repo-two.test",
         "https://repo-two.test/packages/plugin-1.2.0.zip",
         "1.2.0",
-        PUBLISHER,
         &second,
         None,
     );
@@ -141,7 +138,6 @@ fn downloads_require_exact_declared_size_and_sha256() {
         "https://repo.test",
         url,
         "1.0.0",
-        PUBLISHER,
         &package,
         Some((package.bytes.len() as u64) + 1),
     );
@@ -160,7 +156,7 @@ fn downloads_require_exact_declared_size_and_sha256() {
         })
     ));
 
-    let wrong_digest = index_json("https://repo.test", url, "1.0.0", PUBLISHER, &package, None)
+    let wrong_digest = index_json("https://repo.test", url, "1.0.0", &package, None)
         .replace(&sha256_hex(&package.bytes), &"0".repeat(64));
     let index = RepositoryIndex::parse(&wrong_digest).unwrap();
     let mut transport = MockTransport::default();
@@ -185,12 +181,7 @@ fn staging_rejects_traversal_links_scripts_and_oversized_manifests() {
     .unwrap();
 
     let traversal = valid_package("1.0.0", &[("../escaped.txt", b"escape")]);
-    let download = download_fixture(
-        "https://repo.test/traversal.zip",
-        "1.0.0",
-        PUBLISHER,
-        traversal,
-    );
+    let download = download_fixture("https://repo.test/traversal.zip", "1.0.0", traversal);
     assert!(matches!(
         installer.install(&download),
         Err(RepositoryError::InvalidArchive("path traversal"))
@@ -201,26 +192,21 @@ fn staging_rejects_traversal_links_scripts_and_oversized_manifests() {
     assert!(!temporary.path().join("escaped.txt").exists());
 
     let linked = package_with_symlink("1.0.0");
-    let download = download_fixture("https://repo.test/link.zip", "1.0.0", PUBLISHER, linked);
+    let download = download_fixture("https://repo.test/link.zip", "1.0.0", linked);
     assert!(matches!(
         installer.install(&download),
         Err(RepositoryError::LinkEntryForbidden)
     ));
 
     let script = valid_package("1.0.0", &[("setup.sh", b"#!/bin/sh\nexit 0\n")]);
-    let download = download_fixture("https://repo.test/script.zip", "1.0.0", PUBLISHER, script);
+    let download = download_fixture("https://repo.test/script.zip", "1.0.0", script);
     assert!(matches!(
         installer.install(&download),
         Err(RepositoryError::NativeExecutableForbidden)
     ));
 
     let oversized = package_with_oversized_manifest("1.0.0");
-    let download = download_fixture(
-        "https://repo.test/manifest.zip",
-        "1.0.0",
-        PUBLISHER,
-        oversized,
-    );
+    let download = download_fixture("https://repo.test/manifest.zip", "1.0.0", oversized);
     assert!(matches!(
         installer.install(&download),
         Err(RepositoryError::ManifestUnavailable)
@@ -237,7 +223,6 @@ fn upgrades_are_side_by_side_atomic_and_keep_two_rollback_candidates() {
     let v1 = download_fixture(
         "https://repo.test/v1.zip",
         "1.0.0",
-        PUBLISHER,
         valid_package("1.0.0", &[]),
     );
     assert!(matches!(
@@ -254,7 +239,6 @@ fn upgrades_are_side_by_side_atomic_and_keep_two_rollback_candidates() {
     let v2 = download_fixture(
         "https://repo.test/v2.zip",
         "2.0.0",
-        PUBLISHER,
         valid_package("2.0.0", &[]),
     );
     installer.install(&v2).unwrap();
@@ -280,7 +264,6 @@ fn upgrades_are_side_by_side_atomic_and_keep_two_rollback_candidates() {
     let malicious_v3 = download_fixture(
         "https://repo.test/v3-bad.zip",
         "3.0.0",
-        PUBLISHER,
         valid_package("3.0.0", &[("install.exe", b"MZpayload")]),
     );
     assert!(matches!(
@@ -302,7 +285,7 @@ fn upgrades_are_side_by_side_atomic_and_keep_two_rollback_candidates() {
 
     for version in ["3.0.0", "4.0.0"] {
         let url = format!("https://repo.test/v{version}.zip");
-        let download = download_fixture(&url, version, PUBLISHER, valid_package(version, &[]));
+        let download = download_fixture(&url, version, valid_package(version, &[]));
         installer.install(&download).unwrap();
     }
     let active = installer.active_installation(PLUGIN_ID).unwrap().unwrap();
@@ -329,7 +312,6 @@ fn upgrades_are_side_by_side_atomic_and_keep_two_rollback_candidates() {
     let conflicting_v4 = download_fixture(
         "https://repo.test/v4-conflict.zip",
         "4.0.0",
-        PUBLISHER,
         valid_package("4.0.0", &[("notes.txt", b"different package")]),
     );
     assert!(matches!(
@@ -346,7 +328,6 @@ fn rollback_atomically_selects_package_and_restores_matching_data() {
     let v1 = download_fixture(
         "https://repo.test/v1.zip",
         "1.0.0",
-        PUBLISHER,
         valid_package("1.0.0", &[]),
     );
     installer.install(&v1).unwrap();
@@ -357,7 +338,6 @@ fn rollback_atomically_selects_package_and_restores_matching_data() {
     let v2 = download_fixture(
         "https://repo.test/v2.zip",
         "2.0.0",
-        PUBLISHER,
         valid_package("2.0.0", &[]),
     );
     installer.install(&v2).unwrap();
@@ -387,7 +367,6 @@ fn durable_prepare_does_not_activate_and_survives_installer_reopen() {
     let download = download_fixture(
         "https://repo.test/v1.zip",
         "1.0.0",
-        PUBLISHER,
         valid_package("1.0.0", &[]),
     );
     let installer = PluginInstaller::new(&package_root, &data_root).unwrap();
@@ -427,7 +406,6 @@ fn discard_is_exact_and_path_tokens_cannot_escape_staging() {
     let download = download_fixture(
         "https://repo.test/v1.zip",
         "1.0.0",
-        PUBLISHER,
         valid_package("1.0.0", &[]),
     );
     let prepared = installer.prepare_install(&download).unwrap();
@@ -450,7 +428,6 @@ fn prepared_rollback_preflights_a_private_copy_before_commit() {
         let download = download_fixture(
             &format!("https://repo.test/v{version}.zip"),
             version,
-            PUBLISHER,
             valid_package(version, &[]),
         );
         installer.install(&download).unwrap();
@@ -483,14 +460,12 @@ fn prepared_rollback_preflights_a_private_copy_before_commit() {
 fn download_fixture(
     url: &str,
     version: &str,
-    publisher: &str,
     fixture: PackageFixture,
 ) -> bbcom_plugin_repository::DownloadedPackage {
     let index = RepositoryIndex::parse(&index_json(
         "https://repo.test",
         url,
         version,
-        publisher,
         &fixture,
         None,
     ))
@@ -567,7 +542,8 @@ fn manifest(version: &str, component_sha256: &str) -> String {
         r#"id = "{PLUGIN_ID}"
 name = "Fixture"
 version = "{version}"
-api = "^1.0"
+api = "^2.0"
+requested-capabilities = []
 
 [component]
 path = "component/plugin.wasm"
@@ -575,7 +551,6 @@ sha256 = "{component_sha256}"
 
 [publisher]
 name = "bbcom fixtures"
-identity = "{PUBLISHER}"
 website = "https://bbcom.test"
 "#
     )
@@ -585,7 +560,6 @@ fn index_json(
     origin: &str,
     package_url: &str,
     version: &str,
-    publisher: &str,
     fixture: &PackageFixture,
     download_bytes_override: Option<u64>,
 ) -> String {
@@ -597,7 +571,6 @@ fn index_json(
   "update_policy": "manual",
   "plugins": [{{
     "id": "{PLUGIN_ID}",
-    "publisher_identity": "{publisher}",
     "packages": [{{
       "version": "{version}",
       "url": "{package_url}",

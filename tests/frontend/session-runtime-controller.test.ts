@@ -8,6 +8,8 @@ import type { SerialSession } from '../../src/types/session.ts';
 import type { PortConfig, SerialSendResult } from '../../src/types/serial.ts';
 import type { SerialStopResult } from '../../src/composables/useSerialConnection.ts';
 import { PortLeaseRegistry } from '../../src/features/serial/application/port-lease-registry.ts';
+import type { SerialAutomationPausePort } from '../../src/features/serial/application/serial-transaction-lease.ts';
+import { SessionRuntimeStatusRegistry } from '../../src/features/sessions/runtime/session-runtime-status.ts';
 
 const mocked = vi.hoisted(() => ({
   autoLog: {
@@ -22,12 +24,19 @@ const mocked = vi.hoisted(() => ({
     warning: vi.fn(),
   },
   modbus: {
-    master: { stop: vi.fn() },
+    master: {
+      stop: vi.fn(),
+      pauseForSerialTransaction: vi.fn(async () => undefined),
+      resumeAfterSerialTransaction: vi.fn(),
+    },
   },
   modbusOptions: undefined as unknown,
   serial: undefined as unknown,
   serialArgs: undefined as unknown,
   triggerFeed: vi.fn(),
+  triggerPause: vi.fn(async () => undefined),
+  triggerReset: vi.fn(),
+  triggerResume: vi.fn(),
   triggerOptions: undefined as unknown,
 }));
 
@@ -42,7 +51,12 @@ vi.mock('../../src/composables/useSessionModbus.ts', () => ({
 vi.mock('../../src/composables/useTriggers.ts', () => ({
   useTriggers: (options: unknown) => {
     mocked.triggerOptions = options;
-    return { feedBytes: mocked.triggerFeed };
+    return {
+      feedBytes: mocked.triggerFeed,
+      pause: mocked.triggerPause,
+      reset: mocked.triggerReset,
+      resume: mocked.triggerResume,
+    };
   },
 }));
 vi.mock('../../src/composables/useSerialConnection.ts', () => ({
@@ -75,6 +89,7 @@ interface FakeSerial {
   connectionFailure: ReturnType<typeof ref<unknown>>;
   isConnected: ReturnType<typeof ref<boolean>>;
   isConnecting: ReturnType<typeof ref<boolean>>;
+  isClosing: ReturnType<typeof ref<boolean>>;
   reconnecting: ReturnType<typeof ref<boolean>>;
   totalDroppedBytes: ReturnType<typeof ref<number>>;
   start: ReturnType<typeof vi.fn>;
@@ -83,6 +98,11 @@ interface FakeSerial {
   sendBytes: ReturnType<typeof vi.fn>;
   sendBreak: ReturnType<typeof vi.fn>;
   rawBytes: ReturnType<typeof vi.fn>;
+  serialTransactions: {
+    registerAutomation: ReturnType<typeof vi.fn>;
+    dispose: ReturnType<typeof vi.fn>;
+    snapshot: ReturnType<typeof vi.fn>;
+  };
   emit: (bytes: Uint8Array) => void;
 }
 
@@ -132,6 +152,14 @@ function incomplete(outcome: 'partial' | 'cancelled', bytes: number): SerialSend
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function stoppedWithNoConnection(): SerialStopResult {
   return {
     watch: 'not-installed',
@@ -162,6 +190,7 @@ function makeSerial(): FakeSerial {
     connectionFailure: ref(null),
     isConnected,
     isConnecting: ref(false),
+    isClosing: ref(false),
     reconnecting: ref(false),
     totalDroppedBytes: ref(0),
     start: vi.fn(async () => {
@@ -180,6 +209,11 @@ function makeSerial(): FakeSerial {
       observers.add(callback);
       return () => observers.delete(callback);
     }),
+    serialTransactions: {
+      registerAutomation: vi.fn(() => () => undefined),
+      dispose: vi.fn(async () => undefined),
+      snapshot: vi.fn(() => ({ manualWriteAllowed: true })),
+    },
     emit: (bytes: Uint8Array) => {
       for (const callback of observers) callback(bytes);
     },
@@ -197,11 +231,12 @@ function sessionById(session: SerialSession[], id: string): SerialSession {
   return found;
 }
 
-function setup() {
+function setup(runtimeStatusRegistry?: SessionRuntimeStatusRegistry, includeClosing = true) {
   setActivePinia(createPinia());
   const store = useSessionCoreStore();
   const id = store.createSession('COM1', config);
   const serial = makeSerial();
+  if (!includeClosing) Reflect.deleteProperty(serial, 'isClosing');
   mocked.serial = serial;
   const scope = effectScope();
   const runtime = scope.run(() =>
@@ -210,6 +245,7 @@ function setup() {
       {
         notifications: mocked.message,
         portLeaseClient: new PortLeaseRegistry({ platform: 'windows' }),
+        runtimeStatusRegistry,
       },
     ),
   );
@@ -230,8 +266,13 @@ beforeEach(() => {
   mocked.message.success.mockReset();
   mocked.message.warning.mockReset();
   mocked.modbus.master.stop.mockReset();
+  mocked.modbus.master.pauseForSerialTransaction.mockClear();
+  mocked.modbus.master.resumeAfterSerialTransaction.mockReset();
   mocked.triggerFeed.mockReset();
   mocked.triggerFeed.mockResolvedValue(undefined);
+  mocked.triggerPause.mockClear();
+  mocked.triggerReset.mockReset();
+  mocked.triggerResume.mockReset();
   mocked.modbusOptions = undefined;
 });
 
@@ -546,6 +587,44 @@ test('controller exposes lazy status/error branches and joins concurrent shutdow
   void running;
 });
 
+test('runtime status projection preserves closing, reconnecting, and connecting precedence', async () => {
+  const statuses = new SessionRuntimeStatusRegistry();
+  const { id, runtime, scope, serial } = setup(statuses);
+
+  serial.isConnecting.value = true;
+  assert.equal(statuses.get(id).phase, 'connecting');
+  serial.reconnecting.value = true;
+  assert.equal(statuses.get(id).phase, 'reconnecting');
+  serial.isClosing.value = true;
+  assert.equal(statuses.get(id).phase, 'closing');
+  serial.isClosing.value = false;
+  assert.equal(statuses.get(id).phase, 'reconnecting');
+  serial.reconnecting.value = false;
+  assert.equal(statuses.get(id).phase, 'connecting');
+  serial.isConnecting.value = false;
+  serial.isConnected.value = true;
+  assert.equal(statuses.get(id).phase, 'connected');
+
+  serial.serialTransactions.snapshot.mockReturnValueOnce({ manualWriteAllowed: false });
+  assert.deepEqual(await runtime.macro.run({ id: 'blocked', name: 'blocked', steps: [] }), {
+    completed: 0,
+    failedAt: 0,
+    aborted: true,
+  });
+
+  await runtime.dispose();
+  scope.stop();
+});
+
+test('runtime status projection supports serial adapters without an explicit closing ref', async () => {
+  const statuses = new SessionRuntimeStatusRegistry();
+  const { id, runtime, scope } = setup(statuses, false);
+
+  assert.equal(statuses.get(id).phase, 'stopped');
+  await runtime.dispose();
+  scope.stop();
+});
+
 test('loop payload is cleared when an already-running scheduler rejects a second start', async () => {
   const { runtime, scope, serial } = setup();
   serial.isConnected.value = true;
@@ -571,5 +650,101 @@ test('loop payload is cleared when an already-running scheduler rejects a second
   runtime.stopSendLoop();
 
   await runtime.dispose();
+  scope.stop();
+});
+
+test('runtime registers every automatic writer with the serial transaction gate', async () => {
+  const { runtime, scope, serial } = setup();
+  const ports = serial.serialTransactions.registerAutomation.mock.calls.map(
+    ([port]) => port as SerialAutomationPausePort,
+  );
+  assert.deepEqual(
+    ports.map((port) => port.id),
+    ['cyclic-send', 'macro-runner', 'modbus-master', 'trigger-responses'],
+  );
+  const context = {
+    ownerId: 'plugin.test',
+    generation: 1,
+    signal: new AbortController().signal,
+  };
+  assert.equal(await ports[0].pause(context), null);
+  assert.equal(await ports[1].pause(context), null);
+  const modbusSuspension = await ports[2].pause(context);
+  assert.equal(mocked.modbus.master.pauseForSerialTransaction.mock.calls.length, 1);
+  await modbusSuspension?.restore({
+    ownerId: context.ownerId,
+    generation: context.generation,
+    reason: 'released',
+  });
+  assert.equal(mocked.modbus.master.resumeAfterSerialTransaction.mock.calls.length, 1);
+  const triggerSuspension = await ports[3].pause(context);
+  assert.equal(mocked.triggerPause.mock.calls.length, 1);
+  await triggerSuspension?.restore({
+    ownerId: context.ownerId,
+    generation: context.generation,
+    reason: 'released',
+  });
+  assert.equal(mocked.triggerResume.mock.calls.length, 1);
+
+  await runtime.dispose();
+  assert.equal(serial.serialTransactions.dispose.mock.calls.length, 1);
+  scope.stop();
+});
+
+test('automation suspensions preserve cyclic and macro work but never restart after disposal', async () => {
+  const { runtime, scope, serial } = setup();
+  serial.isConnected.value = true;
+  const ports = serial.serialTransactions.registerAutomation.mock.calls.map(
+    ([port]) => port as SerialAutomationPausePort,
+  );
+  const context = {
+    ownerId: 'plugin.test',
+    generation: 1,
+    signal: new AbortController().signal,
+  };
+
+  const firstLoopSend = deferred<SerialSendResult>();
+  serial.send.mockReturnValueOnce(firstLoopSend.promise);
+  assert.equal(runtime.startSendLoop('AT', false), true);
+  await Promise.resolve();
+  const firstCyclicSuspension = await ports[0].pause(context);
+  assert.ok(firstCyclicSuspension);
+  await firstCyclicSuspension.restore({
+    ownerId: context.ownerId,
+    generation: context.generation,
+    reason: 'released',
+  });
+  firstLoopSend.resolve(complete(2));
+  await Promise.resolve();
+  await Promise.resolve();
+  const finalCyclicSuspension = await ports[0].pause(context);
+  assert.ok(finalCyclicSuspension);
+
+  const macroSend = deferred<SerialSendResult>();
+  serial.send.mockReturnValueOnce(macroSend.promise);
+  const macroRun = runtime.macro.run({
+    id: 'paused-macro',
+    name: 'paused macro',
+    steps: [{ data: 'M', isHex: false, delayMs: 0 }],
+  });
+  await Promise.resolve();
+  const macroPause = ports[1].pause(context);
+  macroSend.resolve(complete(1));
+  const macroSuspension = await macroPause;
+  assert.ok(macroSuspension);
+  assert.deepEqual(await macroRun, { completed: 1, failedAt: 1, aborted: false });
+  await macroSuspension.restore({
+    ownerId: context.ownerId,
+    generation: context.generation,
+    reason: 'released',
+  });
+
+  await runtime.dispose();
+  await finalCyclicSuspension.restore({
+    ownerId: context.ownerId,
+    generation: context.generation,
+    reason: 'released',
+  });
+  assert.equal(runtime.looping.value, false);
   scope.stop();
 });

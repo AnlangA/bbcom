@@ -103,6 +103,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
 
   let unlistenRx: (() => void) | null = null;
   let stopped = false;
+  let serialTransactionPaused = false;
   let lastTransactionStatus: ModbusTransactionStatus | null = null;
 
   const replaying = ref(false);
@@ -299,6 +300,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
   function shouldRunRead(): boolean {
     return (
       !stopped &&
+      !serialTransactionPaused &&
       config.value.enabled &&
       isConnected.value &&
       registers.value.some((r) => r.periodicRead && isReadFc(r.functionCode))
@@ -350,6 +352,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
   function shouldRunWrite(): boolean {
     return (
       !stopped &&
+      !serialTransactionPaused &&
       config.value.enabled &&
       isConnected.value &&
       hasPeriodicWritableRows(registers.value)
@@ -383,10 +386,35 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     emitStatus({ kind: 'idle' });
   }
 
+  async function pauseForSerialTransaction(signal?: AbortSignal): Promise<void> {
+    serialTransactionPaused = true;
+    loops.pause();
+    stopReplay();
+    clearWritingState();
+    resetBackoffs();
+    transactions.cancel({ kind: 'error', message: 'serial transaction lease acquired' });
+    try {
+      await loops.waitForIdle(signal);
+      stopListening();
+    } catch (error) {
+      resumeAfterSerialTransaction();
+      throw error;
+    }
+  }
+
+  function resumeAfterSerialTransaction(): void {
+    if (!serialTransactionPaused) return;
+    serialTransactionPaused = false;
+    if (stopped || !config.value.enabled || !isConnected.value) return;
+    startListening();
+    loops.resume();
+  }
+
   // --- Imperative API (table buttons) -----------------------------------
 
   /** Read a single row on demand, regardless of table mode. */
   async function readOnce(reg: ModbusRegister): Promise<number | null> {
+    if (serialTransactionPaused) return null;
     if (!isReadFc(reg.functionCode)) return null;
     const fc = reg.functionCode as ReadFc;
     const count = modbusReadRowCount(reg);
@@ -420,6 +448,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
    * so on-demand reads can't interleave with poll ticks.
    */
   async function readAll(): Promise<void> {
+    if (serialTransactionPaused) return;
     startListening();
     await withBusy(() => pollOnce());
     // Re-arm the read loop in case it was deferred while we held the bus.
@@ -428,6 +457,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
 
   /** Write a single row's value (FC05/06/10). */
   async function sendRow(reg: ModbusRegister): Promise<boolean> {
+    if (serialTransactionPaused) return false;
     const batches = buildModbusWriteBatches([reg]);
     if (batches.length === 0) return false;
     startListening();
@@ -439,6 +469,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
 
   /** Write every writable row; only explicit FC10 register rows batch together. */
   async function sendAll(): Promise<{ sent: number; ok: number }> {
+    if (serialTransactionPaused) return { sent: 0, ok: 0 };
     startListening();
     return withBusy(() => sendWriteBatches(buildModbusWriteBatches(registers.value)));
   }
@@ -454,6 +485,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
    * aborting the replay.
    */
   function startReplay(records: ModbusStreamRecord[]): void {
+    if (serialTransactionPaused) return;
     const queue = buildModbusReplayWriteTargets(records, registers.value);
     if (queue.length === 0) {
       replayCoordinator.stop();
@@ -484,7 +516,7 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
   watch(
     () => [config.value.enabled, isConnected.value] as const,
     ([enabled, connected]) => {
-      if (enabled && connected) {
+      if (enabled && connected && !serialTransactionPaused) {
         // Listening is useful for reads, writes, and replay (all need acks).
         startListening();
         loops.resume();
@@ -510,6 +542,8 @@ export function useModbusMaster(options: UseModbusMasterOptions) {
     status,
     start,
     stop,
+    pauseForSerialTransaction,
+    resumeAfterSerialTransaction,
     readOnce,
     readAll,
     sendRow,

@@ -100,16 +100,20 @@ function projectQuickCommand(command: QuickCommand): {
   name: string;
   data: string;
   isHex: boolean;
+  ownerPluginId?: string;
 } {
-  assertExactKeys(command, ['id', 'name', 'data', 'isHex'], 'quickCommand');
+  assertExactKeys(command, ['id', 'name', 'data', 'isHex', 'ownerPluginId'], 'quickCommand');
+  const id = validateWorkspaceIdentifier(command.id, 'quickCommand.id');
+  const ownerPluginId = projectPluginOwner(command.ownerPluginId, id, 'quickCommand');
   return {
-    id: validateWorkspaceIdentifier(command.id, 'quickCommand.id'),
+    id,
     name: validateSafeText(command.name, 'quickCommand.name', { maxBytes: 256 }),
     data: validateOpaqueText(command.data, 'quickCommand.data', {
       maxBytes: 1024 * 1024,
       allowEmpty: true,
     }),
     isHex: expectBoolean(command.isHex, 'quickCommand.isHex'),
+    ...(ownerPluginId ? { ownerPluginId } : {}),
   };
 }
 
@@ -117,11 +121,14 @@ function projectMacro(macro: Macro): {
   id: string;
   name: string;
   steps: { data: string; isHex: boolean; delayMs: number }[];
+  ownerPluginId?: string;
 } {
-  assertExactKeys(macro, ['id', 'name', 'steps'], 'macro');
+  assertExactKeys(macro, ['id', 'name', 'steps', 'ownerPluginId'], 'macro');
   if (!Array.isArray(macro.steps)) throw new WorkspaceAdapterValidationError('macro.steps');
+  const id = validateWorkspaceIdentifier(macro.id, 'macro.id');
+  const ownerPluginId = projectPluginOwner(macro.ownerPluginId, id, 'macro');
   return {
-    id: validateWorkspaceIdentifier(macro.id, 'macro.id'),
+    id,
     name: validateSafeText(macro.name, 'macro.name', { maxBytes: 256 }),
     steps: macro.steps.map((step) => {
       assertExactKeys(step, ['data', 'isHex', 'delayMs'], 'macro.step');
@@ -134,7 +141,21 @@ function projectMacro(macro: Macro): {
         delayMs: validUint32(step.delayMs, 'macro.step.delayMs'),
       };
     }),
+    ...(ownerPluginId ? { ownerPluginId } : {}),
   };
+}
+
+function projectPluginOwner(
+  ownerPluginId: string | null | undefined,
+  itemId: string,
+  field: string,
+): string | undefined {
+  if (ownerPluginId === null || ownerPluginId === undefined) return undefined;
+  const owner = validateWorkspaceIdentifier(ownerPluginId, `${field}.ownerPluginId`);
+  if (!itemId.startsWith(`plugin:${owner}:`) || itemId.length <= owner.length + 8) {
+    throw new WorkspaceAdapterValidationError(`${field}.ownerPluginId`);
+  }
+  return owner;
 }
 
 function projectTriggerConfig(trigger: Trigger): Record<string, unknown> {

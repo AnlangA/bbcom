@@ -17,26 +17,23 @@
 //! - installer rollback snapshots: `plugin-state-v2/installer-snapshots`
 //! - opaque plugin storage: `plugin-state-v2`
 //! - bounded broker audit log: `logs/plugin-audit.jsonl`
-//! - Windows AppContainer host copy: `plugin-host-v1` (content addressed)
+//! - Windows AppContainer host copy: `plugin-host-v2` (content addressed)
 //!
 //! On-disk plugin roots for every builder dependency are resolved by native
 //! setup only; no command, event, DTO or renderer string can select them.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use bbcom_contracts::{
-    InstallLocalPluginRequest, PluginCommandResponse, PluginSerialAction,
-    PluginSerialActionResultRequest, PluginSnapshotRequest, RuntimeInstanceKey, SerialSendOutcome,
-};
-use bbcom_plugin_broker::{
-    AuditEvent, AuditOperation, AuditSink, BrokerAction, DeclarativePanelBroker,
-    SerialProposalBroker,
+    InstallLocalPluginRequest, PluginCommandResponse, PluginContributionDisposition,
+    PluginErrorCodeV2, PluginSnapshotRequest, RuntimeInstanceKey, WorkspaceMacro,
+    WorkspaceMacroStep, WorkspaceQuickCommand,
 };
 use bbcom_plugin_manager::ManualPackageRequest;
 use bbcom_plugin_repository::{DownloadedPackage, PluginInstaller};
@@ -44,260 +41,31 @@ use semver::Version;
 use sha2::{Digest, Sha256};
 
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::workspace::WorkspaceManager;
 use crate::utils::window::MAIN_WINDOW_LABEL;
 
 use super::bootstrap::{
-    CurrentPluginWorkspace, PluginBootstrapError, PluginHostUpstreamPort, PluginRuntimeLifecycle,
-    PluginSerialSchedulerPort, ProductionPluginRuntime, ProductionPluginRuntimeBuilder,
+    CurrentPluginWorkspace, PluginBootstrapError, PluginRuntimeLifecycle, ProductionPluginRuntime,
+    ProductionPluginRuntimeBuilder,
 };
 use super::command_adapter::{
     CatalogPluginRecord, CatalogViewFailure, CatalogViewPort, PluginDisplayRecord,
 };
-use super::command_service::PluginUpstreamFailure;
-use super::host_launcher::PrivateArtifactRoot;
-use super::installation::{VerifiedPackageProvider, artifact_source};
+use super::host_launcher::{
+    PluginProjectStateProviderV2, PluginProjectStateSnapshotV2, PrivateArtifactRoot,
+};
+use super::installation::VerifiedPackageProvider;
 use super::runtime_actor::PluginWorkspaceBindingPort;
 use super::sandbox::PlatformSandboxDriver;
-use super::state::NativePluginStatePersistencePort;
+use super::state::SharedNativePluginStatePersistencePort;
 
 const SIDECAR_BASENAME: &str = "bbcom-plugin-host";
 static NEXT_SIDECAR_STAGE_ID: AtomicU64 = AtomicU64::new(1);
-/// Serial actions wait at most this long for a main-window acknowledgement
-/// before the operation is reported as unavailable (fail-closed).
-/// The webview acknowledgement round trip includes the user-visible send
-/// path; 2s timed out legitimate slow sends and made plugins retry (risking
-/// duplicate device writes), so the bound is 10s with late completions
-/// logged instead of silently discarded.
-const SERIAL_ACTION_RESULT_TIMEOUT: Duration = Duration::from_secs(10);
-/// Bound on concurrently unacknowledged serial actions. Reaching it fails the
-/// action instead of growing an unbounded pending map.
-const MAX_PENDING_SERIAL_ACTIONS: usize = 16;
-/// The audit log is truncated and reopened once it exceeds this size.
-const MAX_AUDIT_LOG_BYTES: u64 = 4 * 1024 * 1024;
-
-const PANEL_EVENT_NAME: &str = "plugin-panel-event";
-const SERIAL_ACTION_EVENT_NAME: &str = "plugin-serial-action";
-/// G43: a plugin session/capture query awaiting the main window's answer.
-const SESSION_QUERY_EVENT_NAME: &str = "plugin-session-query";
-/// Nudge for the plugin center to re-snapshot (e.g. a proposal arrived).
-const SNAPSHOT_CHANGED_EVENT_NAME: &str = "plugin-snapshot-changed";
-/// Session queries wait at most this long for the webview answer.
-const SESSION_QUERY_RESULT_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_PENDING_SESSION_QUERIES: usize = 32;
-
-/// Current lifecycle the push workers forward into; refreshed by
-/// ensure_plugin_runtime on every (re)composition.
-static ACTIVE_LIFECYCLE: Mutex<Option<Arc<dyn super::bootstrap::PluginRuntimeLifecycle>>> =
-    Mutex::new(None);
-/// Push workers are process-lifetime and must survive recomposition.
-static PUSH_WORKERS: OnceLock<()> = OnceLock::new();
-
-/// Non-blocking sink handed to every host reader thread.
-struct NativeHostPushSink<E> {
-    proposals: mpsc::Sender<bbcom_plugin_contracts::generated::SerialProposalEvent>,
-    environment: Arc<E>,
-    query_registry: Arc<SessionQueryResultRegistry>,
-}
-
-impl<E: HostUpstreamEnvironment> bbcom_plugin_manager::HostPushSink for NativeHostPushSink<E> {
-    fn serial_proposal(&self, event: bbcom_plugin_contracts::generated::SerialProposalEvent) {
-        // Bounded, non-blocking: the host reader thread must never stall on a
-        // full queue; drops are covered by the sidecar's own TTL bound.
-        let _ = self.proposals.send(event);
-    }
-
-    fn session_query(
-        &self,
-        request: bbcom_plugin_contracts::generated::SessionQueryRequest,
-    ) -> bbcom_plugin_contracts::generated::SessionQueryResponse {
-        answer_session_query(&*self.environment, &self.query_registry, request)
-    }
-}
-
-/// Webview answer registry for in-flight session queries.
-#[derive(Clone, Default)]
-pub struct SessionQueryResultRegistry {
-    pending: Arc<Mutex<HashMap<String, mpsc::Sender<bbcom_contracts::PluginSessionQueryResult>>>>,
-}
-
-impl SessionQueryResultRegistry {
-    fn register(
-        &self,
-        query_id: &str,
-    ) -> Option<mpsc::Receiver<bbcom_contracts::PluginSessionQueryResult>> {
-        let mut pending = self.lock_pending();
-        if pending.len() >= MAX_PENDING_SESSION_QUERIES {
-            return None;
-        }
-        let (sender, receiver) = mpsc::channel();
-        pending.insert(query_id.to_owned(), sender);
-        Some(receiver)
-    }
-
-    /// Fulfills an exact query correlation. Returns false for unknown or
-    /// already-answered queries.
-    pub fn complete(&self, result: bbcom_contracts::PluginSessionQueryResult) -> bool {
-        let mut pending = self.lock_pending();
-        pending
-            .remove(&result.query_id)
-            .is_some_and(|sender| sender.send(result).is_ok())
-    }
-
-    fn discard(&self, query_id: &str) {
-        self.lock_pending().remove(query_id);
-    }
-
-    fn lock_pending(
-        &self,
-    ) -> std::sync::MutexGuard<
-        '_,
-        HashMap<String, mpsc::Sender<bbcom_contracts::PluginSessionQueryResult>>,
-    > {
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-fn active_lifecycle() -> Option<Arc<dyn super::bootstrap::PluginRuntimeLifecycle>> {
-    ACTIVE_LIFECYCLE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
-}
-
-fn spawn_push_workers<E: HostUpstreamEnvironment>(
-    environment: &Arc<E>,
-    proposals: mpsc::Receiver<bbcom_plugin_contracts::generated::SerialProposalEvent>,
-) {
-    if PUSH_WORKERS.set(()).is_err() {
-        return; // Workers from an earlier composition keep draining.
-    }
-    let proposal_environment = Arc::clone(environment);
-    std::thread::Builder::new()
-        .name("bbcom-plugin-proposals".to_owned())
-        .spawn(move || {
-            while let Ok(event) = proposals.recv() {
-                if let Some(lifecycle) = active_lifecycle() {
-                    lifecycle.register_serial_proposal(event);
-                }
-                // Make the pending prompt visible without a user-triggered
-                // refresh; failures are harmless (next refresh catches up).
-                let _ = proposal_environment
-                    .emit_to_main(SNAPSHOT_CHANGED_EVENT_NAME, &serde_json::json!({}));
-            }
-        })
-        .expect("proposal worker thread");
-}
-
-fn answer_session_query<E: HostUpstreamEnvironment>(
-    environment: &E,
-    registry: &SessionQueryResultRegistry,
-    request: bbcom_plugin_contracts::generated::SessionQueryRequest,
-) -> bbcom_plugin_contracts::generated::SessionQueryResponse {
-    use bbcom_contracts::{PluginSessionQuery, PluginSessionQueryKind};
-    use bbcom_plugin_contracts::generated::session_query_request::Query;
-
-    let query_id = request.query_id.clone();
-    let plugin_id = request.plugin_id.clone();
-    let kind = match request.query {
-        Some(Query::List(_)) => PluginSessionQueryKind::List,
-        Some(Query::Capture(capture)) => PluginSessionQueryKind::Capture {
-            session_id: capture.session_id,
-            from_sequence: u32::try_from(capture.from_sequence).unwrap_or(u32::MAX),
-            max_frames: capture.max_frames,
-            max_bytes: capture.max_bytes,
-        },
-        None => {
-            return query_error_response(&query_id, "invalid-input");
-        }
-    };
-    let Some(waiter) = registry.register(&query_id) else {
-        return query_error_response(&query_id, "limit-exceeded");
-    };
-    let event = serde_json::to_value(PluginSessionQuery {
-        query_id: query_id.clone(),
-        plugin_id: plugin_id.clone(),
-        kind,
-    });
-    let Ok(event) = event else {
-        registry.discard(&query_id);
-        return query_error_response(&query_id, "invalid-input");
-    };
-    if environment
-        .emit_to_main(SESSION_QUERY_EVENT_NAME, &event)
-        .is_err()
-    {
-        registry.discard(&query_id);
-        return query_error_response(&query_id, "invalid-input");
-    }
-    match waiter.recv_timeout(SESSION_QUERY_RESULT_TIMEOUT) {
-        Ok(result) if result.ok => build_query_response(&query_id, &result),
-        Ok(_) => query_error_response(&query_id, "permission-denied"),
-        Err(_) => {
-            registry.discard(&query_id);
-            query_error_response(&query_id, "unavailable")
-        }
-    }
-}
-
-fn build_query_response(
-    query_id: &str,
-    result: &bbcom_contracts::PluginSessionQueryResult,
-) -> bbcom_plugin_contracts::generated::SessionQueryResponse {
-    bbcom_plugin_contracts::generated::SessionQueryResponse {
-        query_id: query_id.to_owned(),
-        ok: true,
-        error_code: String::new(),
-        sessions: result
-            .sessions
-            .iter()
-            .map(
-                |session| bbcom_plugin_contracts::generated::SessionMetadataEntry {
-                    session_id: session.session_id.clone(),
-                    name: session.name.clone(),
-                    kind: session.kind.clone(),
-                    connected: session.connected,
-                    rx_bytes: session.rx_bytes,
-                    tx_bytes: session.tx_bytes,
-                },
-            )
-            .collect(),
-        frames: result
-            .frames
-            .iter()
-            .map(
-                |frame| bbcom_plugin_contracts::generated::CaptureFrameEntry {
-                    sequence: u64::from(frame.sequence),
-                    timestamp_ms: frame.timestamp_ms,
-                    tx: frame.tx,
-                    payload: frame.bytes.clone(),
-                },
-            )
-            .collect(),
-        next_sequence: u64::from(result.next_sequence),
-        has_more: result.has_more,
-    }
-}
-
-fn query_error_response(
-    query_id: &str,
-    error_code: &str,
-) -> bbcom_plugin_contracts::generated::SessionQueryResponse {
-    bbcom_plugin_contracts::generated::SessionQueryResponse {
-        query_id: query_id.to_owned(),
-        ok: false,
-        error_code: error_code.to_owned(),
-        sessions: Vec::new(),
-        frames: Vec::new(),
-        next_sequence: 0,
-        has_more: false,
-    }
-}
-
-/// Application-owned bridge the plugin upstream ports use to reach the main
-/// webview and the active workspace. Production is backed by [`AppHandle`];
-/// tests substitute a recording environment.
+/// Application-owned bridge used by protocol-v2 capability projection and
+/// workspace lifecycle wiring. Production is backed by [`AppHandle`]; tests
+/// substitute a recording environment.
 trait HostUpstreamEnvironment: Send + Sync + 'static {
     /// Emits a JSON payload to the main webview window.
     fn emit_to_main(&self, event: &'static str, payload: &serde_json::Value) -> Result<(), ()>;
@@ -309,6 +77,16 @@ trait HostUpstreamEnvironment: Send + Sync + 'static {
         &self,
         plugin_id: &str,
         expected_enabled: bool,
+    ) -> Result<(), ()>;
+    fn uninstall_with_plugin_contribution_cleanup(
+        &self,
+        plugin_id: &str,
+        disposition: PluginContributionDisposition,
+        uninstall: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()>;
+    fn recover_plugin_contribution_uninstall(
+        &self,
+        installed_plugin_ids: &BTreeSet<String>,
     ) -> Result<(), ()>;
 }
 
@@ -347,6 +125,322 @@ impl<R: tauri::Runtime> HostUpstreamEnvironment for TauriHostUpstreamEnvironment
             .ok_or(())?
             .set_plugin_expected_enabled(plugin_id, expected_enabled)
     }
+
+    fn uninstall_with_plugin_contribution_cleanup(
+        &self,
+        plugin_id: &str,
+        disposition: PluginContributionDisposition,
+        uninstall: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        let disposition = match disposition {
+            PluginContributionDisposition::Delete => {
+                bbcom_workspace::PluginContributionDisposition::Delete
+            }
+            PluginContributionDisposition::ConvertToUser => {
+                bbcom_workspace::PluginContributionDisposition::ConvertToUser
+            }
+        };
+        self.app
+            .try_state::<WorkspaceManager>()
+            .ok_or(())?
+            .with_plugin_contribution_uninstall(plugin_id, disposition, uninstall)
+    }
+
+    fn recover_plugin_contribution_uninstall(
+        &self,
+        installed_plugin_ids: &BTreeSet<String>,
+    ) -> Result<(), ()> {
+        self.app
+            .try_state::<WorkspaceManager>()
+            .ok_or(())?
+            .recover_plugin_contribution_uninstall(installed_plugin_ids)
+    }
+}
+
+/// Reads portable state from the active workspace at the last responsible
+/// moment before every sidecar launch. This deliberately does not call back
+/// into `PluginService`, so initialization can run while the lifecycle manager
+/// owns its mutex without re-entrancy or deadlock.
+struct EnvironmentProjectStateProvider<E>(Arc<E>);
+
+impl<E: HostUpstreamEnvironment> PluginProjectStateProviderV2
+    for EnvironmentProjectStateProvider<E>
+{
+    fn current_project_state(
+        &self,
+        workspace_id: &str,
+        plugin_id: &str,
+    ) -> Result<Option<PluginProjectStateSnapshotV2>, bbcom_plugin_manager::HostFailure> {
+        let workspace = self
+            .0
+            .active_workspace()
+            .ok_or(bbcom_plugin_manager::HostFailure::Initialization)?;
+        if workspace.workspace_id != workspace_id {
+            return Err(bbcom_plugin_manager::HostFailure::Initialization);
+        }
+        let mut matching = workspace
+            .states
+            .into_iter()
+            .filter(|state| state.plugin_id == plugin_id);
+        let state = matching.next();
+        if matching.next().is_some() {
+            return Err(bbcom_plugin_manager::HostFailure::Initialization);
+        }
+        Ok(state.map(|state| PluginProjectStateSnapshotV2 {
+            value: state.bytes,
+            api_generation: state.api_generation,
+            schema_version: state.schema_version,
+        }))
+    }
+}
+
+struct WebviewCapabilityEventSinkV2<E>(Arc<E>);
+
+impl<E: HostUpstreamEnvironment> super::PluginCapabilityEventSinkV2
+    for WebviewCapabilityEventSinkV2<E>
+{
+    fn emit_serial(
+        &self,
+        event: &bbcom_contracts::PluginSerialCapabilityInboundV2,
+    ) -> Result<(), super::PluginCapabilitySinkErrorV2> {
+        let payload =
+            serde_json::to_value(event).map_err(|_| super::PluginCapabilitySinkErrorV2)?;
+        self.0
+            .emit_to_main(super::PLUGIN_SERIAL_CAPABILITY_EVENT_V2, &payload)
+            .map_err(|_| super::PluginCapabilitySinkErrorV2)
+    }
+
+    fn projection_changed(&self) -> Result<(), super::PluginCapabilitySinkErrorV2> {
+        self.0
+            .emit_to_main(
+                super::PLUGIN_SNAPSHOT_CHANGED_EVENT_V2,
+                &serde_json::json!({}),
+            )
+            .map_err(|_| super::PluginCapabilitySinkErrorV2)
+    }
+}
+
+struct TauriPluginFileDialogPortV2<R: tauri::Runtime> {
+    app: AppHandle<R>,
+}
+
+impl<R: tauri::Runtime> super::PluginFileDialogPortV2 for TauriPluginFileDialogPortV2<R> {
+    fn open_read(
+        &self,
+        accepted_extensions: &[String],
+    ) -> Result<Option<PathBuf>, PluginErrorCodeV2> {
+        let window = self
+            .app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .ok_or(PluginErrorCodeV2::Unavailable)?;
+        let mut dialog = window.dialog().file();
+        let extensions = accepted_extensions
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if !extensions.is_empty() {
+            dialog = dialog.add_filter("Plugin files", &extensions);
+        }
+        dialog
+            .blocking_pick_file()
+            .map(|path| {
+                path.into_path()
+                    .map_err(|_| PluginErrorCodeV2::InvalidInput)
+            })
+            .transpose()
+    }
+
+    fn create_save(&self, suggested_name: &str) -> Result<Option<PathBuf>, PluginErrorCodeV2> {
+        let window = self
+            .app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .ok_or(PluginErrorCodeV2::Unavailable)?;
+        window
+            .dialog()
+            .file()
+            .set_file_name(suggested_name)
+            .blocking_save_file()
+            .map(|path| {
+                path.into_path()
+                    .map_err(|_| PluginErrorCodeV2::InvalidInput)
+            })
+            .transpose()
+    }
+}
+
+struct NativePluginPrivateStatePortV2(SharedNativePluginStatePersistencePort);
+
+impl super::PluginPrivateStatePersistenceV2 for NativePluginPrivateStatePortV2 {
+    fn persist_plugin_storage(
+        &self,
+        context: &bbcom_plugin_broker::GatewayContext,
+        storage_scope: &str,
+        encoded: &[u8],
+    ) -> Result<(), PluginErrorCodeV2> {
+        self.0
+            .persist_scoped_storage(
+                &context.workspace_id,
+                &context.plugin_id,
+                storage_scope,
+                encoded,
+            )
+            .map_err(|_| PluginErrorCodeV2::IoError)
+    }
+}
+
+struct TauriPluginWorkspaceCapabilityPortV2<R: tauri::Runtime> {
+    app: AppHandle<R>,
+}
+
+impl<R: tauri::Runtime> super::PluginWorkspaceCapabilityPortV2
+    for TauriPluginWorkspaceCapabilityPortV2<R>
+{
+    fn set_project_state(
+        &self,
+        context: &bbcom_plugin_broker::GatewayContext,
+        schema_version: u32,
+        value: &[u8],
+    ) -> Result<(), PluginErrorCodeV2> {
+        self.app
+            .try_state::<WorkspaceManager>()
+            .ok_or(PluginErrorCodeV2::Unavailable)?
+            .set_plugin_project_state(
+                &context.workspace_id,
+                &context.plugin_id,
+                value,
+                2,
+                Some(schema_version),
+            )
+            .map_err(map_workspace_capability_error)
+    }
+
+    fn upsert_quick_command(
+        &self,
+        context: &bbcom_plugin_broker::GatewayContext,
+        command: &bbcom_plugin_contracts::generated_v2::QuickCommand,
+    ) -> Result<String, PluginErrorCodeV2> {
+        let contribution_id = contribution_id(&context.plugin_id, &command.local_id)?;
+        let session_id = command.session_id.clone();
+        let mut payload = command.payload.clone();
+        if command.append_newline {
+            payload.push(b'\n');
+        }
+        let command = WorkspaceQuickCommand {
+            id: contribution_id.clone(),
+            name: command.title.clone(),
+            data: encode_hex(&payload),
+            is_hex: true,
+            owner_plugin_id: Some(context.plugin_id.clone()),
+        };
+        self.app
+            .try_state::<WorkspaceManager>()
+            .ok_or(PluginErrorCodeV2::Unavailable)?
+            .upsert_plugin_quick_command(&context.workspace_id, &session_id, &command)
+            .map_err(map_workspace_capability_error)?;
+        Ok(contribution_id)
+    }
+
+    fn delete_quick_command(
+        &self,
+        context: &bbcom_plugin_broker::GatewayContext,
+        session_id: &str,
+        local_id: &str,
+    ) -> Result<(), PluginErrorCodeV2> {
+        let contribution_id = contribution_id(&context.plugin_id, local_id)?;
+        self.app
+            .try_state::<WorkspaceManager>()
+            .ok_or(PluginErrorCodeV2::Unavailable)?
+            .delete_plugin_quick_command(
+                &context.workspace_id,
+                session_id,
+                &contribution_id,
+                &context.plugin_id,
+            )
+            .map_err(map_workspace_capability_error)
+    }
+
+    fn upsert_macro(
+        &self,
+        context: &bbcom_plugin_broker::GatewayContext,
+        value: &bbcom_plugin_contracts::generated_v2::MacroContribution,
+    ) -> Result<String, PluginErrorCodeV2> {
+        let contribution_id = contribution_id(&context.plugin_id, &value.local_id)?;
+        let session_id = value.session_id.clone();
+        let value = WorkspaceMacro {
+            id: contribution_id.clone(),
+            name: value.title.clone(),
+            steps: value
+                .steps
+                .iter()
+                .map(|step| WorkspaceMacroStep {
+                    data: encode_hex(&step.payload),
+                    is_hex: true,
+                    delay_ms: step.delay_ms,
+                })
+                .collect(),
+            owner_plugin_id: Some(context.plugin_id.clone()),
+        };
+        self.app
+            .try_state::<WorkspaceManager>()
+            .ok_or(PluginErrorCodeV2::Unavailable)?
+            .upsert_plugin_macro(&context.workspace_id, &session_id, &value)
+            .map_err(map_workspace_capability_error)?;
+        Ok(contribution_id)
+    }
+
+    fn delete_macro(
+        &self,
+        context: &bbcom_plugin_broker::GatewayContext,
+        session_id: &str,
+        local_id: &str,
+    ) -> Result<(), PluginErrorCodeV2> {
+        let contribution_id = contribution_id(&context.plugin_id, local_id)?;
+        self.app
+            .try_state::<WorkspaceManager>()
+            .ok_or(PluginErrorCodeV2::Unavailable)?
+            .delete_plugin_macro(
+                &context.workspace_id,
+                session_id,
+                &contribution_id,
+                &context.plugin_id,
+            )
+            .map_err(map_workspace_capability_error)
+    }
+}
+
+fn contribution_id(plugin_id: &str, local_id: &str) -> Result<String, PluginErrorCodeV2> {
+    if plugin_id.is_empty() || local_id.is_empty() || plugin_id.len() + local_id.len() + 8 > 128 {
+        return Err(PluginErrorCodeV2::InvalidInput);
+    }
+    Ok(format!("plugin:{plugin_id}:{local_id}"))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn map_workspace_capability_error(error: bbcom_workspace::WorkspaceError) -> PluginErrorCodeV2 {
+    match error {
+        bbcom_workspace::WorkspaceError::InvalidInput { .. }
+        | bbcom_workspace::WorkspaceError::AlreadyExists
+        | bbcom_workspace::WorkspaceError::RevisionConflict { .. }
+        | bbcom_workspace::WorkspaceError::BatchIdReuse => PluginErrorCodeV2::InvalidInput,
+        bbcom_workspace::WorkspaceError::LimitExceeded { .. } => PluginErrorCodeV2::LimitExceeded,
+        bbcom_workspace::WorkspaceError::NotFound => PluginErrorCodeV2::NotFound,
+        bbcom_workspace::WorkspaceError::ReadOnly => PluginErrorCodeV2::PermissionDenied,
+        bbcom_workspace::WorkspaceError::Busy => PluginErrorCodeV2::Busy,
+        bbcom_workspace::WorkspaceError::Corrupt { .. }
+        | bbcom_workspace::WorkspaceError::FutureSchema { .. }
+        | bbcom_workspace::WorkspaceError::Serialization(_)
+        | bbcom_workspace::WorkspaceError::Io(_)
+        | bbcom_workspace::WorkspaceError::Database(_) => PluginErrorCodeV2::IoError,
+    }
 }
 
 struct EnvironmentWorkspaceBindingPort<E>(Arc<E>);
@@ -356,6 +450,146 @@ impl<E: HostUpstreamEnvironment> PluginWorkspaceBindingPort for EnvironmentWorks
         self.0
             .set_plugin_expected_enabled(plugin_id, expected_enabled)
     }
+
+    fn uninstall_with_contribution_cleanup(
+        &self,
+        plugin_id: &str,
+        disposition: PluginContributionDisposition,
+        uninstall: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        self.0
+            .uninstall_with_plugin_contribution_cleanup(plugin_id, disposition, uninstall)
+    }
+
+    fn recover_contribution_uninstall(
+        &self,
+        installed_plugin_ids: &BTreeSet<String>,
+    ) -> Result<(), ()> {
+        self.0
+            .recover_plugin_contribution_uninstall(installed_plugin_ids)
+    }
+}
+
+struct EnvironmentDetachedSerialRevokerV2<E>(Arc<E>);
+
+impl<E: HostUpstreamEnvironment> super::PluginDetachedSerialRevocationPortV2
+    for EnvironmentDetachedSerialRevokerV2<E>
+{
+    fn revoke_serial_runtime(&self, runtime: &RuntimeInstanceKey) {
+        let event = bbcom_contracts::PluginSerialCapabilityInboundV2::RevokeRuntime {
+            context: bbcom_contracts::PluginGatewayContextV2 {
+                workspace_id: runtime.workspace_id.clone(),
+                plugin_id: runtime.plugin_id.clone(),
+                instance_id: runtime.instance_id.to_string(),
+                generation: runtime.generation,
+            },
+        };
+        if let Ok(payload) = serde_json::to_value(event) {
+            let _ = self
+                .0
+                .emit_to_main(super::PLUGIN_SERIAL_CAPABILITY_EVENT_V2, &payload);
+        }
+    }
+}
+
+struct TauriDetachedProjectionPortV2<R: tauri::Runtime> {
+    app: AppHandle<R>,
+    service: Arc<super::PluginDetachedWindowServiceV2>,
+}
+
+impl<R: tauri::Runtime> TauriDetachedProjectionPortV2<R> {
+    fn view(
+        center_revision: u64,
+        runtime: &RuntimeInstanceKey,
+        surface_id: &str,
+        projection: &super::PluginRuntimeProjectionSnapshotV2,
+    ) -> Option<bbcom_contracts::PluginDetachedSurfaceViewV2> {
+        let surface = projection
+            .surfaces
+            .iter()
+            .find(|surface| surface.runtime == *runtime && surface.surface_id == surface_id)?
+            .clone();
+        let tasks = projection
+            .tasks
+            .iter()
+            .filter(|task| task.runtime == *runtime)
+            .cloned()
+            .collect();
+        Some(bbcom_contracts::PluginDetachedSurfaceViewV2 {
+            center_revision,
+            surface,
+            tasks,
+        })
+    }
+
+    fn close_label(&self, label: Option<String>) {
+        if let Some(label) = label
+            && let Some(window) = self.app.get_webview_window(&label)
+        {
+            let _ = window.close();
+        }
+    }
+}
+
+impl<R: tauri::Runtime> super::PluginDetachedProjectionPortV2 for TauriDetachedProjectionPortV2<R> {
+    fn sync(
+        &self,
+        center_revision: u64,
+        projection: &super::PluginRuntimeProjectionSnapshotV2,
+    ) -> Result<(), PluginErrorCodeV2> {
+        for surface in projection.surfaces.iter().filter(|surface| {
+            surface.placement == bbcom_contracts::PluginSurfacePlacement::DetachedWindow
+        }) {
+            let view = Self::view(
+                center_revision,
+                &surface.runtime,
+                &surface.surface_id,
+                projection,
+            )
+            .ok_or(PluginErrorCodeV2::NotFound)?;
+            self.service
+                .update(&self.app, view)
+                .map_err(|_| PluginErrorCodeV2::Unavailable)?;
+        }
+        Ok(())
+    }
+
+    fn open(
+        &self,
+        center_revision: u64,
+        runtime: &RuntimeInstanceKey,
+        surface_id: &str,
+        projection: &super::PluginRuntimeProjectionSnapshotV2,
+    ) -> Result<(), PluginErrorCodeV2> {
+        let view = Self::view(center_revision, runtime, surface_id, projection)
+            .ok_or(PluginErrorCodeV2::NotFound)?;
+        self.service
+            .open(&self.app, view)
+            .map_err(|_| PluginErrorCodeV2::Unavailable)
+    }
+
+    fn revoke_surface(&self, runtime: &RuntimeInstanceKey, surface_id: &str) {
+        let label = self.service.revoke_surface(runtime, surface_id);
+        self.close_label(label);
+    }
+
+    fn revoke_runtime(&self, runtime: &RuntimeInstanceKey) {
+        for label in self.service.revoke_runtime(runtime) {
+            self.close_label(Some(label));
+        }
+    }
+}
+
+fn detached_projection_port<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Arc<dyn super::PluginDetachedProjectionPortV2> {
+    Arc::new(TauriDetachedProjectionPortV2 {
+        app: app.clone(),
+        service: app
+            .state::<Arc<super::PluginDetachedWindowServiceV2>>()
+            .inner()
+            .clone(),
+    })
 }
 
 /// Durable roots and the resolved sidecar path used by one composition.
@@ -363,8 +597,22 @@ struct PluginRuntimeRoots {
     installer_packages: PathBuf,
     installer_data: PathBuf,
     state_private: PathBuf,
-    audit_log: PathBuf,
     sidecar_executable: PathBuf,
+}
+
+struct PluginRuntimeCompositionParts<E: HostUpstreamEnvironment> {
+    roots: PluginRuntimeRoots,
+    environment: Arc<E>,
+    sources: Arc<super::NativePluginSourceRegistry>,
+    serial_v2: Arc<super::SerialCapabilityCorrelationRegistryV2>,
+    projection: Arc<super::PluginRuntimeProjectionV2>,
+    host_context: Arc<super::PluginHostContextStoreV2>,
+    files: Arc<super::PluginFileGrantService>,
+    authorizations: Arc<super::NativePluginAuthorizationStore>,
+    authorization_coordinator: Arc<super::PluginAuthorizationCoordinatorV2>,
+    dialogs: Arc<dyn super::PluginFileDialogPortV2>,
+    workspace_capabilities: Arc<dyn super::PluginWorkspaceCapabilityPortV2>,
+    detached: Arc<dyn super::PluginDetachedProjectionPortV2>,
 }
 
 /// Composes the production plugin runtime from native application state.
@@ -374,7 +622,6 @@ struct PluginRuntimeRoots {
 /// record only [`PluginBootstrapError::code`].
 pub fn compose<R: tauri::Runtime>(
     app: &AppHandle<R>,
-    registry: SerialActionResultRegistry,
 ) -> Result<ProductionPluginRuntime, PluginBootstrapError> {
     let roots = app_data_roots(app)?;
     let environment = Arc::new(TauriHostUpstreamEnvironment::new(app.clone()));
@@ -382,12 +629,53 @@ pub fn compose<R: tauri::Runtime>(
         .state::<Arc<super::NativePluginSourceRegistry>>()
         .inner()
         .clone();
-    let query_registry = Arc::new(
-        app.try_state::<SessionQueryResultRegistry>()
-            .map(|state| state.inner().clone())
-            .unwrap_or_default(),
-    );
-    compose_from_parts(roots, environment, registry, query_registry, sources)
+    let serial_v2 = app
+        .state::<Arc<super::SerialCapabilityCorrelationRegistryV2>>()
+        .inner()
+        .clone();
+    let projection = app
+        .state::<Arc<super::PluginRuntimeProjectionV2>>()
+        .inner()
+        .clone();
+    let host_context = app
+        .state::<Arc<super::PluginHostContextStoreV2>>()
+        .inner()
+        .clone();
+    let files = app
+        .state::<Arc<super::PluginFileGrantService>>()
+        .inner()
+        .clone();
+    let authorizations = app
+        .state::<Arc<super::NativePluginAuthorizationStore>>()
+        .inner()
+        .clone();
+    let authorization_coordinator = app
+        .state::<Arc<super::PluginAuthorizationCoordinatorV2>>()
+        .inner()
+        .clone();
+    let dialogs: Arc<dyn super::PluginFileDialogPortV2> =
+        Arc::new(TauriPluginFileDialogPortV2 { app: app.clone() });
+    let workspace_capabilities: Arc<dyn super::PluginWorkspaceCapabilityPortV2> =
+        Arc::new(TauriPluginWorkspaceCapabilityPortV2 { app: app.clone() });
+    let detached = detached_projection_port(app);
+    app.state::<Arc<super::PluginDetachedWindowServiceV2>>()
+        .install_serial_revoker(Arc::new(EnvironmentDetachedSerialRevokerV2(Arc::clone(
+            &environment,
+        ))));
+    compose_from_parts(PluginRuntimeCompositionParts {
+        roots,
+        environment,
+        sources,
+        serial_v2,
+        projection,
+        host_context,
+        files,
+        authorizations,
+        authorization_coordinator,
+        dialogs,
+        workspace_capabilities,
+        detached,
+    })
 }
 
 /// Serializes composition attempts and owns the host-exit poll generation.
@@ -407,10 +695,6 @@ static HOST_EXIT_POLL_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// `plugin-runtime-status` so the plugin center can surface the cause.
 pub fn ensure_plugin_runtime<R: tauri::Runtime>(app: &AppHandle<R>) {
     let _serial = COMPOSE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    let registry = match app.try_state::<SerialActionResultRegistry>() {
-        Some(registry) => registry.inner().clone(),
-        None => return,
-    };
     let lifecycle_handle = match app.try_state::<PluginLifecycleHandle>() {
         Some(handle) => handle,
         None => return,
@@ -418,19 +702,46 @@ pub fn ensure_plugin_runtime<R: tauri::Runtime>(app: &AppHandle<R>) {
     if lifecycle_handle.current().is_some() {
         return;
     }
-    let outcome = compose(app, registry);
+    let outcome = compose(app);
     let status = match &outcome {
         Ok(runtime) => {
             let generation = HOST_EXIT_POLL_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
-            app.state::<crate::commands::plugin::PluginCommandState>()
-                .replace_service(runtime.command_service());
+            let authorizations = app
+                .state::<Arc<super::NativePluginAuthorizationStore>>()
+                .inner()
+                .clone();
+            let authorization_coordinator = app
+                .state::<Arc<super::PluginAuthorizationCoordinatorV2>>()
+                .inner()
+                .clone();
+            let projection = app
+                .state::<Arc<super::PluginRuntimeProjectionV2>>()
+                .inner()
+                .clone();
+            let detached = detached_projection_port(app);
             let lifecycle = runtime.lifecycle();
+            let private_state = Arc::new(runtime.private_state());
+            let projected_commands: Arc<dyn crate::commands::plugin::PluginCommandService> =
+                Arc::new(super::ProjectingPluginCommandServiceV2::new(
+                    runtime.command_service(),
+                    Arc::clone(&authorizations),
+                    Arc::clone(&authorization_coordinator),
+                    Arc::clone(&projection),
+                    Arc::clone(&detached),
+                    private_state,
+                ));
+            app.state::<crate::commands::plugin::PluginCommandState>()
+                .replace_service(Arc::clone(&projected_commands));
+            app.state::<super::PluginUiActionStateV2>()
+                .replace_service(Arc::new(super::NativePluginUiActionServiceV2::new(
+                    projected_commands,
+                    authorizations,
+                    authorization_coordinator,
+                    Arc::clone(&lifecycle),
+                    projection,
+                    detached,
+                )));
             lifecycle_handle.install(Arc::clone(&lifecycle));
-            // Push workers forward host-side proposals/queries into the
-            // current lifecycle; a recomposition swaps the slot atomically.
-            *ACTIVE_LIFECYCLE
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&lifecycle));
             spawn_host_exit_poll(lifecycle, generation);
             serde_json::json!({ "available": true, "code": null })
         }
@@ -501,7 +812,7 @@ fn app_data_roots<R: tauri::Runtime>(
     // Windows ACL lease is acquired. Content-addressing makes upgrades and
     // crash recovery deterministic without ever overwriting a running host.
     let sidecar_executable = if cfg!(windows) {
-        stage_runtime_sidecar(&bundled_sidecar, &app_data.join("plugin-host-v1")).map_err(
+        stage_runtime_sidecar(&bundled_sidecar, &app_data.join("plugin-host-v2")).map_err(
             |error| {
                 tracing::warn!(%error, "Windows plugin host staging failed");
                 PluginBootstrapError::MissingSidecarExecutable
@@ -519,33 +830,29 @@ fn app_data_roots<R: tauri::Runtime>(
         // on every first run with umask != 077). Old snapshots under the
         // previous location are transient staging data and are not migrated.
         installer_data: app_data.join("plugin-installer-v2").join("snapshots"),
-        audit_log: app_data.join("logs").join("plugin-audit.jsonl"),
         state_private: app_data.clone(),
         sidecar_executable,
     })
 }
 
-/// Process-lifetime audit sink shared by every runtime composition. The
-/// stateful proposal/panel brokers borrow it as `&'static`; re-composing the
-/// runtime (workspace switches, retries after a failed composition) must not
-/// leak a fresh append handle each time, so it is created exactly once.
-static SHARED_AUDIT_SINK: OnceLock<Arc<FileAuditSink>> = OnceLock::new();
-
-fn shared_audit_sink(path: &Path) -> &'static FileAuditSink {
-    let sink = SHARED_AUDIT_SINK.get_or_init(|| Arc::new(FileAuditSink::open(path.to_path_buf())));
-    // The OnceLock contents outlive every composition (process lifetime), so
-    // borrowing through it is a sound 'static promotion.
-    Arc::as_ref(sink)
-}
-
 /// Environment-independent composition used by native setup and the unit tests.
 fn compose_from_parts<E: HostUpstreamEnvironment>(
-    roots: PluginRuntimeRoots,
-    environment: Arc<E>,
-    registry: SerialActionResultRegistry,
-    query_registry: Arc<SessionQueryResultRegistry>,
-    sources: Arc<super::NativePluginSourceRegistry>,
+    parts: PluginRuntimeCompositionParts<E>,
 ) -> Result<ProductionPluginRuntime, PluginBootstrapError> {
+    let PluginRuntimeCompositionParts {
+        roots,
+        environment,
+        sources,
+        serial_v2,
+        projection,
+        host_context,
+        files,
+        authorizations,
+        authorization_coordinator,
+        dialogs,
+        workspace_capabilities,
+        detached,
+    } = parts;
     let workspace_bindings = EnvironmentWorkspaceBindingPort(Arc::clone(&environment));
     // Missing sidecar is resolved before `build()` so platforms without the
     // bundled sidecar fail with the stable missing-sidecar code and never
@@ -567,24 +874,7 @@ fn compose_from_parts<E: HostUpstreamEnvironment>(
         .active_installations()
         .iter()
         .filter_map(|active| {
-            let permissions = std::fs::read_to_string(active.package_directory.join("plugin.toml"))
-                .ok()
-                .and_then(|text| {
-                    bbcom_plugin_contracts::PluginManifest::parse(&text)
-                        .ok()
-                        .and_then(|manifest| manifest.permissions().ok())
-                })
-                .unwrap_or_default()
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>();
-            match bbcom_plugin_manager::PluginArtifact::new(
-                &active.plugin_id,
-                &active.version,
-                &active.package_sha256,
-                &active.component_sha256,
-                artifact_source(&active.repository_origin),
-                permissions,
-            ) {
+            match super::installation::map_active_installation(active) {
                 Ok(artifact) => Some(artifact),
                 // A corrupt durable install is skipped (correct), but it must
                 // be visible — otherwise the plugin just "disappears" from
@@ -600,6 +890,10 @@ fn compose_from_parts<E: HostUpstreamEnvironment>(
             }
         })
         .collect::<Vec<_>>();
+    let installed_plugin_ids = installed_artifacts
+        .iter()
+        .map(|artifact| artifact.plugin_id.clone())
+        .collect::<BTreeSet<_>>();
     let workspace = match environment.active_workspace() {
         Some(context) => {
             CurrentPluginWorkspace::new(context.workspace_id, context.states, installed_artifacts)
@@ -608,7 +902,10 @@ fn compose_from_parts<E: HostUpstreamEnvironment>(
         None => CurrentPluginWorkspace::detached(installed_artifacts),
     };
 
-    let state = NativePluginStatePersistencePort::open(&roots.state_private)
+    let state = SharedNativePluginStatePersistencePort::open(&roots.state_private)
+        .map_err(|_| PluginBootstrapError::MissingStatePersistence)?;
+    state
+        .retry_uninstalled_plugin_removals(&installed_plugin_ids)
         .map_err(|_| PluginBootstrapError::MissingStatePersistence)?;
 
     fs::create_dir_all(&roots.installer_packages)
@@ -617,27 +914,26 @@ fn compose_from_parts<E: HostUpstreamEnvironment>(
     let private_artifact_root = PrivateArtifactRoot::open(&roots.installer_packages)
         .map_err(|_| PluginBootstrapError::MissingPrivateArtifactRoot)?;
 
-    let audit_for_brokers = shared_audit_sink(&roots.audit_log);
-
-    let host_upstream = WebviewHostUpstream {
-        environment: Arc::clone(&environment),
-    };
-    let serial_scheduler = WebviewSerialScheduler {
-        environment: Arc::clone(&environment),
-        registry,
-        next_correlation: AtomicU64::new(1),
-    };
-
-    // Proposal pushes can flow through the lifecycle actor. Session queries
-    // answer synchronously through the host reader's independent stdin path,
-    // because the actor may itself be waiting for plugin initialization.
-    let (proposal_tx, proposal_rx) = mpsc::channel();
-    spawn_push_workers(&environment, proposal_rx);
-    let push_sink: Arc<dyn bbcom_plugin_manager::HostPushSink> = Arc::new(NativeHostPushSink {
-        proposals: proposal_tx,
-        environment: Arc::clone(&environment),
-        query_registry,
-    });
+    let capability_sink: Arc<dyn super::PluginCapabilityEventSinkV2> =
+        Arc::new(WebviewCapabilityEventSinkV2(Arc::clone(&environment)));
+    let private_state: Arc<dyn super::PluginPrivateStatePersistenceV2> =
+        Arc::new(NativePluginPrivateStatePortV2(state.clone()));
+    let capability_gateway: Arc<dyn bbcom_plugin_broker::PluginCapabilityGateway> =
+        Arc::new(super::NativePluginCapabilityGatewayV2::new_with_ports(
+            capability_sink,
+            serial_v2,
+            projection,
+            files,
+            dialogs,
+            private_state,
+            workspace_capabilities,
+            detached,
+        ));
+    let authorization_gate: Arc<dyn bbcom_plugin_host::PluginAuthorizationGate> = Arc::new(
+        super::NativePluginAuthorizationGateV2::new(authorizations, authorization_coordinator),
+    );
+    let project_state_provider: Arc<dyn PluginProjectStateProviderV2> =
+        Arc::new(EnvironmentProjectStateProvider(Arc::clone(&environment)));
 
     ProductionPluginRuntimeBuilder::new()
         .installer(Arc::clone(&installer))
@@ -648,15 +944,14 @@ fn compose_from_parts<E: HostUpstreamEnvironment>(
         })
         .workspace(workspace)
         .state_persistence(state)
-        .serial_scheduler(serial_scheduler)
-        .host_upstream(host_upstream)
-        .push_sink(push_sink)
-        .proposal_broker(SerialProposalBroker::new(audit_for_brokers))
-        .panel_broker(DeclarativePanelBroker::new(audit_for_brokers))
         .sandbox(PlatformSandboxDriver::system())
         .sidecar_executable(roots.sidecar_executable)
         .private_artifact_root(private_artifact_root)
         .workspace_bindings(workspace_bindings)
+        .authorization_gate(authorization_gate)
+        .capability_gateway(capability_gateway)
+        .host_context_provider(host_context)
+        .project_state_provider(project_state_provider)
         .build()
 }
 
@@ -758,280 +1053,9 @@ impl CatalogViewPort for ConfiguredCatalogView {
             enabled: false,
         })
     }
-
-    fn session_label(&mut self, session_id: &str) -> Result<String, CatalogViewFailure> {
-        if session_id.is_empty() || session_id.len() > 128 {
-            return Err(CatalogViewFailure::MissingSessionDisplay);
-        }
-        // Session display metadata remains renderer-owned. The opaque session
-        // identity is safe to show and keeps the confirmation usable without
-        // leaking a port path or native handle.
-        Ok(session_id.to_owned())
-    }
 }
 
-/// Main-window plugin host upstream. Panel events are delivered to the main webview only.
-struct WebviewHostUpstream<E: HostUpstreamEnvironment> {
-    environment: Arc<E>,
-}
-
-impl<E: HostUpstreamEnvironment> PluginHostUpstreamPort for WebviewHostUpstream<E> {
-    fn current_proposal_context(
-        &mut self,
-        proposal: &bbcom_plugin_broker::SerialProposalView,
-    ) -> Result<bbcom_plugin_broker::ProposalContext, PluginUpstreamFailure> {
-        // An active native workspace is required here. The renderer performs
-        // the second, authoritative check by resolving the session runtime;
-        // missing/disposed sessions return a failed serial result.
-        self.environment
-            .active_workspace()
-            .ok_or(PluginUpstreamFailure::ProposalContextUnavailable)?;
-        Ok(bbcom_plugin_broker::ProposalContext {
-            operation_id: proposal.operation_id.clone(),
-            session_id: proposal.session_id.clone(),
-        })
-    }
-
-    fn deliver_panel_event(
-        &mut self,
-        action: bbcom_plugin_broker::PanelEventAction,
-    ) -> Result<(), PluginUpstreamFailure> {
-        let payload = serde_json::json!({
-            "plugin_id": action.plugin_id,
-            "field_id": action.event.field_id,
-            "value": action.event.value,
-        });
-        self.environment
-            .emit_to_main(PANEL_EVENT_NAME, &payload)
-            .map_err(|_| PluginUpstreamFailure::PanelDeliveryUnavailable)
-    }
-}
-
-/// Registry of serial actions awaiting a real main-window send result.
-#[derive(Clone, Default)]
-pub struct SerialActionResultRegistry {
-    pending: Arc<Mutex<HashMap<String, PendingSerialAction>>>,
-}
-
-struct PendingSerialAction {
-    runtime: RuntimeInstanceKey,
-    sender: mpsc::Sender<PluginSerialActionResultRequest>,
-}
-
-impl SerialActionResultRegistry {
-    fn register(
-        &self,
-        correlation_id: &str,
-        runtime: RuntimeInstanceKey,
-    ) -> Option<mpsc::Receiver<PluginSerialActionResultRequest>> {
-        let mut pending = self.lock_pending();
-        if pending.len() >= MAX_PENDING_SERIAL_ACTIONS {
-            return None;
-        }
-        let (sender, receiver) = mpsc::channel();
-        pending.insert(
-            correlation_id.to_owned(),
-            PendingSerialAction { runtime, sender },
-        );
-        Some(receiver)
-    }
-
-    /// Fulfills only an exact correlation/runtime pair. Stale generations and
-    /// spoofed instance identities cannot release the scheduler wait. A late
-    /// completion (the waiter already timed out) is reported so duplicate
-    /// device writes from plugin retries stay diagnosable.
-    pub fn complete(&self, result: PluginSerialActionResultRequest) -> bool {
-        let mut pending = self.lock_pending();
-        let Some(expected) = pending.get(&result.correlation_id) else {
-            tracing::warn!(
-                "late plugin serial action completion for {} (already timed out)",
-                result.correlation_id
-            );
-            return false;
-        };
-        if expected.runtime != result.runtime {
-            return false;
-        }
-        pending
-            .remove(&result.correlation_id)
-            .map(|pending| pending.sender.send(result).is_ok())
-            .unwrap_or(false)
-    }
-
-    fn discard(&self, correlation_id: &str) {
-        self.lock_pending().remove(correlation_id);
-    }
-
-    fn lock_pending(&self) -> std::sync::MutexGuard<'_, HashMap<String, PendingSerialAction>> {
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-/// Serial scheduler that submits an approved `BrokerAction` to the main
-/// webview and blocks (on a command-execution thread) until that window
-/// acknowledges it or the acknowledgement times out. Until a frontend listener
-/// exists every action times out, which is the intended fail-closed behavior;
-/// nothing reaches `execute` before a plugin is installed and authorized.
-struct WebviewSerialScheduler<E: HostUpstreamEnvironment> {
-    environment: Arc<E>,
-    registry: SerialActionResultRegistry,
-    next_correlation: AtomicU64,
-}
-
-impl<E: HostUpstreamEnvironment> PluginSerialSchedulerPort for WebviewSerialScheduler<E> {
-    fn execute(
-        &mut self,
-        runtime: RuntimeInstanceKey,
-        action: BrokerAction,
-    ) -> Result<(), PluginUpstreamFailure> {
-        let BrokerAction::SerialSend {
-            proposal_id,
-            plugin_id,
-            operation_id,
-            session_id,
-            payload,
-        } = action;
-        let correlation_id = format!(
-            "plugin-serial-{}-{}",
-            std::process::id(),
-            self.next_correlation.fetch_add(1, Ordering::Relaxed)
-        );
-        if runtime.plugin_id != plugin_id {
-            return Err(PluginUpstreamFailure::SerialExecutionUnavailable);
-        }
-        let requested_bytes = payload.len();
-        let event = PluginSerialAction {
-            correlation_id: correlation_id.clone(),
-            proposal_id,
-            operation_id,
-            session_id,
-            runtime: runtime.clone(),
-            bytes: payload,
-        };
-        let result = self
-            .registry
-            .register(&correlation_id, runtime)
-            .ok_or(PluginUpstreamFailure::SerialExecutionUnavailable)?;
-        let event = serde_json::to_value(event)
-            .map_err(|_| PluginUpstreamFailure::SerialExecutionUnavailable)?;
-        if self
-            .environment
-            .emit_to_main(SERIAL_ACTION_EVENT_NAME, &event)
-            .is_err()
-        {
-            self.registry.discard(&correlation_id);
-            return Err(PluginUpstreamFailure::SerialExecutionUnavailable);
-        }
-        match result.recv_timeout(SERIAL_ACTION_RESULT_TIMEOUT) {
-            Ok(result)
-                if result.requested_bytes == requested_bytes
-                    && result.sent_bytes == requested_bytes
-                    && result.outcome == SerialSendOutcome::Complete =>
-            {
-                Ok(())
-            }
-            Ok(_) => Err(PluginUpstreamFailure::SerialExecutionUnavailable),
-            Err(_) => {
-                // Timeout or a dropped sender: the pending entry is removed so
-                // the bounded map cannot leak.
-                self.registry.discard(&correlation_id);
-                Err(PluginUpstreamFailure::SerialExecutionUnavailable)
-            }
-        }
-    }
-}
-
-/// Append-only JSON-lines audit sink below the application data root. Audit is
-/// best-effort here: a write failure is reported on stderr and the event is
-/// dropped rather than failing or delaying a broker decision.
-#[derive(Clone)]
-struct FileAuditSink {
-    inner: Arc<FileAuditSinkInner>,
-}
-
-struct FileAuditSinkInner {
-    path: PathBuf,
-    file: Mutex<Option<File>>,
-}
-
-impl FileAuditSink {
-    fn open(path: PathBuf) -> Self {
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        Self {
-            inner: Arc::new(FileAuditSinkInner {
-                path,
-                file: Mutex::new(None),
-            }),
-        }
-    }
-
-    fn append(&self, line: &str) -> std::io::Result<()> {
-        let mut slot = self
-            .inner
-            .file
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let file = match slot.as_mut() {
-            Some(file) => file,
-            None => slot.insert(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&self.inner.path)?,
-            ),
-        };
-        file.write_all(line.as_bytes())?;
-        file.flush()?;
-        if file.metadata()?.len() > MAX_AUDIT_LOG_BYTES {
-            // Truncate in place and reopen for append; the current line is
-            // re-written so no acknowledged event is silently lost.
-            file.set_len(0)?;
-            file.write_all(line.as_bytes())?;
-            file.flush()?;
-        }
-        Ok(())
-    }
-}
-
-impl AuditSink for FileAuditSink {
-    fn record(&self, event: AuditEvent) {
-        if let Err(error) = self.append(&audit_line(&event)) {
-            eprintln!("plugin audit append failed: {error}");
-        }
-    }
-}
-
-fn audit_line(event: &AuditEvent) -> String {
-    let timestamp_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis())
-        .unwrap_or_default();
-    let plugin_id = serde_json::to_string(&event.plugin_id).unwrap_or_else(|_| "\"\"".into());
-    let error_code = match &event.error_code {
-        None => "null".to_owned(),
-        Some(code) => serde_json::to_string(code.as_str()).unwrap_or_else(|_| "null".into()),
-    };
-    let operation = match event.operation {
-        AuditOperation::PanelPublish => "panel_publish",
-        AuditOperation::PanelEvent => "panel_event",
-        AuditOperation::SerialProposalCreate => "serial_proposal_create",
-        AuditOperation::SerialProposalResolve => "serial_proposal_resolve",
-        AuditOperation::InvocationValidate => "invocation_validate",
-    };
-    format!(
-        "{{\"ts_ms\":{timestamp_ms},\"plugin_id\":{plugin_id},\"operation\":\"{operation}\",\"error_code\":{error_code},\"byte_count\":{}}}\n",
-        event.byte_count
-    )
-}
-
-/// Managed wrapper giving the process-lifetime plugin lifecycle a `'static`
-/// Tauri state type.
-/// Managed, replaceable lifecycle holder. Native setup installs an empty
-/// handle once; every successful (re)composition swaps the inner runtime.
-/// Replacing the interior instead of re-managing avoids unsafe `unmanage`
-/// dangling-reference risk.
+/// Process-lifetime holder for the active protocol-v2 plugin lifecycle.
 pub struct PluginLifecycleHandle(Mutex<Option<Arc<dyn PluginRuntimeLifecycle>>>);
 
 /// Private G46 override installed before composition. Normal application
@@ -1051,7 +1075,7 @@ impl PluginLifecycleHandle {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
 
-    pub(super) fn current(&self) -> Option<Arc<dyn PluginRuntimeLifecycle>> {
+    pub(crate) fn current(&self) -> Option<Arc<dyn PluginRuntimeLifecycle>> {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1256,8 +1280,6 @@ pub fn close_plugin_project<R: tauri::Runtime>(app: &AppHandle<R>) {
 /// `ensure_plugin_runtime` swaps in place. Setup must call this before the
 /// first composition attempt.
 pub fn install_managed_defaults<R: tauri::Runtime>(app: &AppHandle<R>) {
-    app.manage(SerialActionResultRegistry::default());
-    app.manage(SessionQueryResultRegistry::default());
     app.manage(PluginLifecycleHandle::empty());
 }
 
@@ -1415,81 +1437,109 @@ fn current_target_triple() -> &'static str {
 }
 
 #[cfg(test)]
-mod session_query_tests {
+mod sidecar_staging_tests {
     use super::*;
-    use bbcom_contracts::{PluginSessionQueryResult, PluginSessionSummary};
-    use bbcom_plugin_contracts::generated::{SessionListQuery, session_query_request};
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
-    struct QueryEnvironment {
-        registry: SessionQueryResultRegistry,
+    struct ProjectStateEnvironment {
+        active: Mutex<Option<crate::commands::workspace::NativePluginWorkspaceSnapshot>>,
+        lifecycle_mutations: AtomicUsize,
     }
 
-    impl HostUpstreamEnvironment for QueryEnvironment {
-        fn emit_to_main(&self, event: &'static str, payload: &serde_json::Value) -> Result<(), ()> {
-            assert_eq!(event, SESSION_QUERY_EVENT_NAME);
-            let query_id = payload
-                .get("queryId")
-                .and_then(serde_json::Value::as_str)
-                .ok_or(())?;
-            assert!(self.registry.complete(PluginSessionQueryResult {
-                query_id: query_id.to_owned(),
-                ok: true,
-                error_code: None,
-                sessions: vec![PluginSessionSummary {
-                    session_id: "session-1".to_owned(),
-                    name: "COM1".to_owned(),
-                    kind: "serial".to_owned(),
-                    connected: true,
-                    rx_bytes: 12,
-                    tx_bytes: 3,
-                }],
-                frames: Vec::new(),
-                next_sequence: 0,
-                has_more: false,
-            }));
+    impl HostUpstreamEnvironment for ProjectStateEnvironment {
+        fn emit_to_main(&self, _: &'static str, _: &serde_json::Value) -> Result<(), ()> {
             Ok(())
         }
 
         fn active_workspace(
             &self,
         ) -> Option<crate::commands::workspace::NativePluginWorkspaceSnapshot> {
-            None
+            self.active.lock().ok()?.clone()
         }
 
-        fn set_plugin_expected_enabled(
+        fn set_plugin_expected_enabled(&self, _: &str, _: bool) -> Result<(), ()> {
+            self.lifecycle_mutations
+                .fetch_add(1, AtomicOrdering::Relaxed);
+            Err(())
+        }
+
+        fn uninstall_with_plugin_contribution_cleanup(
             &self,
-            _plugin_id: &str,
-            _expected_enabled: bool,
-        ) -> Result<(), ()> {
+            _: &str,
+            _: PluginContributionDisposition,
+            _: &mut dyn FnMut() -> bool,
+        ) -> Result<bool, ()> {
+            self.lifecycle_mutations
+                .fetch_add(1, AtomicOrdering::Relaxed);
+            Err(())
+        }
+
+        fn recover_plugin_contribution_uninstall(&self, _: &BTreeSet<String>) -> Result<(), ()> {
             Ok(())
         }
     }
 
-    #[test]
-    fn session_query_returns_directly_to_the_waiting_host_reader() {
-        let registry = SessionQueryResultRegistry::default();
-        let environment = QueryEnvironment {
-            registry: registry.clone(),
-        };
-        let response = answer_session_query(
-            &environment,
-            &registry,
-            bbcom_plugin_contracts::generated::SessionQueryRequest {
-                plugin_id: "dev.bbcom.counter-panel".to_owned(),
-                query_id: "query-1".to_owned(),
-                query: Some(session_query_request::Query::List(SessionListQuery {})),
-            },
-        );
-
-        assert!(response.ok);
-        assert_eq!(response.sessions.len(), 1);
-        assert_eq!(response.sessions[0].session_id, "session-1");
+    fn project_workspace(
+        workspace_id: &str,
+        schema_version: u32,
+        bytes: &[u8],
+    ) -> crate::commands::workspace::NativePluginWorkspaceSnapshot {
+        crate::commands::workspace::NativePluginWorkspaceSnapshot {
+            workspace_id: workspace_id.to_owned(),
+            bindings: Vec::new(),
+            states: vec![
+                bbcom_plugin_manager::OpaqueProjectPluginState::new_with_versions(
+                    "dev.bbcom.fixture",
+                    bytes.to_vec(),
+                    2,
+                    Some(schema_version),
+                )
+                .unwrap(),
+            ],
+        }
     }
-}
 
-#[cfg(test)]
-mod sidecar_staging_tests {
-    use super::*;
+    #[test]
+    fn project_state_provider_reloads_latest_state_without_lifecycle_reentry() {
+        let environment = Arc::new(ProjectStateEnvironment {
+            active: Mutex::new(Some(project_workspace("workspace-a", 2, b"old"))),
+            lifecycle_mutations: AtomicUsize::new(0),
+        });
+        let provider = EnvironmentProjectStateProvider(Arc::clone(&environment));
+
+        let first = provider
+            .current_project_state("workspace-a", "dev.bbcom.fixture")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.schema_version, Some(2));
+        assert_eq!(first.value, b"old");
+
+        // Simulate a guest's durable set followed by a same-process crash.
+        // The next launch reads the workspace again rather than the manager's
+        // original bootstrap projection.
+        *environment.active.lock().unwrap() = Some(project_workspace("workspace-a", 73, b"latest"));
+        let restarted = provider
+            .current_project_state("workspace-a", "dev.bbcom.fixture")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restarted.schema_version, Some(73));
+        assert_eq!(restarted.value, b"latest");
+        assert_eq!(restarted.api_generation, 2);
+
+        // Workspace identity is checked by the native provider, and reading
+        // state never calls a lifecycle mutation while initialization owns
+        // the PluginManager mutex.
+        assert_eq!(
+            provider.current_project_state("workspace-b", "dev.bbcom.fixture"),
+            Err(bbcom_plugin_manager::HostFailure::Initialization)
+        );
+        assert_eq!(
+            environment
+                .lifecycle_mutations
+                .load(AtomicOrdering::Relaxed),
+            0
+        );
+    }
 
     #[test]
     fn runtime_sidecar_is_content_addressed_reused_and_repaired() {

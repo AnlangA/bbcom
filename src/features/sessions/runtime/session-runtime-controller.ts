@@ -10,7 +10,11 @@ import { useSessionModbus } from '../../../composables/useSessionModbus';
 import { useTriggers } from '../../../composables/useTriggers';
 import { useAutoLog } from '../../../composables/useAutoLog';
 import { useMacroRunner } from '../../../composables/useMacroRunner';
-import { AsyncSendLoop, type PortLeaseClient } from '../../serial';
+import {
+  AsyncSendLoop,
+  type PortLeaseClient,
+  type SerialTransactionLeaseCoordinator,
+} from '../../serial';
 import type { ApplicationNotificationPort } from '../../application';
 import { formatBytes } from '../../../lib/format';
 import { t } from '../../../lib/i18n';
@@ -106,6 +110,7 @@ export interface SessionRuntimeController {
   readonly parser: SessionRuntimeProtocolView;
   readonly modbus: SessionRuntimeModbusController;
   readonly macro: SessionRuntimeMacroController;
+  readonly serialTransactions: SerialTransactionLeaseCoordinator<SerialSendResult>;
   connect: () => Promise<boolean>;
   disconnect: () => Promise<void>;
   send: (data: string, isHex: boolean) => Promise<boolean>;
@@ -135,7 +140,7 @@ export function useSessionRuntimeController(
   const autoLog = useAutoLog();
 
   const triggersRef = computed(() => session.value.triggers);
-  const { feedBytes: feedTriggerBytes } = useTriggers({
+  const triggers = useTriggers({
     triggers: triggersRef,
     send: (data, isHex) => send(data, isHex),
     onFire: (fire) => {
@@ -143,6 +148,7 @@ export function useSessionRuntimeController(
       notifications.info(t('message.triggerFired', { name: trigger?.name ?? fire.triggerId }));
     },
   });
+  const feedTriggerBytes = triggers.feedBytes;
 
   const serial = useSerialConnection(
     session.value.id,
@@ -303,6 +309,10 @@ export function useSessionRuntimeController(
   const macroRunner = useMacroRunner({ send: (data, isHex) => send(data, isHex) });
   const macro: SessionRuntimeMacroController = {
     ...macroRunner,
+    run: (definition) =>
+      serial.serialTransactions.snapshot().manualWriteAllowed
+        ? macroRunner.run(definition)
+        : Promise.resolve({ completed: 0, failedAt: 0, aborted: true }),
     status: computed(() => (macroRunner.running.value ? 'running' : 'idle')),
   };
 
@@ -318,6 +328,41 @@ export function useSessionRuntimeController(
     () => appStore.loopIntervalMs,
     () => notifications.error(t('send.error.failed')),
   );
+  serial.serialTransactions.registerAutomation({
+    id: 'cyclic-send',
+    async pause() {
+      if (!sendLoop.isRunning || !loopPayload) return null;
+      const saved = { ...loopPayload };
+      stopSendLoop();
+      return {
+        async restore() {
+          if (!disposed) startSendLoop(saved.data, saved.isHex);
+        },
+      };
+    },
+  });
+  serial.serialTransactions.registerAutomation({
+    id: 'macro-runner',
+    async pause({ signal }) {
+      if (!macroRunner.running.value) return null;
+      await macroRunner.pause(signal);
+      return { restore: async () => macroRunner.resume() };
+    },
+  });
+  serial.serialTransactions.registerAutomation({
+    id: 'modbus-master',
+    async pause({ signal }) {
+      await modbus.master.pauseForSerialTransaction(signal);
+      return { restore: async () => modbus.master.resumeAfterSerialTransaction() };
+    },
+  });
+  serial.serialTransactions.registerAutomation({
+    id: 'trigger-responses',
+    async pause({ signal }) {
+      await triggers.pause(signal);
+      return { restore: async () => triggers.resume() };
+    },
+  });
 
   let disposed = false;
   let preparePromise: Promise<void> | null = null;
@@ -364,7 +409,15 @@ export function useSessionRuntimeController(
   }
 
   function startSendLoop(data: string, isHex: boolean): boolean {
-    if (disposed || !serial.isConnected.value || looping.value || data.length === 0) return false;
+    if (
+      disposed ||
+      !serial.isConnected.value ||
+      !serial.serialTransactions.snapshot().manualWriteAllowed ||
+      looping.value ||
+      data.length === 0
+    ) {
+      return false;
+    }
     loopPayload = { data, isHex };
     const started = sendLoop.start();
     looping.value = started;
@@ -436,6 +489,7 @@ export function useSessionRuntimeController(
       try {
         await prepareShutdown();
       } finally {
+        await serial.serialTransactions.dispose();
         viewBinding.value = null;
         removeParserRawObserver();
         removeParserFrameClearObserver();
@@ -455,7 +509,13 @@ export function useSessionRuntimeController(
   }
 
   stopConnectionWatch = watch(serial.isConnected, (connected) => {
-    if (!connected) stopSendLoop();
+    if (!connected) {
+      stopSendLoop();
+      macroRunner.abort();
+      triggers.reset();
+      triggers.resume();
+      modbus.master.resumeAfterSerialTransaction();
+    }
   });
 
   onScopeDispose(() => {
@@ -478,6 +538,7 @@ export function useSessionRuntimeController(
     parser,
     modbus,
     macro,
+    serialTransactions: serial.serialTransactions,
     connect,
     disconnect,
     send,

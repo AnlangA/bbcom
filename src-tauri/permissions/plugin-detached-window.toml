@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "plugin-detached-window-commands"
+description = "Allows a token-bound plugin surface window to read its own projection, emit validated UI events, and cancel its own tasks."
+commands.allow = [
+  "plugin_detached_surface_snapshot_v2",
+  "plugin_detached_emit_surface_event_v2",
+  "plugin_detached_cancel_task_v2",
+]

@@ -19,6 +19,5 @@ snapshot and changes the active package pointer under a durable recovery
 journal. A process stop between the data-directory exchange and install-state
 commit is reconciled from the atomic install state before any later operation.
 
-Repository `publisher_identity` remains an unverified catalog/manifest claim;
 this crate intentionally does not turn SHA-256 transport integrity into a
 publisher-authentication assertion.

@@ -33,6 +33,11 @@ vi.mock('tauri-plugin-serialplugin-api', () => {
       mocked.calls.push({ method: 'forceClose', args: [path] });
     }
 
+    static async available_ports(): Promise<Record<string, unknown>> {
+      mocked.calls.push({ method: 'availablePorts', args: [] });
+      return { COM9: { type: 'usb' } };
+    }
+
     async open(): Promise<void> {
       mocked.calls.push({ method: 'open', args: [] });
     }
@@ -55,6 +60,26 @@ vi.mock('tauri-plugin-serialplugin-api', () => {
       mocked.calls.push({ method: 'rts', args: [value] });
     }
 
+    async readClearToSend(): Promise<boolean> {
+      mocked.calls.push({ method: 'cts', args: [] });
+      return true;
+    }
+
+    async readDataSetReady(): Promise<boolean> {
+      mocked.calls.push({ method: 'dsr', args: [] });
+      return false;
+    }
+
+    async readRingIndicator(): Promise<boolean> {
+      mocked.calls.push({ method: 'ri', args: [] });
+      return true;
+    }
+
+    async readCarrierDetect(): Promise<boolean> {
+      mocked.calls.push({ method: 'cd', args: [] });
+      return false;
+    }
+
     async setBreak(): Promise<void> {
       mocked.calls.push({ method: 'setBreak', args: [] });
     }
@@ -63,14 +88,34 @@ vi.mock('tauri-plugin-serialplugin-api', () => {
       mocked.calls.push({ method: 'clearBreak', args: [] });
     }
 
+    async bytesToRead(): Promise<number> {
+      mocked.calls.push({ method: 'bytesToRead', args: [] });
+      return 7;
+    }
+
+    async bytesToWrite(): Promise<number> {
+      mocked.calls.push({ method: 'bytesToWrite', args: [] });
+      return 3;
+    }
+
+    async clearBuffer(selection: unknown): Promise<void> {
+      mocked.calls.push({ method: 'clearBuffer', args: [selection] });
+    }
+
     async close(): Promise<void> {
       mocked.calls.push({ method: 'close', args: [] });
     }
   }
-  return { SerialPort };
+  return {
+    ClearBuffer: { Input: 'input-native', Output: 'output-native', All: 'all-native' },
+    SerialPort,
+  };
 });
 
-import { createTauriSerialPort } from '../../src/features/serial/index.ts';
+import {
+  createTauriSerialPort,
+  enumerateTauriSerialPorts,
+} from '../../src/features/serial/index.ts';
 
 beforeEach(() => {
   mocked.calls.splice(0);
@@ -93,8 +138,17 @@ test('Tauri serial adapter forwards every v3 operation to the path-scoped plugin
   assert.equal(await port.writeBinary(new Uint8Array([1, 2, 3])), 3);
   await port.writeDataTerminalReady(true);
   await port.writeRequestToSend(false);
+  assert.equal(await port.readClearToSend?.(), true);
+  assert.equal(await port.readDataSetReady?.(), false);
+  assert.equal(await port.readRingIndicator?.(), true);
+  assert.equal(await port.readCarrierDetect?.(), false);
   await port.setBreak();
   await port.clearBreak();
+  assert.equal(await port.bytesToRead?.(), 7);
+  assert.equal(await port.bytesToWrite?.(), 3);
+  await port.clearBuffer?.('input');
+  await port.clearBuffer?.('output');
+  await port.clearBuffer?.('all');
   assert.deepEqual(await port.drainNativeInput?.(), {
     bytes: [0xaa, 0xbb],
     guaranteed: true,
@@ -103,6 +157,7 @@ test('Tauri serial adapter forwards every v3 operation to the path-scoped plugin
   await port.yieldQueuedChannelEvents?.();
   await port.close();
   await port.forceClose?.();
+  assert.deepEqual(await enumerateTauriSerialPorts(), { COM9: { type: 'usb' } });
 
   assert.deepEqual(
     mocked.calls.map((call) => call.method),
@@ -113,16 +168,32 @@ test('Tauri serial adapter forwards every v3 operation to the path-scoped plugin
       'writeBinary',
       'dtr',
       'rts',
+      'cts',
+      'dsr',
+      'ri',
+      'cd',
       'setBreak',
       'clearBreak',
+      'bytesToRead',
+      'bytesToWrite',
+      'clearBuffer',
+      'clearBuffer',
+      'clearBuffer',
       'drain_serial_input',
       'close',
       'forceClose',
+      'availablePorts',
     ],
   );
   assert.equal(mocked.calls[0].args[0].path, 'COM9');
   assert.equal(mocked.calls[2].args[0], handlers);
   assert.equal(mocked.calls[2].args[1], watchOptions);
-  assert.deepEqual(mocked.calls[8].args[0], { request: { path: 'COM9' } });
-  assert.equal(mocked.calls.at(-1)?.args[0], 'COM9');
+  assert.deepEqual(
+    mocked.calls.filter((call) => call.method === 'clearBuffer').map((call) => call.args[0]),
+    ['input-native', 'output-native', 'all-native'],
+  );
+  assert.deepEqual(mocked.calls.find((call) => call.method === 'drain_serial_input')?.args[0], {
+    request: { path: 'COM9' },
+  });
+  assert.equal(mocked.calls.find((call) => call.method === 'forceClose')?.args[0], 'COM9');
 });

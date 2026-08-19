@@ -7,6 +7,7 @@ pub type Result<T> = std::result::Result<T, HostError>;
 pub enum ExecutionFailureKind {
     Trap,
     Timeout,
+    Cancelled,
     FuelExhausted,
     MemoryLimit,
 }
@@ -23,6 +24,7 @@ impl ExecutionFailure {
         match self.kind {
             ExecutionFailureKind::Trap => "PLUGIN_TRAP",
             ExecutionFailureKind::Timeout => "PLUGIN_TIMEOUT",
+            ExecutionFailureKind::Cancelled => "PLUGIN_CANCELLED",
             ExecutionFailureKind::FuelExhausted => "PLUGIN_FUEL_EXHAUSTED",
             ExecutionFailureKind::MemoryLimit => "PLUGIN_MEMORY_LIMIT",
         }
@@ -33,6 +35,7 @@ impl ExecutionFailure {
         match self.kind {
             ExecutionFailureKind::Trap => "plugin.error.trap",
             ExecutionFailureKind::Timeout => "plugin.error.timeout",
+            ExecutionFailureKind::Cancelled => "plugin.error.cancelled",
             ExecutionFailureKind::FuelExhausted => "plugin.error.fuelExhausted",
             ExecutionFailureKind::MemoryLimit => "plugin.error.memoryLimit",
         }
@@ -67,6 +70,10 @@ pub enum HostError {
     InvalidComponent,
     #[error("plugin component could not be instantiated")]
     ComponentInstantiation,
+    #[error("plugin launch authorization context is invalid")]
+    InvalidAuthorizationContext,
+    #[error("plugin launch was not authorized")]
+    AuthorizationRequired,
     #[error("plugin rejected the host request")]
     PluginRejected,
     #[error(transparent)]
@@ -101,6 +108,9 @@ impl HostError {
             Self::EngineConfiguration | Self::InvalidComponent | Self::ComponentInstantiation => {
                 "PLUGIN_COMPONENT_INVALID"
             }
+            Self::InvalidAuthorizationContext | Self::AuthorizationRequired => {
+                "PLUGIN_AUTHORIZATION_REQUIRED"
+            }
             Self::PluginRejected => "PLUGIN_REQUEST_REJECTED",
             Self::Execution(failure) => failure.code(),
             Self::HandshakeTimeout => "PLUGIN_HANDSHAKE_TIMEOUT",
@@ -124,6 +134,9 @@ impl HostError {
             Self::PluginRejected => "plugin.error.requestRejected",
             Self::Closed => "plugin.error.hostClosed",
             Self::TruncatedTransport | Self::Transport => "plugin.error.transport",
+            Self::InvalidAuthorizationContext | Self::AuthorizationRequired => {
+                "plugin.error.authorizationRequired"
+            }
             Self::InvalidHandshake | Self::Contract(_) => "plugin.error.protocolInvalid",
             Self::InvalidArtifact
             | Self::ArtifactSymlink

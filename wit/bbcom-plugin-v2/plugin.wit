@@ -1,0 +1,377 @@
+package bbcom:plugin@2.0.0;
+
+/// Protocol-v2 values shared by the guest and the trusted host. Strings that
+/// identify workspaces, instances, sessions, surfaces, and grants are opaque.
+/// They never contain native paths or operating-system handles.
+interface types {
+  enum contract-error {
+    invalid-input,
+    permission-denied,
+    unavailable,
+    busy,
+    not-found,
+    stale-handle,
+    disconnected,
+    timeout,
+    cancelled,
+    limit-exceeded,
+    partial-write,
+    unknown-outcome,
+    protocol-error,
+    io-error,
+  }
+
+  enum capability {
+    ui-workspace,
+    ui-detached-window,
+    serial-ports-read,
+    serial-sessions-manage,
+    serial-io,
+    serial-control-lines,
+    session-capture-read,
+    session-commands-read-write,
+    file-open-read,
+    file-save-write,
+    plugin-storage,
+    project-state-read-write,
+  }
+
+  record resource-limits {
+    max-frame-bytes: u64,
+    max-queue-bytes: u64,
+    max-stream-chunk-bytes: u32,
+    max-concurrent-streams: u32,
+    max-pending-host-requests: u32,
+    wasm-memory-limit-bytes: u64,
+    host-process-memory-limit-bytes: u64,
+    call-timeout-ms: u32,
+    serial-read-timeout-ms: u32,
+    long-task-timeout-ms: u64,
+    activity-timeout-ms: u32,
+    max-ui-document-bytes: u32,
+    max-ui-nodes: u32,
+  }
+
+  enum color-scheme { light, dark, system }
+
+  record session-summary {
+    session-id: string,
+    name: string,
+    connected: bool,
+    rx-bytes: u64,
+    tx-bytes: u64,
+    generation: u64,
+  }
+
+  record host-context {
+    workspace-id: string,
+    plugin-id: string,
+    instance-id: string,
+    generation: u64,
+    locale: string,
+    theme: color-scheme,
+    granted-capabilities: list<capability>,
+    limits: resource-limits,
+    sessions: list<session-summary>,
+  }
+
+  enum surface-location { workspace, detached-window }
+
+  record plugin-surface {
+    surface-id: string,
+    title: string,
+    location: surface-location,
+  }
+
+  record command-contribution {
+    command-id: string,
+    title: string,
+    description: string,
+    long-running: bool,
+    /// Host-rendered confirmation. Presence marks the command dangerous;
+    /// dangerous commands cannot be contributed without explicit copy.
+    confirmation: option<string>,
+  }
+
+  record plugin-model {
+    surfaces: list<plugin-surface>,
+    commands: list<command-contribution>,
+  }
+
+  record text-node { text: string }
+  record badge-node { text: string, tone: string }
+  record key-value-entry { key: string, value: string }
+  record key-value-node { entries: list<key-value-entry> }
+  record progress-node { value: u32, maximum: u32, label: string }
+  record log-node { text: string, language: option<string> }
+  record table-node {
+    columns: list<string>,
+    rows: list<list<string>>,
+    page: u32,
+    page-size: u32,
+    total-rows: u64,
+  }
+  record input-node { label: string, value: string, placeholder: string, disabled: bool }
+  record number-input-node {
+    label: string,
+    value: f64,
+    minimum: option<f64>,
+    maximum: option<f64>,
+    step: option<f64>,
+    disabled: bool,
+  }
+  record select-option { value: string, label: string }
+  record select-node { label: string, value: string, options: list<select-option>, disabled: bool }
+  record toggle-node { label: string, checked: bool, disabled: bool }
+  /// `confirmation` is rendered and enforced by the trusted host. Plugins do
+  /// not receive the action event until the user confirms.
+  record button-node { label: string, disabled: bool, confirmation: option<string> }
+  record group-node { title: string }
+  record tabs-node { selected-child-id: string }
+
+  variant ui-node-kind {
+    column,
+    row,
+    group(group-node),
+    tabs(tabs-node),
+    text(text-node),
+    badge(badge-node),
+    key-value(key-value-node),
+    progress(progress-node),
+    log(log-node),
+    code(log-node),
+    table(table-node),
+    input(input-node),
+    number-input(number-input-node),
+    select(select-node),
+    toggle(toggle-node),
+    button(button-node),
+    dangerous-button(button-node),
+  }
+
+  /// Nodes form a tree through parent-id; the root has no parent. Stable IDs
+  /// make patches deterministic without requiring recursive WIT values.
+  record ui-node {
+    id: string,
+    parent-id: option<string>,
+    order: u32,
+    kind: ui-node-kind,
+  }
+
+  record surface-snapshot {
+    surface-id: string,
+    revision: u64,
+    root-node-id: string,
+    nodes: list<ui-node>,
+  }
+
+  variant ui-patch-operation {
+    upsert(ui-node),
+    remove(string),
+    set-root(string),
+  }
+
+  record surface-patch {
+    surface-id: string,
+    base-revision: u64,
+    next-revision: u64,
+    operations: list<ui-patch-operation>,
+  }
+
+  variant ui-value {
+    text(string),
+    number(f64),
+    toggle(bool),
+    selection(string),
+    action,
+  }
+
+  record surface-interaction {
+    surface-id: string,
+    revision: u64,
+    node-id: string,
+    value: ui-value,
+  }
+
+  record command-invocation {
+    command-id: string,
+    invocation-id: string,
+    arguments: list<string>,
+  }
+
+  record command-result { message: string }
+  record event-result { accepted: bool }
+  record migrated-state { schema-version: u32, state: list<u8> }
+  record project-state { schema-version: u32, value: list<u8> }
+
+  variant plugin-event {
+    surface(surface-interaction),
+    locale-changed(string),
+    theme-changed(color-scheme),
+    port-catalog-changed,
+    cancel-task(string),
+  }
+
+  record serial-port {
+    port-id: string,
+    display-name: string,
+    usb-vendor-id: option<u16>,
+    usb-product-id: option<u16>,
+    serial-number: option<string>,
+  }
+
+  enum session-lifetime { persistent, runtime }
+  enum parity { none, odd, even }
+  enum stop-bits { one, two }
+  enum flow-control { none, software, hardware }
+
+  record serial-config {
+    baud-rate: u32,
+    data-bits: u8,
+    parity: parity,
+    stop-bits: stop-bits,
+    flow-control: flow-control,
+  }
+
+  record serial-session {
+    session-id: string,
+    name: string,
+    port-id: option<string>,
+    config: serial-config,
+    connected: bool,
+    generation: u64,
+  }
+
+  record create-session {
+    local-id: string,
+    name: string,
+    lifetime: session-lifetime,
+    port-id: option<string>,
+    config: serial-config,
+  }
+
+  record serial-lease-options {
+    pause-automation: bool,
+    rx-buffer-bytes: u32,
+  }
+
+  enum write-outcome { completed, partial-write, unknown-outcome }
+  record serial-write-result { requested: u64, sent: u64, outcome: write-outcome }
+  record serial-read-result { payload: list<u8>, timed-out: bool, disconnected: bool }
+  record pending-bytes { rx: u64, tx: u64 }
+  record output-lines { dtr: bool, rts: bool, break-active: bool }
+  record input-lines { cts: bool, dsr: bool, ri: bool, cd: bool }
+
+  enum frame-direction { rx, tx }
+  record capture-frame {
+    sequence: u64,
+    timestamp-ms: u64,
+    direction: frame-direction,
+    payload: list<u8>,
+  }
+  record capture-page { frames: list<capture-frame>, next-sequence: option<u64> }
+
+  record quick-command {
+    local-id: string,
+    title: string,
+    session-id: string,
+    payload: list<u8>,
+    append-newline: bool,
+  }
+  record macro-step { delay-ms: u32, payload: list<u8> }
+  record macro-contribution {
+    local-id: string,
+    title: string,
+    session-id: string,
+    steps: list<macro-step>,
+  }
+
+  record read-grant-info { display-name: string, size: u64 }
+  record save-grant-info { display-name: string }
+
+  record task-progress {
+    task-id: string,
+    completed: u64,
+    total: option<u64>,
+    message: string,
+  }
+}
+
+/// All host capabilities are explicit imports. Implementations must authorize
+/// each operation against the capability list supplied at initialization.
+interface host {
+  use types.{capture-page, command-contribution, contract-error, create-session, input-lines, macro-contribution, output-lines, pending-bytes, plugin-surface, project-state, quick-command, read-grant-info, save-grant-info, serial-lease-options, serial-port, serial-read-result, serial-session, serial-write-result, surface-patch, surface-snapshot, task-progress};
+
+  resource serial-lease {
+    session-id: func() -> string;
+    generation: func() -> u64;
+    read: func(max-bytes: u32, timeout-ms: u32) -> result<serial-read-result, contract-error>;
+    write: func(payload: list<u8>) -> result<serial-write-result, contract-error>;
+    clear-buffers: func() -> result<_, contract-error>;
+    pending: func() -> result<pending-bytes, contract-error>;
+    set-output-lines: func(lines: output-lines) -> result<_, contract-error>;
+    input-lines: func() -> result<input-lines, contract-error>;
+    release: func() -> result<_, contract-error>;
+  }
+
+  resource read-grant {
+    info: func() -> read-grant-info;
+    read-at: func(offset: u64, max-bytes: u32) -> result<list<u8>, contract-error>;
+    close: func();
+  }
+
+  resource save-grant {
+    info: func() -> save-grant-info;
+    write: func(payload: list<u8>) -> result<u64, contract-error>;
+    commit: func() -> result<_, contract-error>;
+    cancel: func();
+  }
+
+  publish-surface-snapshot: func(snapshot: surface-snapshot) -> result<_, contract-error>;
+  publish-surface-patch: func(patch: surface-patch) -> result<_, contract-error>;
+  register-surface: func(surface: plugin-surface) -> result<_, contract-error>;
+  unregister-surface: func(surface-id: string) -> result<_, contract-error>;
+  register-command: func(command: command-contribution) -> result<_, contract-error>;
+  unregister-command: func(command-id: string) -> result<_, contract-error>;
+  report-task-progress: func(progress: task-progress) -> result<_, contract-error>;
+  heartbeat: func(task-id: string) -> result<_, contract-error>;
+
+  serial-ports: func() -> result<list<serial-port>, contract-error>;
+  serial-sessions: func() -> result<list<serial-session>, contract-error>;
+  create-serial-session: func(request: create-session) -> result<serial-session, contract-error>;
+  update-serial-session: func(session: serial-session) -> result<serial-session, contract-error>;
+  connect-serial-session: func(session-id: string) -> result<serial-session, contract-error>;
+  disconnect-serial-session: func(session-id: string) -> result<_, contract-error>;
+  delete-serial-session: func(session-id: string) -> result<_, contract-error>;
+  acquire-serial-lease: func(session-id: string, options: serial-lease-options) -> result<serial-lease, contract-error>;
+
+  capture-read: func(session-id: string, from-sequence: u64, max-frames: u32, max-bytes: u32) -> result<capture-page, contract-error>;
+  upsert-quick-command: func(command: quick-command) -> result<string, contract-error>;
+  delete-quick-command: func(session-id: string, local-id: string) -> result<_, contract-error>;
+  upsert-macro: func(macro: macro-contribution) -> result<string, contract-error>;
+  delete-macro: func(session-id: string, local-id: string) -> result<_, contract-error>;
+
+  open-read-grant: func(accept: list<string>) -> result<option<read-grant>, contract-error>;
+  create-save-grant: func(suggested-name: string) -> result<option<save-grant>, contract-error>;
+  storage-get: func(key: string) -> result<option<list<u8>>, contract-error>;
+  storage-set: func(key: string, value: list<u8>) -> result<_, contract-error>;
+  storage-delete: func(key: string) -> result<_, contract-error>;
+  project-state-get: func() -> result<option<project-state>, contract-error>;
+  project-state-set: func(state: project-state) -> result<_, contract-error>;
+}
+
+world plugin {
+  import host;
+  use types.{command-invocation, command-result, contract-error, event-result, host-context, migrated-state, plugin-event, plugin-model};
+
+  /// Initialization is a two-step declaration transaction. Before publishing
+  /// a surface snapshot, the guest must call host.register-surface and
+  /// host.register-command exactly once for every declaration it will return
+  /// in plugin-model. The host rejects duplicates, omissions, additions, or
+  /// field mismatches and commits staged state only after the two views match.
+  export initialize: func(context: host-context) -> result<plugin-model, contract-error>;
+  export handle-event: func(event: plugin-event) -> result<event-result, contract-error>;
+  export run-command: func(invocation: command-invocation) -> result<command-result, contract-error>;
+  export migrate-state: func(previous-api: string, state: list<u8>) -> result<migrated-state, contract-error>;
+  export shutdown: func();
+}

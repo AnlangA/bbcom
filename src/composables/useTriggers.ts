@@ -35,16 +35,21 @@ export function useTriggers({ triggers, send, onFire }: TriggerOptions) {
   // decoder immediately. Responses themselves stay FIFO without blocking a
   // later chunk from entering the matcher.
   let sendTail: Promise<void> = Promise.resolve();
+  let paused = false;
 
   /** Feed raw RX bytes through the matcher and queue any responses in FIFO order. */
   function feedBytes(bytes: Uint8Array): Promise<void> {
     if (triggers.value.length === 0) return Promise.resolve();
     const fires = engine.feed(bytes);
+    if (paused) return Promise.resolve();
     for (const fire of fires) onFire?.(fire);
     if (fires.length === 0) return Promise.resolve();
 
     const operation = sendTail.then(async () => {
-      for (const fire of fires) await send(fire.response, fire.responseIsHex);
+      for (const fire of fires) {
+        if (paused) break;
+        await send(fire.response, fire.responseIsHex);
+      }
     });
     // Keep the next batch live even if one response fails; callers still get
     // the original rejection so runtime logging can surface it.
@@ -63,7 +68,35 @@ export function useTriggers({ triggers, send, onFire }: TriggerOptions) {
     engine.reset();
   }
 
+  async function pause(signal?: AbortSignal): Promise<void> {
+    paused = true;
+    if (signal?.aborted) {
+      paused = false;
+      throw new Error('trigger pause cancelled');
+    }
+    let detachAbort: () => void = () => undefined;
+    try {
+      await Promise.race([
+        sendTail,
+        new Promise<never>((_, reject) => {
+          const onAbort = () => reject(new Error('trigger pause cancelled'));
+          signal?.addEventListener('abort', onAbort, { once: true });
+          detachAbort = () => signal?.removeEventListener('abort', onAbort);
+        }),
+      ]);
+    } catch (error) {
+      paused = false;
+      throw error;
+    } finally {
+      detachAbort();
+    }
+  }
+
+  function resume(): void {
+    paused = false;
+  }
+
   const enabledCount = computed(() => triggers.value.filter((t) => t.enabled).length);
 
-  return { feedBytes, feedFrame, reset, enabledCount };
+  return { feedBytes, feedFrame, reset, pause, resume, enabledCount };
 }

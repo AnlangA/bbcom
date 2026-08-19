@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-plugin-detached-emit-surface-event-v2"
+description = "Enables the plugin_detached_emit_surface_event_v2 command without any pre-configured scope."
+commands.allow = ["plugin_detached_emit_surface_event_v2"]
+
+[[permission]]
+identifier = "deny-plugin-detached-emit-surface-event-v2"
+description = "Denies the plugin_detached_emit_surface_event_v2 command without any pre-configured scope."
+commands.deny = ["plugin_detached_emit_surface_event_v2"]

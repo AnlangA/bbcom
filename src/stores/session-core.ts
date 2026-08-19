@@ -67,6 +67,11 @@ export interface WorkspaceSessionMutationPermissions {
   ) => boolean;
 }
 
+export interface SessionCreationOptions {
+  readonly lifetime?: 'persistent' | 'runtime';
+  readonly displayName?: string;
+}
+
 export interface DeletedSessionSnapshot {
   readonly session: SerialSession;
   readonly index: number;
@@ -119,6 +124,7 @@ export const useSessionCoreStore = defineStore('session-core', () => {
   const lastDeletedSession = shallowRef<DeletedSessionSnapshot | null>(null);
   const sessionFramesVersions = shallowReactive<Record<string, number>>({});
   const cleanupFns = new Map<string, () => Promise<void>>();
+  const runtimeSessionIds = new Set<string>();
   const workspaceChangeListeners = new Set<WorkspaceSessionChangeListener>();
   const persistenceTracker = new SessionMutationRevisionTracker();
   const catalog = new SessionCatalogController();
@@ -184,7 +190,10 @@ export const useSessionCoreStore = defineStore('session-core', () => {
     sessionId: string,
     frame: Pick<DataFrame, 'direction' | 'data'>,
   ): boolean {
-    return canCaptureRuntimeEvents() && mutationGate.preflightRuntimeCapture(sessionId, frame);
+    return (
+      runtimeSessionIds.has(sessionId) ||
+      (canCaptureRuntimeEvents() && mutationGate.preflightRuntimeCapture(sessionId, frame))
+    );
   }
 
   const waveform = createSessionWaveformController({
@@ -279,11 +288,22 @@ export const useSessionCoreStore = defineStore('session-core', () => {
     },
   });
 
-  function createSession(portName: string, portConfig: SerialSession['portConfig']): string | null {
-    if (!canMutateUserState()) return null;
+  function createSessionInternal(
+    portName: string,
+    portConfig: SerialSession['portConfig'],
+    options: SessionCreationOptions = {},
+    allowRuntimeWithoutWorkspaceMutation = false,
+  ): string | null {
+    const runtimeOnly = options.lifetime === 'runtime';
+    if (!canMutateUserState() && !(runtimeOnly && allowRuntimeWithoutWorkspaceMutation)) {
+      return null;
+    }
     const id = crypto.randomUUID();
-    if (!mutationGate.preflightSessionRegistration(id, 0, 0)) return null;
-    const session = wrapSession(createSessionRecord(id, portName, portConfig));
+    if (!runtimeOnly && !mutationGate.preflightSessionRegistration(id, 0, 0)) return null;
+    const record = createSessionRecord(id, portName, portConfig);
+    if (options.displayName) record.displayName = options.displayName;
+    if (runtimeOnly) runtimeSessionIds.add(id);
+    const session = wrapSession(record);
     sessions.value = [...sessions.value, session];
     capture.initializeSession(session);
     waveform.addEmptySession(id);
@@ -294,10 +314,35 @@ export const useSessionCoreStore = defineStore('session-core', () => {
     return id;
   }
 
-  async function removeSession(id: string): Promise<DeletedSessionSnapshot | null> {
-    if (!canMutateUserState()) return null;
+  function createSession(
+    portName: string,
+    portConfig: SerialSession['portConfig'],
+    options: SessionCreationOptions = {},
+  ): string | null {
+    return createSessionInternal(portName, portConfig, options);
+  }
+
+  function createRuntimeSession(
+    portName: string,
+    portConfig: SerialSession['portConfig'],
+    displayName?: string,
+  ): string | null {
+    return createSessionInternal(
+      portName,
+      portConfig,
+      { lifetime: 'runtime', ...(displayName === undefined ? {} : { displayName }) },
+      true,
+    );
+  }
+
+  async function removeSessionInternal(
+    id: string,
+    runtimeTeardown: boolean,
+  ): Promise<DeletedSessionSnapshot | null> {
+    if (!canMutateUserState() && !(runtimeTeardown && runtimeSessionIds.has(id))) return null;
     const session = findSession(id);
     if (!session) return null;
+    const runtimeOnly = runtimeSessionIds.has(id);
     const cleanup = cleanupFns.get(id);
     if (cleanup) cleanupFns.delete(id);
     // Remove the session from every document in one synchronous mutation
@@ -315,6 +360,7 @@ export const useSessionCoreStore = defineStore('session-core', () => {
     });
     capture.removeSession(id);
     sessions.value = sessions.value.filter((session) => session.id !== id);
+    runtimeSessionIds.delete(id);
     catalog.remove(id);
     persistenceTracker.clearDirty(id);
     const nextRebind = { ...workspaceRebindBySessionId.value };
@@ -332,10 +378,19 @@ export const useSessionCoreStore = defineStore('session-core', () => {
       if (activeSessionId.value) catalog.touch(activeSessionId.value);
     }
     schedulePersist();
-    lastDeletedSession.value = snapshot;
+    lastDeletedSession.value = runtimeOnly ? null : snapshot;
     notifyWorkspaceChange(Object.freeze({ kind: 'catalog-changed' }));
     if (cleanup) await cleanup();
     return snapshot;
+  }
+
+  function removeSession(id: string): Promise<DeletedSessionSnapshot | null> {
+    return removeSessionInternal(id, false);
+  }
+
+  function removeRuntimeSession(id: string): Promise<DeletedSessionSnapshot | null> {
+    if (!runtimeSessionIds.has(id)) return Promise.resolve(null);
+    return removeSessionInternal(id, true);
   }
 
   function setActiveSession(id: string): void {
@@ -424,6 +479,7 @@ export const useSessionCoreStore = defineStore('session-core', () => {
       entries.map((entry) => ({ sessionId: entry.session.id, waveform: entry.waveform })),
     );
     const nextActiveSessionId = catalog.replace(preparedSessions, requestedActiveSessionId);
+    runtimeSessionIds.clear();
     capture.replaceSessions(preparedSessions);
     sessions.value = preparedSessions;
     activeSessionId.value = nextActiveSessionId;
@@ -472,6 +528,66 @@ export const useSessionCoreStore = defineStore('session-core', () => {
     schedulePersist(sessionId);
     notifyWorkspaceChange(Object.freeze({ kind: 'session-changed', sessionId }));
     return Object.freeze({ ok: true });
+  }
+
+  function updateSessionConnectionSettingsInternal(
+    sessionId: string,
+    portName: string,
+    portConfig: PortConfig,
+    displayName?: string,
+    allowRuntimeWithoutWorkspaceMutation = false,
+  ): boolean {
+    if (
+      !canMutateUserState() &&
+      !(allowRuntimeWithoutWorkspaceMutation && runtimeSessionIds.has(sessionId))
+    ) {
+      return false;
+    }
+    const session = findSession(sessionId);
+    if (!session || session.isConnected) return false;
+    const normalizedPortName = portName.trim();
+    if (
+      normalizedPortName.length === 0 ||
+      normalizedPortName.length > 1024 ||
+      containsControlCharacters(normalizedPortName)
+    ) {
+      return false;
+    }
+    session.portName = normalizedPortName;
+    session.portConfig = normalizePortConfig(portConfig);
+    if (displayName !== undefined) session.displayName = displayName;
+    schedulePersist(sessionId);
+    notifyWorkspaceChange(Object.freeze({ kind: 'session-changed', sessionId }));
+    return true;
+  }
+
+  function updateSessionConnectionSettings(
+    sessionId: string,
+    portName: string,
+    portConfig: PortConfig,
+    displayName?: string,
+  ): boolean {
+    return updateSessionConnectionSettingsInternal(sessionId, portName, portConfig, displayName);
+  }
+
+  function updateRuntimeSessionConnectionSettings(
+    sessionId: string,
+    portName: string,
+    portConfig: PortConfig,
+    displayName?: string,
+  ): boolean {
+    if (!runtimeSessionIds.has(sessionId)) return false;
+    return updateSessionConnectionSettingsInternal(
+      sessionId,
+      portName,
+      portConfig,
+      displayName,
+      true,
+    );
+  }
+
+  function isPersistentSession(sessionId: string): boolean {
+    return !runtimeSessionIds.has(sessionId);
   }
 
   function undoLastRemovedSession(): UndoDeletedSessionResult {
@@ -527,12 +643,17 @@ export const useSessionCoreStore = defineStore('session-core', () => {
     lastDeletedSession: readonly(lastDeletedSession),
     getSessionFramesVersion: capture.getSessionFramesVersion,
     createSession,
+    createRuntimeSession,
     removeSession,
+    removeRuntimeSession,
     undoLastRemovedSession,
     isSessionConfigurationDirty,
     markWorkspacePersisted,
     replaceWorkspaceSessions,
     completeWorkspaceRebind,
+    updateSessionConnectionSettings,
+    updateRuntimeSessionConnectionSettings,
+    isPersistentSession,
     appendSessionWaveformSamples,
     replaceSessionWaveformSamples,
     setSessionWaveformChannelVisible,

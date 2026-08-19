@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
+use bbcom_plugin_contracts::generated_v2::Capability;
 use bbcom_plugin_manager::{
     ArtifactSlot, HostFailure, InstallationFailure, InstallationPort, ManualPackageRequest,
     PluginArtifact, PluginArtifactSource, PluginSourceKind, PreparationKind, PreparationToken,
@@ -104,32 +105,36 @@ pub struct NativeRepositoryStagingBackend<S> {
 }
 
 impl<S> NativeRepositoryStagingBackend<S> {
-    /// Every durable active installation mapped to manager artifacts with
-    /// permissions re-read from each active package's manifest.
+    /// Every durable active installation mapped to manager artifacts with its
+    /// API generation and v2 capabilities re-read from the active manifest.
     pub fn active_installed_artifacts(&self) -> Vec<PluginArtifact> {
         self.installer
             .active_installations()
             .iter()
-            .filter_map(|active| {
-                let permissions = manifest_permissions(&active.package_directory).ok()?;
-                map_active_artifact(active, &permissions).ok()
-            })
+            .filter_map(|active| map_active_installation(active).ok())
             .collect()
     }
 }
 
-fn manifest_permissions(
+pub(crate) fn map_active_installation(
+    active: &bbcom_plugin_repository::ActiveInstallation,
+) -> Result<PluginArtifact, NativeRepositoryError> {
+    let capabilities = manifest_capabilities(&active.package_directory)?;
+    map_active_artifact(active, &capabilities)
+}
+
+fn manifest_capabilities(
     package_directory: &std::path::Path,
-) -> std::result::Result<
-    std::collections::BTreeSet<bbcom_plugin_contracts::Permission>,
-    NativeRepositoryError,
-> {
+) -> std::result::Result<std::collections::BTreeSet<Capability>, NativeRepositoryError> {
     let manifest_path = package_directory.join("plugin.toml");
     let text =
         std::fs::read_to_string(manifest_path).map_err(|_| NativeRepositoryError::PackageSource)?;
     let manifest = bbcom_plugin_contracts::PluginManifest::parse(&text)
         .map_err(|_| NativeRepositoryError::Descriptor)?;
-    Ok(manifest.permissions().into_iter().flatten().collect())
+    manifest
+        .v2_capabilities()
+        .map_err(|_| NativeRepositoryError::Descriptor)
+        .map(|values| values.into_iter().collect())
 }
 
 impl<S> NativeRepositoryStagingBackend<S> {
@@ -208,7 +213,7 @@ impl<S: VerifiedPackageProvider> RepositoryStagingBackend for NativeRepositorySt
             .installer
             .commit_prepared(&repository_prepared)
             .map_err(|_| NativeRepositoryError::Repository)?;
-        let artifact = map_active_artifact(&active, repository_prepared.requested_permissions())?;
+        let artifact = map_active_artifact(&active, repository_prepared.requested_capabilities())?;
         if artifact != prepared.artifact {
             return Err(NativeRepositoryError::Descriptor);
         }
@@ -315,15 +320,14 @@ fn map_repository_prepared(
 ) -> Result<PreparedRepositoryArtifact, NativeRepositoryError> {
     let token =
         PreparationToken::new(prepared.token()).map_err(|_| NativeRepositoryError::Descriptor)?;
-    let artifact = PluginArtifact::new(
+    let artifact = map_plugin_artifact(
         prepared.plugin_id(),
         prepared.version(),
         prepared.package_sha256(),
         prepared.component_sha256(),
         artifact_source(prepared.repository_origin()),
-        prepared.requested_permissions().iter().copied(),
-    )
-    .map_err(|_| NativeRepositoryError::Descriptor)?;
+        prepared.requested_capabilities(),
+    )?;
     let kind = match prepared.kind() {
         PreparedInstallationKind::InitialInstall => PreparationKind::InitialInstall,
         PreparedInstallationKind::ManualUpgrade => PreparationKind::ManualUpgrade,
@@ -338,15 +342,33 @@ fn map_repository_prepared(
 
 fn map_active_artifact(
     active: &bbcom_plugin_repository::ActiveInstallation,
-    permissions: &std::collections::BTreeSet<bbcom_plugin_contracts::Permission>,
+    capabilities: &std::collections::BTreeSet<Capability>,
 ) -> Result<PluginArtifact, NativeRepositoryError> {
-    PluginArtifact::new(
+    map_plugin_artifact(
         &active.plugin_id,
         &active.version,
         &active.package_sha256,
         &active.component_sha256,
         artifact_source(&active.repository_origin),
-        permissions.iter().copied(),
+        capabilities,
+    )
+}
+
+fn map_plugin_artifact(
+    plugin_id: &str,
+    version: &str,
+    package_sha256: &str,
+    component_sha256: &str,
+    source: PluginArtifactSource,
+    capabilities: &std::collections::BTreeSet<Capability>,
+) -> Result<PluginArtifact, NativeRepositoryError> {
+    PluginArtifact::new(
+        plugin_id,
+        version,
+        package_sha256,
+        component_sha256,
+        source,
+        capabilities.iter().copied(),
     )
     .map_err(|_| NativeRepositoryError::Descriptor)
 }
@@ -554,8 +576,6 @@ pub(crate) fn artifact_source(origin: &str) -> PluginArtifactSource {
 mod tests {
     use std::collections::VecDeque;
 
-    use bbcom_plugin_contracts::Permission;
-
     use super::*;
 
     fn artifact(version: &str) -> PluginArtifact {
@@ -568,7 +588,7 @@ mod tests {
                 source_id: "test".to_owned(),
                 kind: PluginSourceKind::Https,
             },
-            [Permission::SessionMetadataRead],
+            [Capability::SessionCaptureRead],
         )
         .unwrap()
     }

@@ -6,43 +6,41 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bbcom_plugin_contracts::generated::{
-    CompleteShutdownRequest, Envelope, GetStateChunkRequest, HostHello, InitializeRequest,
-    InvokeRequest, OpaqueStateKind, PutStateChunkRequest, ShutdownRequest, StateSnapshotDescriptor,
-    envelope,
+use bbcom_plugin_broker::{
+    GatewayContext, GatewayDispatch, GatewayFailure, GatewaySession, PluginCapabilityGateway,
+    RuntimeBootstrapState, TaskTerminal,
+};
+use bbcom_plugin_contracts::generated_v2::{
+    self as wire, Envelope, Handshake, HostContext, HostHello, InitializeRequest, PluginIdentity,
+    Request, ShutdownRequest, envelope, handshake, request, response,
+};
+use bbcom_plugin_contracts::v2::{
+    LONG_TASK_TIMEOUT_MS, MAX_PENDING_HOST_REQUESTS, MAX_PROTOCOL_MINOR, MIN_PROTOCOL_MINOR,
+    PROTOCOL_MAJOR, WIT_PACKAGE, default_resource_limits,
 };
 use bbcom_plugin_contracts::{
     HANDSHAKE_TIMEOUT_MS, HOST_PROCESS_MEMORY_LIMIT_BYTES, MAX_PLUGIN_PERSISTED_STATE_BYTES,
-    MAX_PLUGIN_STATE_CHUNK_BYTES, MAX_WORKSPACE_PLUGIN_PERSISTED_STATE_BYTES,
-    PLUGIN_STATE_SCHEMA_VERSION, PROTOCOL_MAJOR, PROTOCOL_MINOR, Permission, WIT_PACKAGE,
-    empty_plugin_storage_payload, encode_frame,
+    MAX_WORKSPACE_PLUGIN_PERSISTED_STATE_BYTES,
 };
 use bbcom_plugin_host::transport::{FrameReader, FrameWriter};
+use bbcom_plugin_host::{
+    AuthorizationRequest, PluginAuthorizationGate, PluginLaunchContext, TrustedPluginArtifact,
+    authorization_request, authorization_ticket,
+};
 use bbcom_plugin_manager::{
     ArtifactSlot, CrashKind, HostFailure, HostHandle, HostLaunchMode, HostLaunchRequest,
-    HostLauncher, HostPanel, HostPanelField, HostPanelFieldKind, HostReport,
+    HostLauncher, HostReport,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const PROCESS_EXIT_POLL: Duration = Duration::from_millis(10);
-
-fn handshake_capabilities(granted: &BTreeSet<Permission>) -> Vec<String> {
-    granted
-        .iter()
-        .copied()
-        .chain([Permission::UiPanel, Permission::PluginStorage])
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(Permission::as_str)
-        .map(str::to_owned)
-        .collect()
-}
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginStatePersistenceKey {
@@ -56,6 +54,66 @@ pub struct PluginStatePersistenceKey {
 pub struct PluginPersistedState {
     pub plugin_storage: Vec<u8>,
     pub project_state: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginInitializationContextV2 {
+    pub locale: String,
+    pub theme: wire::ColorScheme,
+    pub sessions: Vec<wire::SessionSummary>,
+}
+
+pub trait PluginHostContextProviderV2: Send + Sync + 'static {
+    fn context_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<PluginInitializationContextV2, HostFailure>;
+}
+
+/// Authoritative, path-free portable state read used immediately before each
+/// host launch. The lifecycle manager intentionally keeps only a projection;
+/// production implementations must read the currently active workspace so a
+/// same-process crash restart cannot replay an older project-state snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginProjectStateSnapshotV2 {
+    pub value: Vec<u8>,
+    pub api_generation: u32,
+    pub schema_version: Option<u32>,
+}
+
+pub trait PluginProjectStateProviderV2: Send + Sync + 'static {
+    fn current_project_state(
+        &self,
+        workspace_id: &str,
+        plugin_id: &str,
+    ) -> Result<Option<PluginProjectStateSnapshotV2>, HostFailure>;
+}
+
+/// Explicit production authorities injected into one sidecar launcher.
+/// Grouping these services keeps the constructor readable without introducing
+/// any permissive default: callers must still supply every authority.
+pub struct PluginHostServicesV2 {
+    authorization: Arc<dyn PluginAuthorizationGate>,
+    gateway: Arc<dyn PluginCapabilityGateway>,
+    host_context: Arc<dyn PluginHostContextProviderV2>,
+    project_state: Arc<dyn PluginProjectStateProviderV2>,
+}
+
+impl PluginHostServicesV2 {
+    #[must_use]
+    pub fn new(
+        authorization: Arc<dyn PluginAuthorizationGate>,
+        gateway: Arc<dyn PluginCapabilityGateway>,
+        host_context: Arc<dyn PluginHostContextProviderV2>,
+        project_state: Arc<dyn PluginProjectStateProviderV2>,
+    ) -> Self {
+        Self {
+            authorization,
+            gateway,
+            host_context,
+            project_state,
+        }
+    }
 }
 
 impl PluginPersistedState {
@@ -75,11 +133,14 @@ impl PluginPersistedState {
 
 /// Native-only persistence authority for opaque plugin bytes.
 ///
-/// Implementations must atomically replace both payloads and reject an update
-/// when it would exceed 16 MiB for one plugin or 64 MiB across one workspace.
-/// Keys are repository/workspace identities; neither input nor output may be a
-/// filesystem path. Prepared slots must resolve to staged data, never active
-/// data.
+/// Implementations atomically replace one private persistence record and
+/// reject an update when it would exceed 16 MiB for one plugin or 64 MiB across
+/// one workspace. Portable project state is committed separately by the
+/// capability gateway and uses an explicit compensating sequence; this port
+/// does not claim cross-store atomicity. Keys are repository/workspace
+/// identities; neither input nor output may be a filesystem path. Update
+/// preflight deliberately loads the active record and has no durable prepared
+/// private-state slot; candidate writes remain inside that runtime.
 pub trait PluginStatePersistencePort: Send + 'static {
     fn load_plugin_storage(
         &mut self,
@@ -93,6 +154,28 @@ pub trait PluginStatePersistencePort: Send + 'static {
         key: &PluginStatePersistenceKey,
         state: &PluginPersistedState,
     ) -> Result<(), HostFailure>;
+}
+
+fn private_state_load_key(
+    request: &HostLaunchRequest,
+) -> Result<PluginStatePersistenceKey, HostFailure> {
+    // Update preflight must inspect the exact currently-active private bytes,
+    // but it may never create or mutate a durable prepared slot. All guest
+    // writes remain inside the preflight runtime and the active artifact
+    // repeats migration after package activation.
+    let (artifact_slot, launch_mode) = match (&request.artifact_slot, request.mode) {
+        (ArtifactSlot::Active, HostLaunchMode::Active)
+        | (ArtifactSlot::Prepared(_), HostLaunchMode::UpdatePreflight) => {
+            (ArtifactSlot::Active, HostLaunchMode::Active)
+        }
+        _ => return Err(HostFailure::Initialization),
+    };
+    Ok(PluginStatePersistenceKey {
+        plugin_id: request.artifact.plugin_id.clone(),
+        workspace_id: request.workspace_id.clone(),
+        artifact_slot,
+        launch_mode,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -371,31 +454,98 @@ struct HostProcess {
     version: String,
     child: SandboxedChild,
     stdin: SharedHostStdin,
-    responses: Receiver<Result<Option<Envelope>, HostFailure>>,
-    next_request_id: u64,
-    state_key: PluginStatePersistenceKey,
-    initial_state: PluginPersistedState,
-    published_panel: Option<HostPanel>,
+    responses: HostResponseRouter,
+    gateway: Arc<GatewaySession<dyn PluginCapabilityGateway>>,
+    tasks: Arc<Mutex<BTreeMap<String, u64>>>,
 }
 
 type SharedHostStdin = Arc<Mutex<Box<dyn Write + Send>>>;
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct HostPanelJson {
-    title: String,
-    fields: Vec<HostPanelFieldJson>,
+type HostResponseSender = mpsc::SyncSender<Result<Envelope, HostFailure>>;
+
+#[derive(Clone, Default)]
+struct HostResponseRouter {
+    pending: Arc<Mutex<BTreeMap<u64, HostResponseSender>>>,
+    failed: Arc<AtomicBool>,
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct HostPanelFieldJson {
-    id: String,
-    label: String,
-    kind: String,
-    value: String,
-    options: Vec<String>,
-    disabled: bool,
+#[derive(Clone, Default)]
+struct CapabilityWorkerRegistry(Arc<AtomicUsize>);
+
+impl CapabilityWorkerRegistry {
+    fn try_acquire(&self) -> Option<CapabilityWorkerPermit> {
+        self.0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < MAX_PENDING_HOST_REQUESTS as usize).then_some(active + 1)
+            })
+            .ok()
+            .map(|_| CapabilityWorkerPermit(Arc::clone(&self.0)))
+    }
+
+    #[cfg(test)]
+    fn active(&self) -> usize {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+struct CapabilityWorkerPermit(Arc<AtomicUsize>);
+
+impl Drop for CapabilityWorkerPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl HostResponseRouter {
+    fn register(
+        &self,
+        message_id: u64,
+    ) -> Result<Receiver<Result<Envelope, HostFailure>>, HostFailure> {
+        if message_id == 0 || self.failed.load(Ordering::Acquire) {
+            return Err(HostFailure::Transport);
+        }
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut pending = self.pending.lock().map_err(|_| HostFailure::Transport)?;
+        if pending.len() >= 32 || pending.insert(message_id, sender).is_some() {
+            return Err(HostFailure::Transport);
+        }
+        Ok(receiver)
+    }
+
+    fn complete(&self, envelope: Envelope) -> bool {
+        let Some(reply_to) = envelope.reply_to else {
+            return false;
+        };
+        let sender = self
+            .pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(&reply_to));
+        if let Some(sender) = sender {
+            let _ = sender.send(Ok(envelope));
+            true
+        } else {
+            false
+        }
+    }
+
+    fn discard(&self, message_id: u64) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(&message_id);
+        }
+    }
+
+    fn fail_all(&self) {
+        self.failed.store(true, Ordering::Release);
+        let pending = self
+            .pending
+            .lock()
+            .map(|mut pending| std::mem::take(&mut *pending))
+            .unwrap_or_default();
+        for sender in pending.into_values() {
+            let _ = sender.send(Err(HostFailure::Transport));
+        }
+    }
 }
 
 #[derive(Default)]
@@ -428,6 +578,7 @@ impl HostExitMonitor {
             let Some(mut process) = processes.running.remove(&instance_id) else {
                 continue;
             };
+            process.gateway.revoke();
             if requires_termination {
                 terminate_child(&mut process.child);
             }
@@ -464,17 +615,58 @@ pub struct SidecarHostLauncher<R, S, P> {
     persistence: P,
     processes: Arc<Mutex<HostProcesses>>,
     next_instance_id: AtomicU64,
-    /// Sidecar-initiated pushes (proposals, session queries) stream here.
-    /// Shared with every host reader thread so a sink attached after
-    /// construction is honored by already-running readers.
-    push_sink: Arc<Mutex<Option<Arc<dyn bbcom_plugin_manager::HostPushSink>>>>,
-    /// Outbound push request ids live in a dedicated high range so they can
-    /// never collide with request/response ids.
-    push_request_id: AtomicU64,
+    authorization: Arc<dyn PluginAuthorizationGate>,
+    gateway: Arc<dyn PluginCapabilityGateway>,
+    host_context: Arc<dyn PluginHostContextProviderV2>,
+    project_state: Arc<dyn PluginProjectStateProviderV2>,
 }
 
-/// First id of the outbound push range.
-const PUSH_REQUEST_ID_BASE: u64 = 1 << 63;
+struct RejectAuthorization;
+impl PluginAuthorizationGate for RejectAuthorization {
+    fn authorize(&self, _request: &AuthorizationRequest) -> bool {
+        false
+    }
+}
+
+struct RejectCapabilityGateway;
+impl PluginCapabilityGateway for RejectCapabilityGateway {
+    fn invoke(
+        &self,
+        _context: &GatewayContext,
+        _message_id: u64,
+        _operation: request::Operation,
+    ) -> std::result::Result<response::Result, GatewayFailure> {
+        Err(GatewayFailure::permission_denied())
+    }
+    fn cancel(
+        &self,
+        _context: &GatewayContext,
+        _target_message_id: u64,
+    ) -> std::result::Result<(), GatewayFailure> {
+        Ok(())
+    }
+    fn revoke_runtime(&self, _context: &GatewayContext) {}
+}
+
+struct RejectHostContext;
+
+impl PluginHostContextProviderV2 for RejectHostContext {
+    fn context_for_workspace(&self, _: &str) -> Result<PluginInitializationContextV2, HostFailure> {
+        Err(HostFailure::Initialization)
+    }
+}
+
+struct RejectProjectState;
+
+impl PluginProjectStateProviderV2 for RejectProjectState {
+    fn current_project_state(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<Option<PluginProjectStateSnapshotV2>, HostFailure> {
+        Err(HostFailure::Initialization)
+    }
+}
 
 impl<R, S, P> Drop for SidecarHostLauncher<R, S, P> {
     fn drop(&mut self) {
@@ -483,6 +675,7 @@ impl<R, S, P> Drop for SidecarHostLauncher<R, S, P> {
         };
         let running = std::mem::take(&mut processes.running);
         for (_, mut process) in running {
+            process.gateway.revoke();
             terminate_child(&mut process.child);
         }
     }
@@ -500,6 +693,32 @@ where
         resolver: R,
         sandbox: S,
         persistence: P,
+    ) -> Result<(Self, HostExitMonitor), HostLauncherBuildError> {
+        Self::new_with_v2_services(
+            sidecar_executable,
+            private_root,
+            resolver,
+            sandbox,
+            persistence,
+            PluginHostServicesV2::new(
+                Arc::new(RejectAuthorization),
+                Arc::new(RejectCapabilityGateway),
+                Arc::new(RejectHostContext),
+                Arc::new(RejectProjectState),
+            ),
+        )
+    }
+
+    /// Production v2 constructor. A launcher built with `new` is deliberately
+    /// deny-only and cannot instantiate plugins until native injects both the
+    /// durable grant gate and the application capability gateway.
+    pub fn new_with_v2_services(
+        sidecar_executable: impl AsRef<Path>,
+        private_root: PrivateArtifactRoot,
+        resolver: R,
+        sandbox: S,
+        persistence: P,
+        services: PluginHostServicesV2,
     ) -> Result<(Self, HostExitMonitor), HostLauncherBuildError> {
         let sidecar_executable = sidecar_executable.as_ref();
         let metadata = fs::symlink_metadata(sidecar_executable)
@@ -524,9 +743,6 @@ where
         let monitor = HostExitMonitor {
             processes: Arc::clone(&processes),
         };
-        let push_sink = Arc::new(Mutex::new(
-            None::<Arc<dyn bbcom_plugin_manager::HostPushSink>>,
-        ));
         Ok((
             Self {
                 sidecar_executable: sidecar_executable.to_path_buf(),
@@ -536,8 +752,10 @@ where
                 persistence,
                 processes,
                 next_instance_id: AtomicU64::new(1),
-                push_sink,
-                push_request_id: AtomicU64::new(PUSH_REQUEST_ID_BASE),
+                authorization: services.authorization,
+                gateway: services.gateway,
+                host_context: services.host_context,
+                project_state: services.project_state,
             },
             monitor,
         ))
@@ -549,146 +767,235 @@ where
 
     fn process_request(
         process: &mut HostProcess,
-        payload: envelope::Payload,
+        operation: request::Operation,
         timeout: Duration,
     ) -> Result<Envelope, HostFailure> {
-        let request_id = process.next_request_id;
-        process.next_request_id = process
-            .next_request_id
-            .checked_add(1)
-            .ok_or(HostFailure::Transport)?;
+        let request_id = process
+            .gateway
+            .next_outbound_message_id()
+            .map_err(|_| HostFailure::Transport)?;
+        let response = process.responses.register(request_id)?;
         let envelope = Envelope {
             protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
-            request_id,
-            payload: Some(payload),
+            protocol_minor: MAX_PROTOCOL_MINOR,
+            message_id: request_id,
+            reply_to: None,
+            payload: Some(envelope::Payload::Request(Request {
+                operation: Some(operation),
+            })),
         };
-        write_host_envelope(&process.stdin, &envelope)?;
-        let response = receive_response(&process.responses, timeout)?;
-        if response.request_id != request_id {
+        if let Err(error) = write_host_envelope(&process.stdin, &envelope) {
+            process.responses.discard(request_id);
+            return Err(error);
+        }
+        let response = receive_response(&response, timeout)?;
+        if response.reply_to != Some(request_id) {
             return Err(HostFailure::Transport);
         }
         Ok(response)
     }
 
-    fn upload_state(
+    fn start_command(
         process: &mut HostProcess,
-        kind: OpaqueStateKind,
-        bytes: &[u8],
+        request: wire::RunCommandRequest,
     ) -> Result<(), HostFailure> {
-        let mut offset = 0usize;
-        loop {
-            let end = offset
-                .saturating_add(MAX_PLUGIN_STATE_CHUNK_BYTES)
-                .min(bytes.len());
-            let final_chunk = end == bytes.len();
-            let response = Self::process_request(
-                process,
-                envelope::Payload::PutStateChunkRequest(PutStateChunkRequest {
-                    state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-                    kind: kind as i32,
-                    total_bytes: bytes.len() as u64,
-                    offset: offset as u64,
-                    payload: bytes[offset..end].to_vec(),
-                    final_chunk,
-                }),
-                REQUEST_TIMEOUT,
-            )?;
-            let accepted = match response.payload {
-                Some(envelope::Payload::PutStateChunkResponse(response))
-                    if response.kind == kind as i32 =>
-                {
-                    response.accepted_bytes as usize
-                }
-                _ => return Err(HostFailure::Initialization),
-            };
-            if accepted != end {
-                return Err(HostFailure::Initialization);
-            }
-            offset = end;
-            if final_chunk {
-                return Ok(());
-            }
+        let invocation = request.invocation.as_ref().ok_or(HostFailure::Transport)?;
+        if invocation.invocation_id.is_empty() || invocation.invocation_id.len() > 128 {
+            return Err(HostFailure::Transport);
         }
-    }
-
-    fn download_state(
-        process: &mut HostProcess,
-        descriptor: &StateSnapshotDescriptor,
-    ) -> Result<PluginPersistedState, HostFailure> {
-        if descriptor.state_schema_version != PLUGIN_STATE_SCHEMA_VERSION
-            || descriptor.revision == 0
-            || descriptor.plugin_storage_bytes as usize > MAX_PLUGIN_PERSISTED_STATE_BYTES
-            || descriptor.project_state_bytes as usize > MAX_PLUGIN_PERSISTED_STATE_BYTES
-            || (!descriptor.has_project_state && descriptor.project_state_bytes != 0)
+        let task_id = invocation.invocation_id.clone();
+        let request_id = process
+            .gateway
+            .next_outbound_message_id()
+            .map_err(|_| HostFailure::Transport)?;
+        let response = process.responses.register(request_id)?;
         {
-            return Err(HostFailure::Initialization);
+            let mut tasks = process.tasks.lock().map_err(|_| HostFailure::Transport)?;
+            if !tasks.is_empty() || tasks.insert(task_id.clone(), request_id).is_some() {
+                process.responses.discard(request_id);
+                return Err(HostFailure::Transport);
+            }
         }
-        let plugin_storage = Self::download_state_kind(
-            process,
-            descriptor,
-            OpaqueStateKind::PluginStorage,
-            descriptor.plugin_storage_bytes as usize,
-        )?;
-        let project_state = if descriptor.has_project_state {
-            Some(Self::download_state_kind(
-                process,
-                descriptor,
-                OpaqueStateKind::ProjectState,
-                descriptor.project_state_bytes as usize,
-            )?)
-        } else {
-            None
+        let envelope = Envelope {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: MAX_PROTOCOL_MINOR,
+            message_id: request_id,
+            reply_to: None,
+            payload: Some(envelope::Payload::Request(Request {
+                operation: Some(request::Operation::RunCommand(request)),
+            })),
         };
-        let state = PluginPersistedState {
-            plugin_storage,
-            project_state,
-        };
-        state.validate()?;
-        Ok(state)
+        if let Err(error) = write_host_envelope(&process.stdin, &envelope) {
+            process.responses.discard(request_id);
+            process
+                .tasks
+                .lock()
+                .map_err(|_| HostFailure::Transport)?
+                .remove(&task_id);
+            return Err(error);
+        }
+        let tasks = Arc::clone(&process.tasks);
+        let gateway = Arc::clone(&process.gateway);
+        let responses = process.responses.clone();
+        let stdin = Arc::clone(&process.stdin);
+        let completion_task_id = task_id.clone();
+        let completion_gateway = Arc::clone(&gateway);
+        let spawned = thread::Builder::new()
+            .name(format!("plugin-task-{task_id}"))
+            .spawn(move || {
+                let (terminal, timed_out) =
+                    match response.recv_timeout(Duration::from_millis(LONG_TASK_TIMEOUT_MS)) {
+                        Ok(Ok(envelope)) => match envelope.payload {
+                            Some(envelope::Payload::Response(wire::Response {
+                                result: Some(response::Result::RunCommand(_)),
+                            })) => (TaskTerminal::Completed, false),
+                            Some(envelope::Payload::Error(error))
+                                if error.code == wire::ErrorCode::Cancelled as i32 =>
+                            {
+                                (TaskTerminal::Cancelled, false)
+                            }
+                            Some(envelope::Payload::Error(error))
+                                if error.code == wire::ErrorCode::UnknownOutcome as i32 =>
+                            {
+                                (TaskTerminal::UnknownOutcome, false)
+                            }
+                            Some(envelope::Payload::Error(error)) => (
+                                TaskTerminal::Failed(
+                                    wire::ErrorCode::try_from(error.code)
+                                        .unwrap_or(wire::ErrorCode::ProtocolError),
+                                ),
+                                false,
+                            ),
+                            _ => (TaskTerminal::Failed(wire::ErrorCode::ProtocolError), false),
+                        },
+                        Ok(Err(_)) => (TaskTerminal::Failed(wire::ErrorCode::IoError), false),
+                        Err(RecvTimeoutError::Timeout) => (TaskTerminal::UnknownOutcome, true),
+                        Err(RecvTimeoutError::Disconnected) => {
+                            (TaskTerminal::Failed(wire::ErrorCode::IoError), false)
+                        }
+                    };
+                responses.discard(request_id);
+                if timed_out
+                    && let Ok(cancel) = gateway.cancel_envelope(request_id, "task-timeout")
+                    && responses.register(cancel.message_id).is_ok()
+                    && write_host_envelope(&stdin, &cancel).is_err()
+                {
+                    responses.discard(cancel.message_id);
+                }
+                if let Ok(mut tasks) = tasks.lock()
+                    && tasks.get(&completion_task_id) == Some(&request_id)
+                {
+                    tasks.remove(&completion_task_id);
+                }
+                completion_gateway.complete_task(&completion_task_id, terminal);
+            });
+        if spawned.is_err() {
+            process.responses.discard(request_id);
+            if let Ok(mut tasks) = process.tasks.lock() {
+                tasks.remove(&task_id);
+            }
+            if let Ok(cancel) = process
+                .gateway
+                .cancel_envelope(request_id, "task-worker-failed")
+            {
+                let _acknowledgement = process.responses.register(cancel.message_id);
+                if write_host_envelope(&process.stdin, &cancel).is_err() {
+                    process.responses.discard(cancel.message_id);
+                }
+            }
+            process
+                .gateway
+                .complete_task(&task_id, TaskTerminal::UnknownOutcome);
+            return Err(HostFailure::Launch);
+        }
+        Ok(())
     }
 
-    fn download_state_kind(
-        process: &mut HostProcess,
-        descriptor: &StateSnapshotDescriptor,
-        kind: OpaqueStateKind,
-        total_bytes: usize,
-    ) -> Result<Vec<u8>, HostFailure> {
-        let mut bytes = Vec::with_capacity(total_bytes.min(MAX_PLUGIN_STATE_CHUNK_BYTES));
-        loop {
-            let response = Self::process_request(
-                process,
-                envelope::Payload::GetStateChunkRequest(GetStateChunkRequest {
-                    state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-                    revision: descriptor.revision,
-                    kind: kind as i32,
-                    offset: bytes.len() as u64,
-                    max_bytes: MAX_PLUGIN_STATE_CHUNK_BYTES as u32,
-                }),
-                REQUEST_TIMEOUT,
-            )?;
-            let chunk = match response.payload {
-                Some(envelope::Payload::GetStateChunkResponse(response))
-                    if response.state_schema_version == PLUGIN_STATE_SCHEMA_VERSION
-                        && response.revision == descriptor.revision
-                        && response.kind == kind as i32
-                        && response.offset as usize == bytes.len()
-                        && response.total_bytes as usize == total_bytes =>
+    fn cancel_active_task(process: &mut HostProcess, task_id: &str) -> Result<bool, HostFailure> {
+        let target_message_id = process
+            .tasks
+            .lock()
+            .map_err(|_| HostFailure::Transport)?
+            .get(task_id)
+            .copied();
+        let Some(target_message_id) = target_message_id else {
+            return Ok(false);
+        };
+        let envelope = process
+            .gateway
+            .cancel_envelope(target_message_id, "user-task-cancelled")
+            .map_err(|_| HostFailure::Transport)?;
+        let _acknowledgement = process.responses.register(envelope.message_id)?;
+        if let Err(error) = write_host_envelope(&process.stdin, &envelope) {
+            process.responses.discard(envelope.message_id);
+            return Err(error);
+        }
+        Ok(true)
+    }
+}
+
+fn dispatch_sidecar_gateway_envelope(
+    gateway: &Arc<GatewaySession<dyn PluginCapabilityGateway>>,
+    stdin: &SharedHostStdin,
+    responses: &HostResponseRouter,
+    workers: &CapabilityWorkerRegistry,
+    envelope: Envelope,
+) -> Result<(), HostFailure> {
+    match gateway
+        .begin(envelope)
+        .map_err(|_| HostFailure::Transport)?
+    {
+        GatewayDispatch::Immediate(Some(reply)) => write_host_envelope(stdin, &reply),
+        GatewayDispatch::Immediate(None) => Ok(()),
+        GatewayDispatch::Request(request) => {
+            let Some(permit) = workers.try_acquire() else {
+                if let Some(reply) = gateway
+                    .abort(
+                        request,
+                        GatewayFailure::new(
+                            wire::ErrorCode::LimitExceeded,
+                            "plugin.error.limitExceeded",
+                        ),
+                    )
+                    .map_err(|_| HostFailure::Transport)?
                 {
-                    response.payload
+                    write_host_envelope(stdin, &reply)?;
                 }
-                _ => return Err(HostFailure::Initialization),
+                return Ok(());
             };
-            if chunk.len() > MAX_PLUGIN_STATE_CHUNK_BYTES
-                || bytes.len().saturating_add(chunk.len()) > total_bytes
-                || (chunk.is_empty() && bytes.len() < total_bytes)
+            let worker_gateway = Arc::clone(gateway);
+            let worker_stdin = Arc::clone(stdin);
+            let worker_router = responses.clone();
+            let fallback = request.clone();
+            let spawn_failed = thread::Builder::new()
+                .name("plugin-capability-v2".to_owned())
+                .spawn(move || {
+                    let _permit = permit;
+                    match worker_gateway.finish(request) {
+                        Ok(Some(reply)) => {
+                            if write_host_envelope(&worker_stdin, &reply).is_err() {
+                                worker_router.fail_all();
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(_) => worker_router.fail_all(),
+                    }
+                })
+                .is_err();
+            if spawn_failed
+                && let Some(reply) = gateway
+                    .abort(
+                        fallback,
+                        GatewayFailure::new(
+                            wire::ErrorCode::Unavailable,
+                            "plugin.error.unavailable",
+                        ),
+                    )
+                    .map_err(|_| HostFailure::Transport)?
             {
-                return Err(HostFailure::Initialization);
+                write_host_envelope(stdin, &reply)?;
             }
-            bytes.extend_from_slice(&chunk);
-            if bytes.len() == total_bytes {
-                return Ok(bytes);
-            }
+            Ok(())
         }
     }
 }
@@ -700,37 +1007,44 @@ where
     P: PluginStatePersistencePort,
 {
     fn launch(&mut self, request: &HostLaunchRequest) -> Result<HostHandle, HostFailure> {
-        let state_key = PluginStatePersistenceKey {
-            plugin_id: request.artifact.plugin_id.clone(),
-            workspace_id: request.workspace_id.clone(),
-            artifact_slot: request.artifact_slot.clone(),
-            launch_mode: request.mode,
+        let project_state = self
+            .project_state
+            .current_project_state(&request.workspace_id, &request.artifact.plugin_id)?;
+        let (project_state, project_state_schema_version) = match project_state {
+            Some(state) if state.api_generation == 2 => (Some(state.value), state.schema_version),
+            Some(_) => return Err(HostFailure::Initialization),
+            None => (None, None),
         };
+        let state_key = private_state_load_key(request)?;
         let plugin_storage = self
             .persistence
             .load_plugin_storage(&state_key)
             .inspect_err(|error| {
                 tracing::warn!(?error, plugin_id = %request.artifact.plugin_id, "plugin storage load failed before host launch");
             })?
-            .unwrap_or_else(empty_plugin_storage_payload);
+            .unwrap_or_default();
         let initial_state = PluginPersistedState {
             plugin_storage,
-            project_state: request.project_state.clone(),
+            project_state,
         };
         initial_state.validate()?;
+        let valid_project_state = match (
+            initial_state.project_state.is_some(),
+            project_state_schema_version,
+        ) {
+            (false, None) => true,
+            (true, Some(schema_version)) => schema_version != 0,
+            _ => false,
+        };
+        if !valid_project_state {
+            return Err(HostFailure::Initialization);
+        }
         if self
             .persistence
             .workspace_total_bytes(&request.workspace_id)?
             > MAX_WORKSPACE_PLUGIN_PERSISTED_STATE_BYTES
         {
             return Err(HostFailure::Initialization);
-        }
-        if request
-            .granted_permissions
-            .iter()
-            .any(|permission| permission.as_str().starts_with("network."))
-        {
-            return Err(HostFailure::SandboxUnavailable);
         }
         let resolved = self
             .resolver
@@ -748,6 +1062,70 @@ where
             .inspect_err(|error| {
                 tracing::warn!(?error, plugin_id = %request.artifact.plugin_id, package_root = %resolved.package_root().display(), "plugin package validation failed before host launch");
             })?;
+        let manifest_text = fs::read_to_string(package_root.join("plugin.toml"))
+            .map_err(|_| HostFailure::Launch)?;
+        let artifact = TrustedPluginArtifact::load(&package_root, &manifest_text)
+            .map_err(|_| HostFailure::Launch)?;
+        if artifact.manifest.id != request.artifact.plugin_id
+            || artifact.manifest.version != request.artifact.version
+            || artifact.manifest.component.sha256 != request.artifact.component_sha256
+        {
+            return Err(HostFailure::Launch);
+        }
+        let granted = artifact
+            .manifest
+            .v2_capabilities()
+            .map_err(|_| HostFailure::Initialization)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if granted != request.requested_capabilities {
+            return Err(HostFailure::Initialization);
+        }
+        let instance_id = self.next_instance_id.fetch_add(1, Ordering::Relaxed);
+        if instance_id == 0 {
+            return Err(HostFailure::Launch);
+        }
+        let runtime_instance_id = instance_id.to_string();
+        let launch_context = PluginLaunchContext {
+            package_sha256: request.artifact.package_sha256.clone(),
+            workspace_id: request.workspace_id.clone(),
+            instance_id: runtime_instance_id.clone(),
+            generation: instance_id,
+        };
+        let authorization =
+            authorization_request(&artifact, &launch_context, granted.iter().copied());
+        if !self.authorization.authorize(&authorization) {
+            return Err(HostFailure::Initialization);
+        }
+        let launch_ticket = authorization_ticket(&authorization);
+        let gateway_context = GatewayContext {
+            workspace_id: request.workspace_id.clone(),
+            plugin_id: request.artifact.plugin_id.clone(),
+            instance_id: runtime_instance_id.clone(),
+            generation: instance_id,
+            granted_capabilities: granted.clone(),
+        };
+        let storage_scope = match (&request.artifact_slot, request.mode) {
+            (ArtifactSlot::Active, HostLaunchMode::Active) => "active".to_owned(),
+            (ArtifactSlot::Prepared(token), HostLaunchMode::UpdatePreflight) => {
+                format!("prepared:{}", token.as_str())
+            }
+            _ => return Err(HostFailure::Initialization),
+        };
+        self.gateway
+            .register_runtime(
+                &gateway_context,
+                RuntimeBootstrapState {
+                    plugin_storage: initial_state.plugin_storage.clone(),
+                    project_state: initial_state.project_state.clone(),
+                    project_state_schema_version,
+                    storage_scope,
+                },
+            )
+            .map_err(|_| HostFailure::Initialization)?;
+        let gateway: Arc<GatewaySession<dyn PluginCapabilityGateway>> = Arc::new(
+            GatewaySession::new(gateway_context, Arc::clone(&self.gateway)),
+        );
         let mut arguments = vec![
             OsString::from("--package-root"),
             package_root.as_os_str().to_owned(),
@@ -755,13 +1133,25 @@ where
             OsString::from(self.sandbox.platform_argument()),
             OsString::from("--memory-limit-bytes"),
             OsString::from(HOST_PROCESS_MEMORY_LIMIT_BYTES.to_string()),
-            OsString::from("--sandbox-no-children"),
-            OsString::from("--sandbox-no-network"),
-            OsString::from("--sandbox-private-fs"),
+            OsString::from("--blocks-child-processes"),
+            OsString::from("--blocks-network"),
+            OsString::from("--restricts-filesystem"),
+            OsString::from("--package-sha256"),
+            OsString::from(&request.artifact.package_sha256),
+            OsString::from("--workspace-id"),
+            OsString::from(&request.workspace_id),
+            OsString::from("--instance-id"),
+            OsString::from(&runtime_instance_id),
+            OsString::from("--generation"),
+            OsString::from(instance_id.to_string()),
+            OsString::from("--authorization-ticket"),
+            OsString::from(launch_ticket),
         ];
-        for permission in &request.granted_permissions {
+        for capability in &granted {
             arguments.push(OsString::from("--grant"));
-            arguments.push(OsString::from(permission.as_str()));
+            arguments.push(OsString::from(bbcom_plugin_contracts::v2_capability_name(
+                *capability,
+            )));
         }
         let launch = SandboxLaunch {
             sidecar_executable: &self.sidecar_executable,
@@ -786,49 +1176,52 @@ where
         };
         let stdin: SharedHostStdin = Arc::new(Mutex::new(stdin));
         let push_stdin = Arc::clone(&stdin);
-        let (sender, responses) = mpsc::sync_channel(32);
-        let sink_cell = Arc::clone(&self.push_sink);
+        let responses = HostResponseRouter::default();
+        let response_router = responses.clone();
+        let gateway_reader = Arc::clone(&gateway);
+        let capability_workers = CapabilityWorkerRegistry::default();
         if thread::Builder::new()
             .name(format!("plugin-host-{}", request.artifact.plugin_id))
             .spawn(move || {
                 let mut reader = FrameReader::new(stdout);
                 loop {
                     let response = reader.read_envelope().map_err(|_| HostFailure::Transport);
-                    // Sidecar pushes bypass request/response matching: the
-                    // guest call is parked inside the sidecar waiting for the
-                    // pipeline, not for this reader's correlation. Sinks must
-                    // only enqueue (never block) — this is the plugin's sole
-                    // response pump.
                     if let Ok(Some(envelope)) = &response
-                        && let Some(sink) = sink_cell.lock().ok().and_then(|guard| guard.clone())
+                        && matches!(
+                            envelope.payload,
+                            Some(
+                                envelope::Payload::Request(_)
+                                    | envelope::Payload::Cancel(_)
+                                    | envelope::Payload::Stream(_)
+                            )
+                        )
                     {
-                        match envelope.payload.as_ref() {
-                            Some(envelope::Payload::SerialProposalEvent(event)) => {
-                                sink.serial_proposal(event.clone());
-                                continue;
-                            }
-                            Some(envelope::Payload::SessionQueryRequest(query)) => {
-                                let response = sink.session_query(query.clone());
-                                let reply = Envelope {
-                                    protocol_major: PROTOCOL_MAJOR,
-                                    protocol_minor: PROTOCOL_MINOR,
-                                    request_id: envelope.request_id,
-                                    payload: Some(envelope::Payload::SessionQueryResponse(
-                                        response,
-                                    )),
-                                };
-                                if write_host_envelope(&push_stdin, &reply).is_err() {
-                                    let _ = sender.send(Err(HostFailure::Transport));
-                                    return;
-                                }
-                                continue;
-                            }
-                            _ => {}
+                        if dispatch_sidecar_gateway_envelope(
+                            &gateway_reader,
+                            &push_stdin,
+                            &response_router,
+                            &capability_workers,
+                            envelope.clone(),
+                        )
+                        .is_err()
+                        {
+                            response_router.fail_all();
+                            return;
                         }
+                        continue;
                     }
-                    let terminal = !matches!(response, Ok(Some(_)));
-                    if sender.send(response).is_err() || terminal {
-                        return;
+                    match response {
+                        Ok(Some(envelope)) => {
+                            if response_router.complete(envelope) {
+                                continue;
+                            }
+                            response_router.fail_all();
+                            return;
+                        }
+                        Ok(None) | Err(_) => {
+                            response_router.fail_all();
+                            return;
+                        }
                     }
                 }
             })
@@ -843,44 +1236,59 @@ where
             child,
             stdin,
             responses,
-            next_request_id: 1,
-            state_key,
-            initial_state,
-            published_panel: None,
+            gateway,
+            tasks: Arc::new(Mutex::new(BTreeMap::new())),
         };
-        // The sidecar always provides panel rendering and private plugin
-        // storage. Its handshake expectation includes those two baseline
-        // capabilities even when a manifest only requests an optional host
-        // capability, so attest the complete effective set on the wire.
-        let granted_capabilities = handshake_capabilities(&request.granted_permissions);
-        let handshake = Self::process_request(
-            &mut process,
-            envelope::Payload::HostHello(HostHello {
-                wit_package: WIT_PACKAGE.to_owned(),
-                plugin_id: request.artifact.plugin_id.clone(),
-                plugin_version: request.artifact.version.clone(),
-                granted_capabilities,
-            }),
-            Duration::from_millis(HANDSHAKE_TIMEOUT_MS),
-        );
+        let handshake_id = process
+            .gateway
+            .next_outbound_message_id()
+            .map_err(|_| HostFailure::Handshake)?;
+        let hello = Envelope {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: MAX_PROTOCOL_MINOR,
+            message_id: handshake_id,
+            reply_to: None,
+            payload: Some(envelope::Payload::Handshake(Handshake {
+                hello: Some(handshake::Hello::Host(HostHello {
+                    protocol_major: PROTOCOL_MAJOR,
+                    min_minor: MIN_PROTOCOL_MINOR,
+                    max_minor: MAX_PROTOCOL_MINOR,
+                    wit_package: WIT_PACKAGE.to_owned(),
+                    plugin: Some(PluginIdentity {
+                        plugin_id: request.artifact.plugin_id.clone(),
+                        plugin_version: request.artifact.version.clone(),
+                        component_sha256: request.artifact.component_sha256.clone(),
+                    }),
+                    granted_capabilities: granted.iter().map(|value| *value as i32).collect(),
+                    limits: Some(default_resource_limits()),
+                    workspace_id: request.workspace_id.clone(),
+                    instance_id: runtime_instance_id,
+                    generation: instance_id,
+                })),
+            })),
+        };
+        let handshake = process
+            .responses
+            .register(handshake_id)
+            .and_then(|response| {
+                write_host_envelope(&process.stdin, &hello).and_then(|()| {
+                    receive_response(&response, Duration::from_millis(HANDSHAKE_TIMEOUT_MS))
+                })
+            });
         let handshake_valid = handshake.is_ok_and(|response| {
             matches!(
                 response.payload,
-                Some(envelope::Payload::PluginHello(hello))
-                    if hello.plugin_id == request.artifact.plugin_id
-                        && hello.plugin_version == request.artifact.version
+                Some(envelope::Payload::Handshake(Handshake { hello: Some(handshake::Hello::Plugin(hello)) }))
+                    if response.reply_to == Some(handshake_id)
+                        && hello.plugin.as_ref().is_some_and(|plugin| plugin.plugin_id == request.artifact.plugin_id && plugin.plugin_version == request.artifact.version && plugin.component_sha256 == request.artifact.component_sha256)
                         && hello.wit_package == WIT_PACKAGE
             )
         });
         if !handshake_valid {
             tracing::warn!(plugin_id = %request.artifact.plugin_id, "plugin host handshake failed");
+            process.gateway.revoke();
             terminate_child(&mut process.child);
             return Err(HostFailure::Handshake);
-        }
-        let instance_id = self.next_instance_id.fetch_add(1, Ordering::Relaxed);
-        if instance_id == 0 {
-            terminate_child(&mut process.child);
-            return Err(HostFailure::Launch);
         }
         let handle = HostHandle::new(
             instance_id,
@@ -890,6 +1298,7 @@ where
         let mut processes = match self.lock_processes() {
             Ok(processes) => processes,
             Err(error) => {
+                process.gateway.revoke();
                 terminate_child(&mut process.child);
                 return Err(error);
             }
@@ -899,10 +1308,12 @@ where
             .values()
             .any(|running| running.plugin_id == request.artifact.plugin_id)
         {
+            process.gateway.revoke();
             terminate_child(&mut process.child);
             return Err(HostFailure::Launch);
         }
         if processes.running.contains_key(&instance_id) {
+            process.gateway.revoke();
             terminate_child(&mut process.child);
             return Err(HostFailure::Launch);
         }
@@ -913,36 +1324,43 @@ where
     fn initialize(&mut self, handle: &HostHandle) -> Result<(), HostFailure> {
         let mut process = take_process(&self.processes, handle)?;
         let result = (|| {
-            let plugin_storage = process.initial_state.plugin_storage.clone();
-            let project_state = process.initial_state.project_state.clone();
-            Self::upload_state(
-                &mut process,
-                OpaqueStateKind::PluginStorage,
-                &plugin_storage,
-            )?;
-            if let Some(project_state) = project_state.as_ref() {
-                Self::upload_state(&mut process, OpaqueStateKind::ProjectState, project_state)?;
-            }
+            let context = process.gateway.context().clone();
+            let initialization = self
+                .host_context
+                .context_for_workspace(&context.workspace_id)?;
+            validate_initialization_context(&initialization)?;
             let response = Self::process_request(
                 &mut process,
-                envelope::Payload::InitializeRequest(InitializeRequest {
-                    state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-                    has_plugin_storage: true,
-                    has_project_state: project_state.is_some(),
+                request::Operation::Initialize(InitializeRequest {
+                    context: Some(HostContext {
+                        workspace_id: context.workspace_id.clone(),
+                        plugin_id: context.plugin_id.clone(),
+                        instance_id: context.instance_id.clone(),
+                        generation: context.generation,
+                        locale: initialization.locale,
+                        theme: initialization.theme as i32,
+                        granted_capabilities: context
+                            .granted_capabilities
+                            .iter()
+                            .map(|value| *value as i32)
+                            .collect(),
+                        limits: Some(default_resource_limits()),
+                        sessions: initialization.sessions,
+                    }),
                 }),
                 REQUEST_TIMEOUT,
             )?;
-            let descriptor = match response.payload {
-                Some(envelope::Payload::InitializeResponse(response)) => {
-                    process.published_panel = parse_panel_json(&response.panel_json)?;
-                    response.state.ok_or(HostFailure::Initialization)?
-                }
-                _ => return Err(HostFailure::Initialization),
+            let Some(envelope::Payload::Response(wire::Response {
+                result: Some(response::Result::Initialize(initialized)),
+            })) = response.payload
+            else {
+                return Err(HostFailure::Initialization);
             };
-            let state = Self::download_state(&mut process, &descriptor)?;
-            self.persistence.persist_state(&process.state_key, &state)?;
-            process.initial_state = state;
-            Ok(())
+            let model = initialized.model.ok_or(HostFailure::Initialization)?;
+            process
+                .gateway
+                .finalize_initial_model(&model)
+                .map_err(|_| HostFailure::Initialization)
         })();
         if let Err(error) = &result {
             tracing::warn!(?error, plugin_id = %handle.plugin_id, "plugin host initialization failed");
@@ -958,33 +1376,14 @@ where
         let result = (|| {
             let response = Self::process_request(
                 &mut process,
-                envelope::Payload::ShutdownRequest(ShutdownRequest {
-                    state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-                }),
-                REQUEST_TIMEOUT,
-            )?;
-            let descriptor = match response.payload {
-                Some(envelope::Payload::ShutdownResponse(response)) => {
-                    response.state.ok_or(HostFailure::Shutdown)?
-                }
-                _ => return Err(HostFailure::Shutdown),
-            };
-            let state = Self::download_state(&mut process, &descriptor)
-                .map_err(|_| HostFailure::Shutdown)?;
-            self.persistence
-                .persist_state(&process.state_key, &state)
-                .map_err(|_| HostFailure::Shutdown)?;
-            let completed = Self::process_request(
-                &mut process,
-                envelope::Payload::CompleteShutdownRequest(CompleteShutdownRequest {
-                    state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-                    revision: descriptor.revision,
-                }),
+                request::Operation::Shutdown(ShutdownRequest {}),
                 REQUEST_TIMEOUT,
             )?;
             if !matches!(
-                completed.payload,
-                Some(envelope::Payload::CompleteShutdownResponse(_))
+                response.payload,
+                Some(envelope::Payload::Response(wire::Response {
+                    result: Some(response::Result::Shutdown(_))
+                }))
             ) {
                 return Err(HostFailure::Shutdown);
             }
@@ -1000,7 +1399,10 @@ where
         })();
         match result {
             // Success keeps the old final state: removed from the table.
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                process.gateway.revoke();
+                Ok(())
+            }
             // Failure reinserts so the caller's terminate fallback (and the
             // exit monitor) can still find and kill the child.
             Err(error) => {
@@ -1010,51 +1412,12 @@ where
         }
     }
 
-    fn take_published_panel(
-        &mut self,
-        handle: &HostHandle,
-    ) -> Result<Option<HostPanel>, HostFailure> {
-        let mut processes = self.processes.lock().map_err(|_| HostFailure::Launch)?;
-        Ok(exact_process(&mut processes, handle)?
-            .published_panel
-            .take())
-    }
-
-    fn invoke_panel_event(
-        &mut self,
-        handle: &HostHandle,
-        field_id: &str,
-        value: &str,
-    ) -> Result<Option<HostPanel>, HostFailure> {
-        let mut processes = self.processes.lock().map_err(|_| HostFailure::Launch)?;
-        let process = exact_process(&mut processes, handle)?;
-        let body = serde_json::to_vec(&serde_json::json!({
-            "fieldId": field_id,
-            "value": value,
-        }))
-        .map_err(|_| HostFailure::Transport)?;
-        let response = Self::process_request(
-            process,
-            envelope::Payload::InvokeRequest(InvokeRequest {
-                method: "panel-event".to_owned(),
-                body,
-                long_running: false,
-            }),
-            REQUEST_TIMEOUT,
-        )?;
-        let panel = match response.payload {
-            Some(envelope::Payload::InvokeResponse(response)) => parse_panel_json(&response.body)?,
-            _ => return Err(HostFailure::Transport),
-        };
-        process.published_panel = panel.clone();
-        Ok(panel)
-    }
-
     fn terminate(&mut self, handle: &HostHandle) {
         let Ok(mut processes) = self.processes.lock() else {
             return;
         };
         if let Some(mut process) = processes.running.remove(&handle.instance_id) {
+            process.gateway.revoke();
             terminate_child(&mut process.child);
         }
     }
@@ -1062,29 +1425,70 @@ where
     fn deliver_envelope(
         &mut self,
         handle: &HostHandle,
-        payload: envelope::Payload,
+        payload: bbcom_plugin_contracts::generated_v2::envelope::Payload,
     ) -> Result<(), HostFailure> {
-        let request_id = self.push_request_id.fetch_add(1, Ordering::Relaxed);
-        let frame = encode_frame(&Envelope {
-            protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
-            request_id,
-            payload: Some(payload),
-        })
-        .map_err(|_| HostFailure::Transport)?;
         let mut processes = self.lock_processes()?;
-        let process = exact_process(&mut processes, handle)?;
-        let mut stdin = process.stdin.lock().map_err(|_| HostFailure::Transport)?;
-        stdin
-            .write_all(&frame)
-            .and_then(|()| stdin.flush())
-            .map_err(|_| HostFailure::Transport)
-    }
-
-    fn attach_push_sink(&mut self, sink: std::sync::Arc<dyn bbcom_plugin_manager::HostPushSink>) {
-        if let Ok(mut current) = self.push_sink.lock() {
-            *current = Some(sink);
-        }
+        let process = processes
+            .running
+            .get_mut(&handle.instance_id)
+            .filter(|process| {
+                process.plugin_id == handle.plugin_id && process.version == handle.version
+            })
+            .ok_or(HostFailure::Transport)?;
+        let payload = match payload {
+            envelope::Payload::Request(request) => {
+                let operation = request.operation.ok_or(HostFailure::Transport)?;
+                match operation {
+                    request::Operation::RunCommand(request) => {
+                        return Self::start_command(process, request);
+                    }
+                    request::Operation::HandleEvent(request) => {
+                        if let Some(wire::plugin_event::Item::CancelTask(cancel)) =
+                            request.event.as_ref().and_then(|event| event.item.as_ref())
+                            && Self::cancel_active_task(process, &cancel.task_id)?
+                        {
+                            return Ok(());
+                        }
+                        let response = Self::process_request(
+                            process,
+                            request::Operation::HandleEvent(request),
+                            REQUEST_TIMEOUT,
+                        )?;
+                        return matches!(
+                            response.payload,
+                            Some(envelope::Payload::Response(wire::Response {
+                                result: Some(response::Result::HandleEvent(_))
+                            }))
+                        )
+                        .then_some(())
+                        .ok_or(HostFailure::Transport);
+                    }
+                    _ => return Err(HostFailure::Transport),
+                }
+            }
+            payload => payload,
+        };
+        let envelope = match payload {
+            envelope::Payload::Event(event) => process
+                .gateway
+                .event_envelope(event.item.ok_or(HostFailure::Transport)?)
+                .map_err(|_| HostFailure::Transport)?,
+            envelope::Payload::Cancel(cancel) => process
+                .gateway
+                .cancel_envelope(cancel.target_message_id, cancel.reason)
+                .map_err(|_| HostFailure::Transport)?,
+            envelope::Payload::Stream(stream) => process
+                .gateway
+                .stream_envelope(stream)
+                .map_err(|_| HostFailure::Transport)?,
+            // Host requests require a correlated result and therefore use the
+            // typed command/task API rather than this fire-and-forget port.
+            envelope::Payload::Handshake(_)
+            | envelope::Payload::Request(_)
+            | envelope::Payload::Response(_)
+            | envelope::Payload::Error(_) => return Err(HostFailure::Transport),
+        };
+        write_host_envelope(&process.stdin, &envelope)
     }
 }
 
@@ -1095,51 +1499,50 @@ fn write_host_envelope(stdin: &SharedHostStdin, envelope: &Envelope) -> Result<(
         .map_err(|_| HostFailure::Transport)
 }
 
+fn validate_initialization_context(
+    context: &PluginInitializationContextV2,
+) -> Result<(), HostFailure> {
+    if !matches!(context.locale.as_str(), "en-US" | "zh-CN")
+        || context.theme == wire::ColorScheme::Unspecified
+        || context.sessions.len() > 1_024
+    {
+        return Err(HostFailure::Initialization);
+    }
+    let mut session_ids = BTreeSet::new();
+    for session in &context.sessions {
+        let mut bytes = session.session_id.bytes();
+        if session.session_id.is_empty()
+            || session.session_id.len() > 128
+            || !bytes
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            || !bytes.all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+            })
+            || !session_ids.insert(session.session_id.as_str())
+            || session.name.is_empty()
+            || session.name.len() > 1_024
+            || session.name.chars().any(char::is_control)
+            || session.rx_bytes > MAX_SAFE_INTEGER
+            || session.tx_bytes > MAX_SAFE_INTEGER
+            || session.generation > MAX_SAFE_INTEGER
+            || (session.connected && session.generation == 0)
+        {
+            return Err(HostFailure::Initialization);
+        }
+    }
+    Ok(())
+}
+
 fn receive_response(
-    responses: &Receiver<Result<Option<Envelope>, HostFailure>>,
+    responses: &Receiver<Result<Envelope, HostFailure>>,
     timeout: Duration,
 ) -> Result<Envelope, HostFailure> {
     match responses.recv_timeout(timeout) {
-        Ok(Ok(Some(envelope))) => Ok(envelope),
-        Ok(Ok(None)) | Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
-            Err(HostFailure::Transport)
-        }
+        Ok(Ok(envelope)) => Ok(envelope),
+        Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => Err(HostFailure::Transport),
         Err(RecvTimeoutError::Timeout) => Err(HostFailure::Transport),
     }
-}
-
-fn parse_panel_json(bytes: &[u8]) -> Result<Option<HostPanel>, HostFailure> {
-    if bytes.is_empty() || bytes == b"null" {
-        return Ok(None);
-    }
-    let panel: HostPanelJson =
-        serde_json::from_slice(bytes).map_err(|_| HostFailure::Initialization)?;
-    let fields = panel
-        .fields
-        .into_iter()
-        .map(|field| {
-            let kind = match field.kind.as_str() {
-                "text" => HostPanelFieldKind::Text,
-                "number" => HostPanelFieldKind::Number,
-                "toggle" => HostPanelFieldKind::Toggle,
-                "select" => HostPanelFieldKind::Select,
-                "button" => HostPanelFieldKind::Button,
-                _ => return Err(HostFailure::Initialization),
-            };
-            Ok(HostPanelField {
-                id: field.id,
-                label: field.label,
-                kind,
-                value: field.value,
-                options: field.options,
-                disabled: field.disabled,
-            })
-        })
-        .collect::<Result<Vec<_>, HostFailure>>()?;
-    Ok(Some(HostPanel {
-        title: panel.title,
-        fields,
-    }))
 }
 
 /// Remove a process from the shared table so long request sequences (chunked
@@ -1172,26 +1575,80 @@ fn reinsert_process(processes: &Arc<Mutex<HostProcesses>>, instance_id: u64, pro
     }
 }
 
-fn exact_process<'a>(
-    processes: &'a mut HostProcesses,
-    handle: &HostHandle,
-) -> Result<&'a mut HostProcess, HostFailure> {
-    processes
-        .running
-        .get_mut(&handle.instance_id)
-        .filter(|process| {
-            process.plugin_id == handle.plugin_id && process.version == handle.version
-        })
-        .ok_or(HostFailure::Transport)
-}
-
 fn terminate_child(child: &mut SandboxedChild) {
     child.terminate_and_wait();
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Condvar;
+
     use super::*;
+
+    #[derive(Default)]
+    struct ReaderBlockingGateway {
+        invoked: (Mutex<bool>, Condvar),
+        release: (Mutex<bool>, Condvar),
+        discarded: AtomicUsize,
+        revoked: AtomicUsize,
+    }
+
+    impl PluginCapabilityGateway for ReaderBlockingGateway {
+        fn invoke(
+            &self,
+            _: &GatewayContext,
+            _: u64,
+            operation: request::Operation,
+        ) -> Result<response::Result, GatewayFailure> {
+            if !matches!(operation, request::Operation::ListPorts(_)) {
+                return Err(GatewayFailure::new(
+                    wire::ErrorCode::ProtocolError,
+                    "plugin.error.protocolInvalid",
+                ));
+            }
+            *self.invoked.0.lock().unwrap() = true;
+            self.invoked.1.notify_all();
+            let mut release = self.release.0.lock().unwrap();
+            while !*release {
+                release = self.release.1.wait(release).unwrap();
+            }
+            Ok(response::Result::ListPorts(wire::ListPortsResponse {
+                ports: Vec::new(),
+            }))
+        }
+
+        fn cancel(&self, _: &GatewayContext, _: u64) -> Result<(), GatewayFailure> {
+            *self.release.0.lock().unwrap() = true;
+            self.release.1.notify_all();
+            Ok(())
+        }
+
+        fn discard_cancelled_result(
+            &self,
+            _: &GatewayContext,
+            _: &request::Operation,
+            _: &response::Result,
+        ) {
+            self.discarded.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn revoke_runtime(&self, _: &GatewayContext) {
+            self.revoked.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct RecordingWrite(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for RecordingWrite {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[derive(Clone, Default)]
     struct MemoryPersistence;
@@ -1263,26 +1720,146 @@ mod tests {
     }
 
     #[test]
-    fn handshake_attests_baseline_and_manifest_capabilities() {
-        let granted = BTreeSet::from([Permission::SessionMetadataRead]);
-        assert_eq!(
-            handshake_capabilities(&granted),
-            vec![
-                "ui.panel".to_owned(),
-                "plugin.storage".to_owned(),
-                "session.metadata.read".to_owned(),
-            ]
-        );
-
-        let explicit_baseline = BTreeSet::from([
-            Permission::UiPanel,
-            Permission::PluginStorage,
-            Permission::SessionMetadataRead,
+    fn v2_handshake_uses_the_exact_sorted_manifest_capability_set() {
+        let granted = BTreeSet::from([
+            wire::Capability::PluginStorage,
+            wire::Capability::SerialIo,
+            wire::Capability::UiWorkspace,
         ]);
         assert_eq!(
-            handshake_capabilities(&explicit_baseline),
-            handshake_capabilities(&granted)
+            granted
+                .into_iter()
+                .map(bbcom_plugin_contracts::v2_capability_name)
+                .collect::<Vec<_>>(),
+            vec!["ui.workspace", "serial.io", "plugin.storage"]
         );
+    }
+
+    #[test]
+    fn update_preflight_reads_active_private_bytes_without_a_prepared_state_key() {
+        struct ActivePrivateState;
+
+        impl PluginStatePersistencePort for ActivePrivateState {
+            fn load_plugin_storage(
+                &mut self,
+                key: &PluginStatePersistenceKey,
+            ) -> Result<Option<Vec<u8>>, HostFailure> {
+                assert_eq!(key.artifact_slot, ArtifactSlot::Active);
+                assert_eq!(key.launch_mode, HostLaunchMode::Active);
+                Ok(Some(b"active-private".to_vec()))
+            }
+
+            fn workspace_total_bytes(&mut self, _: &str) -> Result<usize, HostFailure> {
+                Ok(b"active-private".len())
+            }
+
+            fn persist_state(
+                &mut self,
+                _: &PluginStatePersistenceKey,
+                _: &PluginPersistedState,
+            ) -> Result<(), HostFailure> {
+                panic!("preflight loading must not persist private state")
+            }
+        }
+
+        let artifact = bbcom_plugin_manager::PluginArtifact::new(
+            "dev.bbcom.fixture",
+            "2.0.0",
+            "a".repeat(64),
+            "b".repeat(64),
+            bbcom_plugin_manager::PluginArtifactSource {
+                source_id: "official".to_owned(),
+                kind: bbcom_plugin_manager::PluginSourceKind::Https,
+            },
+            [],
+        )
+        .unwrap();
+        let request = HostLaunchRequest {
+            artifact,
+            artifact_slot: ArtifactSlot::Prepared(
+                bbcom_plugin_manager::PreparationToken::new("upgrade-1").unwrap(),
+            ),
+            workspace_id: "workspace-1".to_owned(),
+            requested_capabilities: BTreeSet::new(),
+            mode: HostLaunchMode::UpdatePreflight,
+        };
+        let key = private_state_load_key(&request).unwrap();
+        let loaded = ActivePrivateState
+            .load_plugin_storage(&key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, b"active-private");
+    }
+
+    #[test]
+    fn reader_dispatches_cancel_while_capability_worker_blocks_and_writes_no_late_reply() {
+        let concrete = Arc::new(ReaderBlockingGateway::default());
+        let erased: Arc<dyn PluginCapabilityGateway> = concrete.clone();
+        let session: Arc<GatewaySession<dyn PluginCapabilityGateway>> =
+            Arc::new(GatewaySession::new(
+                GatewayContext {
+                    workspace_id: "workspace-1".to_owned(),
+                    plugin_id: "dev.bbcom.reader".to_owned(),
+                    instance_id: "1".to_owned(),
+                    generation: 1,
+                    granted_capabilities: BTreeSet::from([wire::Capability::SerialPortsRead]),
+                },
+                erased,
+            ));
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let stdin: SharedHostStdin =
+            Arc::new(Mutex::new(Box::new(RecordingWrite(Arc::clone(&bytes)))));
+        let responses = HostResponseRouter::default();
+        let workers = CapabilityWorkerRegistry::default();
+        dispatch_sidecar_gateway_envelope(
+            &session,
+            &stdin,
+            &responses,
+            &workers,
+            Envelope {
+                protocol_major: PROTOCOL_MAJOR,
+                protocol_minor: MAX_PROTOCOL_MINOR,
+                message_id: 1,
+                reply_to: None,
+                payload: Some(envelope::Payload::Request(Request {
+                    operation: Some(request::Operation::ListPorts(wire::ListPortsRequest {})),
+                })),
+            },
+        )
+        .unwrap();
+        let mut invoked = concrete.invoked.0.lock().unwrap();
+        while !*invoked {
+            invoked = concrete.invoked.1.wait(invoked).unwrap();
+        }
+        drop(invoked);
+        assert_eq!(workers.active(), 1);
+        dispatch_sidecar_gateway_envelope(
+            &session,
+            &stdin,
+            &responses,
+            &workers,
+            Envelope {
+                protocol_major: PROTOCOL_MAJOR,
+                protocol_minor: MAX_PROTOCOL_MINOR,
+                message_id: 2,
+                reply_to: None,
+                payload: Some(envelope::Payload::Cancel(wire::Cancel {
+                    target_message_id: 1,
+                    reason: "test".to_owned(),
+                })),
+            },
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while workers.active() != 0 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(workers.active(), 0);
+        assert_eq!(concrete.discarded.load(Ordering::Relaxed), 1);
+        assert!(bytes.lock().unwrap().is_empty());
+
+        session.revoke();
+        assert_eq!(concrete.revoked.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -1421,35 +1998,23 @@ mod tests {
     fn response_transport_accepts_only_one_complete_envelope() {
         let envelope = Envelope {
             protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
-            request_id: 7,
+            protocol_minor: MAX_PROTOCOL_MINOR,
+            message_id: 7,
+            reply_to: Some(6),
             payload: None,
         };
-        let (sender, receiver) = mpsc::channel();
-        sender.send(Ok(Some(envelope.clone()))).unwrap();
+        let router = HostResponseRouter::default();
+        let receiver = router.register(6).unwrap();
+        assert!(router.complete(envelope.clone()));
         assert_eq!(
             receive_response(&receiver, Duration::from_millis(1))
                 .unwrap()
-                .request_id,
+                .message_id,
             7
         );
-        sender.send(Ok(None)).unwrap();
-        assert_eq!(
-            receive_response(&receiver, Duration::from_millis(1)),
-            Err(HostFailure::Transport)
-        );
-        sender.send(Err(HostFailure::Handshake)).unwrap();
-        assert_eq!(
-            receive_response(&receiver, Duration::from_millis(1)),
-            Err(HostFailure::Transport)
-        );
-        drop(sender);
-        assert_eq!(
-            receive_response(&receiver, Duration::from_millis(1)),
-            Err(HostFailure::Transport)
-        );
+        assert!(!router.complete(envelope));
 
-        let (_sender, empty) = mpsc::channel();
+        let (_sender, empty) = mpsc::channel::<Result<Envelope, HostFailure>>();
         assert_eq!(
             receive_response(&empty, Duration::from_millis(1)),
             Err(HostFailure::Transport)

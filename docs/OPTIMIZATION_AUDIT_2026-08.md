@@ -275,7 +275,7 @@ sessions_push -11% 均为并发负载所致，单独重跑后消失；log_text_v
 1. **g45_fixture_contract 既有失败（修复）**：根因是五个 fixture 在组件根导出
    裸函数、且函数签名引用的 record/enum 类型从未进入导出集合，触发
    wasmparser 0.252 的命名类型规则（`func/type not valid to be used as
-export`）。修复：类型改为经 `bbcom:plugin/types@1.0.0` 实例导出，函数经
+export`）。修复：类型改为经 `bbcom:plugin/types@2.0.0` 实例导出，函数经
    `alias export` 引用导出后的类型（对齐 wit-component 真实产物形状）；
    ambient fixture 的空实例导入会被 wasmtime 平凡满足，改为类型化实例导入
    （要求 `resolve` 函数）使其必然链接失败；两测试以 HOST_STORE_LOCK 串行
@@ -335,65 +335,3 @@ serialrxqueue −47%、Rust 零改动锚点 checksum/sum8 +127%，跨工具链�
 所有"劣化"信号均被锚点包络；`ipc_payload` 同会话内 base64 对 number-array
 仍 5.5~7.7 倍。bench 过滤模式不输出中位数（仅全量运行打印），配对前测改用
 保守污染基线口径并在文中注明。
-
-### 8.9 真实插件落地（2026-08-16）
-
-**插件**：`plugins/counter-plugin`（dev.bbcom.counter-panel v1.0.0）——no_std
-wasm32-wasip2 组件（9.8 KiB），使用 plugin.storage / session-list /
-publish-panel 三个宿主导入，面板含计数/会话数/按钮字段；工件为
-digest-pinned 清单（tests/fixtures/plugins/counter）。关键工程约束：宿主
-v1 不链接任何 WASI，Rust std 会拖入 wasi:io/poll——guest 必须 no_std +
-自提供 cabi_realloc（wasm32-wasip2 组件必需，std 平时隐藏了这一事实）。
-
-**补全的宿主能力**（原为设计未落地面）：`PluginRuntime::handle_panel_event`
-与 `take_published_panel`（面板可观测通道）；sidecar 协议新增
-`panel-event` invoke（body=JSON {fieldId,value}，响应体=更新后面板 JSON）。
-`PluginExecutor` trait 与两个测试桩同步扩展；`bindings` 模块公开供测试。
-
-**测试**（全绿）：进程内契约 3 项（digest 篡改拒绝；生命周期+事件+跨
-runtime 存储恢复；无 session.metadata.read 时 fail-closed 拒绝且无面板
-发布）+ 真实 sidecar 进程 1 项（握手含隐式权限集 → 种子状态上传
-counter=5 → initialize → bump 事件返回 count=6 → shutdown → 状态回读
-=6 → CompleteShutdown 干净退出）。
-
-**语义确认**：UiPanel/PluginStorage 为隐式权限（宿主恒授予，清单请求即
-拒绝）；握手 granted 集必须与期望集完全相等（含隐式项）。
-
-### 8.10 运行时插件装卸与自动加载（2026-08-16 第三批）
-
-**目标**：运行中安装（本地路径、免签名）+ 运行中卸载 + 重启后自动加载。
-
-**实现**（六层贯通，签名校验按需求关闭）：
-
-1. **Repository crate**：`DownloadedPackage::from_local_package`（无 HTTPS/TUF/
-   发布者签名边界，仅清单组件摘要校验）；`PluginInstaller::prepare_local_install`
-   （本地目录→zip→正规 staged pipeline）；`active_installations()`（重启发现）；
-   `remove_installation()`（卸载删除）。发布者身份从组件 sha256 派生（管理器
-   要求 publisher:sha256- 格式，本地包无签名验证）。
-2. **Manager crate**：`install_local(&Path)` 镜像 install_manual（验证+撤销检查
-   +精确提交+记录插入）；`uninstall(plugin_id)` 停宿主+删记录+删持久安装。
-   InstallationPort 扩展 `prepare_local`/`remove_installed`。
-3. **Bootstrap/runtime_wiring**：`autostart_registry(builder)` — 组合成功后读
-   `plugins-autostart.json` 并自动 enable 之前运行的插件；工作区切换时
-   `ensure_plugin_runtime` 经 `installer.active_installations()` 重建记录。
-4. **命令层**：`plugin_install_local`（packageRoot 参数+主窗口守卫+绝对路径/
-   plugin.toml 存在校验）；`plugin_uninstall`；`set_enabled` 维护自启动注册表。
-5. **前端**：插件中心面板"从本地安装"表单（路径输入）+ 已安装行"卸载"按钮
-   （确认对话框）；15+11 项测试。
-6. **测试**：repository local_install 3 项（staging/digest 拒绝/持久枚举）+
-   manager local_uninstall 1 项（安装→授权→运行→卸载→重装往返）。
-
-**安装失败修复（2026-08-16 第四批）**：UI 本地安装报"另一个插件操作正在
-运行"，但安装实际已持久化成功。根因链：生产 catalog view 完全 fail-closed，
-`installed_view` 为每个已安装插件调 `plugin_display` 必然失败；`center_data`
-用硬编码 request_id="snapshot" 附加错误，`attach_request` 的请求一致性检查
-把真实 catalog 错误掩盖为 operation_conflict。首次成功安装后**所有**快照/
-安装/卸载响应都会失败。修复：catalog view 改为 `LocalInstallCatalogView`
-（持 `Arc<PluginInstaller>`，从持久安装目录的 plugin.toml 解析显示名；未知
-插件与 session 标签保持 fail-closed）；原生 `INVALID_INPUT` 拒绝映射到新增
-`invalid-input` 失败码（contracts 枚举 + bindings 再生成 + 中英文案）。
-回归测试：wiring `local_install_catalog_resolves_installed_display_metadata`
-（counter fixture 真实 prepare→commit→显示解析）+ 传输层 AppErrorCode→失败码
-映射 5 例。端到端验证（mock_app + 真实组合）：安装 OK→重启发现 installed=1→
-重复安装拒绝→卸载 OK；诊断用 example 已删除（其 mock app_data_dir 解析到
-`~/.local/share/` 根目录，保留有污染风险）。

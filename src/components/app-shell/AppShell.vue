@@ -152,7 +152,6 @@
 
     <CreateSessionDialog v-model:show="showCreateDialog" :preferred-port="preferredCreatePort" />
     <SettingsModal v-model:show="showSettings" />
-    <PluginPromptHost />
   </div>
 </template>
 
@@ -186,7 +185,6 @@ const CreateSessionDialog = defineAsyncComponent(() => import('./CreateSessionDi
 const SettingsModal = defineAsyncComponent(() => import('./SettingsModal.vue'));
 const AiSettingsPanel = defineAsyncComponent(() => import('../ai/AiSettingsPanel.vue'));
 const PluginCenterPanel = defineAsyncComponent(() => import('../plugins/PluginCenterPanel.vue'));
-const PluginPromptHost = defineAsyncComponent(() => import('../plugins/PluginPromptHost.vue'));
 
 const catalog = useSessionCatalog();
 const mutationPolicy = useSessionMutationPolicy();

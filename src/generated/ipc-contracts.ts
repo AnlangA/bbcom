@@ -95,13 +95,9 @@ export type OperationRecord = { operationId: string, kind: OperationKind, status
 
 export type CancelOperationRequest = { operationId: string, };
 
-export type PluginPermission = "ui.panel" | "plugin.storage" | "session.metadata.read" | "session.capture.read" | "project.settings.read-write" | "serial.ports.read" | "serial.control" | "serial.write-proposal" | "ai.conversation.read" | "ai.request" | "file.open-save" | "clipboard" | "notification";
-
 export type PluginLifecycleStatus = "disabled" | "stopped" | "starting" | "running" | "updating" | "rolling-back" | "failed";
 
 export type PluginStatusReason = "user" | "crash-loop-rolled-back" | "crash-loop-no-rollback" | "rollback-failed" | "rollback-blocked-revoked" | "artifact-revoked";
-
-export type PluginUnavailableCapability = "ui.panel" | "plugin.storage" | "session.metadata.read" | "session.capture.read" | "project.settings.read-write" | "serial.ports.read" | "serial.control" | "serial.write-proposal" | "ai.conversation.read" | "ai.request" | "file.open-save" | "clipboard" | "notification" | "network";
 
 export type PluginCatalogItem = { catalogId: string, pluginId: string, displayName: string, description: string, version: string, publisherName: string, installedVersion: string | null, };
 
@@ -113,21 +109,20 @@ export type PluginSourceView = { sourceId: string, kind: PluginSourceKind, displ
 
 export type RuntimeInstanceKey = { workspaceId: string, pluginId: string, instanceId: number, generation: number, };
 
-export type InstalledPluginView = { pluginId: string, displayName: string, version: string, status: PluginLifecycleStatus, statusReason: PluginStatusReason | null, enabled: boolean, pendingVersion: string | null, declaredCapabilities: Array<PluginPermission>, effectiveCapabilities: Array<PluginPermission>, unavailableCapabilities: Array<PluginUnavailableCapability>, runtime: RuntimeInstanceKey | null, };
+export type InstalledPluginView = { pluginId: string, displayName: string, version: string, status: PluginLifecycleStatus, statusReason: PluginStatusReason | null, enabled: boolean, pendingVersion: string | null,
+/**
+ * Canonical capabilities requested by the verified manifest.
+ */
+requestedCapabilities: Array<PluginCapabilityV2>,
+/**
+ * Capabilities active in the current runtime instance. Empty while the
+ * plugin is stopped or awaiting authorization.
+ */
+effectiveCapabilities: Array<PluginCapabilityV2>, runtime: RuntimeInstanceKey | null, };
 
-export type PluginSerialProposal = { runtime: RuntimeInstanceKey, proposalId: string, pluginId: string, pluginName: string, sessionLabel: string, displayLabel: string, byteCount: number, hexPreview: string, expiresAtMs: number, };
+export type PluginCenterData = { revision: number, catalog: Array<PluginCatalogItem>, installed: Array<InstalledPluginView>, sources: Array<PluginSourceView>, surfaces?: Array<PluginSurfaceSnapshot>, tasks?: Array<PluginTaskViewV2>, authorizationRequests?: Array<PluginAuthorizationRequestV2>, commandContributions?: Array<PluginCommandContributionV2>, };
 
-export type PluginPanelFieldKind = "text" | "number" | "toggle" | "select" | "button";
-
-export type PluginPanelField = { id: string, label: string, kind: PluginPanelFieldKind, value: string, options: Array<string>, disabled: boolean, };
-
-export type PluginDeclarativePanel = { runtime: RuntimeInstanceKey, title: string, fields: Array<PluginPanelField>, };
-
-export type PluginPanelEvent = { runtime: RuntimeInstanceKey, fieldId: string, value: string, };
-
-export type PluginCenterData = { revision: number, catalog: Array<PluginCatalogItem>, installed: Array<InstalledPluginView>, serialProposals: Array<PluginSerialProposal>, panels: Array<PluginDeclarativePanel>, sources: Array<PluginSourceView>, };
-
-export type PluginFailureCode = "unavailable" | "invalid-response" | "invalid-panel" | "invalid-input" | "operation-conflict" | "installation-failed" | "host-failed" | "proposal-expired" | "proposal-context-changed" | "proposal-consumed" | "panel-event-rejected" | "cancel-failed" | "workspace-missing";
+export type PluginFailureCode = "unavailable" | "invalid-response" | "invalid-surface" | "invalid-input" | "operation-conflict" | "installation-failed" | "host-failed" | "cancel-failed" | "workspace-missing";
 
 export type PluginFailure = { code: PluginFailureCode, };
 
@@ -145,7 +140,9 @@ export type RequestPluginLocalSourceGrantRequest = { requestId: string, sourceKi
 
 export type PluginLocalSourceGrantResponse = { requestId: string, grantId: string, displayName: string, sourceKind: PluginLocalSourceKind, };
 
-export type UninstallPluginRequest = { requestId: string, revision: number, operationId: string, pluginId: string, };
+export type PluginContributionDisposition = "delete" | "convert-to-user";
+
+export type UninstallPluginRequest = { requestId: string, revision: number, operationId: string, pluginId: string, contributionDisposition: PluginContributionDisposition, };
 
 export type SetPluginEnabledRequest = { requestId: string, revision: number, operationId: string, pluginId: string, enabled: boolean, };
 
@@ -159,27 +156,127 @@ export type RefreshPluginSourceRequest = { requestId: string, revision: number, 
 
 export type SetPluginWatchEnabledRequest = { requestId: string, revision: number, operationId: string, sourceId: string, enabled: boolean, };
 
-export type PluginSerialProposalDecision = "approve" | "reject";
-
-export type ResolvePluginSerialProposalRequest = { requestId: string, revision: number, operationId: string, proposalId: string, runtime: RuntimeInstanceKey, decision: PluginSerialProposalDecision, };
-
-export type PluginSerialAction = { correlationId: string, proposalId: string, operationId: string, sessionId: string, runtime: RuntimeInstanceKey, bytes: Array<number>, };
-
-export type PluginSerialActionResultRequest = { correlationId: string, runtime: RuntimeInstanceKey, outcome: SerialSendOutcome, requestedBytes: number, sentBytes: number, };
-
-export type PluginSessionQuery = { queryId: string, pluginId: string, } & ({ "kind": "list" } | { "kind": "capture", sessionId: string, fromSequence: number, maxFrames: number, maxBytes: number, });
-
-export type PluginSessionQueryKind = { "kind": "list" } | { "kind": "capture", sessionId: string, fromSequence: number, maxFrames: number, maxBytes: number, };
-
-export type PluginSessionQueryResult = { queryId: string, ok: boolean, errorCode?: string | null, sessions?: Array<PluginSessionSummary>, frames?: Array<PluginCapturedFrame>, nextSequence: number, hasMore: boolean, };
-
-export type PluginSessionSummary = { sessionId: string, name: string, kind: string, connected: boolean, rxBytes: number, txBytes: number, };
-
-export type PluginCapturedFrame = { sequence: number, timestampMs: number, tx: boolean, bytes: Array<number>, };
-
-export type EmitPluginPanelEventRequest = { requestId: string, revision: number, operationId: string, event: PluginPanelEvent, };
-
 export type CancelPluginOperationRequest = { requestId: string, revision: number, operationId: string, };
+
+export type PluginCapabilityV2 = "ui.workspace" | "ui.detached-window" | "serial.ports.read" | "serial.sessions.manage" | "serial.io" | "serial.control-lines" | "session.capture.read" | "session.commands.read-write" | "file.open-read" | "file.save-write" | "plugin.storage" | "project.state.read-write";
+
+export type PluginErrorCodeV2 = "invalid-input" | "permission-denied" | "unavailable" | "busy" | "not-found" | "stale-handle" | "disconnected" | "timeout" | "cancelled" | "limit-exceeded" | "partial-write" | "unknown-outcome" | "protocol-error" | "io-error";
+
+export type PluginFailureV2 = { code: PluginErrorCodeV2,
+/**
+ * Stable, host-owned localization key. Guest-supplied details are shown
+ * separately and are never interpreted as markup.
+ */
+messageKey: string, detail?: string, retryable: boolean, };
+
+export type PluginSurfacePlacement = "workspace" | "detached-window";
+
+export type PluginTextTone = "default" | "muted" | "info" | "success" | "warning" | "danger";
+
+export type PluginUiTab = { id: string, label: string, children: Array<PluginUiNode>, };
+
+export type PluginKeyValueEntry = { key: string, value: string, tone?: PluginTextTone, };
+
+export type PluginTableColumn = { id: string, label: string, };
+
+export type PluginSelectOption = { value: string, label: string, };
+
+export type PluginUiNode = { "kind": "column", id: string, children: Array<PluginUiNode>, } | { "kind": "row", id: string, children: Array<PluginUiNode>, } | { "kind": "group", id: string, label: string, children: Array<PluginUiNode>, } | { "kind": "tabs", id: string, selectedId: string, tabs: Array<PluginUiTab>, } | { "kind": "text", id: string, text: string, tone: PluginTextTone, } | { "kind": "badge", id: string, text: string, tone: PluginTextTone, } | { "kind": "key-value-list", id: string, entries: Array<PluginKeyValueEntry>, } | { "kind": "progress", id: string, label: string, completed: number, total: number, } | { "kind": "log", id: string, text: string, maxLines: number, } | { "kind": "code", id: string, text: string, language: string, } | { "kind": "table", id: string, columns: Array<PluginTableColumn>, rows: Array<Array<string>>, page: number, pageCount: number, } | { "kind": "text-input", id: string, label: string, value: string, disabled: boolean, } | { "kind": "number-input", id: string, label: string, value: string, min?: string, max?: string, step?: string, disabled: boolean, } | { "kind": "select", id: string, label: string, value: string, options: Array<PluginSelectOption>, disabled: boolean, } | { "kind": "toggle", id: string, label: string, value: boolean, disabled: boolean, } | { "kind": "button", id: string, label: string, disabled: boolean, dangerous: boolean, confirmation?: string, };
+
+export type PluginSurfaceSnapshot = { runtime: RuntimeInstanceKey, surfaceId: string, revision: number, title: string, placement: PluginSurfacePlacement, detachedAllowed: boolean, editable: boolean, root: PluginUiNode, };
+
+export type PluginUiPatchOperation = { "kind": "replace-node", nodeId: string, node: PluginUiNode, } | { "kind": "set-text", nodeId: string, text: string, } | { "kind": "set-value", nodeId: string, value: string, } | { "kind": "set-disabled", nodeId: string, disabled: boolean, } | { "kind": "select-tab", nodeId: string, selectedId: string, };
+
+export type PluginSurfacePatch = { runtime: RuntimeInstanceKey, surfaceId: string, baseRevision: number, nextRevision: number, operations: Array<PluginUiPatchOperation>, };
+
+export type PluginSurfaceUpdateV2 = { "kind": "snapshot", surface: PluginSurfaceSnapshot, } | { "kind": "patch", patch: PluginSurfacePatch, } | { "kind": "remove", runtime: RuntimeInstanceKey, surfaceId: string, };
+
+export type PluginSurfaceEventKind = "activate" | "input" | "change" | "select-tab" | "request-page";
+
+export type PluginSurfaceEventV2 = { runtime: RuntimeInstanceKey, surfaceId: string, revision: number, nodeId: string, event: PluginSurfaceEventKind, value?: string, };
+
+export type PluginTaskStatusV2 = "running" | "cancelling" | "completed" | "failed" | "cancelled" | "unknown-outcome";
+
+export type PluginTaskViewV2 = { runtime: RuntimeInstanceKey, taskId: string, commandId: string, title: string, status: PluginTaskStatusV2, completed: number, total: number, statusText: string, cancellable: boolean, failure?: PluginFailureV2, };
+
+export type PluginAuthorizationRequestV2 = { pluginId: string, displayName: string, version: string, digestSha256: string, developmentSource: boolean, requestedCapabilities: Array<PluginCapabilityV2>, addedCapabilities: Array<PluginCapabilityV2>, };
+
+export type PluginCommandContributionV2 = { runtime: RuntimeInstanceKey, commandId: string, title: string, description: string, dangerous: boolean, confirmation?: string, };
+
+export type PluginAuthorizationDecisionV2 = "approve" | "reject";
+
+export type ResolvePluginAuthorizationRequestV2 = { requestId: string, revision: number, operationId: string, pluginId: string, version: string, digestSha256: string, requestedCapabilities: Array<PluginCapabilityV2>, decision: PluginAuthorizationDecisionV2, };
+
+export type EmitPluginSurfaceEventRequestV2 = { requestId: string, revision: number, operationId: string, event: PluginSurfaceEventV2, };
+
+export type CancelPluginTaskRequestV2 = { requestId: string, revision: number, operationId: string, runtime: RuntimeInstanceKey, taskId: string, };
+
+export type RunPluginCommandRequestV2 = { requestId: string, revision: number, operationId: string, runtime: RuntimeInstanceKey, commandId: string, };
+
+export type SetPluginSurfacePlacementRequestV2 = { requestId: string, revision: number, operationId: string, runtime: RuntimeInstanceKey, surfaceId: string, placement: PluginSurfacePlacement, };
+
+export type PluginGatewayContextV2 = { workspaceId: string, pluginId: string, instanceId: string, generation: number, };
+
+export type PluginResourceBindingV2 = { workspaceId: string, pluginId: string, instanceId: string, generation: number, resourceId: string, };
+
+export type PluginSerialConfigV2 = { baudRate: number, dataBits: number,
+/**
+ * Numeric values are the frozen Protobuf v2 enum discriminants.
+ */
+parity: number, stopBits: number, flowControl: number, };
+
+export type PluginSerialPortV2 = {
+/**
+ * Runtime-scoped opaque identity. This value is never an operating-system
+ * device path and becomes invalid when the renderer port catalog drops it.
+ */
+portId: string, displayName: string, usbVendorId?: number, usbProductId?: number, serialNumber?: string, };
+
+export type PluginSerialSessionLifetimeV2 = "persistent" | "runtime";
+
+export type PluginSerialSessionV2 = { sessionId: string, name: string, portId?: string, config: PluginSerialConfigV2, connected: boolean, generation: number, };
+
+export type PluginSerialLeaseOptionsV2 = { pauseAutomation: boolean, rxBufferBytes: number, };
+
+export type PluginSerialCreateSessionV2 = { localId: string, name: string, lifetime: PluginSerialSessionLifetimeV2, portId?: string, config: PluginSerialConfigV2, };
+
+export type PluginSerialOutputLinesV2 = { dtr: boolean, rts: boolean, breakActive: boolean, };
+
+export type PluginSerialInputLinesV2 = { cts: boolean, dsr: boolean, ri: boolean, cd: boolean, };
+
+export type PluginSerialFrameDirectionV2 = "rx" | "tx";
+
+export type PluginSerialCaptureFrameV2 = { sequence: number, timestampMs: number, direction: PluginSerialFrameDirectionV2, payload: Array<number>, };
+
+export type PluginSerialCapabilityOperationV2 = { "kind": "list-ports" } | { "kind": "list-sessions" } | { "kind": "create-session", request: PluginSerialCreateSessionV2, } | { "kind": "update-session", session: PluginSerialSessionV2, } | { "kind": "connect-session", sessionId: string, } | { "kind": "disconnect-session", sessionId: string, } | { "kind": "delete-session", sessionId: string, } | { "kind": "acquire-serial-lease", sessionId: string, options: PluginSerialLeaseOptionsV2, } | { "kind": "release-serial-lease", lease: PluginResourceBindingV2, } | { "kind": "serial-read", lease: PluginResourceBindingV2, maxBytes: number, timeoutMs: number, } | { "kind": "serial-write", lease: PluginResourceBindingV2, payload: Array<number>, } | { "kind": "clear-serial-buffers", lease: PluginResourceBindingV2, } | { "kind": "pending-serial-bytes", lease: PluginResourceBindingV2, } | { "kind": "set-output-lines", lease: PluginResourceBindingV2, lines: PluginSerialOutputLinesV2, } | { "kind": "read-input-lines", lease: PluginResourceBindingV2, } | { "kind": "capture-read", sessionId: string, fromSequence: number, maxFrames: number, maxBytes: number, };
+
+export type PluginSerialCapabilityResultV2 = { "kind": "list-ports", ports: Array<PluginSerialPortV2>, } | { "kind": "list-sessions", sessions: Array<PluginSerialSessionV2>, } | { "kind": "create-session", session: PluginSerialSessionV2, } | { "kind": "update-session", session: PluginSerialSessionV2, } | { "kind": "connect-session", session: PluginSerialSessionV2, } | { "kind": "disconnect-session" } | { "kind": "delete-session" } | { "kind": "acquire-serial-lease", lease: PluginResourceBindingV2, sessionGeneration: number, } | { "kind": "release-serial-lease" } | { "kind": "serial-read", payload: Array<number>, timedOut: boolean, disconnected: boolean, } | { "kind": "serial-write", requested: number, sent: number, outcome: PluginSerialWriteOutcomeV2, } | { "kind": "clear-serial-buffers" } | { "kind": "pending-serial-bytes", rx: number, tx: number, } | { "kind": "set-output-lines" } | { "kind": "read-input-lines", lines: PluginSerialInputLinesV2, } | { "kind": "capture-read", frames: Array<PluginSerialCaptureFrameV2>, nextSequence?: number, };
+
+export type PluginSerialWriteOutcomeV2 = "completed" | "partial-write" | "unknown-outcome";
+
+export type PluginSerialCapabilityInboundV2 = { "kind": "request", context: PluginGatewayContextV2, messageId: number, operation: PluginSerialCapabilityOperationV2, } | { "kind": "cancel", context: PluginGatewayContextV2, targetMessageId: number, } | { "kind": "revoke-lease", context: PluginGatewayContextV2, lease: PluginResourceBindingV2, sessionGeneration: number, } | { "kind": "revoke-runtime", context: PluginGatewayContextV2, } | { "kind": "revoke-all" };
+
+export type PluginSerialCapabilityResponseV2 = { context: PluginGatewayContextV2, replyTo: number, ok: boolean, result?: PluginSerialCapabilityResultV2, errorCode?: PluginErrorCodeV2, };
+
+export type PluginSerialCapabilityOutboundV2 = { "kind": "response", response: PluginSerialCapabilityResponseV2, } | { "kind": "cancel-result", context: PluginGatewayContextV2, targetMessageId: number, ok: boolean, errorCode?: PluginErrorCodeV2, };
+
+export type PluginSerialCapabilityReplyRequestV2 = { event: PluginSerialCapabilityOutboundV2, };
+
+export type PluginHostLocaleV2 = "en" | "zh";
+
+export type PluginHostThemeV2 = "light" | "dark";
+
+export type PluginHostSessionSummaryV2 = { sessionId: string, name: string, connected: boolean, rxBytes: number, txBytes: number, generation: number, };
+
+export type PluginHostContextUpdateRequestV2 = { workspaceId?: string, locale: PluginHostLocaleV2, theme: PluginHostThemeV2, sessions: Array<PluginHostSessionSummaryV2>, };
+
+export type PluginDetachedSurfaceViewV2 = { centerRevision: number, surface: PluginSurfaceSnapshot, tasks: Array<PluginTaskViewV2>, };
+
+export type PluginDetachedSurfaceSnapshotRequestV2 = { token: string, };
+
+export type PluginDetachedSurfaceEventRequestV2 = { token: string, surfaceRevision: number, nodeId: string, event: PluginSurfaceEventKind, value?: string, };
+
+export type PluginDetachedTaskCancelRequestV2 = { token: string, taskId: string, };
 
 export type SerialSendOutcome = "complete" | "partial" | "failed" | "cancelled";
 
@@ -295,11 +392,11 @@ export type WorkspaceFeatureStatePayload = { feature: WorkspaceFeatureKind, stat
 
 export type WorkspaceSendHistoryEntry = { data: string, isHex: boolean, };
 
-export type WorkspaceQuickCommand = { id: string, name: string, data: string, isHex: boolean, };
+export type WorkspaceQuickCommand = { id: string, name: string, data: string, isHex: boolean, ownerPluginId?: string, };
 
 export type WorkspaceMacroStep = { data: string, isHex: boolean, delayMs: number, };
 
-export type WorkspaceMacro = { id: string, name: string, steps: Array<WorkspaceMacroStep>, };
+export type WorkspaceMacro = { id: string, name: string, steps: Array<WorkspaceMacroStep>, ownerPluginId?: string, };
 
 export type WorkspaceConfigRow = { id: string, config: Record<string, unknown>, };
 

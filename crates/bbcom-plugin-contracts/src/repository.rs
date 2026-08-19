@@ -28,9 +28,6 @@ pub struct RepositoryPlugin {
     pub name: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
-    /// Legacy self-asserted identity. Parsed for compatibility and ignored.
-    #[serde(default)]
-    pub publisher_identity: Option<String>,
     pub packages: Vec<RepositoryPackage>,
 }
 
@@ -151,9 +148,9 @@ impl RepositoryIndex {
 fn valid_catalog_text(value: &str, max: usize) -> bool {
     !value.is_empty()
         && value.len() <= max
-        && !value.chars().any(|character| {
-            character.is_control() && !matches!(character, '\n' | '\r' | '\t')
-        })
+        && !value
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
 }
 
 fn canonical_origin(value: &str) -> Result<String> {

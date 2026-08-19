@@ -11,6 +11,7 @@ import type { SerialPortAdapter, SerialPortFactory } from './serial-port';
 import {
   SERIAL_WRITE_CLOSE_GRACE_MS,
   SerialWriteScheduler,
+  type SerialWriteAdmission,
 } from '../../../lib/serial-write-scheduler';
 import { logger } from '../../../lib/logger';
 import { normalizeRxFrameGapMs } from '../../../lib/serial-framing';
@@ -20,6 +21,11 @@ import type { DataFrame, PortConfig, SerialSendResult, SerialWriteOptions } from
 import type { PortLeaseClient } from './port-lease-registry';
 import { classifyOpenFailure, type SerialConnectionFailure } from './serial-connection-failure';
 import { createPortLeaseController } from './serial-port-lease';
+import {
+  SerialTransactionLeaseCoordinator,
+  SerialTransactionLeaseError,
+  type SerialTransactionOutputLines,
+} from './serial-transaction-lease';
 import {
   createRxEvidenceDrainer,
   createShutdownProtocol,
@@ -133,6 +139,8 @@ export interface SerialConnectionController {
   sendBytes(payload: Uint8Array, options?: SerialWriteOptions): Promise<SerialSendResult>;
   sendBreak(durationMs?: number): Promise<boolean>;
   rawBytes(callback: (bytes: Uint8Array) => void): () => void;
+  /** Exclusive protocol transaction boundary shared by plugins and built-in writers. */
+  readonly serialTransactions: SerialTransactionLeaseCoordinator<SerialSendResult>;
   stop(): Promise<SerialStopResult>;
   visibilityChanged(): void;
   dispose(): Promise<SerialStopResult>;
@@ -168,7 +176,7 @@ class StaleConnectionError extends Error {
   }
 }
 
-type SendFailureReason = 'empty' | 'bad-hex' | 'too-large' | 'not-connected';
+type SendFailureReason = 'empty' | 'bad-hex' | 'too-large' | 'not-connected' | 'busy';
 
 const SERIAL_SEND_OPERATION = 'serial_send';
 
@@ -199,6 +207,9 @@ function failedSend(reason: SendFailureReason, requestedBytes: number): SerialSe
       break;
     case 'not-connected':
       error = sendError('SERIAL_DISCONNECTED', 'error.serial_disconnected', true);
+      break;
+    case 'busy':
+      error = sendError('BUSY', 'error.busy', true);
       break;
     case 'empty':
     case 'bad-hex':
@@ -266,6 +277,12 @@ export function createSerialConnectionController(
   let reconnectTimer: unknown | null = null;
   let reconnectAttempts = 0;
   let breakInFlight = false;
+  let trackedOutputLines: Readonly<SerialTransactionOutputLines> = Object.freeze({
+    dtr: false,
+    rts: false,
+    breakActive: false,
+  });
+  let trackedOutputLinesGeneration = -1;
   let closingPromise: Promise<SerialStopResult> | null = null;
 
   // Process-level port lease acquire/transition/release bookkeeping.
@@ -296,6 +313,191 @@ export function createSerialConnectionController(
   });
 
   const rawByteObservers = new Set<(bytes: Uint8Array) => void>();
+  const serialTransactions = new SerialTransactionLeaseCoordinator<SerialSendResult>({
+    io: {
+      snapshot: () => ({
+        generation: connectionGeneration,
+        connected:
+          isConnected.value &&
+          activeConnection?.generation === connectionGeneration &&
+          activeConnection.scheduler !== null,
+      }),
+      async waitForWriteDrain({ generation, signal }) {
+        const connection = activeConnection;
+        if (!connection?.scheduler || connection.generation !== generation) {
+          throw new SerialTransactionLeaseError('stale-handle');
+        }
+        await connection.scheduler.waitForIdle(signal);
+      },
+      async write(payload, context) {
+        const connection = activeConnection;
+        if (
+          context.signal.aborted ||
+          !isConnected.value ||
+          !connection?.scheduler ||
+          connection.generation !== context.generation ||
+          connection.generation !== connectionGeneration
+        ) {
+          throw new SerialTransactionLeaseError(
+            context.signal.aborted ? 'cancelled' : 'stale-handle',
+          );
+        }
+        return enqueuePayload(payload, undefined, {
+          source: 'plugin',
+          ownerId: context.ownerId,
+          generation: context.generation,
+          leaseToken: context.leaseToken,
+        });
+      },
+      async clearBuffers(selection, context) {
+        const connection = currentTransactionConnection(context);
+        if (!connection.port.clearBuffer) {
+          throw new SerialTransactionLeaseError('unavailable');
+        }
+        await connection.port.clearBuffer(selection);
+      },
+      async pendingBytes(context) {
+        const connection = currentTransactionConnection(context);
+        if (!connection.port.bytesToRead || !connection.port.bytesToWrite) {
+          throw new SerialTransactionLeaseError('unavailable');
+        }
+        const [rx, tx] = await Promise.all([
+          connection.port.bytesToRead(),
+          connection.port.bytesToWrite(),
+        ]);
+        return { rx, tx };
+      },
+      async setOutputLines(lines, context) {
+        const connection = currentTransactionConnection(context);
+        await connection.port.writeDataTerminalReady(lines.dtr);
+        currentTransactionConnection(context);
+        trackOutputLines(context.generation, { dtr: lines.dtr });
+        await connection.port.writeRequestToSend(lines.rts);
+        currentTransactionConnection(context);
+        trackOutputLines(context.generation, { rts: lines.rts });
+        if (lines.breakActive) await connection.port.setBreak();
+        else await connection.port.clearBreak();
+        currentTransactionConnection(context);
+        trackOutputLines(context.generation, { breakActive: lines.breakActive });
+      },
+      snapshotOutputLines(generation) {
+        currentGenerationConnection(generation);
+        if (trackedOutputLinesGeneration !== generation) {
+          throw new SerialTransactionLeaseError('stale-handle');
+        }
+        return trackedOutputLines;
+      },
+      async restoreOutputLines(lines, context) {
+        const connection = currentGenerationConnection(context.generation);
+        const failures: string[] = [];
+        const restore = async (
+          name: string,
+          operation: () => Promise<void>,
+          applied: Partial<SerialTransactionOutputLines>,
+        ) => {
+          try {
+            assertRestoreConnection(connection, context.generation);
+            await operation();
+            assertRestoreConnection(connection, context.generation);
+            trackOutputLines(context.generation, applied);
+          } catch {
+            failures.push(name);
+          }
+        };
+        await restore('dtr', () => connection.port.writeDataTerminalReady(lines.dtr), {
+          dtr: lines.dtr,
+        });
+        await restore('rts', () => connection.port.writeRequestToSend(lines.rts), {
+          rts: lines.rts,
+        });
+        await restore(
+          'break',
+          () => (lines.breakActive ? connection.port.setBreak() : connection.port.clearBreak()),
+          { breakActive: lines.breakActive },
+        );
+        if (failures.length > 0) {
+          logger.warn(
+            'serial transaction output-line restore failed for',
+            sessionId,
+            failures.join(','),
+          );
+          throw new SerialTransactionLeaseError('io-error');
+        }
+      },
+      async readInputLines(context) {
+        const connection = currentTransactionConnection(context);
+        if (
+          !connection.port.readClearToSend ||
+          !connection.port.readDataSetReady ||
+          !connection.port.readRingIndicator ||
+          !connection.port.readCarrierDetect
+        ) {
+          throw new SerialTransactionLeaseError('unavailable');
+        }
+        const [cts, dsr, ri, cd] = await Promise.all([
+          connection.port.readClearToSend(),
+          connection.port.readDataSetReady(),
+          connection.port.readRingIndicator(),
+          connection.port.readCarrierDetect(),
+        ]);
+        currentTransactionConnection(context);
+        return { cts, dsr, ri, cd };
+      },
+    },
+  });
+
+  function currentTransactionConnection(context: {
+    readonly generation: number;
+    readonly signal: AbortSignal;
+  }): ConnectionAttempt {
+    const connection = activeConnection;
+    if (
+      context.signal.aborted ||
+      !isConnected.value ||
+      !connection?.scheduler ||
+      connection.generation !== context.generation ||
+      connection.generation !== connectionGeneration
+    ) {
+      throw new SerialTransactionLeaseError(context.signal.aborted ? 'cancelled' : 'stale-handle');
+    }
+    return connection;
+  }
+
+  function currentGenerationConnection(generation: number): ConnectionAttempt {
+    const connection = activeConnection;
+    if (
+      !isConnected.value ||
+      !connection?.scheduler ||
+      connection.generation !== generation ||
+      connection.generation !== connectionGeneration
+    ) {
+      throw new SerialTransactionLeaseError('stale-handle');
+    }
+    return connection;
+  }
+
+  function assertRestoreConnection(connection: ConnectionAttempt, generation: number): void {
+    if (currentGenerationConnection(generation) !== connection) {
+      throw new SerialTransactionLeaseError('stale-handle');
+    }
+  }
+
+  function trackOutputLines(
+    generation: number,
+    applied: Partial<SerialTransactionOutputLines>,
+  ): void {
+    if (trackedOutputLinesGeneration !== generation) {
+      throw new SerialTransactionLeaseError('stale-handle');
+    }
+    trackedOutputLines = Object.freeze({ ...trackedOutputLines, ...applied });
+  }
+
+  function revokeSerialTransaction(generation: number): Promise<boolean> | null {
+    const phase = serialTransactions.snapshot().phase;
+    return phase === 'acquiring' || phase === 'active' || phase === 'releasing'
+      ? serialTransactions.notifyDisconnected(generation)
+      : null;
+  }
 
   function assertCurrent(attempt: ConnectionAttempt): void {
     if (attempt.generation !== connectionGeneration || intentionalClose || attempt.disconnected) {
@@ -385,7 +587,10 @@ export function createSerialConnectionController(
             // but RX remains admissible until the explicit drain boundary has
             // yielded every already-queued Channel task.
             if (!attempt.acceptingRx) return;
-            enqueueReceivedBytes(data instanceof Uint8Array ? data : encodeUtf8(data));
+            enqueueReceivedBytes(
+              data instanceof Uint8Array ? data : encodeUtf8(data),
+              attempt.generation,
+            );
           },
           onDisconnect() {
             // Some native backends announce watch shutdown before delivering
@@ -435,9 +640,19 @@ export function createSerialConnectionController(
       }
       assertCurrent(attempt);
 
-      attempt.scheduler = new SerialWriteScheduler((chunk) => attempt.port.writeBinary(chunk));
+      attempt.scheduler = new SerialWriteScheduler(
+        (chunk) => attempt.port.writeBinary(chunk),
+        {},
+        { authorize: (admission) => serialTransactions.authorizesSchedulerWrite(admission) },
+      );
       attempt.committed = true;
       activeConnection = attempt;
+      trackedOutputLinesGeneration = attempt.generation;
+      trackedOutputLines = Object.freeze({
+        dtr: target.config.dtr,
+        rts: target.config.rts,
+        breakActive: false,
+      });
       if (pendingAttempt === attempt) pendingAttempt = null;
       port.value = attempt.port;
       return attempt;
@@ -514,6 +729,8 @@ export function createSerialConnectionController(
       port.value = null;
       isConnected.value = false;
       sink.setConnected(sessionId, false);
+      const revocation = revokeSerialTransaction(previous.generation);
+      if (revocation) await revocation;
       try {
         const closeEvidence = await shutdownConnection(previous, closeGraceMs);
         if (!isPortCloseProven(closeEvidence)) {
@@ -603,6 +820,7 @@ export function createSerialConnectionController(
         sink.setConnected(sessionId, false);
         return finishStart(generation, false);
       }
+      await serialTransactions.synchronizeConnection();
       return finishStart(generation, true);
     } catch (openError) {
       if (generation === connectionGeneration && !intentionalClose) {
@@ -639,6 +857,8 @@ export function createSerialConnectionController(
     port.value = null;
     isConnected.value = false;
     sink.setConnected(sessionId, false);
+    const revocation = revokeSerialTransaction(attempt.generation);
+    if (revocation) await revocation;
     let closeEvidence: PortCloseEvidence;
     try {
       closeEvidence = await shutdownConnection(attempt, 0);
@@ -773,6 +993,7 @@ export function createSerialConnectionController(
         options?.onDisconnect?.();
         return;
       }
+      await serialTransactions.synchronizeConnection();
       sink.setConnected(sessionId, true);
       options?.onReconnected?.();
     } catch (reconnectError) {
@@ -800,8 +1021,12 @@ export function createSerialConnectionController(
     reconnecting.value = false;
   }
 
-  function enqueueReceivedBytes(bytes: Uint8Array): void {
+  function enqueueReceivedBytes(bytes: Uint8Array, generation = connectionGeneration): void {
     if (bytes.length === 0) return;
+    const mirrored = serialTransactions.offerRx(generation, bytes);
+    if (mirrored.status === 'backpressure') {
+      logger.warn('serial transaction RX mirror backpressure for', sessionId);
+    }
     for (const observer of rawByteObservers) observer(bytes);
 
     const result = rxQueue.enqueue(bytes);
@@ -844,7 +1069,7 @@ export function createSerialConnectionController(
   ): Promise<SerialSendResult> {
     const built = buildSendPayload(data, isHex);
     if (!built.ok) return failedSend(built.reason, built.requestedBytes);
-    return enqueuePayload(built.payload, writeOptions);
+    return enqueueManualPayload(built.payload, writeOptions);
   }
 
   async function sendBytes(
@@ -853,18 +1078,35 @@ export function createSerialConnectionController(
   ): Promise<SerialSendResult> {
     if (payload.length === 0) return failedSend('empty', 0);
     if (payload.length > MAX_INPUT_SIZE) return failedSend('too-large', payload.length);
-    return enqueuePayload(payload, writeOptions);
+    return enqueueManualPayload(payload, writeOptions);
+  }
+
+  async function enqueueManualPayload(
+    payload: Uint8Array,
+    writeOptions?: SerialWriteOptions,
+  ): Promise<SerialSendResult> {
+    try {
+      return await serialTransactions.runManualWrite(() =>
+        enqueuePayload(payload, writeOptions, { source: 'host', ownerId: sessionId }),
+      );
+    } catch (gateError) {
+      if (gateError instanceof SerialTransactionLeaseError) {
+        return failedSend(gateError.code === 'busy' ? 'busy' : 'not-connected', payload.length);
+      }
+      throw gateError;
+    }
   }
 
   async function enqueuePayload(
     payload: Uint8Array,
     writeOptions?: SerialWriteOptions,
+    admission?: SerialWriteAdmission,
   ): Promise<SerialSendResult> {
     const connection = activeConnection;
     if (isClosing.value || !connection?.scheduler || !isConnected.value) {
       return failedSend('not-connected', payload.length);
     }
-    const result = await connection.scheduler.enqueue(payload, writeOptions);
+    const result = await connection.scheduler.enqueue(payload, writeOptions, admission ?? null);
     if (result.sentBytes > 0) {
       const txFrame = sink.addFrame(sessionId, {
         direction: 'TX',
@@ -891,13 +1133,28 @@ export function createSerialConnectionController(
   }
 
   async function sendBreak(durationMs = 250): Promise<boolean> {
+    try {
+      return await serialTransactions.runManualWrite(() => performSendBreak(durationMs));
+    } catch (gateError) {
+      if (gateError instanceof SerialTransactionLeaseError) return false;
+      throw gateError;
+    }
+  }
+
+  async function performSendBreak(durationMs: number): Promise<boolean> {
     const connection = activeConnection;
     if (isClosing.value || breakInFlight || !connection) return false;
     breakInFlight = true;
     try {
       await connection.port.setBreak();
+      if (connection === activeConnection) {
+        trackOutputLines(connection.generation, { breakActive: true });
+      }
       await timerPort.delay(durationMs);
       await connection.port.clearBreak();
+      if (connection === activeConnection) {
+        trackOutputLines(connection.generation, { breakActive: false });
+      }
       return connection === activeConnection;
     } catch (breakError) {
       logger.warn('serial setBreak/clearBreak failed on', connection.target.portName, breakError);
@@ -943,6 +1200,8 @@ export function createSerialConnectionController(
     intentionalClose = true;
     stopReconnect();
     isConnecting.value = false;
+    const revocation = revokeSerialTransaction(closingGeneration);
+    if (revocation) await revocation;
 
     let opening = pendingAttempt;
     const connection = detachActiveConnection();
@@ -1067,10 +1326,13 @@ export function createSerialConnectionController(
   }
 
   async function dispose(): Promise<SerialStopResult> {
-    const result = await stop();
-    listeners.clear();
-    rawByteObservers.clear();
-    return result;
+    try {
+      return await stop();
+    } finally {
+      await serialTransactions.dispose();
+      listeners.clear();
+      rawByteObservers.clear();
+    }
   }
 
   initialized = true;
@@ -1082,6 +1344,7 @@ export function createSerialConnectionController(
     sendBytes,
     sendBreak,
     rawBytes,
+    serialTransactions,
     stop,
     visibilityChanged,
     dispose,

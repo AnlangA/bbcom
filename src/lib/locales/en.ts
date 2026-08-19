@@ -659,6 +659,14 @@ const en: Catalog = {
   'plugins.uninstall': 'Uninstall',
   'plugins.uninstall_confirm.title': 'Uninstall plugin?',
   'plugins.uninstall_confirm.content': 'Uninstall {name}? This cannot be undone.',
+  'plugins.uninstall_confirm.contributions.legend':
+    'Quick commands and macros created by this plugin',
+  'plugins.uninstall_confirm.contributions.delete': 'Delete them (default)',
+  'plugins.uninstall_confirm.contributions.delete_description':
+    'Remove owned entries from every workspace.',
+  'plugins.uninstall_confirm.contributions.convert': 'Keep as user entries',
+  'plugins.uninstall_confirm.contributions.convert_description':
+    'Remove plugin ownership and keep the entries under collision-safe user IDs.',
   'plugins.local_install.label': 'Install from local…',
   'plugins.local_install.placeholder': 'Absolute plugin package directory',
   'plugins.local_install.install': 'Install local',
@@ -666,6 +674,7 @@ const en: Catalog = {
   'plugins.tab.catalog': 'Catalog',
   'plugins.tab.sources': 'Sources',
   'plugins.tab.panels': 'Panels',
+  'plugins.tab.tasks': 'Tasks & commands',
   'plugins.installed.empty': 'No plugins are installed.',
   'plugins.catalog.empty': 'No plugins are available from enabled sources.',
   'plugins.sources.empty': 'No plugin sources are configured.',
@@ -683,6 +692,77 @@ const en: Catalog = {
   'plugins.source.health.disconnected': 'Directory disconnected',
   'plugins.dev_install.install': 'Choose development directory',
   'plugins.panels.empty': 'No enabled plugin exposes a panel.',
+  'plugins.surface.detach': 'Open in window',
+  'plugins.surface.attach': 'Bring back',
+  'plugins.surface.detached_placeholder': 'This plugin workspace is open in a separate window.',
+  'plugins.surface.rejected': 'Plugin UI was rejected: {code}.',
+  'plugins.surface.dangerous_title': 'Confirm dangerous plugin action',
+  'plugins.surface.table_pages': 'Table pages',
+  'plugins.surface.previous_page': 'Previous',
+  'plugins.surface.next_page': 'Next',
+  'plugins.detached.loading': 'Loading plugin workspace…',
+  'plugins.detached.unavailable_title': 'Plugin workspace unavailable',
+  'plugins.detached.unavailable': 'This window grant expired or the plugin stopped.',
+  'plugins.detached.action_failed': 'The plugin action could not be completed.',
+  'plugins.tasks.title': 'Plugin tasks',
+  'plugins.tasks.empty': 'No plugin tasks are active or retained.',
+  'plugins.tasks.status.running': 'Running',
+  'plugins.tasks.status.cancelling': 'Cancelling',
+  'plugins.tasks.status.completed': 'Completed',
+  'plugins.tasks.status.failed': 'Failed',
+  'plugins.tasks.status.cancelled': 'Cancelled',
+  'plugins.tasks.status.unknown-outcome': 'Outcome unknown',
+  'plugins.commands.title': 'Plugin commands',
+  'plugins.commands.empty': 'No running plugin contributes a command.',
+  'plugins.commands.run': 'Run',
+  'plugins.commands.confirm_title': 'Run dangerous plugin command?',
+  'plugins.authorization.title': 'Review plugin capabilities',
+  'plugins.authorization.description':
+    '{name} {version} needs your approval before it can be enabled.',
+  'plugins.authorization.development_warning':
+    'This plugin comes from a development directory. Its content can change without its version changing.',
+  'plugins.authorization.digest': 'SHA-256 digest',
+  'plugins.authorization.capabilities': 'Requested capabilities',
+  'plugins.authorization.new_capability': 'New capability',
+  'plugins.authorization.no_capabilities': 'This plugin requests no host capabilities.',
+  'plugins.authorization.reject': 'Keep disabled',
+  'plugins.authorization.approve': 'Approve and enable',
+  'plugins.v2_capability.ui.workspace': 'Plugin workspace UI',
+  'plugins.v2_capability.ui.workspace.description':
+    'Publish a host-rendered component tree in the plugin workspace.',
+  'plugins.v2_capability.ui.detached-window': 'Detached plugin window',
+  'plugins.v2_capability.ui.detached-window.description':
+    'Move a host-rendered surface into its own restricted window.',
+  'plugins.v2_capability.serial.ports.read': 'Read serial ports',
+  'plugins.v2_capability.serial.ports.read.description':
+    'List serial ports and receive port hot-plug events.',
+  'plugins.v2_capability.serial.sessions.manage': 'Manage serial sessions',
+  'plugins.v2_capability.serial.sessions.manage.description':
+    'Create, configure, bind, connect, disconnect and remove user-level sessions.',
+  'plugins.v2_capability.serial.io': 'Serial data access',
+  'plugins.v2_capability.serial.io.description':
+    'Acquire an exclusive transaction lease and read or write raw serial bytes.',
+  'plugins.v2_capability.serial.control-lines': 'Serial control lines',
+  'plugins.v2_capability.serial.control-lines.description':
+    'Set DTR, RTS and Break, and read CTS, DSR, RI and carrier detect.',
+  'plugins.v2_capability.session.capture.read': 'Read captured serial data',
+  'plugins.v2_capability.session.capture.read.description':
+    'Page through existing session captures, which may contain sensitive data.',
+  'plugins.v2_capability.session.commands.read-write': 'Manage commands and macros',
+  'plugins.v2_capability.session.commands.read-write.description':
+    'Create and edit plugin-owned native quick commands and macros.',
+  'plugins.v2_capability.file.open-read': 'Open files for reading',
+  'plugins.v2_capability.file.open-read.description':
+    'Ask you to select a file and read it through a short-lived opaque handle.',
+  'plugins.v2_capability.file.save-write': 'Save files',
+  'plugins.v2_capability.file.save-write.description':
+    'Ask you for a destination, write a temporary file and atomically commit it.',
+  'plugins.v2_capability.plugin.storage': 'Private plugin storage',
+  'plugins.v2_capability.plugin.storage.description':
+    'Store bounded private state scoped to this plugin.',
+  'plugins.v2_capability.project.state.read-write': 'Portable project state',
+  'plugins.v2_capability.project.state.read-write.description':
+    'Read and write bounded plugin state that travels with the workspace.',
   'plugins.action.running': 'Plugin operation in progress',
   'plugins.action.cancelling': 'Cancelling plugin operation',
   'plugins.status.disabled': 'Disabled',
@@ -692,75 +772,18 @@ const en: Catalog = {
   'plugins.status.updating': 'Updating',
   'plugins.status.rolling-back': 'Rolling back',
   'plugins.status.failed': 'Failed',
-  'plugins.capability.network': 'Network access (not available in v1)',
-  'plugins.serial.title': 'Plugin serial write request',
-  'plugins.serial.requested_by': 'Requested by {name}',
-  'plugins.serial.session': 'Session',
-  'plugins.serial.reason': 'Purpose',
-  'plugins.serial.byte_count': 'Byte count',
-  'plugins.serial.hex_preview': 'HEX preview',
-  'plugins.serial.one_time_warning':
-    'This decision applies to the current plugin runtime instance only. The plugin never receives the serial handle.',
-  'plugins.serial.reject': 'Reject',
-  'plugins.serial.approve_once': 'Approve for this instance',
   'plugins.error.unavailable': 'The native plugin service is unavailable.',
   'plugins.bootstrap.unavailable':
     'The plugin runtime is unavailable ({code}). Switching or creating a workspace retries automatically; if it persists, restart the app and check app-data permissions and system sandbox support.',
   'plugins.error.invalid-response': 'The plugin service returned an invalid response.',
   'plugins.error.invalid-input': 'Invalid plugin request; check the local install path.',
-  'plugins.error.invalid-panel': 'An unsafe or invalid plugin panel was rejected.',
+  'plugins.error.invalid-surface': 'An unsafe or invalid plugin surface was rejected.',
   'plugins.error.operation-conflict': 'Another plugin operation is already running.',
   'plugins.error.installation-failed': 'The plugin could not be installed safely.',
   'plugins.error.host-failed': 'The isolated plugin host failed.',
-  'plugins.error.proposal-expired': 'The serial write request expired.',
-  'plugins.error.proposal-context-changed': 'The serial write context changed; request rejected.',
-  'plugins.error.proposal-consumed': 'The serial write request was already resolved.',
-  'plugins.error.panel-event-rejected': 'The plugin panel action was rejected.',
   'plugins.error.cancel-failed': 'The plugin operation could not be cancelled safely.',
   'plugins.error.workspace-missing':
     'No workspace is open. Create or open a workspace before managing plugins.',
-  'plugins.permission.ui.panel': 'Declarative panel',
-  'plugins.permission.ui.panel.description':
-    'Show host-rendered controls without plugin JavaScript.',
-  'plugins.permission.plugin.storage': 'Private plugin storage',
-  'plugins.permission.plugin.storage.description': 'Store bounded data in the plugin private area.',
-  'plugins.permission.session.metadata.read': 'Read session metadata',
-  'plugins.permission.session.metadata.read.description':
-    'Read non-payload session names and settings.',
-  'plugins.permission.session.capture.read': 'Read captured serial data',
-  'plugins.permission.session.capture.read.description':
-    'Read potentially sensitive serial payloads.',
-  'plugins.permission.project.settings.read-write': 'Read and write plugin project state',
-  'plugins.permission.project.settings.read-write.description':
-    'Change plugin-owned project settings.',
-  'plugins.permission.serial.ports.read': 'Read serial port list',
-  'plugins.permission.serial.ports.read.description':
-    'See available device metadata without handles.',
-  'plugins.permission.serial.control': 'Control serial connection',
-  'plugins.permission.serial.control.description':
-    'Request connection state changes through bbcom.',
-  'plugins.permission.serial.write-proposal': 'Propose serial writes',
-  'plugins.permission.serial.write-proposal.description':
-    'Ask for a one-time, user-approved serial write.',
-  'plugins.permission.ai.conversation.read': 'Read AI conversations',
-  'plugins.permission.ai.conversation.read.description':
-    'Read potentially sensitive project AI messages.',
-  'plugins.permission.ai.request': 'Request AI processing',
-  'plugins.permission.ai.request.description':
-    'Ask bbcom to make an AI request without exposing the API key.',
-  'plugins.permission.file.open-save': 'Open or save a file',
-  'plugins.permission.file.open-save.description':
-    'Use one-time native file grants without receiving paths.',
-  'plugins.permission.clipboard': 'Write clipboard',
-  'plugins.permission.clipboard.description': 'Write user-visible content to the clipboard.',
-  'plugins.permission.notification': 'Show notifications',
-  'plugins.permission.notification.description': 'Display bounded host-rendered notifications.',
-  'plugins.risk.capture-with-network': 'Captured serial data could be sent over a network.',
-  'plugins.risk.conversation-with-network': 'AI conversations could be sent over a network.',
-  'plugins.risk.capture-with-external-sink': 'Captured serial data could leave the project.',
-  'plugins.risk.conversation-with-external-sink': 'AI conversations could leave the project.',
-  'plugins.risk.serial-control-and-write-proposal':
-    'The plugin can control a connection and propose device writes.',
   // Common
   'common.cancel': 'Cancel',
   'common.save': 'Save',

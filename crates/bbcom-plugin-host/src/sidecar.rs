@@ -1,29 +1,27 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::Instant;
 
-use bbcom_plugin_contracts::generated::{
-    CancelRequest, CompleteShutdownResponse, Envelope, Error as ProtocolError,
-    GetStateChunkRequest, GetStateChunkResponse, InitializeRequest, InitializeResponse,
-    InvokeRequest, InvokeResponse, OpaqueStateKind, PutStateChunkRequest, PutStateChunkResponse,
-    ShutdownResponse, StateSnapshotDescriptor, envelope,
+use bbcom_plugin_contracts::generated_v2 as wire;
+use bbcom_plugin_contracts::generated_v2::{
+    Capability, Envelope, ErrorCode, Request, Response, envelope, request, response,
 };
-use bbcom_plugin_contracts::{
-    HANDSHAKE_TIMEOUT_MS, MAX_PLUGIN_PERSISTED_STATE_BYTES, MAX_PLUGIN_STATE_CHUNK_BYTES,
-    PLUGIN_STATE_SCHEMA_VERSION, PROTOCOL_MAJOR, PROTOCOL_MINOR, Permission, parse_permission,
-};
+use bbcom_plugin_contracts::v2::{MAX_PROTOCOL_MINOR, PROTOCOL_MAJOR, default_resource_limits};
+use bbcom_plugin_contracts::{parse_v2_capability, v2_capability_name};
 
-use crate::bindings::bbcom::plugin::types::FieldKind;
+use crate::authorization::{ExactLaunchTicketGate, PluginLaunchContext};
+use crate::bindings::bbcom::plugin::types as wit;
 use crate::handshake::{HandshakeExpectation, HandshakeMachine};
 use crate::policy::{HostPlatform, ProcessLimitPolicy};
-use crate::transport::{FramePump, FrameWriter, InputOperationControl, PumpEvent};
-use crate::uplink::Uplink;
+use crate::transport::{
+    EnvelopeDispatcher, FramePump, FrameWriter, InputOperationControl, PumpEvent,
+};
+use crate::uplink::{CapabilityRpc, CapabilityRpcDispatcher, MessageIdSequence};
 use crate::{
-    CallKind, HostError, PluginEngineFactory, PluginRuntime, Result, RuntimeInterruptHandle,
+    HostError, PluginEngineFactory, PluginRuntime, Result, RuntimeInterruptHandle,
     TrustedPluginArtifact,
 };
 
@@ -35,29 +33,39 @@ pub enum SidecarExit {
     PeerClosed,
 }
 
+/// Test/embedder seam for the guest exports.
 pub trait PluginExecutor {
-    fn initialize_with_kind(&mut self, kind: CallKind) -> Result<()>;
-    fn shutdown(&mut self) -> Result<()>;
-    fn handle_panel_event(&mut self, event: crate::bindings::PanelEvent) -> Result<()>;
-    fn take_published_panel(&mut self) -> Option<crate::bindings::DeclarativePanel>;
-    fn restore_persisted_state(
+    fn initialize_v2(&mut self, _context: wit::HostContext) -> Result<wit::PluginModel> {
+        Err(HostError::UnsupportedMethod)
+    }
+    fn handle_event_v2(&mut self, _event: wit::PluginEvent) -> Result<wit::EventResult> {
+        Err(HostError::UnsupportedMethod)
+    }
+    fn run_command_v2(
         &mut self,
-        plugin_storage: &[u8],
-        project_state: Option<Vec<u8>>,
-    ) -> Result<()>;
-    fn persisted_state(&self) -> (Vec<u8>, Option<Vec<u8>>);
-
+        _invocation: wit::CommandInvocation,
+    ) -> Result<wit::CommandResult> {
+        Err(HostError::UnsupportedMethod)
+    }
+    fn migrate_state_v2(
+        &mut self,
+        _previous_api: &str,
+        _state: &[u8],
+    ) -> Result<wit::MigratedState> {
+        Err(HostError::UnsupportedMethod)
+    }
+    fn shutdown(&mut self) -> Result<()> {
+        Ok(())
+    }
     fn interrupt_handle(&self) -> Option<Arc<dyn PluginInterrupt>> {
         None
     }
-
     fn prepare_interruptible_call(&self) {}
 }
 
 pub trait PluginInterrupt: Send + Sync + 'static {
     fn interrupt(&self);
 }
-
 impl PluginInterrupt for RuntimeInterruptHandle {
     fn interrupt(&self) {
         RuntimeInterruptHandle::interrupt(self);
@@ -65,38 +73,24 @@ impl PluginInterrupt for RuntimeInterruptHandle {
 }
 
 impl PluginExecutor for PluginRuntime {
-    fn initialize_with_kind(&mut self, kind: CallKind) -> Result<()> {
-        PluginRuntime::initialize_with_kind(self, kind)
+    fn initialize_v2(&mut self, context: wit::HostContext) -> Result<wit::PluginModel> {
+        PluginRuntime::initialize_v2(self, context)
     }
-
+    fn handle_event_v2(&mut self, event: wit::PluginEvent) -> Result<wit::EventResult> {
+        PluginRuntime::handle_event(self, event)
+    }
+    fn run_command_v2(&mut self, invocation: wit::CommandInvocation) -> Result<wit::CommandResult> {
+        PluginRuntime::run_command(self, invocation)
+    }
+    fn migrate_state_v2(&mut self, previous_api: &str, state: &[u8]) -> Result<wit::MigratedState> {
+        PluginRuntime::migrate_state(self, previous_api, state)
+    }
     fn shutdown(&mut self) -> Result<()> {
         PluginRuntime::shutdown(self)
     }
-
-    fn handle_panel_event(&mut self, event: crate::bindings::PanelEvent) -> Result<()> {
-        PluginRuntime::handle_panel_event(self, event)
-    }
-
-    fn take_published_panel(&mut self) -> Option<crate::bindings::DeclarativePanel> {
-        PluginRuntime::take_published_panel(self)
-    }
-
-    fn restore_persisted_state(
-        &mut self,
-        plugin_storage: &[u8],
-        project_state: Option<Vec<u8>>,
-    ) -> Result<()> {
-        PluginRuntime::restore_persisted_state(self, plugin_storage, project_state)
-    }
-
-    fn persisted_state(&self) -> (Vec<u8>, Option<Vec<u8>>) {
-        PluginRuntime::persisted_state(self)
-    }
-
     fn interrupt_handle(&self) -> Option<Arc<dyn PluginInterrupt>> {
         Some(Arc::new(PluginRuntime::interrupt_handle(self)))
     }
-
     fn prepare_interruptible_call(&self) {
         PluginRuntime::prepare_interruptible_call(self);
     }
@@ -104,79 +98,66 @@ impl PluginExecutor for PluginRuntime {
 
 #[derive(Default)]
 struct ActiveOperations {
-    entries: Mutex<BTreeMap<u64, ActiveOperation>>,
+    operation: Mutex<Option<ActiveOperation>>,
 }
-
 struct ActiveOperation {
-    cancellation_requested: bool,
+    message_id: u64,
+    cancelled: bool,
     interrupt: Option<Arc<dyn PluginInterrupt>>,
 }
 
 impl ActiveOperations {
-    fn begin(
+    fn attach(
         &self,
-        request_id: u64,
+        message_id: u64,
         interrupt: Option<Arc<dyn PluginInterrupt>>,
-    ) -> ActiveOperationGuard<'_> {
+    ) -> ActiveGuard<'_> {
         let interrupt_now = {
-            let mut entries = self
-                .entries
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let operation = entries.entry(request_id).or_insert(ActiveOperation {
-                cancellation_requested: false,
-                interrupt: None,
-            });
-            operation.interrupt = interrupt;
-            operation
-                .cancellation_requested
-                .then(|| operation.interrupt.clone())
-                .flatten()
+            let mut operation = self.operation.lock().unwrap_or_else(|v| v.into_inner());
+            if let Some(active) = operation
+                .as_mut()
+                .filter(|active| active.message_id == message_id)
+            {
+                active.interrupt = interrupt;
+                active.cancelled.then(|| active.interrupt.clone()).flatten()
+            } else {
+                None
+            }
         };
         if let Some(interrupt) = interrupt_now {
             interrupt.interrupt();
         }
-        ActiveOperationGuard {
+        ActiveGuard {
             operations: self,
-            request_id,
-            finished: false,
+            message_id,
         }
-    }
-
-    fn discard(&self, request_id: u64) {
-        self.entries
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&request_id);
     }
 }
 
 impl InputOperationControl for ActiveOperations {
-    fn register(&self, request_id: u64) {
-        self.entries
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(request_id)
-            .or_insert(ActiveOperation {
-                cancellation_requested: false,
-                interrupt: None,
-            });
+    fn register(&self, message_id: u64) -> bool {
+        let mut operation = self.operation.lock().unwrap_or_else(|v| v.into_inner());
+        if operation.is_some() {
+            return false;
+        }
+        *operation = Some(ActiveOperation {
+            message_id,
+            cancelled: false,
+            interrupt: None,
+        });
+        true
     }
-
-    fn cancel(&self, target_request_id: u64) -> bool {
+    fn cancel(&self, target_message_id: u64) -> bool {
         let interrupt = {
-            let mut entries = self
-                .entries
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let Some(operation) = entries.get_mut(&target_request_id) else {
+            let mut operation = self.operation.lock().unwrap_or_else(|v| v.into_inner());
+            let Some(active) = operation
+                .as_mut()
+                .filter(|active| active.message_id == target_message_id && !active.cancelled)
+            else {
                 return false;
             };
-            if operation.cancellation_requested {
-                return false;
-            }
-            operation.cancellation_requested = true;
-            operation.interrupt.clone()
+            active.cancelled = true;
+            active.interrupt.clone()
         };
         if let Some(interrupt) = interrupt {
             interrupt.interrupt();
@@ -185,667 +166,486 @@ impl InputOperationControl for ActiveOperations {
     }
 }
 
-struct ActiveOperationGuard<'a> {
+struct ActiveGuard<'a> {
     operations: &'a ActiveOperations,
-    request_id: u64,
-    finished: bool,
+    message_id: u64,
 }
-
-impl ActiveOperationGuard<'_> {
-    fn finish(mut self) -> bool {
-        self.finished = true;
+impl ActiveGuard<'_> {
+    fn finish(self) -> bool {
         self.operations
-            .entries
+            .operation
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&self.request_id)
-            .is_some_and(|operation| operation.cancellation_requested)
+            .unwrap_or_else(|v| v.into_inner())
+            .take()
+            .filter(|active| active.message_id == self.message_id)
+            .is_some_and(|active| active.cancelled)
     }
 }
-
-impl Drop for ActiveOperationGuard<'_> {
+impl Drop for ActiveGuard<'_> {
     fn drop(&mut self) {
-        if !self.finished {
-            self.operations.discard(self.request_id);
+        let mut operation = self
+            .operations
+            .operation
+            .lock()
+            .unwrap_or_else(|v| v.into_inner());
+        if operation
+            .as_ref()
+            .is_some_and(|active| active.message_id == self.message_id)
+        {
+            operation.take();
         }
     }
-}
-
-#[derive(Default)]
-struct UploadedState {
-    plugin_storage: Option<StateUpload>,
-    project_state: Option<StateUpload>,
-}
-
-#[derive(Default)]
-struct StateUpload {
-    total_bytes: usize,
-    bytes: Vec<u8>,
-    complete: bool,
-}
-
-struct PublishedState {
-    revision: u64,
-    plugin_storage: Vec<u8>,
-    project_state: Option<Vec<u8>>,
 }
 
 pub struct Sidecar<E = PluginRuntime> {
     runtime: E,
     operations: Arc<ActiveOperations>,
     handshake: HandshakeMachine,
-    uploaded: UploadedState,
-    published: Option<PublishedState>,
-    next_revision: u64,
+    ids: Arc<MessageIdSequence>,
     initialized: bool,
-    shutdown_prepared: bool,
-}
-
-#[derive(serde::Deserialize)]
-struct PanelEventBody {
-    #[serde(rename = "fieldId")]
-    field_id: String,
-    value: String,
-}
-
-fn panel_json(panel: &crate::bindings::DeclarativePanel) -> Vec<u8> {
-    use serde_json::json;
-    json!({
-        "title": panel.title,
-        "fields": panel.fields.iter().map(|field| json!({
-            "id": field.id,
-            "label": field.label,
-            "kind": field_kind_name(field.kind),
-            "value": field.value,
-            "options": field.options,
-            "disabled": field.disabled,
-        })).collect::<Vec<_>>(),
-    })
-    .to_string()
-    .into_bytes()
-}
-
-const fn field_kind_name(kind: FieldKind) -> &'static str {
-    match kind {
-        FieldKind::Text => "text",
-        FieldKind::Number => "number",
-        FieldKind::Toggle => "toggle",
-        FieldKind::Select => "select",
-        FieldKind::Button => "button",
-    }
+    closed: bool,
 }
 
 impl<E: PluginExecutor> Sidecar<E> {
     #[must_use]
     pub fn new(runtime: E, expectation: HandshakeExpectation) -> Self {
+        Self::with_message_ids(runtime, expectation, MessageIdSequence::new())
+    }
+    #[must_use]
+    pub fn with_message_ids(
+        runtime: E,
+        expectation: HandshakeExpectation,
+        ids: Arc<MessageIdSequence>,
+    ) -> Self {
         Self {
             runtime,
             operations: Arc::new(ActiveOperations::default()),
             handshake: HandshakeMachine::new(expectation),
-            uploaded: UploadedState::default(),
-            published: None,
-            next_revision: 1,
+            ids,
             initialized: false,
-            shutdown_prepared: false,
+            closed: false,
         }
     }
 
-    pub fn run<R, W>(&mut self, reader: R, writer: W) -> Result<SidecarExit>
-    where
-        R: Read + Send + 'static,
-        W: Write,
-    {
-        self.run_with_dispatcher(reader, writer, None)
-    }
-
-    /// `run` with a pump-level push dispatcher for parked WIT host imports
-    /// (serial proposal decisions, session query data).
-    pub fn run_with_dispatcher<R, W>(
+    pub fn run<R: Read + Send + 'static, W: Write>(
         &mut self,
         reader: R,
         writer: W,
-        dispatcher: Option<Arc<dyn crate::transport::EnvelopeDispatcher>>,
-    ) -> Result<SidecarExit>
-    where
-        R: Read + Send + 'static,
-        W: Write,
-    {
-        let operation_control: Arc<dyn InputOperationControl> = self.operations.clone();
-        let pump = FramePump::spawn(reader, operation_control, dispatcher)?;
+    ) -> Result<SidecarExit> {
+        self.run_with_dispatcher(reader, writer, None)
+    }
+    pub fn run_with_dispatcher<R: Read + Send + 'static, W: Write>(
+        &mut self,
+        reader: R,
+        writer: W,
+        dispatcher: Option<Arc<dyn EnvelopeDispatcher>>,
+    ) -> Result<SidecarExit> {
         let mut writer = FrameWriter::new(writer);
-        let first = match pump
-            .receiver()
-            .recv_timeout(Duration::from_millis(HANDSHAKE_TIMEOUT_MS))
-        {
-            Ok(PumpEvent::Envelope(envelope, _permit)) => envelope,
-            Ok(PumpEvent::Cancel(_, _permit, _accepted)) => {
-                return Err(HostError::InvalidHandshake);
-            }
-            Ok(PumpEvent::Eof) => return Err(HostError::InvalidHandshake),
-            Ok(PumpEvent::Failed(error)) => return Err(error),
-            Err(RecvTimeoutError::Timeout) => return Err(HostError::HandshakeTimeout),
-            Err(RecvTimeoutError::Disconnected) => return Err(HostError::Transport),
-        };
-        let response = self.handshake.accept(first, std::time::Instant::now())?;
-        writer.write_envelope(&response)?;
-
+        let pump = FramePump::spawn(
+            reader,
+            Arc::clone(&self.operations) as Arc<dyn InputOperationControl>,
+            dispatcher,
+        )?;
         loop {
-            match pump.receiver().recv() {
-                Ok(PumpEvent::Envelope(envelope, _permit)) => {
-                    if let Some(exit) = self.handle_envelope(envelope, &mut writer)? {
-                        self.handshake.close();
+            match pump.receiver().recv().map_err(|_| HostError::Transport)? {
+                PumpEvent::Envelope(envelope, _permit) => {
+                    if !self.handshake.is_established() {
+                        let reply =
+                            self.handshake
+                                .accept(envelope, Instant::now(), self.ids.next()?)?;
+                        writer.write_envelope(&reply)?;
+                        continue;
+                    }
+                    if let Some(exit) = self.dispatch(envelope, &mut writer)? {
                         return Ok(exit);
                     }
                 }
-                Ok(PumpEvent::Cancel(envelope, _permit, accepted)) => {
-                    let request_id = envelope.request_id;
-                    let Some(envelope::Payload::CancelRequest(request)) = envelope.payload else {
-                        return Err(HostError::Transport);
+                PumpEvent::Busy(envelope, _permit) => writer.write_envelope(&error_reply(
+                    self.ids.next()?,
+                    envelope.message_id,
+                    ErrorCode::Busy,
+                    "plugin.error.busy",
+                ))?,
+                PumpEvent::Cancel(envelope, _permit, accepted) => {
+                    let code = if accepted {
+                        ErrorCode::Cancelled
+                    } else {
+                        ErrorCode::NotFound
                     };
-                    self.handle_cancel(request_id, request, accepted, &mut writer)?;
+                    let key = if accepted {
+                        "plugin.error.cancelled"
+                    } else {
+                        "plugin.error.operationNotFound"
+                    };
+                    writer.write_envelope(&error_reply(
+                        self.ids.next()?,
+                        envelope.message_id,
+                        code,
+                        key,
+                    ))?;
                 }
-                Ok(PumpEvent::Eof) => {
-                    self.runtime.shutdown()?;
-                    self.handshake.close();
+                PumpEvent::Eof => {
+                    self.best_effort_shutdown();
                     return Ok(SidecarExit::PeerClosed);
                 }
-                Ok(PumpEvent::Failed(error)) => return Err(error),
-                Err(_) => return Err(HostError::Transport),
+                PumpEvent::Failed(error) => return Err(error),
             }
         }
     }
 
-    fn handle_envelope<W: Write>(
+    fn dispatch<W: Write>(
         &mut self,
         envelope: Envelope,
         writer: &mut FrameWriter<W>,
     ) -> Result<Option<SidecarExit>> {
-        let request_id = envelope.request_id;
-        match envelope.payload {
-            Some(envelope::Payload::InvokeRequest(request)) => {
-                self.handle_invoke(request_id, request, writer)
-            }
-            Some(envelope::Payload::CancelRequest(request)) => {
-                self.handle_cancel(request_id, request, false, writer)?;
-                Ok(None)
-            }
-            Some(envelope::Payload::PutStateChunkRequest(request)) => {
-                self.handle_put_state(request_id, request, writer)?;
-                Ok(None)
-            }
-            Some(envelope::Payload::InitializeRequest(request)) => {
-                self.handle_initialize(request_id, request, writer)?;
-                Ok(None)
-            }
-            Some(envelope::Payload::GetStateChunkRequest(request)) => {
-                self.handle_get_state(request_id, request, writer)?;
-                Ok(None)
-            }
-            Some(envelope::Payload::ShutdownRequest(_)) => {
-                self.handle_shutdown(request_id, writer)?;
-                Ok(None)
-            }
-            Some(envelope::Payload::CompleteShutdownRequest(request)) => {
-                if !self.shutdown_prepared
-                    || self.published.as_ref().map(|state| state.revision) != Some(request.revision)
-                {
-                    writer.write_envelope(&protocol_error(
-                        request_id,
-                        "PLUGIN_PROTOCOL_INVALID",
-                        "plugin.error.protocolInvalid",
-                    ))?;
-                    return Ok(None);
-                }
-                writer.write_envelope(&Envelope {
-                    protocol_major: PROTOCOL_MAJOR,
-                    protocol_minor: PROTOCOL_MINOR,
-                    request_id,
-                    payload: Some(envelope::Payload::CompleteShutdownResponse(
-                        CompleteShutdownResponse {},
-                    )),
-                })?;
-                Ok(Some(SidecarExit::ShutdownRequested))
-            }
-            _ => {
-                writer.write_envelope(&protocol_error(
-                    request_id,
-                    "PLUGIN_PROTOCOL_INVALID",
-                    "plugin.error.protocolInvalid",
-                ))?;
-                Ok(None)
-            }
-        }
-    }
-
-    fn handle_invoke<W: Write>(
-        &mut self,
-        request_id: u64,
-        request: InvokeRequest,
-        writer: &mut FrameWriter<W>,
-    ) -> Result<Option<SidecarExit>> {
-        self.operations.discard(request_id);
-        if matches!(request.method.as_str(), "initialize" | "shutdown") {
-            writer.write_envelope(&protocol_error(
-                request_id,
-                "PLUGIN_PROTOCOL_VERSION_UNSUPPORTED",
+        let message_id = envelope.message_id;
+        let Some(envelope::Payload::Request(Request {
+            operation: Some(operation),
+        })) = envelope.payload
+        else {
+            writer.write_envelope(&error_reply(
+                self.ids.next()?,
+                message_id,
+                ErrorCode::ProtocolError,
                 "plugin.error.protocolInvalid",
             ))?;
             return Ok(None);
-        }
-        if request.method == "panel-event" {
-            return self.handle_panel_event_invoke(request_id, request, writer);
-        }
-        let error = HostError::UnsupportedMethod;
-        writer.write_envelope(&protocol_error(
-            request_id,
-            error.code(),
-            error.message_key(),
-        ))?;
-        Ok(None)
-    }
-
-    /// Delivers a declarative-panel event to the plugin. The request body is
-    /// JSON `{"fieldId": string, "value": string}`; the response body is the
-    /// plugin's returned panel serialized as JSON
-    /// `{"title": string, "fields": [{"id", "label", "kind", "value",
-    /// "options", "disabled"}]}`.
-    fn handle_panel_event_invoke<W: Write>(
-        &mut self,
-        request_id: u64,
-        request: InvokeRequest,
-        writer: &mut FrameWriter<W>,
-    ) -> Result<Option<SidecarExit>> {
-        if !self.initialized || self.shutdown_prepared {
-            self.operations.discard(request_id);
-            writer.write_envelope(&protocol_error(
-                request_id,
-                "PLUGIN_PROTOCOL_INVALID",
-                "plugin.error.protocolInvalid",
-            ))?;
-            return Ok(None);
-        }
-        let event: PanelEventBody = match serde_json::from_slice(&request.body) {
-            Ok(event) => event,
-            Err(_) => {
-                self.operations.discard(request_id);
-                writer.write_envelope(&protocol_error(
-                    request_id,
-                    "PLUGIN_PROTOCOL_INVALID",
-                    "plugin.error.protocolInvalid",
-                ))?;
-                return Ok(None);
-            }
-        };
-        let event = crate::bindings::PanelEvent {
-            field_id: event.field_id,
-            value: event.value,
         };
         self.runtime.prepare_interruptible_call();
-        let active = self
+        let guard = self
             .operations
-            .begin(request_id, self.runtime.interrupt_handle());
-        let result = self.runtime.handle_panel_event(event);
-        let cancelled = active.finish();
-        if cancelled {
-            writer.write_envelope(&cancelled_error(request_id))?;
-            return Ok(None);
-        }
-        let panel = match result {
-            Ok(()) => self.runtime.take_published_panel(),
-            Err(error) => {
-                writer.write_envelope(&protocol_error(
-                    request_id,
-                    error.code(),
-                    error.message_key(),
-                ))?;
-                return Ok(None);
-            }
-        };
-        let body = panel
-            .map(|panel| panel_json(&panel))
-            .unwrap_or_else(|| serde_json::Value::Null.to_string().into_bytes());
-        writer.write_envelope(&Envelope {
-            protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
-            request_id,
-            payload: Some(envelope::Payload::InvokeResponse(InvokeResponse { body })),
-        })?;
-        Ok(None)
-    }
-
-    fn handle_put_state<W: Write>(
-        &mut self,
-        request_id: u64,
-        request: PutStateChunkRequest,
-        writer: &mut FrameWriter<W>,
-    ) -> Result<()> {
-        if self.initialized
-            || request.state_schema_version != PLUGIN_STATE_SCHEMA_VERSION
-            || request.payload.len() > MAX_PLUGIN_STATE_CHUNK_BYTES
-            || request.total_bytes as usize > MAX_PLUGIN_PERSISTED_STATE_BYTES
-        {
-            return writer.write_envelope(&protocol_error(
-                request_id,
-                "PLUGIN_PROTOCOL_INVALID",
-                "plugin.error.protocolInvalid",
-            ));
-        }
-        let kind = OpaqueStateKind::try_from(request.kind).ok();
-        let other_bytes = match kind {
-            Some(OpaqueStateKind::PluginStorage) => self
-                .uploaded
-                .project_state
-                .as_ref()
-                .map_or(0, |state| state.total_bytes),
-            Some(OpaqueStateKind::ProjectState) => self
-                .uploaded
-                .plugin_storage
-                .as_ref()
-                .map_or(0, |state| state.total_bytes),
-            _ => {
-                return writer.write_envelope(&protocol_error(
-                    request_id,
-                    "PLUGIN_PROTOCOL_INVALID",
-                    "plugin.error.protocolInvalid",
-                ));
-            }
-        };
-        let total_bytes = request.total_bytes as usize;
-        if total_bytes.saturating_add(other_bytes) > MAX_PLUGIN_PERSISTED_STATE_BYTES {
-            return writer.write_envelope(&protocol_error(
-                request_id,
-                "PLUGIN_STATE_LIMIT",
-                "plugin.error.packageLimit",
-            ));
-        }
-        let upload = match kind {
-            Some(OpaqueStateKind::PluginStorage) => &mut self.uploaded.plugin_storage,
-            Some(OpaqueStateKind::ProjectState) => &mut self.uploaded.project_state,
-            _ => unreachable!("state kind was validated"),
-        };
-        let state = upload.get_or_insert_with(|| StateUpload {
-            total_bytes,
-            bytes: Vec::with_capacity(total_bytes.min(MAX_PLUGIN_STATE_CHUNK_BYTES)),
-            complete: false,
-        });
-        if state.complete
-            || state.total_bytes != total_bytes
-            || request.offset as usize != state.bytes.len()
-            || state.bytes.len().saturating_add(request.payload.len()) > total_bytes
-            || request.final_chunk
-                != (state.bytes.len().saturating_add(request.payload.len()) == total_bytes)
-        {
-            return writer.write_envelope(&protocol_error(
-                request_id,
-                "PLUGIN_PROTOCOL_INVALID",
-                "plugin.error.protocolInvalid",
-            ));
-        }
-        state.bytes.extend_from_slice(&request.payload);
-        state.complete = request.final_chunk;
-        let accepted_bytes = state.bytes.len() as u64;
-        writer.write_envelope(&Envelope {
-            protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
-            request_id,
-            payload: Some(envelope::Payload::PutStateChunkResponse(
-                PutStateChunkResponse {
-                    kind: request.kind,
-                    accepted_bytes,
-                },
-            )),
-        })
-    }
-
-    fn handle_initialize<W: Write>(
-        &mut self,
-        request_id: u64,
-        request: InitializeRequest,
-        writer: &mut FrameWriter<W>,
-    ) -> Result<()> {
-        let storage_ready = self
-            .uploaded
-            .plugin_storage
-            .as_ref()
-            .is_some_and(|state| state.complete);
-        let project_ready = self
-            .uploaded
-            .project_state
-            .as_ref()
-            .is_some_and(|state| state.complete);
-        if self.initialized
-            || request.state_schema_version != PLUGIN_STATE_SCHEMA_VERSION
-            || request.has_plugin_storage != storage_ready
-            || request.has_project_state != project_ready
-            || !storage_ready
-        {
-            self.operations.discard(request_id);
-            return writer.write_envelope(&protocol_error(
-                request_id,
-                "PLUGIN_PROTOCOL_INVALID",
-                "plugin.error.protocolInvalid",
-            ));
-        }
-        let storage = self
-            .uploaded
-            .plugin_storage
-            .take()
-            .expect("validated upload")
-            .bytes;
-        let project = self.uploaded.project_state.take().map(|state| state.bytes);
-        if let Err(error) = self.runtime.restore_persisted_state(&storage, project) {
-            self.operations.discard(request_id);
-            return writer.write_envelope(&protocol_error(
-                request_id,
-                error.code(),
-                error.message_key(),
-            ));
-        }
-        self.runtime.prepare_interruptible_call();
-        let active = self
-            .operations
-            .begin(request_id, self.runtime.interrupt_handle());
-        let result = self.runtime.initialize_with_kind(CallKind::Normal);
-        let cancelled = active.finish();
-        if cancelled {
-            return writer.write_envelope(&cancelled_error(request_id));
-        }
-        if let Err(error) = result {
-            return writer.write_envelope(&protocol_error(
-                request_id,
-                error.code(),
-                error.message_key(),
-            ));
-        }
-        self.initialized = true;
-        let panel_json = self
-            .runtime
-            .take_published_panel()
-            .map(|panel| panel_json(&panel))
-            .unwrap_or_default();
-        let descriptor = self.publish_runtime_state()?;
-        writer.write_envelope(&Envelope {
-            protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
-            request_id,
-            payload: Some(envelope::Payload::InitializeResponse(InitializeResponse {
-                state: Some(descriptor),
-                panel_json,
-            })),
-        })
-    }
-
-    fn handle_shutdown<W: Write>(
-        &mut self,
-        request_id: u64,
-        writer: &mut FrameWriter<W>,
-    ) -> Result<()> {
-        if !self.initialized || self.shutdown_prepared {
-            self.operations.discard(request_id);
-            return writer.write_envelope(&protocol_error(
-                request_id,
-                "PLUGIN_PROTOCOL_INVALID",
-                "plugin.error.protocolInvalid",
-            ));
-        }
-        self.runtime.prepare_interruptible_call();
-        let active = self
-            .operations
-            .begin(request_id, self.runtime.interrupt_handle());
-        let result = self.runtime.shutdown();
-        let cancelled = active.finish();
-        if cancelled {
-            return writer.write_envelope(&cancelled_error(request_id));
-        }
-        if let Err(error) = result {
-            return writer.write_envelope(&protocol_error(
-                request_id,
-                error.code(),
-                error.message_key(),
-            ));
-        }
-        self.shutdown_prepared = true;
-        let descriptor = self.publish_runtime_state()?;
-        writer.write_envelope(&Envelope {
-            protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
-            request_id,
-            payload: Some(envelope::Payload::ShutdownResponse(ShutdownResponse {
-                state: Some(descriptor),
-            })),
-        })
-    }
-
-    fn publish_runtime_state(&mut self) -> Result<StateSnapshotDescriptor> {
-        let (plugin_storage, project_state) = self.runtime.persisted_state();
-        let combined = plugin_storage
-            .len()
-            .saturating_add(project_state.as_ref().map_or(0, Vec::len));
-        if combined > MAX_PLUGIN_PERSISTED_STATE_BYTES {
-            return Err(HostError::PluginRejected);
-        }
-        let revision = self.next_revision;
-        self.next_revision = self
-            .next_revision
-            .checked_add(1)
-            .ok_or(HostError::Transport)?;
-        let descriptor = StateSnapshotDescriptor {
-            state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-            revision,
-            plugin_storage_bytes: plugin_storage.len() as u64,
-            has_project_state: project_state.is_some(),
-            project_state_bytes: project_state.as_ref().map_or(0, Vec::len) as u64,
-        };
-        self.published = Some(PublishedState {
-            revision,
-            plugin_storage,
-            project_state,
-        });
-        Ok(descriptor)
-    }
-
-    fn handle_get_state<W: Write>(
-        &mut self,
-        request_id: u64,
-        request: GetStateChunkRequest,
-        writer: &mut FrameWriter<W>,
-    ) -> Result<()> {
-        let Some(state) = self.published.as_ref().filter(|state| {
-            state.revision == request.revision
-                && request.state_schema_version == PLUGIN_STATE_SCHEMA_VERSION
-                && request.max_bytes > 0
-                && request.max_bytes as usize <= MAX_PLUGIN_STATE_CHUNK_BYTES
-        }) else {
-            return writer.write_envelope(&protocol_error(
-                request_id,
-                "PLUGIN_PROTOCOL_INVALID",
-                "plugin.error.protocolInvalid",
-            ));
-        };
-        let kind = OpaqueStateKind::try_from(request.kind).ok();
-        let bytes = match kind {
-            Some(OpaqueStateKind::PluginStorage) => &state.plugin_storage,
-            Some(OpaqueStateKind::ProjectState) => match state.project_state.as_ref() {
-                Some(bytes) => bytes,
-                None => {
-                    return writer.write_envelope(&protocol_error(
-                        request_id,
-                        "PLUGIN_PROTOCOL_INVALID",
-                        "plugin.error.protocolInvalid",
-                    ));
+            .attach(message_id, self.runtime.interrupt_handle());
+        let (result, exit) = match operation {
+            request::Operation::Initialize(value) if !self.initialized => {
+                let context =
+                    value
+                        .context
+                        .ok_or(HostError::InvalidHandshake)
+                        .and_then(|value| {
+                            self.validate_context(&value)
+                                .and_then(|()| host_context(value))
+                        })?;
+                match self.runtime.initialize_v2(context) {
+                    Ok(model) => {
+                        self.initialized = true;
+                        (
+                            Ok(response::Result::Initialize(wire::InitializeResponse {
+                                model: Some(plugin_model(model)),
+                            })),
+                            false,
+                        )
+                    }
+                    Err(error) => (Err(error), false),
                 }
-            },
-            _ => {
-                return writer.write_envelope(&protocol_error(
-                    request_id,
-                    "PLUGIN_PROTOCOL_INVALID",
-                    "plugin.error.protocolInvalid",
-                ));
             }
+            request::Operation::Initialize(_) => (Err(HostError::InvalidHandshake), false),
+            request::Operation::HandleEvent(value) if self.initialized => {
+                let result = value
+                    .event
+                    .ok_or(HostError::InvalidHandshake)
+                    .and_then(plugin_event)
+                    .and_then(|event| self.runtime.handle_event_v2(event))
+                    .map(|value| {
+                        response::Result::HandleEvent(wire::HandleEventResponse {
+                            accepted: value.accepted,
+                        })
+                    });
+                (result, false)
+            }
+            request::Operation::RunCommand(value) if self.initialized => {
+                let result = value
+                    .invocation
+                    .ok_or(HostError::InvalidHandshake)
+                    .map(command_invocation)
+                    .and_then(|value| self.runtime.run_command_v2(value))
+                    .map(|value| {
+                        response::Result::RunCommand(wire::RunCommandResponse {
+                            message: value.message,
+                        })
+                    });
+                (result, false)
+            }
+            request::Operation::MigrateState(value) if !self.initialized => {
+                let result = self
+                    .runtime
+                    .migrate_state_v2(&value.previous_api, &value.state)
+                    .map(|value| {
+                        response::Result::MigrateState(wire::MigrateStateResponse {
+                            state_schema_version: value.schema_version,
+                            state: value.state,
+                        })
+                    });
+                (result, false)
+            }
+            request::Operation::Shutdown(_) => (
+                self.runtime
+                    .shutdown()
+                    .map(|()| response::Result::Shutdown(wire::OperationAck {})),
+                true,
+            ),
+            request::Operation::HandleEvent(_)
+            | request::Operation::RunCommand(_)
+            | request::Operation::MigrateState(_) => (Err(HostError::InvalidHandshake), false),
+            _ => (Err(HostError::UnsupportedMethod), false),
         };
-        let offset = request.offset as usize;
-        if offset > bytes.len() {
-            return writer.write_envelope(&protocol_error(
-                request_id,
-                "PLUGIN_PROTOCOL_INVALID",
-                "plugin.error.protocolInvalid",
-            ));
-        }
-        let end = offset
-            .saturating_add(request.max_bytes as usize)
-            .min(bytes.len());
-        writer.write_envelope(&Envelope {
-            protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
-            request_id,
-            payload: Some(envelope::Payload::GetStateChunkResponse(
-                GetStateChunkResponse {
-                    state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-                    revision: state.revision,
-                    kind: request.kind,
-                    offset: request.offset,
-                    total_bytes: bytes.len() as u64,
-                    payload: bytes[offset..end].to_vec(),
-                },
-            )),
-        })
-    }
-
-    fn handle_cancel<W: Write>(
-        &mut self,
-        request_id: u64,
-        request: CancelRequest,
-        accepted: bool,
-        writer: &mut FrameWriter<W>,
-    ) -> Result<()> {
-        let _ = request.target_request_id;
-        if accepted {
-            writer.write_envelope(&cancelled_error(request_id))
+        let cancelled = guard.finish();
+        let reply = if cancelled {
+            error_reply(
+                self.ids.next()?,
+                message_id,
+                ErrorCode::Cancelled,
+                "plugin.error.cancelled",
+            )
         } else {
-            writer.write_envelope(&protocol_error(
-                request_id,
-                "PLUGIN_OPERATION_NOT_FOUND",
-                "plugin.error.operationNotFound",
-            ))
+            match result {
+                Ok(result) => response_reply(self.ids.next()?, message_id, result),
+                Err(error) => host_error_reply(self.ids.next()?, message_id, &error),
+            }
+        };
+        writer.write_envelope(&reply)?;
+        if exit && !cancelled {
+            self.closed = true;
+            self.handshake.close();
+            Ok(Some(SidecarExit::ShutdownRequested))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn validate_context(&self, context: &wire::HostContext) -> Result<()> {
+        let expected = self.handshake.expectation();
+        let mut capabilities = BTreeSet::new();
+        for capability in &context.granted_capabilities {
+            let capability =
+                Capability::try_from(*capability).map_err(|_| HostError::InvalidHandshake)?;
+            if capability == Capability::Unspecified || !capabilities.insert(capability) {
+                return Err(HostError::InvalidHandshake);
+            }
+        }
+        if context.workspace_id != expected.workspace_id
+            || context.plugin_id != expected.plugin_id
+            || context.instance_id != expected.instance_id
+            || context.generation != expected.generation
+            || capabilities != expected.granted_capabilities
+            || context.limits.as_ref() != Some(&expected.limits)
+        {
+            return Err(HostError::InvalidHandshake);
+        }
+        Ok(())
+    }
+
+    fn best_effort_shutdown(&mut self) {
+        if !self.closed {
+            let _ = self.runtime.shutdown();
+            self.closed = true;
+            self.handshake.close();
         }
     }
 }
 
-fn cancelled_error(request_id: u64) -> Envelope {
-    protocol_error(request_id, "PLUGIN_CANCELLED", "plugin.error.cancelled")
+impl<E> Drop for Sidecar<E> {
+    fn drop(&mut self) {
+        if let Some(interrupt) = self
+            .operations
+            .operation
+            .lock()
+            .unwrap_or_else(|v| v.into_inner())
+            .take()
+            .and_then(|active| active.interrupt)
+        {
+            interrupt.interrupt();
+        }
+    }
 }
 
-fn protocol_error(request_id: u64, code: &str, message_key: &str) -> Envelope {
+fn response_reply(message_id: u64, reply_to: u64, result: response::Result) -> Envelope {
     Envelope {
         protocol_major: PROTOCOL_MAJOR,
-        protocol_minor: PROTOCOL_MINOR,
-        request_id,
-        payload: Some(envelope::Payload::Error(ProtocolError {
-            code: code.to_owned(),
-            message_key: message_key.to_owned(),
-            retryable: false,
+        protocol_minor: MAX_PROTOCOL_MINOR,
+        message_id,
+        reply_to: Some(reply_to),
+        payload: Some(envelope::Payload::Response(Response {
+            result: Some(result),
         })),
     }
+}
+fn error_reply(message_id: u64, reply_to: u64, code: ErrorCode, message_key: &str) -> Envelope {
+    Envelope {
+        protocol_major: PROTOCOL_MAJOR,
+        protocol_minor: MAX_PROTOCOL_MINOR,
+        message_id,
+        reply_to: Some(reply_to),
+        payload: Some(envelope::Payload::Error(wire::Error {
+            code: code as i32,
+            message_key: message_key.to_owned(),
+            retryable: false,
+            detail: None,
+        })),
+    }
+}
+fn host_error_reply(message_id: u64, reply_to: u64, error: &HostError) -> Envelope {
+    let (code, key) = match error {
+        HostError::AuthorizationRequired | HostError::InvalidAuthorizationContext => (
+            ErrorCode::PermissionDenied,
+            "plugin.error.authorizationRequired",
+        ),
+        HostError::Execution(value) if value.kind == crate::ExecutionFailureKind::Timeout => {
+            (ErrorCode::Timeout, "plugin.error.timeout")
+        }
+        HostError::Execution(value) if value.kind == crate::ExecutionFailureKind::Cancelled => {
+            (ErrorCode::Cancelled, "plugin.error.cancelled")
+        }
+        HostError::Execution(value) if value.kind == crate::ExecutionFailureKind::Trap => {
+            (ErrorCode::ProtocolError, "plugin.error.trap")
+        }
+        HostError::Execution(value) if value.kind == crate::ExecutionFailureKind::FuelExhausted => {
+            (ErrorCode::LimitExceeded, "plugin.error.fuelExhausted")
+        }
+        HostError::Execution(value) if value.kind == crate::ExecutionFailureKind::MemoryLimit => {
+            (ErrorCode::LimitExceeded, "plugin.error.memoryLimit")
+        }
+        HostError::UnsupportedMethod => {
+            (ErrorCode::Unavailable, "plugin.error.operationUnavailable")
+        }
+        HostError::PluginRejected => (ErrorCode::InvalidInput, "plugin.error.requestRejected"),
+        _ => (ErrorCode::ProtocolError, "plugin.error.protocolInvalid"),
+    };
+    error_reply(message_id, reply_to, code, key)
+}
+
+fn host_context(value: wire::HostContext) -> Result<wit::HostContext> {
+    let theme = match wire::ColorScheme::try_from(value.theme).ok() {
+        Some(wire::ColorScheme::Light) => wit::ColorScheme::Light,
+        Some(wire::ColorScheme::Dark) => wit::ColorScheme::Dark,
+        Some(wire::ColorScheme::System) => wit::ColorScheme::System,
+        _ => return Err(HostError::InvalidHandshake),
+    };
+    let capabilities = value
+        .granted_capabilities
+        .into_iter()
+        .map(|value| match Capability::try_from(value).ok() {
+            Some(Capability::UiWorkspace) => Ok(wit::Capability::UiWorkspace),
+            Some(Capability::UiDetachedWindow) => Ok(wit::Capability::UiDetachedWindow),
+            Some(Capability::SerialPortsRead) => Ok(wit::Capability::SerialPortsRead),
+            Some(Capability::SerialSessionsManage) => Ok(wit::Capability::SerialSessionsManage),
+            Some(Capability::SerialIo) => Ok(wit::Capability::SerialIo),
+            Some(Capability::SerialControlLines) => Ok(wit::Capability::SerialControlLines),
+            Some(Capability::SessionCaptureRead) => Ok(wit::Capability::SessionCaptureRead),
+            Some(Capability::SessionCommandsReadWrite) => {
+                Ok(wit::Capability::SessionCommandsReadWrite)
+            }
+            Some(Capability::FileOpenRead) => Ok(wit::Capability::FileOpenRead),
+            Some(Capability::FileSaveWrite) => Ok(wit::Capability::FileSaveWrite),
+            Some(Capability::PluginStorage) => Ok(wit::Capability::PluginStorage),
+            Some(Capability::ProjectStateReadWrite) => Ok(wit::Capability::ProjectStateReadWrite),
+            _ => Err(HostError::InvalidHandshake),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let limits = value.limits.ok_or(HostError::InvalidHandshake)?;
+    Ok(wit::HostContext {
+        workspace_id: value.workspace_id,
+        plugin_id: value.plugin_id,
+        instance_id: value.instance_id,
+        generation: value.generation,
+        locale: value.locale,
+        theme,
+        granted_capabilities: capabilities,
+        limits: wit::ResourceLimits {
+            max_frame_bytes: limits.max_frame_bytes,
+            max_queue_bytes: limits.max_queue_bytes,
+            max_stream_chunk_bytes: limits.max_stream_chunk_bytes,
+            max_concurrent_streams: limits.max_concurrent_streams,
+            max_pending_host_requests: limits.max_pending_host_requests,
+            wasm_memory_limit_bytes: limits.wasm_memory_limit_bytes,
+            host_process_memory_limit_bytes: limits.host_process_memory_limit_bytes,
+            call_timeout_ms: limits.call_timeout_ms,
+            serial_read_timeout_ms: limits.serial_read_timeout_ms,
+            long_task_timeout_ms: limits.long_task_timeout_ms,
+            activity_timeout_ms: limits.activity_timeout_ms,
+            max_ui_document_bytes: limits.max_ui_document_bytes,
+            max_ui_nodes: limits.max_ui_nodes,
+        },
+        sessions: value
+            .sessions
+            .into_iter()
+            .map(|session| wit::SessionSummary {
+                session_id: session.session_id,
+                name: session.name,
+                connected: session.connected,
+                rx_bytes: session.rx_bytes,
+                tx_bytes: session.tx_bytes,
+                generation: session.generation,
+            })
+            .collect(),
+    })
+}
+
+fn plugin_model(value: wit::PluginModel) -> wire::PluginModel {
+    wire::PluginModel {
+        surfaces: value
+            .surfaces
+            .into_iter()
+            .map(|surface| wire::PluginSurface {
+                surface_id: surface.surface_id,
+                title: surface.title,
+                location: match surface.location {
+                    wit::SurfaceLocation::Workspace => wire::SurfaceLocation::Workspace as i32,
+                    wit::SurfaceLocation::DetachedWindow => {
+                        wire::SurfaceLocation::DetachedWindow as i32
+                    }
+                },
+            })
+            .collect(),
+        commands: value
+            .commands
+            .into_iter()
+            .map(|command| wire::CommandContribution {
+                command_id: command.command_id,
+                title: command.title,
+                description: command.description,
+                long_running: command.long_running,
+                confirmation: command.confirmation,
+            })
+            .collect(),
+    }
+}
+fn command_invocation(value: wire::CommandInvocation) -> wit::CommandInvocation {
+    wit::CommandInvocation {
+        command_id: value.command_id,
+        invocation_id: value.invocation_id,
+        arguments: value.arguments,
+    }
+}
+fn plugin_event(value: wire::PluginEvent) -> Result<wit::PluginEvent> {
+    use wire::plugin_event::Item;
+    Ok(match value.item.ok_or(HostError::InvalidHandshake)? {
+        Item::Surface(value) => {
+            let ui_value = match value.value.ok_or(HostError::InvalidHandshake)? {
+                wire::surface_interaction::Value::Text(v) => wit::UiValue::Text(v),
+                wire::surface_interaction::Value::Number(v) => wit::UiValue::Number(v),
+                wire::surface_interaction::Value::Toggle(v) => wit::UiValue::Toggle(v),
+                wire::surface_interaction::Value::Selection(v) => wit::UiValue::Selection(v),
+                wire::surface_interaction::Value::Action(_) => wit::UiValue::Action,
+            };
+            wit::PluginEvent::Surface(wit::SurfaceInteraction {
+                surface_id: value.surface_id,
+                revision: value.revision,
+                node_id: value.node_id,
+                value: ui_value,
+            })
+        }
+        Item::LocaleChanged(value) => wit::PluginEvent::LocaleChanged(value.locale),
+        Item::ThemeChanged(value) => {
+            wit::PluginEvent::ThemeChanged(match wire::ColorScheme::try_from(value.theme).ok() {
+                Some(wire::ColorScheme::Light) => wit::ColorScheme::Light,
+                Some(wire::ColorScheme::Dark) => wit::ColorScheme::Dark,
+                Some(wire::ColorScheme::System) => wit::ColorScheme::System,
+                _ => return Err(HostError::InvalidHandshake),
+            })
+        }
+        Item::PortCatalogChanged(_) => wit::PluginEvent::PortCatalogChanged,
+        Item::CancelTask(value) => wit::PluginEvent::CancelTask(value.task_id),
+    })
 }
 
 pub fn run_from_environment() -> Result<SidecarExit> {
@@ -861,44 +661,281 @@ pub fn run_from_environment() -> Result<SidecarExit> {
     }
     let manifest_text = fs::read_to_string(&manifest_path).map_err(|_| HostError::ArtifactRead)?;
     let artifact = TrustedPluginArtifact::load(&launch.package_root, &manifest_text)?;
-    let requested: BTreeSet<_> = artifact.manifest.permissions()?.into_iter().collect();
-    if launch
-        .granted
-        .iter()
-        .any(|permission| !permission.is_implicit() && !requested.contains(permission))
-    {
-        return Err(HostError::InvalidHandshake);
+    let requested = artifact
+        .manifest
+        .v2_capabilities()?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if requested != launch.granted {
+        return Err(HostError::InvalidAuthorizationContext);
     }
-    let mut granted = launch.granted;
-    granted.insert(Permission::UiPanel);
-    granted.insert(Permission::PluginStorage);
+    let context = PluginLaunchContext {
+        package_sha256: launch.package_sha256,
+        workspace_id: launch.workspace_id.clone(),
+        instance_id: launch.instance_id.clone(),
+        generation: launch.generation,
+    };
+    let ids = MessageIdSequence::new();
+    let shared_stdout: Arc<Mutex<Box<dyn Write + Send>>> =
+        Arc::new(Mutex::new(Box::new(std::io::stdout())));
+    let rpc = CapabilityRpc::new(
+        Box::new(SharedWrite(Arc::clone(&shared_stdout))),
+        Arc::clone(&ids),
+    );
+    let factory = PluginEngineFactory::with_authorization_gate(ExactLaunchTicketGate::new(
+        launch.authorization_ticket,
+    ))?;
+    let runtime = factory.load_authorized(
+        &artifact,
+        &context,
+        launch.granted.iter().copied(),
+        Arc::clone(&rpc),
+    )?;
     let expectation = HandshakeExpectation::new(
         artifact.manifest.id.clone(),
         artifact.manifest.version.clone(),
-        granted.iter().copied(),
+        artifact.manifest.component.sha256.clone(),
+        launch.workspace_id,
+        launch.instance_id,
+        launch.generation,
+        launch.granted.iter().copied(),
     );
-    let factory = PluginEngineFactory::new()?;
-    // One shared stdout handle: the main loop and the WIT-host uplink write
-    // through the same mutex so envelope frames never interleave.
-    let shared_stdout: Arc<Mutex<Box<dyn Write + Send>>> =
-        Arc::new(Mutex::new(Box::new(std::io::stdout())));
-    let uplink = Uplink::new(
-        artifact.manifest.id.clone(),
-        Box::new(SharedWrite(Arc::clone(&shared_stdout))),
-    );
-    let runtime = factory.load_with_uplink(&artifact, granted, Some(Arc::clone(&uplink)))?;
-    let mut sidecar = Sidecar::new(runtime, expectation);
-    let dispatcher = crate::uplink::UplinkDispatcher(uplink);
+    let mut sidecar = Sidecar::with_message_ids(runtime, expectation, ids);
     sidecar.run_with_dispatcher(
         std::io::stdin(),
         SharedWrite(shared_stdout),
-        Some(Arc::new(dispatcher)),
+        Some(Arc::new(CapabilityRpcDispatcher(rpc))),
     )
 }
 
-/// Serialized writer handle shared by the main envelope loop and the uplink.
-pub(crate) struct SharedWrite(Arc<Mutex<Box<dyn Write + Send>>>);
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
 
+    use super::*;
+    use crate::transport::InputOperationControl;
+    use bbcom_plugin_contracts::generated_v2::{
+        CommandInvocation, HandleEventRequest, Handshake, HostContext, HostHello,
+        InitializeRequest, PluginEvent, PluginIdentity, RunCommandRequest, envelope, handshake,
+        plugin_event,
+    };
+    use bbcom_plugin_contracts::v2::{MIN_PROTOCOL_MINOR, WIT_PACKAGE, default_resource_limits};
+
+    #[derive(Default)]
+    struct FakeRuntime {
+        calls: Vec<&'static str>,
+    }
+
+    impl PluginExecutor for FakeRuntime {
+        fn initialize_v2(&mut self, _: wit::HostContext) -> Result<wit::PluginModel> {
+            self.calls.push("initialize");
+            Ok(wit::PluginModel {
+                surfaces: Vec::new(),
+                commands: Vec::new(),
+            })
+        }
+
+        fn handle_event_v2(&mut self, _: wit::PluginEvent) -> Result<wit::EventResult> {
+            self.calls.push("event");
+            Ok(wit::EventResult { accepted: true })
+        }
+
+        fn run_command_v2(&mut self, _: wit::CommandInvocation) -> Result<wit::CommandResult> {
+            self.calls.push("command");
+            Ok(wit::CommandResult {
+                message: "ok".to_owned(),
+            })
+        }
+
+        fn migrate_state_v2(&mut self, _: &str, state: &[u8]) -> Result<wit::MigratedState> {
+            self.calls.push("migrate");
+            Ok(wit::MigratedState {
+                schema_version: 2,
+                state: state.to_vec(),
+            })
+        }
+
+        fn shutdown(&mut self) -> Result<()> {
+            self.calls.push("shutdown");
+            Ok(())
+        }
+    }
+
+    fn expectation() -> HandshakeExpectation {
+        HandshakeExpectation::new(
+            "dev.bbcom.fixture",
+            "2.0.0",
+            "a".repeat(64),
+            "workspace-1",
+            "1",
+            1,
+            [Capability::UiWorkspace],
+        )
+    }
+
+    fn establish(sidecar: &mut Sidecar<FakeRuntime>) {
+        let expected = expectation();
+        sidecar
+            .handshake
+            .accept(
+                Envelope {
+                    protocol_major: PROTOCOL_MAJOR,
+                    protocol_minor: MAX_PROTOCOL_MINOR,
+                    message_id: 1,
+                    reply_to: None,
+                    payload: Some(envelope::Payload::Handshake(Handshake {
+                        hello: Some(handshake::Hello::Host(HostHello {
+                            protocol_major: PROTOCOL_MAJOR,
+                            min_minor: MIN_PROTOCOL_MINOR,
+                            max_minor: MAX_PROTOCOL_MINOR,
+                            wit_package: WIT_PACKAGE.to_owned(),
+                            plugin: Some(PluginIdentity {
+                                plugin_id: expected.plugin_id,
+                                plugin_version: expected.plugin_version,
+                                component_sha256: expected.component_sha256,
+                            }),
+                            granted_capabilities: vec![Capability::UiWorkspace as i32],
+                            limits: Some(default_resource_limits()),
+                            workspace_id: expected.workspace_id,
+                            instance_id: expected.instance_id,
+                            generation: expected.generation,
+                        })),
+                    })),
+                },
+                Instant::now(),
+                1,
+            )
+            .unwrap();
+    }
+
+    fn request(message_id: u64, operation: request::Operation) -> Envelope {
+        Envelope {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: MAX_PROTOCOL_MINOR,
+            message_id,
+            reply_to: None,
+            payload: Some(envelope::Payload::Request(Request {
+                operation: Some(operation),
+            })),
+        }
+    }
+
+    fn dispatch(sidecar: &mut Sidecar<FakeRuntime>, envelope: Envelope) -> Option<SidecarExit> {
+        let mut bytes = Vec::new();
+        let mut writer = FrameWriter::new(&mut bytes);
+        sidecar.dispatch(envelope, &mut writer).unwrap()
+    }
+
+    fn initialize(message_id: u64) -> Envelope {
+        request(
+            message_id,
+            request::Operation::Initialize(InitializeRequest {
+                context: Some(HostContext {
+                    workspace_id: "workspace-1".to_owned(),
+                    plugin_id: "dev.bbcom.fixture".to_owned(),
+                    instance_id: "1".to_owned(),
+                    generation: 1,
+                    locale: "en-US".to_owned(),
+                    theme: wire::ColorScheme::System as i32,
+                    granted_capabilities: vec![Capability::UiWorkspace as i32],
+                    limits: Some(default_resource_limits()),
+                    sessions: Vec::new(),
+                }),
+            }),
+        )
+    }
+
+    #[test]
+    fn migrate_precedes_single_initialize_then_events_and_commands_are_sequenced() {
+        let mut sidecar = Sidecar::new(FakeRuntime::default(), expectation());
+        establish(&mut sidecar);
+        dispatch(
+            &mut sidecar,
+            request(
+                2,
+                request::Operation::MigrateState(wire::MigrateStateRequest {
+                    previous_api: "bbcom:plugin@2.0.0".to_owned(),
+                    state_schema_version: 1,
+                    state: vec![7],
+                }),
+            ),
+        );
+        dispatch(&mut sidecar, initialize(3));
+        // A second initialize is rejected before reaching the guest.
+        dispatch(&mut sidecar, initialize(4));
+        dispatch(
+            &mut sidecar,
+            request(
+                5,
+                request::Operation::HandleEvent(HandleEventRequest {
+                    event: Some(PluginEvent {
+                        item: Some(plugin_event::Item::PortCatalogChanged(
+                            wire::PortCatalogChangedEvent {},
+                        )),
+                    }),
+                }),
+            ),
+        );
+        dispatch(
+            &mut sidecar,
+            request(
+                6,
+                request::Operation::RunCommand(RunCommandRequest {
+                    invocation: Some(CommandInvocation {
+                        command_id: "fixture.run".to_owned(),
+                        invocation_id: "invocation-1".to_owned(),
+                        arguments: Vec::new(),
+                    }),
+                }),
+            ),
+        );
+        assert_eq!(
+            sidecar.runtime.calls,
+            ["migrate", "initialize", "event", "command"]
+        );
+    }
+
+    #[test]
+    fn shutdown_runs_once_and_closes_the_sidecar() {
+        let mut sidecar = Sidecar::new(FakeRuntime::default(), expectation());
+        establish(&mut sidecar);
+        dispatch(&mut sidecar, initialize(2));
+        assert_eq!(
+            dispatch(
+                &mut sidecar,
+                request(3, request::Operation::Shutdown(wire::ShutdownRequest {})),
+            ),
+            Some(SidecarExit::ShutdownRequested)
+        );
+        assert_eq!(sidecar.runtime.calls, ["initialize", "shutdown"]);
+        sidecar.best_effort_shutdown();
+        assert_eq!(sidecar.runtime.calls, ["initialize", "shutdown"]);
+    }
+
+    struct InterruptFlag(AtomicBool);
+    impl PluginInterrupt for InterruptFlag {
+        fn interrupt(&self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn one_guest_task_is_admitted_and_cancel_interrupts_the_exact_task() {
+        let operations = ActiveOperations::default();
+        assert!(operations.register(10));
+        assert!(!operations.register(11), "second guest task must be busy");
+        let interrupted = Arc::new(InterruptFlag(AtomicBool::new(false)));
+        let guard = operations.attach(10, Some(interrupted.clone()));
+        assert!(!operations.cancel(11));
+        assert!(operations.cancel(10));
+        assert!(interrupted.0.load(Ordering::Acquire));
+        assert!(guard.finish());
+        assert!(operations.register(11), "cancelled task releases the slot");
+    }
+}
+
+pub(crate) struct SharedWrite(Arc<Mutex<Box<dyn Write + Send>>>);
 impl Write for SharedWrite {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         self.0
@@ -906,7 +943,6 @@ impl Write for SharedWrite {
             .map_err(|_| std::io::Error::other("shared stdout poisoned"))?
             .write(buffer)
     }
-
     fn flush(&mut self) -> std::io::Result<()> {
         self.0
             .lock()
@@ -918,9 +954,13 @@ impl Write for SharedWrite {
 struct LaunchArguments {
     package_root: PathBuf,
     process_policy: ProcessLimitPolicy,
-    granted: BTreeSet<Permission>,
+    granted: BTreeSet<Capability>,
+    package_sha256: String,
+    workspace_id: String,
+    instance_id: String,
+    generation: u64,
+    authorization_ticket: String,
 }
-
 impl LaunchArguments {
     fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Self> {
         let mut arguments = arguments.into_iter();
@@ -931,6 +971,11 @@ impl LaunchArguments {
         let mut blocks_network = false;
         let mut restricts_filesystem = false;
         let mut granted = BTreeSet::new();
+        let mut package_sha256 = None;
+        let mut workspace_id = None;
+        let mut instance_id = None;
+        let mut generation = None;
+        let mut authorization_ticket = None;
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
                 "--package-root" => package_root = arguments.next().map(PathBuf::from),
@@ -943,132 +988,59 @@ impl LaunchArguments {
                     }
                 }
                 "--memory-limit-bytes" => {
-                    memory_limit_bytes = arguments
-                        .next()
-                        .and_then(|value| value.parse::<usize>().ok())
+                    memory_limit_bytes = arguments.next().and_then(|v| v.parse().ok())
                 }
-                "--sandbox-no-children" => blocks_child_processes = true,
-                "--sandbox-no-network" => blocks_network = true,
-                "--sandbox-private-fs" => restricts_filesystem = true,
+                "--blocks-child-processes" => blocks_child_processes = true,
+                "--blocks-network" => blocks_network = true,
+                "--restricts-filesystem" => restricts_filesystem = true,
                 "--grant" => {
-                    let value = arguments.next().ok_or(HostError::InvalidHandshake)?;
-                    granted.insert(parse_permission(&value)?);
+                    let value = arguments
+                        .next()
+                        .ok_or(HostError::InvalidAuthorizationContext)?;
+                    let capability = parse_v2_capability(&value)?;
+                    if !granted.insert(capability) {
+                        return Err(HostError::InvalidAuthorizationContext);
+                    }
                 }
+                "--package-sha256" => package_sha256 = arguments.next(),
+                "--workspace-id" => workspace_id = arguments.next(),
+                "--instance-id" => instance_id = arguments.next(),
+                "--generation" => generation = arguments.next().and_then(|v| v.parse().ok()),
+                "--authorization-ticket" => authorization_ticket = arguments.next(),
                 _ => return Err(HostError::InvalidProcessLimit),
             }
         }
+        let process_policy = ProcessLimitPolicy {
+            platform: platform.ok_or(HostError::InvalidProcessLimit)?,
+            memory_limit_bytes: memory_limit_bytes.ok_or(HostError::InvalidProcessLimit)?,
+            blocks_child_processes,
+            blocks_network,
+            restricts_filesystem,
+        };
         Ok(Self {
             package_root: package_root.ok_or(HostError::InvalidArtifact)?,
-            process_policy: ProcessLimitPolicy {
-                platform: platform.ok_or(HostError::InvalidProcessLimit)?,
-                memory_limit_bytes: memory_limit_bytes.ok_or(HostError::InvalidProcessLimit)?,
-                blocks_child_processes,
-                blocks_network,
-                restricts_filesystem,
-            },
+            process_policy,
             granted,
+            package_sha256: package_sha256.ok_or(HostError::InvalidAuthorizationContext)?,
+            workspace_id: workspace_id.ok_or(HostError::InvalidAuthorizationContext)?,
+            instance_id: instance_id.ok_or(HostError::InvalidAuthorizationContext)?,
+            generation: generation
+                .filter(|v| *v != 0)
+                .ok_or(HostError::InvalidAuthorizationContext)?,
+            authorization_ticket: authorization_ticket.ok_or(HostError::AuthorizationRequired)?,
         })
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn valid_arguments(platform: &str) -> Vec<String> {
-        vec![
-            "--package-root".to_owned(),
-            "/private/plugin".to_owned(),
-            "--platform".to_owned(),
-            platform.to_owned(),
-            "--memory-limit-bytes".to_owned(),
-            bbcom_plugin_contracts::HOST_PROCESS_MEMORY_LIMIT_BYTES.to_string(),
-            "--sandbox-no-children".to_owned(),
-            "--sandbox-no-network".to_owned(),
-            "--sandbox-private-fs".to_owned(),
-            "--grant".to_owned(),
-            Permission::SessionMetadataRead.to_string(),
-        ]
-    }
-
-    #[test]
-    fn launch_arguments_parse_all_platforms_and_reject_malformed_attestations() {
-        for (name, platform) in [
-            ("windows", HostPlatform::Windows),
-            ("macos", HostPlatform::MacOs),
-            ("linux", HostPlatform::Linux),
-        ] {
-            let parsed = LaunchArguments::parse(valid_arguments(name)).unwrap();
-            assert_eq!(parsed.package_root, PathBuf::from("/private/plugin"));
-            assert_eq!(parsed.process_policy.platform, platform);
-            assert_eq!(
-                parsed.granted,
-                [Permission::SessionMetadataRead].into_iter().collect()
-            );
-            parsed.process_policy.validate().unwrap();
-        }
-
-        assert!(matches!(
-            LaunchArguments::parse(Vec::<String>::new()),
-            Err(HostError::InvalidArtifact)
-        ));
-        assert!(matches!(
-            LaunchArguments::parse(["--unknown".to_owned()]),
-            Err(HostError::InvalidProcessLimit)
-        ));
-        assert!(matches!(
-            LaunchArguments::parse([
-                "--package-root".to_owned(),
-                "/private/plugin".to_owned(),
-                "--platform".to_owned(),
-                "other".to_owned(),
-            ]),
-            Err(HostError::InvalidProcessLimit)
-        ));
-        assert!(matches!(
-            LaunchArguments::parse([
-                "--package-root".to_owned(),
-                "/private/plugin".to_owned(),
-                "--platform".to_owned(),
-                "linux".to_owned(),
-                "--memory-limit-bytes".to_owned(),
-                "not-a-number".to_owned(),
-            ]),
-            Err(HostError::InvalidProcessLimit)
-        ));
-        assert!(matches!(
-            LaunchArguments::parse([
-                "--package-root".to_owned(),
-                "/private/plugin".to_owned(),
-                "--platform".to_owned(),
-                "linux".to_owned(),
-                "--memory-limit-bytes".to_owned(),
-                "1".to_owned(),
-                "--grant".to_owned(),
-                "network.http".to_owned(),
-            ]),
-            Err(HostError::Contract(_))
-        ));
-    }
-
-    #[test]
-    fn protocol_errors_are_stable_and_non_retryable() {
-        let envelope = protocol_error(41, "PLUGIN_DENIED", "plugin.error.denied");
-        assert_eq!(envelope.request_id, 41);
-        let Some(envelope::Payload::Error(error)) = envelope.payload else {
-            panic!("expected error payload")
-        };
-        assert_eq!(error.code, "PLUGIN_DENIED");
-        assert_eq!(error.message_key, "plugin.error.denied");
-        assert!(!error.retryable);
-    }
-
-    #[test]
-    fn panel_field_kinds_use_stable_wire_names() {
-        assert_eq!(field_kind_name(FieldKind::Text), "text");
-        assert_eq!(field_kind_name(FieldKind::Number), "number");
-        assert_eq!(field_kind_name(FieldKind::Toggle), "toggle");
-        assert_eq!(field_kind_name(FieldKind::Select), "select");
-        assert_eq!(field_kind_name(FieldKind::Button), "button");
-    }
+#[allow(dead_code)]
+fn canonical_grants(capabilities: &BTreeSet<Capability>) -> Vec<&'static str> {
+    capabilities
+        .iter()
+        .copied()
+        .map(v2_capability_name)
+        .collect()
+}
+#[allow(dead_code)]
+fn expected_limits() -> wire::ResourceLimits {
+    default_resource_limits()
 }

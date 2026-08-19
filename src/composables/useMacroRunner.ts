@@ -39,6 +39,10 @@ export interface MacroRunResult {
 export function useMacroRunner({ send, onStep }: MacroRunnerOptions) {
   const running = ref(false);
   let aborted = false;
+  let paused = false;
+  let sendInFlight = false;
+  const resumeWaiters = new Set<() => void>();
+  const pauseWaiters = new Set<() => void>();
   // The pending delay's resolver: when abort() fires during an inter-step
   // delay, we clear the timer AND invoke this so the awaiting run() loop wakes
   // immediately (clearTimeout alone would leave the promise forever pending).
@@ -48,6 +52,8 @@ export function useMacroRunner({ send, onStep }: MacroRunnerOptions) {
   function abort() {
     if (aborted) return;
     aborted = true;
+    paused = false;
+    resolveWaiters(resumeWaiters);
     if (pendingDelayTimer !== null) {
       clearTimeout(pendingDelayTimer);
       pendingDelayTimer = null;
@@ -57,6 +63,39 @@ export function useMacroRunner({ send, onStep }: MacroRunnerOptions) {
       pendingDelayResolver = null;
       resolve();
     }
+  }
+
+  async function pause(signal?: AbortSignal): Promise<void> {
+    paused = true;
+    if (signal?.aborted) {
+      paused = false;
+      throw new Error('macro pause cancelled');
+    }
+    if (!sendInFlight) return;
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        pauseWaiters.delete(onIdle);
+        paused = false;
+        reject(new Error('macro pause cancelled'));
+      };
+      const onIdle = () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      pauseWaiters.add(onIdle);
+    });
+  }
+
+  function resume(): void {
+    if (!paused) return;
+    paused = false;
+    resolveWaiters(resumeWaiters);
+  }
+
+  function waitWhilePaused(): Promise<void> {
+    if (!paused || aborted) return Promise.resolve();
+    return new Promise<void>((resolve) => resumeWaiters.add(resolve));
   }
 
   function cancellableDelay(ms: number): Promise<void> {
@@ -81,10 +120,18 @@ export function useMacroRunner({ send, onStep }: MacroRunnerOptions) {
     let i = 0;
     try {
       for (; i < steps.length; i += 1) {
+        await waitWhilePaused();
         if (aborted) break;
         onStep?.(i, steps.length);
         const step = steps[i];
-        const ok = await send(step.data, step.isHex);
+        sendInFlight = true;
+        let ok: boolean;
+        try {
+          ok = await send(step.data, step.isHex);
+        } finally {
+          sendInFlight = false;
+          resolveWaiters(pauseWaiters);
+        }
         if (!ok) {
           return { completed: i, failedAt: i, aborted };
         }
@@ -100,5 +147,11 @@ export function useMacroRunner({ send, onStep }: MacroRunnerOptions) {
     }
   }
 
-  return { running, run, abort };
+  return { running, run, abort, pause, resume };
+}
+
+function resolveWaiters(waiters: Set<() => void>): void {
+  const pending = Array.from(waiters);
+  waiters.clear();
+  for (const resolve of pending) resolve();
 }

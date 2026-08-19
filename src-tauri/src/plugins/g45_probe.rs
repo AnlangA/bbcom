@@ -1,7 +1,7 @@
 //! Installed-application G45 probe for the packaged plugin sidecar.
 //!
 //! This entry point deliberately reports Component observations separately
-//! from native sandbox self-test observations. The v1 WIT surface exposes no
+//! from native sandbox self-test observations. The v2 WIT surface exposes no
 //! WASI or ambient OS authority, so a Component cannot honestly claim it tried
 //! a socket, child process, filesystem path, serial device, or keyring.
 
@@ -14,15 +14,19 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bbcom_plugin_contracts::generated::{
-    Envelope, HostHello, InitializeRequest, OpaqueStateKind, PutStateChunkRequest, envelope,
+use bbcom_plugin_contracts::generated_v2::{
+    self as wire, Envelope, Handshake, HostContext, HostHello, InitializeRequest, PluginIdentity,
+    Request, envelope, handshake, request, response,
 };
-use bbcom_plugin_contracts::{
-    HOST_PROCESS_MEMORY_LIMIT_BYTES, MAX_FRAME_BYTES, PLUGIN_STATE_SCHEMA_VERSION, PROTOCOL_MAJOR,
-    PROTOCOL_MINOR, Permission, WIT_PACKAGE, empty_plugin_storage_payload,
+use bbcom_plugin_contracts::v2::{
+    HOST_PROCESS_MEMORY_LIMIT_BYTES, MAX_FRAME_BYTES, MAX_PROTOCOL_MINOR, MIN_PROTOCOL_MINOR,
+    PROTOCOL_MAJOR, WIT_PACKAGE, default_resource_limits,
 };
 use bbcom_plugin_host::transport::{FrameReader, FrameWriter};
-use bbcom_plugin_host::{PluginEngineFactory, TrustedPluginArtifact};
+use bbcom_plugin_host::{
+    AuthorizationRequest, CapabilityRpc, MessageIdSequence, PluginAuthorizationGate,
+    PluginEngineFactory, PluginLaunchContext, TrustedPluginArtifact, authorization_ticket,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -30,7 +34,7 @@ use super::host_launcher::SandboxedChild;
 use super::{PlatformSandboxDriver, SandboxDriver, SandboxLaunch};
 
 const PROBE_FLAG: &str = "--plugin-g45-host-probe";
-const COMPONENT_PACKAGE: &str = "bbcom:g45-malicious-fixture@1.0.0";
+const COMPONENT_PACKAGE: &str = "bbcom:g45-malicious-fixture@2.0.0";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(8);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_FIXTURE_SOURCE_BYTES: u64 = 1024 * 1024;
@@ -112,7 +116,7 @@ fn run_probe(arguments: Vec<OsString>) -> Result<(), PluginG45ProbeError> {
     let evidence = HostEvidence {
         schema_version: 1,
         evidence_kind: "bbcom-packaged-host-malicious-component",
-        probe_protocol: "bbcom-plugin-host-g45/v1",
+        probe_protocol: "bbcom-plugin-host-g45/v2",
         commit_sha: &arguments.commit,
         platform: platform.name,
         target: platform.target,
@@ -122,7 +126,7 @@ fn run_probe(arguments: Vec<OsString>) -> Result<(), PluginG45ProbeError> {
         fixture: FixtureEvidence {
             component_package: COMPONENT_PACKAGE,
             sha256: &fixture_sources.suite_sha256,
-            digest_algorithm: "sha256(length-prefixed-name-and-source-v1)",
+            digest_algorithm: "sha256(length-prefixed-name-and-source-v2)",
             artifacts: &packages.artifacts,
         },
         sidecar: SidecarEvidence {
@@ -150,7 +154,7 @@ fn run_probe(arguments: Vec<OsString>) -> Result<(), PluginG45ProbeError> {
             required_evidence: "separate-native-platform-sandbox-self-test",
         },
         limitations: &[
-            "v1 Component links no WASI, socket, process, filesystem, device, environment, WebView, DOM or Tauri import",
+            "v2 Component links no WASI, socket, process, filesystem, device, environment, WebView, DOM or Tauri import",
             "native sandbox observations are not relabelled as Component resource attempts",
             "this probe never self-authorizes market release; only the aggregate G45/G46 gate may promote evidence",
         ],
@@ -379,7 +383,7 @@ impl FixtureSources {
             fs::write(package.join("component/plugin.wasm"), &compiled)
                 .map_err(|_| PluginG45ProbeError::new("compiled Component could not be written"))?;
             let manifest = format!(
-                "id = \"dev.bbcom.g45-fixture\"\nname = \"G45 Malicious Fixture\"\nversion = \"1.0.0\"\napi = \"^1.0\"\nrequested-capabilities = []\n\n[component]\npath = \"component/plugin.wasm\"\nsha256 = \"{compiled_sha256}\"\n\n[publisher]\nname = \"bbcom G45\"\nidentity = \"publisher:bbcom-g45\"\nwebsite = \"https://example.invalid\"\n"
+                "id = \"dev.bbcom.g45-fixture\"\nname = \"G45 Malicious Fixture\"\nversion = \"1.0.0\"\napi = \"^2.0\"\nrequested-capabilities = []\n\n[component]\npath = \"component/plugin.wasm\"\nsha256 = \"{compiled_sha256}\"\n\n[publisher]\nname = \"bbcom G45\"\nwebsite = \"https://example.invalid\"\n"
             );
             fs::write(package.join("plugin.toml"), manifest)
                 .map_err(|_| PluginG45ProbeError::new("probe manifest could not be written"))?;
@@ -460,9 +464,23 @@ fn classify_unlinked_ambient_import(package: &Path) -> Result<&'static str, Plug
         .map_err(|_| PluginG45ProbeError::new("ambient fixture manifest is unavailable"))?;
     let artifact = TrustedPluginArtifact::load(package, &manifest)
         .map_err(|_| PluginG45ProbeError::new("ambient fixture artifact is invalid"))?;
-    let factory = PluginEngineFactory::new()
-        .map_err(|_| PluginG45ProbeError::new("ambient fixture engine is unavailable"))?;
-    match factory.load(&artifact, [Permission::UiPanel, Permission::PluginStorage]) {
+    struct ProbeAuthorization;
+    impl PluginAuthorizationGate for ProbeAuthorization {
+        fn authorize(&self, _request: &AuthorizationRequest) -> bool {
+            true
+        }
+    }
+    let factory =
+        PluginEngineFactory::with_authorization_gate(std::sync::Arc::new(ProbeAuthorization))
+            .map_err(|_| PluginG45ProbeError::new("ambient fixture engine is unavailable"))?;
+    let context = PluginLaunchContext {
+        package_sha256: artifact.manifest.component.sha256.clone(),
+        workspace_id: "g45-probe".to_owned(),
+        instance_id: "ambient".to_owned(),
+        generation: 1,
+    };
+    let rpc = CapabilityRpc::new(Box::new(std::io::sink()), MessageIdSequence::new());
+    match factory.load_authorized(&artifact, &context, [], rpc) {
         Err(error) if error.code() == "PLUGIN_COMPONENT_INVALID" => Ok("PLUGIN_COMPONENT_INVALID"),
         Err(error) => Err(PluginG45ProbeError::new(format!(
             "ambient fixture returned {}, expected PLUGIN_COMPONENT_INVALID",
@@ -482,52 +500,51 @@ fn run_initialization_probe<S: SandboxDriver>(
 ) -> Result<Option<String>, PluginG45ProbeError> {
     let mut process = ProbeProcess::spawn(sandbox, sidecar, package)?;
     process.handshake()?;
-    let storage = empty_plugin_storage_payload();
-    let upload = process.request(
-        2,
-        envelope::Payload::PutStateChunkRequest(PutStateChunkRequest {
-            state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-            kind: OpaqueStateKind::PluginStorage as i32,
-            total_bytes: storage.len() as u64,
-            offset: 0,
-            payload: storage.clone(),
-            final_chunk: true,
-        }),
-    )?;
-    if !matches!(
-        upload.payload,
-        Some(envelope::Payload::PutStateChunkResponse(response))
-            if response.kind == OpaqueStateKind::PluginStorage as i32
-                && response.accepted_bytes == storage.len() as u64
-    ) {
-        return Err(PluginG45ProbeError::new(
-            "packaged host rejected the canonical initial state upload",
-        ));
-    }
     let response = process.request(
-        3,
-        envelope::Payload::InitializeRequest(InitializeRequest {
-            state_schema_version: PLUGIN_STATE_SCHEMA_VERSION,
-            has_plugin_storage: true,
-            has_project_state: false,
+        2,
+        request::Operation::Initialize(InitializeRequest {
+            context: Some(HostContext {
+                workspace_id: "g45-probe".to_owned(),
+                plugin_id: "dev.bbcom.g45-fixture".to_owned(),
+                instance_id: "g45-probe-1".to_owned(),
+                generation: 1,
+                locale: "en-US".to_owned(),
+                theme: wire::ColorScheme::System as i32,
+                granted_capabilities: Vec::new(),
+                limits: Some(default_resource_limits()),
+                sessions: Vec::new(),
+            }),
         }),
     )?;
     match (expectation, response.payload) {
-        (InitializationExpectation::Success, Some(envelope::Payload::InitializeResponse(_))) => {
-            Ok(None)
-        }
+        (
+            InitializationExpectation::Success,
+            Some(envelope::Payload::Response(wire::Response {
+                result: Some(response::Result::Initialize(_)),
+            })),
+        ) => Ok(None),
         (
             InitializationExpectation::ExactError(expected),
             Some(envelope::Payload::Error(error)),
-        ) if error.code == expected => Ok(Some(error.code)),
+        ) if classify_protocol_error(&error) == expected => Ok(Some(expected.to_owned())),
         (InitializationExpectation::OneOf(expected), Some(envelope::Payload::Error(error)))
-            if expected.contains(&error.code.as_str()) =>
+            if expected.contains(&classify_protocol_error(&error)) =>
         {
-            Ok(Some(error.code))
+            Ok(Some(classify_protocol_error(&error).to_owned()))
         }
         _ => Err(PluginG45ProbeError::new(
             "packaged host returned an unexpected initialization result",
         )),
+    }
+}
+
+fn classify_protocol_error(error: &wire::Error) -> &'static str {
+    match error.message_key.as_str() {
+        "plugin.error.trap" => "PLUGIN_TRAP",
+        "plugin.error.timeout" => "PLUGIN_TIMEOUT",
+        "plugin.error.fuelExhausted" => "PLUGIN_FUEL_EXHAUSTED",
+        "plugin.error.memoryLimit" => "PLUGIN_MEMORY_LIMIT",
+        _ => "PLUGIN_PROTOCOL_INVALID",
     }
 }
 
@@ -536,7 +553,8 @@ fn run_unlinked_ambient_import_probe<S: SandboxDriver>(
     sidecar: &Path,
     package: &Path,
 ) -> Result<(), PluginG45ProbeError> {
-    let arguments = sidecar_arguments(sandbox, package);
+    let component_sha256 = probe_component_digest(package)?;
+    let arguments = sidecar_arguments(sandbox, package, &component_sha256);
     let launch = SandboxLaunch {
         sidecar_executable: sidecar,
         package_root: package,
@@ -595,6 +613,7 @@ struct ProbeProcess {
     stdin: Box<dyn Write + Send>,
     responses: Receiver<Result<Option<Envelope>, ()>>,
     reader: Option<JoinHandle<()>>,
+    component_sha256: String,
 }
 
 impl ProbeProcess {
@@ -603,7 +622,8 @@ impl ProbeProcess {
         sidecar: &Path,
         package: &Path,
     ) -> Result<Self, PluginG45ProbeError> {
-        let arguments = sidecar_arguments(sandbox, package);
+        let component_sha256 = probe_component_digest(package)?;
+        let arguments = sidecar_arguments(sandbox, package, &component_sha256);
         let launch = SandboxLaunch {
             sidecar_executable: sidecar,
             package_root: package,
@@ -638,24 +658,50 @@ impl ProbeProcess {
             stdin,
             responses,
             reader: Some(reader),
+            component_sha256,
         })
     }
 
     fn handshake(&mut self) -> Result<(), PluginG45ProbeError> {
-        let response = self.request(
-            1,
-            envelope::Payload::HostHello(HostHello {
-                wit_package: WIT_PACKAGE.to_owned(),
-                plugin_id: "dev.bbcom.g45-fixture".to_owned(),
-                plugin_version: "1.0.0".to_owned(),
-                granted_capabilities: vec!["plugin.storage".to_owned(), "ui.panel".to_owned()],
-            }),
-        )?;
-        match response.payload {
-            Some(envelope::Payload::PluginHello(hello))
-                if hello.plugin_id == "dev.bbcom.g45-fixture"
-                    && hello.plugin_version == "1.0.0"
-                    && hello.wit_package == WIT_PACKAGE =>
+        FrameWriter::new(&mut self.stdin)
+            .write_envelope(&Envelope {
+                protocol_major: PROTOCOL_MAJOR,
+                protocol_minor: MAX_PROTOCOL_MINOR,
+                message_id: 1,
+                reply_to: None,
+                payload: Some(envelope::Payload::Handshake(Handshake {
+                    hello: Some(handshake::Hello::Host(HostHello {
+                        protocol_major: PROTOCOL_MAJOR,
+                        min_minor: MIN_PROTOCOL_MINOR,
+                        max_minor: MAX_PROTOCOL_MINOR,
+                        wit_package: WIT_PACKAGE.to_owned(),
+                        plugin: Some(PluginIdentity {
+                            plugin_id: "dev.bbcom.g45-fixture".to_owned(),
+                            plugin_version: "1.0.0".to_owned(),
+                            component_sha256: self.component_sha256.clone(),
+                        }),
+                        granted_capabilities: Vec::new(),
+                        limits: Some(default_resource_limits()),
+                        workspace_id: "g45-probe".to_owned(),
+                        instance_id: "g45-probe-1".to_owned(),
+                        generation: 1,
+                    })),
+                })),
+            })
+            .map_err(|_| PluginG45ProbeError::new("host handshake could not be written"))?;
+        match self.responses.recv_timeout(RESPONSE_TIMEOUT) {
+            Ok(Ok(Some(Envelope {
+                reply_to: Some(1),
+                payload:
+                    Some(envelope::Payload::Handshake(Handshake {
+                        hello: Some(handshake::Hello::Plugin(hello)),
+                    })),
+                ..
+            }))) if hello.wit_package == WIT_PACKAGE
+                && hello.plugin.as_ref().is_some_and(|plugin| {
+                    plugin.plugin_id == "dev.bbcom.g45-fixture"
+                        && plugin.component_sha256 == self.component_sha256
+                }) =>
             {
                 Ok(())
             }
@@ -668,18 +714,21 @@ impl ProbeProcess {
     fn request(
         &mut self,
         request_id: u64,
-        payload: envelope::Payload,
+        operation: request::Operation,
     ) -> Result<Envelope, PluginG45ProbeError> {
         FrameWriter::new(&mut self.stdin)
             .write_envelope(&Envelope {
                 protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
-                request_id,
-                payload: Some(payload),
+                protocol_minor: MAX_PROTOCOL_MINOR,
+                message_id: request_id,
+                reply_to: None,
+                payload: Some(envelope::Payload::Request(Request {
+                    operation: Some(operation),
+                })),
             })
             .map_err(|_| PluginG45ProbeError::new("host request could not be written"))?;
         match self.responses.recv_timeout(RESPONSE_TIMEOUT) {
-            Ok(Ok(Some(response))) if response.request_id == request_id => Ok(response),
+            Ok(Ok(Some(response))) if response.reply_to == Some(request_id) => Ok(response),
             Ok(_) => Err(PluginG45ProbeError::new(
                 "host response was missing, malformed or mis-correlated",
             )),
@@ -693,18 +742,51 @@ impl ProbeProcess {
     }
 }
 
-fn sidecar_arguments<S: SandboxDriver>(sandbox: &S, package: &Path) -> [OsString; 9] {
-    [
+fn sidecar_arguments<S: SandboxDriver>(
+    sandbox: &S,
+    package: &Path,
+    component_sha256: &str,
+) -> Vec<OsString> {
+    let request = AuthorizationRequest {
+        plugin_id: "dev.bbcom.g45-fixture".to_owned(),
+        plugin_version: "1.0.0".to_owned(),
+        component_sha256: component_sha256.to_owned(),
+        package_sha256: component_sha256.to_owned(),
+        workspace_id: "g45-probe".to_owned(),
+        instance_id: "g45-probe-1".to_owned(),
+        generation: 1,
+        capabilities: Vec::new(),
+    };
+    vec![
         OsString::from("--package-root"),
         package.as_os_str().to_owned(),
         OsString::from("--platform"),
         OsString::from(sandbox.platform_argument()),
         OsString::from("--memory-limit-bytes"),
         OsString::from(HOST_PROCESS_MEMORY_LIMIT_BYTES.to_string()),
-        OsString::from("--sandbox-no-children"),
-        OsString::from("--sandbox-no-network"),
-        OsString::from("--sandbox-private-fs"),
+        OsString::from("--blocks-child-processes"),
+        OsString::from("--blocks-network"),
+        OsString::from("--restricts-filesystem"),
+        OsString::from("--package-sha256"),
+        OsString::from(component_sha256),
+        OsString::from("--workspace-id"),
+        OsString::from("g45-probe"),
+        OsString::from("--instance-id"),
+        OsString::from("g45-probe-1"),
+        OsString::from("--generation"),
+        OsString::from("1"),
+        OsString::from("--authorization-ticket"),
+        OsString::from(authorization_ticket(&request)),
     ]
+}
+
+fn probe_component_digest(package: &Path) -> Result<String, PluginG45ProbeError> {
+    let manifest = fs::read_to_string(package.join("plugin.toml"))
+        .map_err(|_| PluginG45ProbeError::new("probe manifest is unavailable"))?;
+    Ok(bbcom_plugin_contracts::PluginManifest::parse(&manifest)
+        .map_err(|_| PluginG45ProbeError::new("probe manifest is invalid"))?
+        .component
+        .sha256)
 }
 
 impl Drop for ProbeProcess {

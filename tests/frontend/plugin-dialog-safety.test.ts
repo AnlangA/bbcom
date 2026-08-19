@@ -2,15 +2,13 @@
 
 import { flushPromises, mount } from '@vue/test-utils';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import type { VNode } from 'vue';
 import PluginCenterPanel from '../../src/components/plugins/PluginCenterPanel.vue';
-import PluginPromptHost from '../../src/components/plugins/PluginPromptHost.vue';
-import PluginSerialProposalDialog from '../../src/components/plugins/PluginSerialProposalDialog.vue';
 import {
   PLUGIN_CENTER_KEY,
   PluginCenterService,
   type PluginCenterData,
   type PluginCenterPort,
-  type PluginSerialProposal,
 } from '../../src/features/plugins';
 import zh from '../../src/lib/locales/zh';
 
@@ -26,32 +24,21 @@ vi.mock('naive-ui', async (importOriginal) => {
 
 interface UninstallConfirmation {
   title?: string;
-  content?: string;
+  content?: string | (() => VNode);
   positiveText?: string;
   negativeText?: string;
   onPositiveClick?: () => void;
 }
 
+function mountConfirmationContent(confirmation: UninstallConfirmation) {
+  expect(confirmation.content).toBeTypeOf('function');
+  const render = confirmation.content as () => VNode;
+  return mount({ render });
+}
+
 function lastUninstallConfirmation(): UninstallConfirmation | undefined {
   return dialogWarning.mock.calls.at(-1)?.[0] as UninstallConfirmation | undefined;
 }
-
-const proposal: PluginSerialProposal = {
-  runtime: {
-    workspaceId: 'workspace-1',
-    pluginId: 'plugin.proposal',
-    instanceId: 1,
-    generation: 1,
-  },
-  proposalId: 'proposal-1',
-  pluginId: 'plugin.proposal',
-  pluginName: 'Proposal Plugin',
-  sessionLabel: 'Session A',
-  displayLabel: 'Send request',
-  byteCount: 2,
-  hexPreview: '01 02',
-  expiresAtMs: 1_000,
-};
 
 function centerData(overrides: Partial<PluginCenterData> = {}): PluginCenterData {
   return {
@@ -66,14 +53,11 @@ function centerData(overrides: Partial<PluginCenterData> = {}): PluginCenterData
         statusReason: null,
         enabled: false,
         pendingVersion: null,
-        declaredCapabilities: [],
+        requestedCapabilities: [],
         effectiveCapabilities: [],
-        unavailableCapabilities: [],
         runtime: null,
       },
     ],
-    serialProposals: [],
-    panels: [],
     sources: [],
     ...overrides,
   };
@@ -93,25 +77,9 @@ function createCenterPort(initial: PluginCenterData): PluginCenterPort {
     removeSource: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
     refreshSource: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
     setWatchEnabled: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-    resolveSerialProposal: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
-    emitPanelEvent: vi.fn(async () => ({ outcome: 'completed' as const, data: initial })),
     subscribe: vi.fn(() => vi.fn()),
   };
 }
-
-describe('plugin dialog safety boundaries', () => {
-  test('does not reject a proposal while an action is busy', async () => {
-    const serial = mount(PluginSerialProposalDialog, {
-      props: { proposal, busy: true },
-      global: { stubs: { Teleport: true } },
-    });
-    expect(serial.get('.app-modal__close').attributes('disabled')).toBeDefined();
-    await serial.get('.app-modal-overlay').trigger('keydown', { key: 'Escape' });
-    expect(serial.emitted('resolve')).toBeUndefined();
-
-    serial.unmount();
-  });
-});
 
 describe('plugin center panel local install and uninstall', () => {
   beforeEach(() => {
@@ -156,13 +124,42 @@ describe('plugin center panel local install and uninstall', () => {
 
     const confirmation = lastUninstallConfirmation();
     expect(confirmation?.title).toBe(zh['plugins.uninstall_confirm.title']);
-    expect(confirmation?.content).toContain('Capture Tools');
+    const confirmationContent = mountConfirmationContent(confirmation ?? {});
+    expect(confirmationContent.text()).toContain('Capture Tools');
+    expect(confirmationContent.text()).toContain(
+      zh['plugins.uninstall_confirm.contributions.delete'],
+    );
+    const choices = confirmationContent.findAll('input[type="radio"]');
+    expect(choices).toHaveLength(2);
+    expect((choices[0]?.element as HTMLInputElement).checked).toBe(true);
     expect(confirmation?.positiveText).toBe(zh['plugins.uninstall']);
     expect(confirmation?.negativeText).toBe(zh['common.cancel']);
 
     confirmation?.onPositiveClick?.();
     await flushPromises();
     expect(port.uninstall).toHaveBeenCalledWith('tools.capture', expect.any(AbortSignal));
+    confirmationContent.unmount();
+    wrapper.unmount();
+  });
+
+  test('uninstall can visibly convert plugin-owned contributions to user entries', async () => {
+    const port = createCenterPort(centerData());
+    const wrapper = await mountPanel(port);
+
+    await wrapper.get('.plugin-center__uninstall').trigger('click');
+    const confirmation = lastUninstallConfirmation();
+    const confirmationContent = mountConfirmationContent(confirmation ?? {});
+    const preserve = confirmationContent.get('input[value="convert-to-user"]');
+    await preserve.setValue(true);
+
+    confirmation?.onPositiveClick?.();
+    await flushPromises();
+    expect(port.uninstall).toHaveBeenCalledWith(
+      'tools.capture',
+      expect.any(AbortSignal),
+      'convert-to-user',
+    );
+    confirmationContent.unmount();
     wrapper.unmount();
   });
 
@@ -186,7 +183,7 @@ describe('plugin center panel local install and uninstall', () => {
   });
 });
 
-describe('plugin runtime status banner and proposal expiry', () => {
+describe('plugin runtime status banner', () => {
   test('panel renders and clears the runtime-unavailable banner from the service snapshot', async () => {
     const port = createCenterPort(centerData());
     const service = new PluginCenterService(port);
@@ -226,69 +223,5 @@ describe('plugin runtime status banner and proposal expiry', () => {
     expect(banner.text()).toContain('PLUGIN_BOOTSTRAP_STATE_STORE_MISSING');
     wrapper.unmount();
     wrapper2.unmount();
-  });
-
-  test('prompt host hides a proposal whose TTL already elapsed', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(5_000);
-    try {
-      const expired = { ...proposal, expiresAtMs: 4_000 };
-      const wrapper = mount(PluginPromptHost, {
-        global: {
-          provide: {
-            [PLUGIN_CENTER_KEY as symbol]: {
-              snapshot: () => ({ serialProposals: [expired], action: null, failure: null }),
-              subscribe: () => () => undefined,
-              clearFailure: vi.fn(),
-              resolveSerialProposal: vi.fn(),
-              refresh: vi.fn(),
-            },
-          },
-        },
-      });
-      await flushPromises();
-      expect(wrapper.findComponent(PluginSerialProposalDialog).exists()).toBe(false);
-
-      // An already-dismissed expired proposal stays hidden even when the
-      // expiry timer fires later.
-      vi.advanceTimersByTime(120_000);
-      expect(wrapper.findComponent(PluginSerialProposalDialog).exists()).toBe(false);
-      wrapper.unmount();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  test('prompt host dismisses a proposal when its TTL timer fires', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(10_000);
-    try {
-      const live = { ...proposal, expiresAtMs: 70_000 };
-      const wrapper = mount(PluginPromptHost, {
-        global: {
-          provide: {
-            [PLUGIN_CENTER_KEY as symbol]: {
-              snapshot: () => ({ serialProposals: [live], action: null, failure: null }),
-              subscribe: () => () => undefined,
-              clearFailure: vi.fn(),
-              resolveSerialProposal: vi.fn(),
-              refresh: vi.fn(),
-            },
-          },
-        },
-      });
-      await flushPromises();
-      expect(wrapper.findComponent(PluginSerialProposalDialog).exists()).toBe(true);
-
-      vi.advanceTimersByTime(60_100);
-      await flushPromises();
-      expect(
-        wrapper.findComponent(PluginSerialProposalDialog).exists(),
-        'expired proposal is hidden without user action',
-      ).toBe(false);
-      wrapper.unmount();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

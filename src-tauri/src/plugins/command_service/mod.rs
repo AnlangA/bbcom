@@ -5,38 +5,19 @@
 //! adapter may map these native values to reviewed DTOs after wiring the
 //! explicit upstream ports below.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use bbcom_contracts::RuntimeInstanceKey;
-use bbcom_plugin_broker::{
-    AuditSink, BrokerAction, BrokerError, DeclarativePanel, DeclarativePanelBroker, HostedPanel,
-    NoActionReason, PanelControlKind, PanelEvent, PanelEventAction, PanelField, ProposalContext,
-    ProposalDecision, ProposalResolution, SerialProposalBroker, SerialProposalRequest,
-    SerialProposalView,
-};
-use bbcom_plugin_contracts::Permission;
-use bbcom_plugin_contracts::generated::{ProposalOutcomeValue, ProposalResult, envelope};
+use bbcom_contracts::PluginContributionDisposition;
 use bbcom_plugin_manager::{
-    Clock, HostLauncher, HostPanel, HostPanelFieldKind, HostPublishedPanel, InstallationPort,
-    ManualPackageRequest, PluginSnapshot,
+    Clock, HostLauncher, InstallationPort, ManualPackageRequest, PluginSnapshot,
 };
-
-/// Terminal proposal outcome pushed to a sidecar parked on its guest call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HostProposalOutcome {
-    Approved,
-    Rejected,
-    Expired,
-}
 
 use super::service::{PluginService, PluginServiceError};
 
 const MAX_ACTIVE_OPERATIONS: usize = 128;
 const MAX_COMPLETED_OPERATIONS: usize = 256;
 const COMPLETED_OPERATION_RETENTION_MS: u64 = 15 * 60 * 1_000;
-const MAX_PENDING_PANELS: usize = 128;
-const MAX_PENDING_PROPOSALS: usize = 1_024;
 const MAX_REQUEST_ID_BYTES: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,11 +34,7 @@ pub enum PluginOperationStatus {
 #[cfg(test)]
 mod operation_retention_tests {
     use super::*;
-    use bbcom_plugin_broker::NoopAuditSink;
-    use bbcom_plugin_manager::{
-        PluginArtifact, PluginArtifactSource, PluginSourceKind, PluginStatus,
-    };
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct Lifecycle;
 
@@ -97,32 +74,6 @@ mod operation_retention_tests {
         }
     }
 
-    struct Upstream;
-
-    impl PluginCommandUpstreamPort for Upstream {
-        fn current_proposal_context(
-            &mut self,
-            _proposal: &SerialProposalView,
-        ) -> Result<ProposalContext, PluginUpstreamFailure> {
-            Err(PluginUpstreamFailure::ProposalContextUnavailable)
-        }
-
-        fn execute_serial_action(
-            &mut self,
-            _runtime: RuntimeInstanceKey,
-            _action: BrokerAction,
-        ) -> Result<(), PluginUpstreamFailure> {
-            Err(PluginUpstreamFailure::SerialExecutionUnavailable)
-        }
-
-        fn deliver_panel_event(
-            &mut self,
-            _action: PanelEventAction,
-        ) -> Result<(), PluginUpstreamFailure> {
-            Err(PluginUpstreamFailure::PanelDeliveryUnavailable)
-        }
-    }
-
     fn failure() -> PluginOperationFailure {
         PluginOperationFailure {
             code: "TEST_FAILURE",
@@ -130,20 +81,9 @@ mod operation_retention_tests {
         }
     }
 
-    fn service() -> PluginCommandService {
-        let audit: &'static NoopAuditSink = Box::leak(Box::new(NoopAuditSink));
-        PluginCommandService::new(
-            Arc::new(Lifecycle),
-            Box::new(Upstream),
-            Box::new(SerialProposalBroker::new(audit)),
-            Box::new(DeclarativePanelBroker::new(audit)),
-        )
-        .unwrap()
-    }
-
     #[test]
-    fn five_thousand_terminal_operations_keep_registry_and_correlations_bounded() {
-        let mut service = service();
+    fn terminal_operation_registry_and_request_correlations_stay_bounded() {
+        let mut service = PluginCommandService::new(Arc::new(Lifecycle)).unwrap();
         for index in 0..5_000_u64 {
             let queued = service
                 .queue_set_enabled(
@@ -159,343 +99,222 @@ mod operation_retention_tests {
         let snapshot = service.snapshot();
         assert_eq!(snapshot.operations.len(), MAX_COMPLETED_OPERATIONS);
         assert_eq!(service.requests.len(), MAX_COMPLETED_OPERATIONS);
-
-        // Advancing beyond retention removes the old request correlations too.
-        let queued = service
-            .queue_set_enabled(
-                snapshot.revision,
-                "request-after-retention".to_owned(),
-                "dev.bbcom.fixture".to_owned(),
-                true,
-            )
-            .unwrap();
-        service
-            .execute(
-                &queued.operation_id,
-                COMPLETED_OPERATION_RETENTION_MS + 10_000,
-            )
-            .unwrap();
-        assert!(service.snapshot().operations.len() <= MAX_COMPLETED_OPERATIONS);
     }
 
-    struct RunningLifecycle(PluginSnapshot);
+    struct RejectCleanup(Arc<AtomicBool>);
 
-    impl PluginLifecyclePort for RunningLifecycle {
-        fn snapshots(&self) -> Result<Vec<PluginSnapshot>, PluginOperationFailure> {
-            Ok(vec![self.0.clone()])
-        }
-        fn workspace_id(&self) -> Result<Option<String>, PluginOperationFailure> {
-            Ok(Some("11111111-1111-1111-1111-111111111111".to_owned()))
-        }
-        fn install_manual(
+    impl PluginContributionCleanupPort for RejectCleanup {
+        fn uninstall_with_contribution_cleanup(
             &self,
-            _: &ManualPackageRequest,
+            _plugin_id: &str,
+            disposition: PluginContributionDisposition,
+            _uninstall: &mut dyn FnMut() -> Result<PluginSnapshot, PluginOperationFailure>,
         ) -> Result<PluginSnapshot, PluginOperationFailure> {
-            Ok(self.0.clone())
-        }
-        fn install_local(
-            &self,
-            _: &std::path::Path,
-        ) -> Result<PluginSnapshot, PluginOperationFailure> {
-            Ok(self.0.clone())
-        }
-        fn uninstall(&self, _: &str) -> Result<PluginSnapshot, PluginOperationFailure> {
-            Ok(self.0.clone())
-        }
-        fn set_enabled(&self, _: &str, _: bool) -> Result<PluginSnapshot, PluginOperationFailure> {
-            Ok(self.0.clone())
-        }
-    }
-
-    struct CountingUpstream(Arc<AtomicUsize>);
-
-    impl PluginCommandUpstreamPort for CountingUpstream {
-        fn current_proposal_context(
-            &mut self,
-            proposal: &SerialProposalView,
-        ) -> Result<ProposalContext, PluginUpstreamFailure> {
-            Ok(ProposalContext {
-                operation_id: proposal.operation_id.clone(),
-                session_id: proposal.session_id.clone(),
+            assert_eq!(disposition, PluginContributionDisposition::ConvertToUser);
+            assert!(
+                self.0.load(Ordering::SeqCst),
+                "plugin runtime must be stopped before contribution cleanup"
+            );
+            Err(PluginOperationFailure {
+                code: "PLUGIN_CONTRIBUTION_CLEANUP_FAILED",
+                message_key: "plugin.error.contributionCleanupFailed",
             })
         }
-        fn execute_serial_action(
-            &mut self,
-            _: RuntimeInstanceKey,
-            _: BrokerAction,
-        ) -> Result<(), PluginUpstreamFailure> {
-            self.0.fetch_add(1, Ordering::Relaxed);
-            Ok(())
+    }
+
+    struct PanicOnUninstall {
+        disabled: Arc<AtomicBool>,
+        uninstall_called: Arc<AtomicBool>,
+    }
+
+    impl PluginLifecyclePort for PanicOnUninstall {
+        fn snapshots(&self) -> Result<Vec<PluginSnapshot>, PluginOperationFailure> {
+            Ok(Vec::new())
         }
-        fn deliver_panel_event(
-            &mut self,
-            _: PanelEventAction,
-        ) -> Result<(), PluginUpstreamFailure> {
-            Ok(())
+
+        fn install_manual(
+            &self,
+            _request: &ManualPackageRequest,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            unreachable!()
+        }
+
+        fn install_local(
+            &self,
+            _package_root: &std::path::Path,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            unreachable!()
+        }
+
+        fn uninstall(&self, _plugin_id: &str) -> Result<PluginSnapshot, PluginOperationFailure> {
+            self.uninstall_called.store(true, Ordering::SeqCst);
+            unreachable!("lifecycle uninstall must not run after cleanup failure")
+        }
+
+        fn set_enabled(
+            &self,
+            _plugin_id: &str,
+            enabled: bool,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            assert!(!enabled);
+            self.disabled.store(true, Ordering::SeqCst);
+            Ok(disabled_snapshot())
         }
     }
 
-    fn running_snapshot() -> PluginSnapshot {
+    fn disabled_snapshot() -> PluginSnapshot {
+        let artifact = bbcom_plugin_manager::PluginArtifact::new(
+            "dev.bbcom.fixture",
+            "1.0.0",
+            "00".repeat(32),
+            "11".repeat(32),
+            bbcom_plugin_manager::PluginArtifactSource {
+                source_id: "local".to_owned(),
+                kind: bbcom_plugin_manager::PluginSourceKind::LocalPackage,
+            },
+            [],
+        )
+        .unwrap();
         PluginSnapshot {
-            artifact: PluginArtifact::new(
-                "dev.bbcom.fixture",
-                "1.0.0",
-                "a".repeat(64),
-                "b".repeat(64),
-                PluginArtifactSource {
-                    source_id: "local".to_owned(),
-                    kind: PluginSourceKind::LocalPackage,
-                },
-                [Permission::SerialWriteProposal],
-            )
-            .unwrap(),
-            expected_enabled: true,
-            status: PluginStatus::Running,
+            artifact,
+            expected_enabled: false,
+            status: bbcom_plugin_manager::PluginStatus::Disabled(
+                bbcom_plugin_manager::DisableReason::User,
+            ),
             pending_version: None,
-            running_instance_id: Some(7),
-            generation: 3,
+            running_instance_id: None,
+            generation: 1,
             crashes_in_window: 0,
             last_error: None,
         }
     }
 
-    fn proposal(index: u8) -> SerialProposalRequest {
-        SerialProposalRequest {
-            operation_id: format!("operation-{index}"),
-            session_id: "session-1".to_owned(),
-            payload: vec![index],
-            display_label: "send".to_owned(),
-        }
-    }
-
-    fn proposal_service(counter: Arc<AtomicUsize>) -> PluginCommandService {
-        let audit: &'static NoopAuditSink = Box::leak(Box::new(NoopAuditSink));
-        PluginCommandService::new(
-            Arc::new(RunningLifecycle(running_snapshot())),
-            Box::new(CountingUpstream(counter)),
-            Box::new(SerialProposalBroker::new(audit)),
-            Box::new(DeclarativePanelBroker::new(audit)),
-        )
-        .unwrap()
-    }
-
     #[test]
-    fn first_write_decision_is_reused_only_within_the_runtime_generation() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let mut service = proposal_service(Arc::clone(&count));
-        let declared = BTreeSet::from([Permission::SerialWriteProposal]);
-        let first = service
-            .register_proposal("dev.bbcom.fixture", &declared, proposal(1), None, 1)
-            .unwrap();
-        assert_eq!(service.snapshot().proposals.len(), 1);
+    fn contribution_cleanup_failure_prevents_irreversible_uninstall() {
+        let disabled = Arc::new(AtomicBool::new(false));
+        let uninstall_called = Arc::new(AtomicBool::new(false));
+        let lifecycle: Arc<dyn PluginLifecyclePort + Send + Sync> = Arc::new(PanicOnUninstall {
+            disabled: Arc::clone(&disabled),
+            uninstall_called: Arc::clone(&uninstall_called),
+        });
+        let cleanup: Arc<dyn PluginContributionCleanupPort> =
+            Arc::new(RejectCleanup(Arc::clone(&disabled)));
+        let mut service =
+            PluginCommandService::new_with_contribution_cleanup(lifecycle, cleanup).unwrap();
         let queued = service
-            .queue_proposal_decision(
+            .queue_uninstall(
                 service.snapshot().revision,
-                "approve-first".to_owned(),
-                first.proposal_id,
-                ProposalDecision::Approve,
+                "uninstall-request".to_owned(),
+                "dev.bbcom.fixture".to_owned(),
+                PluginContributionDisposition::ConvertToUser,
             )
             .unwrap();
+        let terminal = service.execute(&queued.operation_id, 1).unwrap();
+        assert_eq!(terminal.status, PluginOperationStatus::Failed);
         assert_eq!(
-            service.execute(&queued.operation_id, 2).unwrap().status,
-            PluginOperationStatus::Completed
+            terminal.failure.unwrap().code,
+            "PLUGIN_CONTRIBUTION_CLEANUP_FAILED"
         );
-        assert_eq!(count.load(Ordering::Relaxed), 1);
-
-        service
-            .register_proposal("dev.bbcom.fixture", &declared, proposal(2), None, 3)
-            .unwrap();
-        assert!(service.snapshot().proposals.is_empty());
-        assert_eq!(count.load(Ordering::Relaxed), 2);
+        assert!(!uninstall_called.load(Ordering::SeqCst));
     }
 
-    #[test]
-    fn rejection_is_cached_and_suppresses_later_prompts_and_writes() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let mut service = proposal_service(Arc::clone(&count));
-        let declared = BTreeSet::from([Permission::SerialWriteProposal]);
-        let first = service
-            .register_proposal("dev.bbcom.fixture", &declared, proposal(1), None, 1)
-            .unwrap();
-        let queued = service
-            .queue_proposal_decision(
-                service.snapshot().revision,
-                "reject-first".to_owned(),
-                first.proposal_id,
-                ProposalDecision::Reject,
-            )
-            .unwrap();
-        service.execute(&queued.operation_id, 2).unwrap();
-        service
-            .register_proposal("dev.bbcom.fixture", &declared, proposal(2), None, 3)
-            .unwrap();
-        assert!(service.snapshot().proposals.is_empty());
-        assert_eq!(count.load(Ordering::Relaxed), 0);
+    struct FailingArtifactRemoval {
+        disabled: Arc<AtomicBool>,
     }
 
-    /// Lifecycle wrapper that records pushed envelopes so tests can assert
-    /// parked sidecar calls receive their correlated outcome.
-    struct RecordingLifecycle {
-        inner: RunningLifecycle,
-        delivered: std::sync::Mutex<Vec<(String, String, i32)>>,
-    }
-
-    impl PluginLifecyclePort for RecordingLifecycle {
+    impl PluginLifecyclePort for FailingArtifactRemoval {
         fn snapshots(&self) -> Result<Vec<PluginSnapshot>, PluginOperationFailure> {
-            self.inner.snapshots()
+            Ok(Vec::new())
         }
-        fn workspace_id(&self) -> Result<Option<String>, PluginOperationFailure> {
-            self.inner.workspace_id()
-        }
+
         fn install_manual(
             &self,
-            request: &ManualPackageRequest,
+            _request: &ManualPackageRequest,
         ) -> Result<PluginSnapshot, PluginOperationFailure> {
-            self.inner.install_manual(request)
+            unreachable!()
         }
+
         fn install_local(
             &self,
-            package_root: &std::path::Path,
+            _package_root: &std::path::Path,
         ) -> Result<PluginSnapshot, PluginOperationFailure> {
-            self.inner.install_local(package_root)
+            unreachable!()
         }
-        fn uninstall(&self, plugin_id: &str) -> Result<PluginSnapshot, PluginOperationFailure> {
-            self.inner.uninstall(plugin_id)
+
+        fn uninstall(&self, _plugin_id: &str) -> Result<PluginSnapshot, PluginOperationFailure> {
+            Err(PluginOperationFailure {
+                code: "PLUGIN_INSTALLATION_PREPARE_FAILED",
+                message_key: "plugin.error.installationPrepareFailed",
+            })
         }
+
         fn set_enabled(
             &self,
-            plugin_id: &str,
+            _plugin_id: &str,
             enabled: bool,
         ) -> Result<PluginSnapshot, PluginOperationFailure> {
-            self.inner.set_enabled(plugin_id, enabled)
+            assert!(!enabled);
+            self.disabled.store(true, Ordering::SeqCst);
+            Ok(disabled_snapshot())
         }
-        fn deliver_envelope(
+    }
+
+    struct RecordingRollbackCleanup {
+        cleaned: Arc<AtomicBool>,
+        restored: Arc<AtomicBool>,
+    }
+
+    impl PluginContributionCleanupPort for RecordingRollbackCleanup {
+        fn uninstall_with_contribution_cleanup(
             &self,
-            plugin_id: &str,
-            payload: envelope::Payload,
-        ) -> Result<(), PluginOperationFailure> {
-            if let envelope::Payload::ProposalResult(result) = payload {
-                self.delivered
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push((plugin_id.to_owned(), result.proposal_id, result.outcome));
+            _plugin_id: &str,
+            _disposition: PluginContributionDisposition,
+            uninstall: &mut dyn FnMut() -> Result<PluginSnapshot, PluginOperationFailure>,
+        ) -> Result<PluginSnapshot, PluginOperationFailure> {
+            self.cleaned.store(true, Ordering::SeqCst);
+            match uninstall() {
+                Ok(snapshot) => Ok(snapshot),
+                Err(failure) => {
+                    self.cleaned.store(false, Ordering::SeqCst);
+                    self.restored.store(true, Ordering::SeqCst);
+                    Err(failure)
+                }
             }
-            Ok(())
         }
     }
 
     #[test]
-    fn correlated_proposals_push_their_outcome_back_to_the_sidecar() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let audit: &'static NoopAuditSink = Box::leak(Box::new(NoopAuditSink));
-        let recording = Arc::new(RecordingLifecycle {
-            inner: RunningLifecycle(running_snapshot()),
-            delivered: std::sync::Mutex::new(Vec::new()),
+    fn artifact_uninstall_failure_is_reported_only_after_contributions_restore() {
+        let disabled = Arc::new(AtomicBool::new(false));
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let restored = Arc::new(AtomicBool::new(false));
+        let lifecycle: Arc<dyn PluginLifecyclePort + Send + Sync> =
+            Arc::new(FailingArtifactRemoval {
+                disabled: Arc::clone(&disabled),
+            });
+        let cleanup: Arc<dyn PluginContributionCleanupPort> = Arc::new(RecordingRollbackCleanup {
+            cleaned: Arc::clone(&cleaned),
+            restored: Arc::clone(&restored),
         });
-        let mut service = PluginCommandService::new(
-            recording.clone(),
-            Box::new(CountingUpstream(Arc::clone(&count))),
-            Box::new(SerialProposalBroker::new(audit)),
-            Box::new(DeclarativePanelBroker::new(audit)),
-        )
-        .unwrap();
-        let declared = BTreeSet::from([Permission::SerialWriteProposal]);
-
-        let approved = service
-            .register_proposal(
-                "dev.bbcom.fixture",
-                &declared,
-                proposal(1),
-                Some("sidecar-proposal-1".to_owned()),
-                1,
-            )
-            .unwrap();
+        let mut service =
+            PluginCommandService::new_with_contribution_cleanup(lifecycle, cleanup).unwrap();
         let queued = service
-            .queue_proposal_decision(
+            .queue_uninstall(
                 service.snapshot().revision,
-                "approve".to_owned(),
-                approved.proposal_id,
-                ProposalDecision::Approve,
-            )
-            .unwrap();
-        service.execute(&queued.operation_id, 2).unwrap();
-
-        // A second proposal under the cached approval auto-resolves and
-        // still pushes its correlated outcome without a renderer decision.
-        service
-            .register_proposal(
-                "dev.bbcom.fixture",
-                &declared,
-                proposal(2),
-                Some("sidecar-proposal-2".to_owned()),
-                3,
-            )
-            .unwrap();
-
-        // Rejection outcome uses a fresh service (the approve cache is
-        // per-generation by design).
-        let recording_reject = Arc::new(RecordingLifecycle {
-            inner: RunningLifecycle(running_snapshot()),
-            delivered: std::sync::Mutex::new(Vec::new()),
-        });
-        let mut reject_service = PluginCommandService::new(
-            recording_reject.clone(),
-            Box::new(CountingUpstream(Arc::clone(&count))),
-            Box::new(SerialProposalBroker::new(audit)),
-            Box::new(DeclarativePanelBroker::new(audit)),
-        )
-        .unwrap();
-        let rejected = reject_service
-            .register_proposal(
-                "dev.bbcom.fixture",
-                &declared,
-                proposal(1),
-                Some("sidecar-proposal-3".to_owned()),
-                1,
-            )
-            .unwrap();
-        let queued = reject_service
-            .queue_proposal_decision(
-                reject_service.snapshot().revision,
-                "reject".to_owned(),
-                rejected.proposal_id,
-                ProposalDecision::Reject,
-            )
-            .unwrap();
-        reject_service.execute(&queued.operation_id, 2).unwrap();
-        assert_eq!(
-            recording_reject
-                .delivered
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
-            vec![(
+                "failed-artifact-uninstall".to_owned(),
                 "dev.bbcom.fixture".to_owned(),
-                "sidecar-proposal-3".to_owned(),
-                ProposalOutcomeValue::Rejected as i32
-            )]
-        );
-
-        let delivered = recording
-            .delivered
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+                PluginContributionDisposition::ConvertToUser,
+            )
+            .unwrap();
+        let terminal = service.execute(&queued.operation_id, 1).unwrap();
+        assert_eq!(terminal.status, PluginOperationStatus::Failed);
         assert_eq!(
-            delivered,
-            vec![
-                (
-                    "dev.bbcom.fixture".to_owned(),
-                    "sidecar-proposal-1".to_owned(),
-                    ProposalOutcomeValue::Approved as i32
-                ),
-                (
-                    "dev.bbcom.fixture".to_owned(),
-                    "sidecar-proposal-2".to_owned(),
-                    ProposalOutcomeValue::Approved as i32
-                ),
-            ]
+            terminal.failure.unwrap().code,
+            "PLUGIN_INSTALLATION_PREPARE_FAILED"
         );
+        assert!(disabled.load(Ordering::SeqCst));
+        assert!(restored.load(Ordering::SeqCst));
+        assert!(!cleaned.load(Ordering::SeqCst));
     }
 }
 
@@ -527,57 +346,12 @@ pub enum PluginOperationKind {
     Install,
     Uninstall,
     SetEnabled,
-    ProposalDecision,
-    PanelEvent,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PluginUpstreamFailure {
-    ProposalContextUnavailable,
-    SerialExecutionUnavailable,
-    PanelDeliveryUnavailable,
-}
-
-impl PluginUpstreamFailure {
-    #[must_use]
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::ProposalContextUnavailable => "PLUGIN_PROPOSAL_CONTEXT_UNAVAILABLE",
-            Self::SerialExecutionUnavailable => "PLUGIN_SERIAL_EXECUTION_UNAVAILABLE",
-            Self::PanelDeliveryUnavailable => "PLUGIN_PANEL_DELIVERY_UNAVAILABLE",
-        }
-    }
-
-    #[must_use]
-    pub const fn message_key(self) -> &'static str {
-        match self {
-            Self::ProposalContextUnavailable => "plugin.error.proposalContextUnavailable",
-            Self::SerialExecutionUnavailable => "plugin.error.serialExecutionUnavailable",
-            Self::PanelDeliveryUnavailable => "plugin.error.panelDeliveryUnavailable",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginOperationFailure {
     pub code: &'static str,
     pub message_key: &'static str,
-}
-
-impl PluginOperationFailure {
-    fn broker(error: BrokerError) -> Self {
-        Self {
-            code: error.code().as_str(),
-            message_key: error.message_key(),
-        }
-    }
-
-    fn upstream(error: PluginUpstreamFailure) -> Self {
-        Self {
-            code: error.code(),
-            message_key: error.message_key(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -595,8 +369,6 @@ pub struct PluginCommandSnapshot {
     pub workspace_id: Option<String>,
     pub plugins: Vec<PluginSnapshot>,
     pub operations: Vec<PluginOperationSnapshot>,
-    pub proposals: Vec<SerialProposalView>,
-    pub panels: Vec<HostedPanel>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -606,11 +378,7 @@ pub enum PluginCommandErrorCode {
     RegistryLimit,
     OperationNotFound,
     OperationNotCancellable,
-    ProposalNotFound,
-    PanelNotFound,
     LifecycleUnavailable,
-    BrokerRejected,
-    UpstreamUnavailable,
 }
 
 impl PluginCommandErrorCode {
@@ -622,11 +390,7 @@ impl PluginCommandErrorCode {
             Self::RegistryLimit => "PLUGIN_COMMAND_REGISTRY_LIMIT",
             Self::OperationNotFound => "PLUGIN_OPERATION_NOT_FOUND",
             Self::OperationNotCancellable => "PLUGIN_OPERATION_NOT_CANCELLABLE",
-            Self::ProposalNotFound => "PLUGIN_PROPOSAL_NOT_FOUND",
-            Self::PanelNotFound => "PLUGIN_PANEL_NOT_FOUND",
             Self::LifecycleUnavailable => "PLUGIN_LIFECYCLE_UNAVAILABLE",
-            Self::BrokerRejected => "PLUGIN_BROKER_REJECTED",
-            Self::UpstreamUnavailable => "PLUGIN_UPSTREAM_UNAVAILABLE",
         }
     }
 }
@@ -658,32 +422,6 @@ pub trait PluginLifecyclePort {
     fn workspace_id(&self) -> Result<Option<String>, PluginOperationFailure> {
         Ok(None)
     }
-    fn take_published_panels(&self) -> Result<Vec<HostPublishedPanel>, PluginOperationFailure> {
-        Ok(Vec::new())
-    }
-    /// Push an unsolicited envelope (proposal decision, session-query data)
-    /// into the plugin's own sidecar process. Default: unavailable.
-    fn deliver_envelope(
-        &self,
-        _plugin_id: &str,
-        _payload: bbcom_plugin_contracts::generated::envelope::Payload,
-    ) -> Result<(), PluginOperationFailure> {
-        Err(PluginOperationFailure {
-            code: "PLUGIN_HOST_DELIVERY_UNAVAILABLE",
-            message_key: "plugin.error.hostDeliveryUnavailable",
-        })
-    }
-    fn invoke_panel_event(
-        &self,
-        _plugin_id: &str,
-        _field_id: &str,
-        _value: &str,
-    ) -> Result<Option<HostPanel>, PluginOperationFailure> {
-        Err(PluginOperationFailure {
-            code: "PLUGIN_PANEL_DELIVERY_UNAVAILABLE",
-            message_key: "plugin.error.panelDeliveryUnavailable",
-        })
-    }
     fn install_manual(
         &self,
         request: &ManualPackageRequest,
@@ -706,6 +444,32 @@ pub trait PluginLifecyclePort {
     ) -> Result<PluginSnapshot, PluginOperationFailure>;
 }
 
+/// Native workspace/package transaction coordinator executed after command
+/// correlation and runtime shutdown. Implementations stage contribution
+/// cleanup, invoke the supplied irreversible package action exactly once, and
+/// commit or restore workspace rows before returning.
+pub trait PluginContributionCleanupPort: Send + Sync + 'static {
+    fn uninstall_with_contribution_cleanup(
+        &self,
+        plugin_id: &str,
+        disposition: PluginContributionDisposition,
+        uninstall: &mut dyn FnMut() -> Result<PluginSnapshot, PluginOperationFailure>,
+    ) -> Result<PluginSnapshot, PluginOperationFailure>;
+}
+
+struct NoopPluginContributionCleanup;
+
+impl PluginContributionCleanupPort for NoopPluginContributionCleanup {
+    fn uninstall_with_contribution_cleanup(
+        &self,
+        _plugin_id: &str,
+        _disposition: PluginContributionDisposition,
+        uninstall: &mut dyn FnMut() -> Result<PluginSnapshot, PluginOperationFailure>,
+    ) -> Result<PluginSnapshot, PluginOperationFailure> {
+        uninstall()
+    }
+}
+
 impl<I, H, C> PluginLifecyclePort for PluginService<I, H, C>
 where
     I: InstallationPort,
@@ -718,28 +482,6 @@ where
 
     fn workspace_id(&self) -> Result<Option<String>, PluginOperationFailure> {
         PluginService::workspace_id(self).map_err(lifecycle_failure)
-    }
-
-    fn take_published_panels(&self) -> Result<Vec<HostPublishedPanel>, PluginOperationFailure> {
-        PluginService::take_published_panels(self).map_err(lifecycle_failure)
-    }
-
-    fn invoke_panel_event(
-        &self,
-        plugin_id: &str,
-        field_id: &str,
-        value: &str,
-    ) -> Result<Option<HostPanel>, PluginOperationFailure> {
-        PluginService::invoke_panel_event(self, plugin_id, field_id, value)
-            .map_err(lifecycle_failure)
-    }
-
-    fn deliver_envelope(
-        &self,
-        plugin_id: &str,
-        payload: envelope::Payload,
-    ) -> Result<(), PluginOperationFailure> {
-        PluginService::deliver_envelope(self, plugin_id, payload).map_err(lifecycle_failure)
     }
 
     fn install_manual(
@@ -797,124 +539,6 @@ fn lifecycle_failure(error: PluginServiceError) -> PluginOperationFailure {
     }
 }
 
-fn host_panel_to_broker(panel: HostPanel) -> DeclarativePanel {
-    DeclarativePanel {
-        title: panel.title,
-        fields: panel
-            .fields
-            .into_iter()
-            .map(|field| PanelField {
-                id: field.id,
-                label: field.label,
-                kind: match field.kind {
-                    HostPanelFieldKind::Text => PanelControlKind::Text,
-                    HostPanelFieldKind::Number => PanelControlKind::Number,
-                    HostPanelFieldKind::Toggle => PanelControlKind::Toggle,
-                    HostPanelFieldKind::Select => PanelControlKind::Select,
-                    HostPanelFieldKind::Button => PanelControlKind::Button,
-                },
-                value: field.value,
-                options: field.options,
-                disabled: field.disabled,
-            })
-            .collect(),
-    }
-}
-
-pub trait ProposalBrokerPort {
-    fn create(
-        &mut self,
-        plugin_id: &str,
-        declared: &BTreeSet<Permission>,
-        request: SerialProposalRequest,
-        now_ms: u64,
-    ) -> Result<SerialProposalView, BrokerError>;
-
-    fn resolve(
-        &mut self,
-        proposal_id: &str,
-        decision: ProposalDecision,
-        current: &ProposalContext,
-        now_ms: u64,
-    ) -> ProposalResolution;
-}
-
-impl<'a, A: AuditSink> ProposalBrokerPort for SerialProposalBroker<'a, A> {
-    fn create(
-        &mut self,
-        plugin_id: &str,
-        declared: &BTreeSet<Permission>,
-        request: SerialProposalRequest,
-        now_ms: u64,
-    ) -> Result<SerialProposalView, BrokerError> {
-        SerialProposalBroker::create(self, plugin_id, declared, request, now_ms)
-    }
-
-    fn resolve(
-        &mut self,
-        proposal_id: &str,
-        decision: ProposalDecision,
-        current: &ProposalContext,
-        now_ms: u64,
-    ) -> ProposalResolution {
-        SerialProposalBroker::resolve(self, proposal_id, decision, current, now_ms)
-    }
-}
-
-pub trait PanelBrokerPort {
-    fn publish(&self, plugin_id: &str, panel: DeclarativePanel)
-    -> Result<HostedPanel, BrokerError>;
-
-    fn event(
-        &self,
-        hosted: &HostedPanel,
-        event: PanelEvent,
-    ) -> Result<PanelEventAction, BrokerError>;
-}
-
-impl<'a, A: AuditSink> PanelBrokerPort for DeclarativePanelBroker<'a, A> {
-    fn publish(
-        &self,
-        plugin_id: &str,
-        panel: DeclarativePanel,
-    ) -> Result<HostedPanel, BrokerError> {
-        DeclarativePanelBroker::publish(self, plugin_id, panel)
-    }
-
-    fn event(
-        &self,
-        hosted: &HostedPanel,
-        event: PanelEvent,
-    ) -> Result<PanelEventAction, BrokerError> {
-        DeclarativePanelBroker::event(self, hosted, event)
-    }
-}
-
-/// Missing native integrations are explicit and fail closed.
-///
-/// Implementations obtain current proposal context from application-owned
-/// state. `execute_serial_action` is the only place an
-/// approved broker action may reach the serial subsystem. `deliver_panel_event`
-/// is the only place a validated event may reach a host. No permissive default
-/// implementation exists.
-pub trait PluginCommandUpstreamPort {
-    fn current_proposal_context(
-        &mut self,
-        proposal: &SerialProposalView,
-    ) -> Result<ProposalContext, PluginUpstreamFailure>;
-
-    fn execute_serial_action(
-        &mut self,
-        runtime: RuntimeInstanceKey,
-        action: BrokerAction,
-    ) -> Result<(), PluginUpstreamFailure>;
-
-    fn deliver_panel_event(
-        &mut self,
-        action: PanelEventAction,
-    ) -> Result<(), PluginUpstreamFailure>;
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum QueuedAction {
     Install(ManualPackageRequest),
@@ -923,18 +547,11 @@ enum QueuedAction {
     },
     Uninstall {
         plugin_id: String,
+        contribution_disposition: PluginContributionDisposition,
     },
     SetEnabled {
         plugin_id: String,
         enabled: bool,
-    },
-    ProposalDecision {
-        proposal_id: String,
-        decision: ProposalDecision,
-    },
-    PanelEvent {
-        plugin_id: String,
-        event: PanelEvent,
     },
 }
 
@@ -944,8 +561,6 @@ impl QueuedAction {
             Self::Install(_) | Self::InstallLocal { .. } => PluginOperationKind::Install,
             Self::Uninstall { .. } => PluginOperationKind::Uninstall,
             Self::SetEnabled { .. } => PluginOperationKind::SetEnabled,
-            Self::ProposalDecision { .. } => PluginOperationKind::ProposalDecision,
-            Self::PanelEvent { .. } => PluginOperationKind::PanelEvent,
         }
     }
 }
@@ -957,36 +572,30 @@ struct OperationRecord {
     terminal_at_ms: Option<u64>,
 }
 
-/// Application-owned plugin command core. The five reviewed native ports are
-/// dyn objects because production wiring has exactly one implementation of
-/// each; the port traits remain the reviewed contract every implementation
-/// (including test fakes) must satisfy before it is boxed or shared here.
+/// Application-owned plugin command core. Lifecycle mutations remain behind a
+/// single reviewed native port; protocol-v2 capability traffic is handled by
+/// the separate capability gateway and never enters this command queue.
 pub struct PluginCommandService {
     lifecycle: Arc<dyn PluginLifecyclePort + Send + Sync>,
-    upstream: Box<dyn PluginCommandUpstreamPort + Send>,
-    proposals: Box<dyn ProposalBrokerPort + Send>,
-    panels: Box<dyn PanelBrokerPort + Send>,
+    contribution_cleanup: Arc<dyn PluginContributionCleanupPort>,
     revision: u64,
     workspace_id: Option<String>,
     next_operation_id: u64,
     operations: BTreeMap<String, OperationRecord>,
     requests: BTreeMap<String, String>,
-    proposal_views: BTreeMap<String, SerialProposalView>,
-    proposal_generations: BTreeMap<String, u64>,
-    /// Broker proposal id → sidecar correlation id for parked guest calls.
-    proposal_correlations: BTreeMap<String, String>,
-    hosted_panels: BTreeMap<String, HostedPanel>,
-    panel_generations: BTreeMap<String, u64>,
-    serial_write_decisions: BTreeMap<(String, u64), bool>,
     plugin_snapshots: BTreeMap<String, PluginSnapshot>,
 }
 
 impl PluginCommandService {
     pub fn new(
         lifecycle: Arc<dyn PluginLifecyclePort + Send + Sync>,
-        upstream: Box<dyn PluginCommandUpstreamPort + Send>,
-        proposals: Box<dyn ProposalBrokerPort + Send>,
-        panels: Box<dyn PanelBrokerPort + Send>,
+    ) -> Result<Self, PluginCommandError> {
+        Self::new_with_contribution_cleanup(lifecycle, Arc::new(NoopPluginContributionCleanup))
+    }
+
+    pub fn new_with_contribution_cleanup(
+        lifecycle: Arc<dyn PluginLifecyclePort + Send + Sync>,
+        contribution_cleanup: Arc<dyn PluginContributionCleanupPort>,
     ) -> Result<Self, PluginCommandError> {
         let initial = lifecycle.snapshots().map_err(|failure| {
             PluginCommandError::with_failure(PluginCommandErrorCode::LifecycleUnavailable, failure)
@@ -995,34 +604,16 @@ impl PluginCommandService {
         let workspace_id = lifecycle.workspace_id().map_err(|failure| {
             PluginCommandError::with_failure(PluginCommandErrorCode::LifecycleUnavailable, failure)
         })?;
-        let mut service = Self {
+        Ok(Self {
             lifecycle,
-            upstream,
-            proposals,
-            panels,
+            contribution_cleanup,
             revision: 1,
             workspace_id,
             next_operation_id: 1,
             operations: BTreeMap::new(),
             requests: BTreeMap::new(),
-            proposal_views: BTreeMap::new(),
-            proposal_generations: BTreeMap::new(),
-            proposal_correlations: BTreeMap::new(),
-            hosted_panels: BTreeMap::new(),
-            panel_generations: BTreeMap::new(),
-            serial_write_decisions: BTreeMap::new(),
             plugin_snapshots,
-        };
-        if let Err(error) = service.ingest_published_panels() {
-            if error.code == PluginCommandErrorCode::BrokerRejected {
-                tracing::warn!(
-                    "ignoring a broker-rejected plugin panel during command-service bootstrap"
-                );
-            } else {
-                return Err(error);
-            }
-        }
-        Ok(service)
+        })
     }
 
     #[must_use]
@@ -1036,8 +627,6 @@ impl PluginCommandService {
                 .values()
                 .map(|record| record.snapshot.clone())
                 .collect(),
-            proposals: self.proposal_views.values().cloned().collect(),
-            panels: self.hosted_panels.values().cloned().collect(),
         }
     }
 
@@ -1056,10 +645,8 @@ impl PluginCommandService {
             self.ensure_revision_capacity(1)?;
             self.plugin_snapshots = next;
             self.workspace_id = workspace_id;
-            self.reconcile_runtime_instances();
             self.bump_revision()?;
         }
-        self.ingest_published_panels()?;
         Ok(self.revision)
     }
 
@@ -1081,11 +668,15 @@ impl PluginCommandService {
         expected_revision: u64,
         client_request_id: String,
         plugin_id: String,
+        contribution_disposition: PluginContributionDisposition,
     ) -> Result<PluginOperationSnapshot, PluginCommandError> {
         self.queue(
             expected_revision,
             client_request_id,
-            QueuedAction::Uninstall { plugin_id },
+            QueuedAction::Uninstall {
+                plugin_id,
+                contribution_disposition,
+            },
         )
     }
 
@@ -1113,239 +704,6 @@ impl PluginCommandService {
             expected_revision,
             client_request_id,
             QueuedAction::SetEnabled { plugin_id, enabled },
-        )
-    }
-
-    /// Trusted host ingress. `plugin_id` and `declared` come from the native running
-    /// instance, never from a renderer request. `correlation` is the sidecar's
-    /// own proposal id: when present, terminal outcomes are pushed back so the
-    /// parked guest `propose-serial-send` call can resolve.
-    pub fn register_proposal(
-        &mut self,
-        plugin_id: &str,
-        declared: &BTreeSet<Permission>,
-        request: SerialProposalRequest,
-        correlation: Option<String>,
-        now_ms: u64,
-    ) -> Result<SerialProposalView, PluginCommandError> {
-        // Drop proposals whose broker TTL already elapsed: their parked
-        // sidecar calls resolved themselves as cancelled, so registry slots
-        // and correlation entries must not accumulate across re-propose
-        // loops.
-        let expired: Vec<String> = self
-            .proposal_views
-            .iter()
-            .filter(|(_, view)| now_ms >= view.expires_at_ms)
-            .map(|(proposal_id, _)| proposal_id.clone())
-            .collect();
-        for proposal_id in expired {
-            self.proposal_views.remove(&proposal_id);
-            self.proposal_generations.remove(&proposal_id);
-            self.proposal_correlations.remove(&proposal_id);
-        }
-        if self.proposal_views.len() >= MAX_PENDING_PROPOSALS {
-            return Err(PluginCommandError::new(
-                PluginCommandErrorCode::RegistryLimit,
-            ));
-        }
-        self.ensure_revision_capacity(1)?;
-        let generation = self.running_generation(plugin_id)?;
-        let view = self
-            .proposals
-            .create(plugin_id, declared, request, now_ms)
-            .map_err(|error| {
-                PluginCommandError::with_failure(
-                    PluginCommandErrorCode::BrokerRejected,
-                    PluginOperationFailure::broker(error),
-                )
-            })?;
-        if let Some(approved) = self
-            .serial_write_decisions
-            .get(&(plugin_id.to_owned(), generation))
-            .copied()
-        {
-            // Cached per-generation decision: resolve immediately. The
-            // correlation must be registered before resolution so the
-            // outcome push below can find it.
-            if let Some(correlation) = correlation {
-                self.proposal_correlations
-                    .insert(view.proposal_id.clone(), correlation);
-            }
-            let current = self
-                .upstream
-                .current_proposal_context(&view)
-                .map_err(|error| {
-                    PluginCommandError::with_failure(
-                        PluginCommandErrorCode::UpstreamUnavailable,
-                        PluginOperationFailure::upstream(error),
-                    )
-                })?;
-            let resolution = self.proposals.resolve(
-                &view.proposal_id,
-                if approved {
-                    ProposalDecision::Approve
-                } else {
-                    ProposalDecision::Reject
-                },
-                &current,
-                now_ms,
-            );
-            match resolution {
-                ProposalResolution::Action(action) => {
-                    let runtime = self.running_instance_key(plugin_id)?;
-                    self.upstream
-                        .execute_serial_action(runtime, action)
-                        .map_err(|error| {
-                            PluginCommandError::with_failure(
-                                PluginCommandErrorCode::UpstreamUnavailable,
-                                PluginOperationFailure::upstream(error),
-                            )
-                        })?;
-                    // Cache the approval only after the action executed:
-                    // a failed execution must not seed an auto-approve for
-                    // the rest of this instance's lifetime.
-                    self.serial_write_decisions
-                        .insert((plugin_id.to_owned(), generation), true);
-                    self.deliver_proposal_outcome(
-                        plugin_id,
-                        &view.proposal_id,
-                        HostProposalOutcome::Approved,
-                    );
-                }
-                ProposalResolution::NoAction(NoActionReason::Rejected) => {
-                    self.deliver_proposal_outcome(
-                        plugin_id,
-                        &view.proposal_id,
-                        HostProposalOutcome::Rejected,
-                    );
-                }
-                ProposalResolution::NoAction(NoActionReason::Expired) => {
-                    self.deliver_proposal_outcome(
-                        plugin_id,
-                        &view.proposal_id,
-                        HostProposalOutcome::Expired,
-                    );
-                }
-                ProposalResolution::NoAction(
-                    NoActionReason::ContextChanged | NoActionReason::UnknownOrConsumed,
-                ) => {}
-            }
-            self.proposal_correlations.remove(&view.proposal_id);
-        } else {
-            if let Some(correlation) = correlation {
-                self.proposal_correlations
-                    .insert(view.proposal_id.clone(), correlation);
-            }
-            self.proposal_generations
-                .insert(view.proposal_id.clone(), generation);
-            self.proposal_views
-                .insert(view.proposal_id.clone(), view.clone());
-        }
-        self.bump_revision()?;
-        Ok(view)
-    }
-
-    /// Best-effort push of a terminal proposal outcome to the parked sidecar
-    /// call. Delivery failure is logged only: the sidecar's own TTL bound
-    /// resolves the call even when this push cannot be delivered.
-    fn deliver_proposal_outcome(
-        &self,
-        plugin_id: &str,
-        broker_proposal_id: &str,
-        outcome: HostProposalOutcome,
-    ) {
-        let Some(correlation) = self.proposal_correlations.get(broker_proposal_id) else {
-            return;
-        };
-        let payload = envelope::Payload::ProposalResult(ProposalResult {
-            proposal_id: correlation.clone(),
-            outcome: match outcome {
-                HostProposalOutcome::Approved => ProposalOutcomeValue::Approved,
-                HostProposalOutcome::Rejected => ProposalOutcomeValue::Rejected,
-                HostProposalOutcome::Expired => ProposalOutcomeValue::Expired,
-            } as i32,
-        });
-        if let Err(error) = self.lifecycle.deliver_envelope(plugin_id, payload) {
-            tracing::warn!(
-                "proposal outcome push failed for {plugin_id} ({broker_proposal_id}): {}",
-                error.code
-            );
-        }
-    }
-
-    pub fn queue_proposal_decision(
-        &mut self,
-        expected_revision: u64,
-        client_request_id: String,
-        proposal_id: String,
-        decision: ProposalDecision,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-        let action = QueuedAction::ProposalDecision {
-            proposal_id: proposal_id.clone(),
-            decision,
-        };
-        if !self.requests.contains_key(&client_request_id)
-            && !self.proposal_views.contains_key(&proposal_id)
-        {
-            return Err(PluginCommandError::new(
-                PluginCommandErrorCode::ProposalNotFound,
-            ));
-        }
-        self.queue(expected_revision, client_request_id, action)
-    }
-
-    /// Trusted host ingress. The broker validates the complete declarative
-    /// panel before it becomes visible to command snapshots.
-    pub fn publish_panel(
-        &mut self,
-        plugin_id: &str,
-        panel: DeclarativePanel,
-    ) -> Result<HostedPanel, PluginCommandError> {
-        if !self.hosted_panels.contains_key(plugin_id)
-            && self.hosted_panels.len() >= MAX_PENDING_PANELS
-        {
-            return Err(PluginCommandError::new(
-                PluginCommandErrorCode::RegistryLimit,
-            ));
-        }
-        self.ensure_revision_capacity(1)?;
-        let hosted = self.panels.publish(plugin_id, panel).map_err(|error| {
-            PluginCommandError::with_failure(
-                PluginCommandErrorCode::BrokerRejected,
-                PluginOperationFailure::broker(error),
-            )
-        })?;
-        self.hosted_panels
-            .insert(hosted.plugin_id().to_owned(), hosted.clone());
-        self.panel_generations
-            .insert(plugin_id.to_owned(), self.running_generation(plugin_id)?);
-        self.bump_revision()?;
-        Ok(hosted)
-    }
-
-    pub fn queue_panel_event(
-        &mut self,
-        expected_revision: u64,
-        client_request_id: String,
-        plugin_id: String,
-        event: PanelEvent,
-    ) -> Result<PluginOperationSnapshot, PluginCommandError> {
-        if !self.hosted_panels.contains_key(&plugin_id) {
-            return Err(PluginCommandError::new(
-                PluginCommandErrorCode::PanelNotFound,
-            ));
-        }
-        if self.panel_generations.get(&plugin_id).copied()
-            != Some(self.running_generation(&plugin_id)?)
-        {
-            return Err(PluginCommandError::new(
-                PluginCommandErrorCode::PanelNotFound,
-            ));
-        }
-        self.queue(
-            expected_revision,
-            client_request_id,
-            QueuedAction::PanelEvent { plugin_id, event },
         )
     }
 
@@ -1391,7 +749,7 @@ impl PluginCommandService {
             record.action.clone()
         };
         self.bump_revision()?;
-        let result = self.execute_action(action, now_ms);
+        let result = self.execute_action(action);
         let record = self
             .operations
             .get_mut(operation_id)
@@ -1509,11 +867,7 @@ impl PluginCommandService {
         Ok(snapshot)
     }
 
-    fn execute_action(
-        &mut self,
-        action: QueuedAction,
-        now_ms: u64,
-    ) -> Result<(), PluginOperationFailure> {
+    fn execute_action(&mut self, action: QueuedAction) -> Result<(), PluginOperationFailure> {
         match action {
             QueuedAction::Install(request) => {
                 let snapshot = if self.plugin_snapshots.contains_key(&request.plugin_id) {
@@ -1529,13 +883,25 @@ impl PluginCommandService {
                 self.upsert_plugin_snapshot(snapshot);
                 Ok(())
             }
-            QueuedAction::Uninstall { plugin_id } => {
-                self.lifecycle.uninstall(&plugin_id)?;
+            QueuedAction::Uninstall {
+                plugin_id,
+                contribution_disposition,
+            } => {
+                // Stop the guest before touching workspace contributions.  It
+                // must not be able to recreate an owned row in the interval
+                // between the cleanup transaction and package removal.
+                let disabled = self.lifecycle.set_enabled(&plugin_id, false)?;
+                self.upsert_plugin_snapshot(disabled);
+                let lifecycle = Arc::clone(&self.lifecycle);
+                let uninstall_plugin_id = plugin_id.clone();
+                let mut uninstall = move || lifecycle.uninstall(&uninstall_plugin_id);
+                self.contribution_cleanup
+                    .uninstall_with_contribution_cleanup(
+                        &plugin_id,
+                        contribution_disposition,
+                        &mut uninstall,
+                    )?;
                 self.plugin_snapshots.remove(&plugin_id);
-                self.hosted_panels.remove(&plugin_id);
-                self.panel_generations.remove(&plugin_id);
-                self.serial_write_decisions
-                    .retain(|(candidate, _), _| candidate != &plugin_id);
                 Ok(())
             }
             QueuedAction::SetEnabled { plugin_id, enabled } => {
@@ -1543,160 +909,7 @@ impl PluginCommandService {
                 self.upsert_plugin_snapshot(snapshot);
                 Ok(())
             }
-            QueuedAction::ProposalDecision {
-                proposal_id,
-                decision,
-            } => {
-                let view = self.proposal_views.get(&proposal_id).cloned().ok_or(
-                    PluginOperationFailure {
-                        code: "PLUGIN_PROPOSAL_NOT_FOUND",
-                        message_key: "plugin.error.proposalNotFound",
-                    },
-                )?;
-                let context = self
-                    .upstream
-                    .current_proposal_context(&view)
-                    .map_err(PluginOperationFailure::upstream)?;
-                let resolution = self
-                    .proposals
-                    .resolve(&proposal_id, decision, &context, now_ms);
-                self.proposal_views.remove(&proposal_id);
-                let generation = self.proposal_generations.remove(&proposal_id).ok_or(
-                    PluginOperationFailure {
-                        code: "PLUGIN_PROPOSAL_NOT_FOUND",
-                        message_key: "plugin.error.proposalNotFound",
-                    },
-                )?;
-                match resolution {
-                    ProposalResolution::Action(action) => {
-                        let runtime =
-                            self.running_instance_key(&view.plugin_id)
-                                .map_err(|error| {
-                                    error.failure.unwrap_or(PluginOperationFailure {
-                                        code: "PLUGIN_LIFECYCLE_UNAVAILABLE",
-                                        message_key: "plugin.error.lifecycleUnavailable",
-                                    })
-                                })?;
-                        self.upstream
-                            .execute_serial_action(runtime, action)
-                            .map_err(PluginOperationFailure::upstream)?;
-                        // Cache the approval only after the action executed:
-                        // a failed execution must not seed an auto-approve for
-                        // the rest of this instance's lifetime.
-                        self.serial_write_decisions
-                            .insert((view.plugin_id.clone(), generation), true);
-                        self.deliver_proposal_outcome(
-                            &view.plugin_id,
-                            &proposal_id,
-                            HostProposalOutcome::Approved,
-                        );
-                        self.proposal_correlations.remove(&proposal_id);
-                        Ok(())
-                    }
-                    ProposalResolution::NoAction(NoActionReason::Rejected) => {
-                        self.serial_write_decisions
-                            .insert((view.plugin_id.clone(), generation), false);
-                        self.deliver_proposal_outcome(
-                            &view.plugin_id,
-                            &proposal_id,
-                            HostProposalOutcome::Rejected,
-                        );
-                        self.proposal_correlations.remove(&proposal_id);
-                        Ok(())
-                    }
-                    ProposalResolution::NoAction(
-                        NoActionReason::Expired | NoActionReason::ContextChanged,
-                    ) => {
-                        self.deliver_proposal_outcome(
-                            &view.plugin_id,
-                            &proposal_id,
-                            HostProposalOutcome::Expired,
-                        );
-                        self.proposal_correlations.remove(&proposal_id);
-                        Ok(())
-                    }
-                    ProposalResolution::NoAction(NoActionReason::UnknownOrConsumed) => {
-                        Err(PluginOperationFailure {
-                            code: "PLUGIN_PROPOSAL_NOT_FOUND",
-                            message_key: "plugin.error.proposalNotFound",
-                        })
-                    }
-                }
-            }
-            QueuedAction::PanelEvent { plugin_id, event } => {
-                let generation = self
-                    .plugin_snapshots
-                    .get(&plugin_id)
-                    .filter(|snapshot| snapshot.running_instance_id.is_some())
-                    .map(|snapshot| snapshot.generation)
-                    .ok_or(PluginOperationFailure {
-                        code: "PLUGIN_PANEL_NOT_FOUND",
-                        message_key: "plugin.error.panelNotFound",
-                    })?;
-                let hosted = self
-                    .hosted_panels
-                    .get(&plugin_id)
-                    .ok_or(PluginOperationFailure {
-                        code: "PLUGIN_PANEL_NOT_FOUND",
-                        message_key: "plugin.error.panelNotFound",
-                    })?;
-                let action = self
-                    .panels
-                    .event(hosted, event)
-                    .map_err(PluginOperationFailure::broker)?;
-                let returned = self.lifecycle.invoke_panel_event(
-                    &action.plugin_id,
-                    &action.event.field_id,
-                    &action.event.value,
-                )?;
-                if let Some(panel) = returned {
-                    let hosted = self
-                        .panels
-                        .publish(&plugin_id, host_panel_to_broker(panel))
-                        .map_err(PluginOperationFailure::broker)?;
-                    self.hosted_panels.insert(plugin_id.clone(), hosted);
-                    self.panel_generations.insert(plugin_id.clone(), generation);
-                }
-                Ok(())
-            }
         }
-    }
-
-    fn ingest_published_panels(&mut self) -> Result<(), PluginCommandError> {
-        let panels = self.lifecycle.take_published_panels().map_err(|failure| {
-            PluginCommandError::with_failure(PluginCommandErrorCode::LifecycleUnavailable, failure)
-        })?;
-        if panels.is_empty() {
-            return Ok(());
-        }
-        self.ensure_revision_capacity(1)?;
-        let mut changed = false;
-        for published in panels {
-            let Some(snapshot) = self.plugin_snapshots.get(&published.plugin_id) else {
-                continue;
-            };
-            if snapshot.running_instance_id != Some(published.instance_id) {
-                continue;
-            }
-            let hosted = self
-                .panels
-                .publish(&published.plugin_id, host_panel_to_broker(published.panel))
-                .map_err(|error| {
-                    PluginCommandError::with_failure(
-                        PluginCommandErrorCode::BrokerRejected,
-                        PluginOperationFailure::broker(error),
-                    )
-                })?;
-            self.hosted_panels
-                .insert(published.plugin_id.clone(), hosted);
-            self.panel_generations
-                .insert(published.plugin_id, snapshot.generation);
-            changed = true;
-        }
-        if changed {
-            self.bump_revision()?;
-        }
-        Ok(())
     }
 
     fn expect_revision(&self, expected: u64) -> Result<(), PluginCommandError> {
@@ -1712,71 +925,6 @@ impl PluginCommandService {
     fn upsert_plugin_snapshot(&mut self, snapshot: PluginSnapshot) {
         self.plugin_snapshots
             .insert(snapshot.artifact.plugin_id.clone(), snapshot);
-        self.reconcile_runtime_instances();
-    }
-
-    fn running_generation(&self, plugin_id: &str) -> Result<u64, PluginCommandError> {
-        self.plugin_snapshots
-            .get(plugin_id)
-            .filter(|snapshot| {
-                snapshot.status == bbcom_plugin_manager::PluginStatus::Running
-                    && snapshot.running_instance_id.is_some()
-            })
-            .map(|snapshot| snapshot.generation)
-            .ok_or_else(|| PluginCommandError::new(PluginCommandErrorCode::LifecycleUnavailable))
-    }
-
-    fn running_instance_key(
-        &self,
-        plugin_id: &str,
-    ) -> Result<RuntimeInstanceKey, PluginCommandError> {
-        let workspace_id = self
-            .workspace_id
-            .clone()
-            .ok_or_else(|| PluginCommandError::new(PluginCommandErrorCode::LifecycleUnavailable))?;
-        let snapshot = self
-            .plugin_snapshots
-            .get(plugin_id)
-            .filter(|snapshot| snapshot.status == bbcom_plugin_manager::PluginStatus::Running)
-            .ok_or_else(|| PluginCommandError::new(PluginCommandErrorCode::LifecycleUnavailable))?;
-        let instance_id = snapshot
-            .running_instance_id
-            .ok_or_else(|| PluginCommandError::new(PluginCommandErrorCode::LifecycleUnavailable))?;
-        Ok(RuntimeInstanceKey {
-            workspace_id,
-            plugin_id: plugin_id.to_owned(),
-            instance_id,
-            generation: snapshot.generation,
-        })
-    }
-
-    fn reconcile_runtime_instances(&mut self) {
-        let current = self
-            .plugin_snapshots
-            .iter()
-            .filter(|(_, snapshot)| {
-                snapshot.status == bbcom_plugin_manager::PluginStatus::Running
-                    && snapshot.running_instance_id.is_some()
-            })
-            .map(|(plugin_id, snapshot)| (plugin_id.clone(), snapshot.generation))
-            .collect::<BTreeMap<_, _>>();
-        self.serial_write_decisions
-            .retain(|(plugin_id, generation), _| {
-                current.get(plugin_id).copied() == Some(*generation)
-            });
-        self.panel_generations
-            .retain(|plugin_id, generation| current.get(plugin_id).copied() == Some(*generation));
-        self.hosted_panels
-            .retain(|plugin_id, _| self.panel_generations.contains_key(plugin_id));
-        self.proposal_generations.retain(|proposal_id, generation| {
-            self.proposal_views
-                .get(proposal_id)
-                .and_then(|view| current.get(&view.plugin_id))
-                .copied()
-                == Some(*generation)
-        });
-        self.proposal_views
-            .retain(|proposal_id, _| self.proposal_generations.contains_key(proposal_id));
     }
 
     fn bump_revision(&mut self) -> Result<(), PluginCommandError> {

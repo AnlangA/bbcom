@@ -6,7 +6,7 @@ use rusqlite::{Connection, OpenFlags};
 use crate::{Result, WorkspaceError};
 
 pub const WORKSPACE_APPLICATION_ID: i32 = 0x4242_434d;
-pub const WORKSPACE_SCHEMA_VERSION: i32 = 1;
+pub const WORKSPACE_SCHEMA_VERSION: i32 = 3;
 pub const WORKSPACE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) const READ_WRITE_FLAGS: OpenFlags = OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -82,6 +82,91 @@ pub(crate) fn validate_header(connection: &Connection) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// Upgrade an already validated workspace before any query depends on the
+/// current schema. Read-only opens cannot safely mutate an older file and
+/// therefore fail closed until it is opened once in writable mode.
+pub(crate) fn migrate_schema(connection: &Connection, writable: bool) -> Result<()> {
+    let application_id: i32 =
+        connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    if application_id != WORKSPACE_APPLICATION_ID {
+        return Err(WorkspaceError::Corrupt {
+            reason: "application_id",
+        });
+    }
+    let user_version: i32 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if user_version > WORKSPACE_SCHEMA_VERSION {
+        return Err(WorkspaceError::FutureSchema {
+            found: user_version,
+            supported: WORKSPACE_SCHEMA_VERSION,
+        });
+    }
+    if user_version == WORKSPACE_SCHEMA_VERSION {
+        return Ok(());
+    }
+    if !writable || !matches!(user_version, 1 | 2) {
+        return Err(WorkspaceError::Corrupt {
+            reason: "user_version",
+        });
+    }
+
+    if user_version == 1 {
+        let migration = connection.execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE quick_commands ADD COLUMN owner_plugin_id TEXT
+               CHECK (owner_plugin_id IS NULL OR length(owner_plugin_id) BETWEEN 1 AND 128);
+             ALTER TABLE macros ADD COLUMN owner_plugin_id TEXT
+               CHECK (owner_plugin_id IS NULL OR length(owner_plugin_id) BETWEEN 1 AND 128);
+             PRAGMA user_version = 2;
+             COMMIT;",
+        );
+        if let Err(error) = migration {
+            let _ = connection.execute_batch("ROLLBACK;");
+            return Err(error.into());
+        }
+    }
+
+    let add_schema_column =
+        !table_has_column(connection, "plugin_project_state", "schema_version")?;
+    let migration = if add_schema_column {
+        connection.execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE plugin_project_state ADD COLUMN schema_version INTEGER
+               CHECK (schema_version IS NULL OR schema_version >= 1);
+             UPDATE plugin_project_state
+                SET schema_version = 1
+              WHERE state_version = 2;
+             PRAGMA user_version = 3;
+             COMMIT;",
+        )
+    } else {
+        connection.execute_batch(
+            "BEGIN IMMEDIATE;
+             UPDATE plugin_project_state
+                SET schema_version = 1
+              WHERE state_version = 2 AND schema_version IS NULL;
+             PRAGMA user_version = 3;
+             COMMIT;",
+        )
+    };
+    if let Err(error) = migration {
+        let _ = connection.execute_batch("ROLLBACK;");
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 const SCHEMA_SQL: &str = r#"
@@ -161,6 +246,9 @@ CREATE TABLE quick_commands (
   name TEXT NOT NULL,
   data TEXT NOT NULL,
   is_hex INTEGER NOT NULL CHECK (is_hex IN (0, 1)),
+  owner_plugin_id TEXT CHECK (
+    owner_plugin_id IS NULL OR length(owner_plugin_id) BETWEEN 1 AND 128
+  ),
   PRIMARY KEY (session_id, id),
   UNIQUE (session_id, position)
 ) STRICT;
@@ -170,6 +258,9 @@ CREATE TABLE macros (
   id TEXT NOT NULL,
   position INTEGER NOT NULL CHECK (position >= 0),
   name TEXT NOT NULL,
+  owner_plugin_id TEXT CHECK (
+    owner_plugin_id IS NULL OR length(owner_plugin_id) BETWEEN 1 AND 128
+  ),
   PRIMARY KEY (session_id, id),
   UNIQUE (session_id, position)
 ) STRICT;
@@ -270,7 +361,10 @@ CREATE TABLE plugin_bindings (
 CREATE TABLE plugin_project_state (
   plugin_id TEXT PRIMARY KEY REFERENCES plugin_bindings(plugin_id) ON DELETE CASCADE,
   state BLOB NOT NULL CHECK (length(state) <= 16777216),
-  state_version INTEGER NOT NULL DEFAULT 1 CHECK (state_version >= 1)
+  state_version INTEGER NOT NULL DEFAULT 1 CHECK (state_version IN (1, 2)),
+  schema_version INTEGER CHECK (schema_version IS NULL OR schema_version >= 1),
+  CHECK ((state_version = 1 AND schema_version IS NULL) OR
+         (state_version = 2 AND schema_version IS NOT NULL))
 ) STRICT;
 
 CREATE TABLE committed_batches (

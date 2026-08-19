@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { SerialPort } from 'tauri-plugin-serialplugin-api';
+import { ClearBuffer, SerialPort } from 'tauri-plugin-serialplugin-api';
 import type { SerialDrainRequest, SerialDrainResponse } from '../../../generated/ipc-contracts';
 import type { SerialPortFactory } from '../application/serial-port';
 
@@ -12,8 +12,22 @@ export const createTauriSerialPort: SerialPortFactory = (options) => {
     writeBinary: (data) => port.writeBinary(data),
     writeDataTerminalReady: (value) => port.writeDataTerminalReady(value),
     writeRequestToSend: (value) => port.writeRequestToSend(value),
+    readClearToSend: () => port.readClearToSend(),
+    readDataSetReady: () => port.readDataSetReady(),
+    readRingIndicator: () => port.readRingIndicator(),
+    readCarrierDetect: () => port.readCarrierDetect(),
     setBreak: () => port.setBreak(),
     clearBreak: () => port.clearBreak(),
+    bytesToRead: () => port.bytesToRead(),
+    bytesToWrite: () => port.bytesToWrite(),
+    clearBuffer: (selection) =>
+      port.clearBuffer(
+        selection === 'input'
+          ? ClearBuffer.Input
+          : selection === 'output'
+            ? ClearBuffer.Output
+            : ClearBuffer.All,
+      ),
     close: () => port.close(),
     drainNativeInput: () => {
       // serialplugin v3 is path-scoped for every existing operation. The

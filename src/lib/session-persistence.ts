@@ -486,6 +486,11 @@ function normalizeQuickCommands(
       name: item.name.trim() || 'Command',
       data: item.data,
       isHex: item.isHex === true,
+      ownerPluginId:
+        typeof item.ownerPluginId === 'string' &&
+        item.id?.startsWith(`plugin:${item.ownerPluginId}:`)
+          ? item.ownerPluginId
+          : null,
     }));
 }
 
@@ -502,6 +507,11 @@ function normalizeMacros(raw: unknown, options: SessionPersistenceOptions): Macr
     .map((macro) => ({
       id: typeof macro.id === 'string' ? macro.id : createId(options),
       name: macro.name.trim() || 'Macro',
+      ownerPluginId:
+        typeof macro.ownerPluginId === 'string' &&
+        macro.id?.startsWith(`plugin:${macro.ownerPluginId}:`)
+          ? macro.ownerPluginId
+          : null,
       steps: macro.steps
         .filter((step) => step && typeof step.data === 'string')
         .map((step) => ({

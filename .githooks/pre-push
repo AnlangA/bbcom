@@ -10,4 +10,9 @@ repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
 }
 
 cd "$repository_root"
+
+# Git sends one ref-update record per line on stdin. None of the quality gates
+# consume those records, and forwarding them lets stdin-aware test runners
+# mistake a ref record for a spec path. Drain the records before spawning pnpm.
+cat >/dev/null
 exec pnpm run precommit:full

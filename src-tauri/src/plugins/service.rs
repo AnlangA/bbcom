@@ -125,31 +125,25 @@ where
         Ok(self.lock()?.uninstall(plugin_id)?)
     }
 
-    pub fn take_published_panels(
-        &self,
-    ) -> Result<Vec<bbcom_plugin_manager::HostPublishedPanel>, PluginServiceError> {
-        Ok(self.lock()?.take_published_panels()?)
-    }
-
-    pub fn invoke_panel_event(
-        &self,
-        plugin_id: &str,
-        field_id: &str,
-        value: &str,
-    ) -> Result<Option<bbcom_plugin_manager::HostPanel>, PluginServiceError> {
-        Ok(self
-            .lock()?
-            .invoke_panel_event(plugin_id, field_id, value)?)
-    }
-
-    /// Push an unsolicited envelope (proposal decision, session-query data)
-    /// into a running plugin's sidecar.
+    /// Push a protocol-v2 event/cancel/stream payload into a running sidecar.
     pub fn deliver_envelope(
         &self,
         plugin_id: &str,
-        payload: bbcom_plugin_contracts::generated::envelope::Payload,
+        payload: bbcom_plugin_contracts::generated_v2::envelope::Payload,
     ) -> Result<(), PluginServiceError> {
         Ok(self.lock()?.deliver_envelope(plugin_id, payload)?)
+    }
+
+    pub fn notify_port_catalog_changed(&self) -> Result<usize, PluginServiceError> {
+        Ok(self.lock()?.notify_port_catalog_changed()?)
+    }
+
+    pub fn notify_host_context_changed(
+        &self,
+        locale: Option<String>,
+        theme: Option<bbcom_plugin_contracts::generated_v2::ColorScheme>,
+    ) -> Result<usize, PluginServiceError> {
+        Ok(self.lock()?.notify_host_context_changed(locale, theme)?)
     }
 
     pub fn begin_manual_upgrade(

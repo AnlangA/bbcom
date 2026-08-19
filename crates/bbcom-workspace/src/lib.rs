@@ -17,4 +17,7 @@ pub use model::{
     WorkspacePluginBindingSnapshot, WorkspaceSessionPage, WorkspaceSessionSnapshot,
 };
 pub use schema::{WORKSPACE_APPLICATION_ID, WORKSPACE_SCHEMA_VERSION};
-pub use service::{WorkspaceAiMessagePage, WorkspaceService, WorkspaceWaveformPage};
+pub use service::{
+    PluginContributionCleanupReport, PluginContributionDisposition, WorkspaceAiMessagePage,
+    WorkspaceService, WorkspaceWaveformPage,
+};

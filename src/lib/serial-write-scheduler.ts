@@ -30,13 +30,33 @@ export interface SerialWriteShutdownResult {
   timedOut: boolean;
 }
 
+export type SerialWriteAdmission =
+  | Readonly<{ source: 'host'; ownerId: string }>
+  | Readonly<{
+      source: 'plugin';
+      ownerId: string;
+      generation: number;
+      leaseToken: string;
+    }>;
+
+export interface SerialWriteAdmissionGate {
+  authorize(admission: SerialWriteAdmission): boolean;
+}
+
 interface WriteOperation {
   payload: Uint8Array;
   options: SerialWriteOptions;
+  admission: SerialWriteAdmission | null;
   sentBytes: number;
   settled: boolean;
   promise: Promise<SerialSendResult>;
   resolve: (result: SerialSendResult) => void;
+}
+
+interface IdleWaiter {
+  readonly resolve: () => void;
+  readonly reject: (error: Error) => void;
+  detachAbort: () => void;
 }
 
 type WriteChunk = (chunk: Uint8Array) => Promise<number>;
@@ -85,6 +105,15 @@ function cancelled(requestedBytes: number, sentBytes = 0): SerialSendResult {
   };
 }
 
+function denied(requestedBytes: number, sentBytes = 0): SerialSendResult {
+  return {
+    outcome: sentBytes > 0 ? 'partial' : 'failed',
+    requestedBytes,
+    sentBytes,
+    error: serialError('SECURITY_DENIED', 'error.security_denied', false),
+  };
+}
+
 /**
  * A bounded, single-flight FIFO for all writes belonging to one connection.
  *
@@ -97,12 +126,17 @@ export class SerialWriteScheduler {
   private readonly limits: SerialWriteSchedulerLimits;
   private readonly queue: WriteOperation[] = [];
   private activeOperation: WriteOperation | null = null;
+  private readonly idleWaiters = new Set<IdleWaiter>();
   private draining = false;
   private accepting = true;
   private outstandingOperations = 0;
   private outstandingBytes = 0;
 
-  constructor(writeChunk: WriteChunk, limits: Partial<SerialWriteSchedulerLimits> = {}) {
+  constructor(
+    writeChunk: WriteChunk,
+    limits: Partial<SerialWriteSchedulerLimits> = {},
+    private readonly admissionGate?: SerialWriteAdmissionGate,
+  ) {
     this.writeChunk = writeChunk;
     this.limits = { ...DEFAULT_SERIAL_WRITE_LIMITS, ...limits };
     if (
@@ -127,7 +161,11 @@ export class SerialWriteScheduler {
     };
   }
 
-  enqueue(payload: Uint8Array, options: SerialWriteOptions = {}): Promise<SerialSendResult> {
+  enqueue(
+    payload: Uint8Array,
+    options: SerialWriteOptions = {},
+    admission: SerialWriteAdmission | null = null,
+  ): Promise<SerialSendResult> {
     if (payload.length === 0) {
       return Promise.resolve(
         failed(0, serialError('INVALID_INPUT', 'error.invalid_input', false, { field: 'payload' })),
@@ -135,6 +173,9 @@ export class SerialWriteScheduler {
     }
     if (!this.accepting) {
       return Promise.resolve(cancelled(payload.length));
+    }
+    if (!this.authorized(admission)) {
+      return Promise.resolve(denied(payload.length));
     }
     if (
       this.outstandingOperations >= this.limits.maxOperations ||
@@ -153,6 +194,7 @@ export class SerialWriteScheduler {
       // The caller may reuse or mutate its buffer while this operation waits.
       payload: payload.slice(),
       options,
+      admission: admission ? Object.freeze({ ...admission }) : null,
       sentBytes: 0,
       settled: false,
       promise,
@@ -163,6 +205,36 @@ export class SerialWriteScheduler {
     this.outstandingBytes += operation.payload.length;
     void this.drain();
     return promise;
+  }
+
+  /**
+   * Resolve only after the logical FIFO and the current physical driver call
+   * are both idle. Cancellation removes the waiter but never interrupts a
+   * physical write whose outcome is already uncertain.
+   */
+  waitForIdle(signal?: AbortSignal): Promise<void> {
+    if (this.isIdle()) return Promise.resolve();
+    if (signal?.aborted) return Promise.reject(new Error('serial write drain cancelled'));
+    return new Promise<void>((resolve, reject) => {
+      const waiter: IdleWaiter = {
+        resolve,
+        reject,
+        detachAbort: () => undefined,
+      };
+      const onAbort = () => {
+        if (!this.idleWaiters.delete(waiter)) return;
+        waiter.detachAbort();
+        reject(new Error('serial write drain cancelled'));
+      };
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true });
+        waiter.detachAbort = () => signal.removeEventListener('abort', onAbort);
+      }
+      this.idleWaiters.add(waiter);
+      // Defensive re-check: a custom driver thenable may settle synchronously
+      // while this waiter is being installed.
+      this.resolveIdleWaiters();
+    });
   }
 
   /**
@@ -206,10 +278,14 @@ export class SerialWriteScheduler {
       }
     } finally {
       this.draining = false;
+      this.resolveIdleWaiters();
     }
   }
 
   private async writeOperation(operation: WriteOperation): Promise<SerialSendResult> {
+    if (!this.authorized(operation.admission)) {
+      return denied(operation.payload.length, operation.sentBytes);
+    }
     try {
       operation.options.onWriteStarted?.();
     } catch {
@@ -230,6 +306,9 @@ export class SerialWriteScheduler {
         }
 
         if (!this.accepting) return cancelled(operation.payload.length, operation.sentBytes);
+        if (!this.authorized(operation.admission)) {
+          return denied(operation.payload.length, operation.sentBytes);
+        }
         const chunk = operation.payload.subarray(operation.sentBytes, logicalChunkEnd);
         let written: number;
         try {
@@ -273,5 +352,29 @@ export class SerialWriteScheduler {
     this.outstandingBytes = Math.max(0, this.outstandingBytes - remaining);
     this.outstandingOperations = Math.max(0, this.outstandingOperations - 1);
     operation.resolve(result);
+  }
+
+  private authorized(admission: SerialWriteAdmission | null): boolean {
+    if (!this.admissionGate) return true;
+    if (!admission) return false;
+    try {
+      return this.admissionGate.authorize(admission);
+    } catch {
+      return false;
+    }
+  }
+
+  private isIdle(): boolean {
+    return this.queue.length === 0 && this.activeOperation === null && !this.draining;
+  }
+
+  private resolveIdleWaiters(): void {
+    if (!this.isIdle() || this.idleWaiters.size === 0) return;
+    const waiters = Array.from(this.idleWaiters);
+    this.idleWaiters.clear();
+    for (const waiter of waiters) {
+      waiter.detachAbort();
+      waiter.resolve();
+    }
   }
 }

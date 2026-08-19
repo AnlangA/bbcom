@@ -1,0 +1,19 @@
+id = "dev.bbcom.counter-v2"
+name = "Counter v2 Example"
+version = "2.0.0"
+api = "^2.0"
+requested-capabilities = [
+  "ui.workspace",
+  "serial.sessions.manage",
+  "serial.io",
+  "session.commands.read-write",
+  "project.state.read-write",
+]
+
+[component]
+path = "component/plugin.wasm"
+sha256 = "@SHA256@"
+
+[publisher]
+name = "BBCOM project"
+website = "https://github.com/AnlangA/bbcom"
