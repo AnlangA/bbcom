@@ -705,7 +705,7 @@ const en: Catalog = {
   'plugins.serial.approve_once': 'Approve for this instance',
   'plugins.error.unavailable': 'The native plugin service is unavailable.',
   'plugins.bootstrap.unavailable':
-    'The plugin runtime is unavailable ({code}). Switching or creating a workspace retries automatically; if it persists, check app-data permissions and the bubblewrap/python3 dependencies.',
+    'The plugin runtime is unavailable ({code}). Switching or creating a workspace retries automatically; if it persists, restart the app and check app-data permissions and system sandbox support.',
   'plugins.error.invalid-response': 'The plugin service returned an invalid response.',
   'plugins.error.invalid-input': 'Invalid plugin request; check the local install path.',
   'plugins.error.invalid-panel': 'An unsafe or invalid plugin panel was rejected.',

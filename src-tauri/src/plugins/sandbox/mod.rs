@@ -6,7 +6,7 @@
 //! required control on the current machine.
 
 use super::host_launcher::{SandboxDriver, SandboxError, SandboxLaunch, SandboxSelfTest};
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::host_launcher::{SandboxedChild, SandboxedProcess};
 
 #[cfg(target_os = "linux")]

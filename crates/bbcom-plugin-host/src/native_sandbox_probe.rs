@@ -17,6 +17,7 @@ const SELF_TEST_MARKER: &str = "bbcom-native-sandbox-readable-package";
 const NETWORK_DENIAL_FAILURE: i32 = 41;
 const CHILD_PROCESS_DENIAL_FAILURE: i32 = 42;
 const PACKAGE_WRITE_DENIAL_FAILURE: i32 = 44;
+#[cfg(target_os = "windows")]
 const MEMORY_LIMIT_FAILURE: i32 = 45;
 const INVALID_PROBE_ARGUMENTS: i32 = 46;
 const PACKAGE_READ_FAILURE: i32 = 48;
@@ -38,6 +39,8 @@ pub fn run_if_requested(arguments: &[OsString]) -> Option<i32> {
                 &PathBuf::from(&arguments[3]),
             ))
         }
+        #[cfg(target_os = "macos")]
+        "--native-sandbox-memory" if arguments.len() == 1 => run_resident_memory_probe(),
         "--native-sandbox-crash" if arguments.len() == 1 => std::process::abort(),
         "--native-sandbox-hang" if arguments.len() == 1 => loop {
             std::thread::sleep(Duration::from_secs(1));
@@ -89,10 +92,26 @@ fn run_base_probe(package: &Path, sensitive: &Path, child_executable: &Path) -> 
     if !child_process_is_denied(child_executable) {
         return CHILD_PROCESS_DENIAL_FAILURE;
     }
+    #[cfg(target_os = "windows")]
     if !oversized_allocation_is_denied() {
         return MEMORY_LIMIT_FAILURE;
     }
     0
+}
+
+#[cfg(target_os = "macos")]
+fn run_resident_memory_probe() -> ! {
+    const PROBE_BYTES: usize = HOST_PROCESS_MEMORY_LIMIT_BYTES + 64 * 1024 * 1024;
+    const PAGE_SIZE: usize = 16 * 1024;
+
+    let mut allocation = vec![0_u8; PROBE_BYTES];
+    for offset in (0..allocation.len()).step_by(PAGE_SIZE) {
+        allocation[offset] = (offset as u8).wrapping_add(1);
+    }
+    std::hint::black_box(&allocation);
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -131,52 +150,12 @@ fn child_creation_error_is_denial(error: &std::io::Error) -> bool {
         || error.raw_os_error() == Some(ERROR_CHILD_PROCESS_BLOCKED)
 }
 
-#[cfg(target_os = "macos")]
-fn oversized_allocation_is_denied() -> bool {
-    const PROT_READ: i32 = 1;
-    const PROT_WRITE: i32 = 2;
-    const MAP_PRIVATE: i32 = 2;
-    const MAP_ANON: i32 = 0x1000;
-    const ENOMEM: i32 = 12;
-    const PAGE_SIZE: usize = 16 * 1024;
-
-    let length = HOST_PROCESS_MEMORY_LIMIT_BYTES + PAGE_SIZE;
-    let address = unsafe {
-        mmap(
-            std::ptr::null_mut(),
-            length,
-            PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANON,
-            -1,
-            0,
-        )
-    };
-    if address as isize == -1 {
-        return std::io::Error::last_os_error().raw_os_error() == Some(ENOMEM);
-    }
-    let _ = unsafe { munmap(address, length) };
-    false
-}
-
 #[cfg(target_os = "windows")]
 fn oversized_allocation_is_denied() -> bool {
     let mut allocation = Vec::<u8>::new();
     allocation
         .try_reserve_exact(HOST_PROCESS_MEMORY_LIMIT_BYTES + 64 * 1024 * 1024)
         .is_err()
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" {
-    fn mmap(
-        address: *mut std::ffi::c_void,
-        length: usize,
-        protection: i32,
-        flags: i32,
-        descriptor: i32,
-        offset: i64,
-    ) -> *mut std::ffi::c_void;
-    fn munmap(address: *mut std::ffi::c_void, length: usize) -> i32;
 }
 
 #[cfg(test)]
