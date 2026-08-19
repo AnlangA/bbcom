@@ -26,6 +26,3 @@ export function aiModelLabel(id: string): string {
 export function getAiModelOptions(): Array<{ label: string; value: RegisteredAiModel }> {
   return AI_MODELS.map((model) => ({ label: model.label, value: model.id }));
 }
-
-/** @deprecated Prefer `getAiModelOptions`; retained for existing dropdown imports. */
-export const aiModelOptions = getAiModelOptions;

@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { DEFAULT_RX_FRAME_GAP_MS } from '../../src/lib/serial-framing.ts';
 import {
-  SERIAL_RX_DRAIN_INTERVAL_MS,
   SERIAL_UI_HIDDEN_INTERVAL_MS,
   SERIAL_UI_VISIBLE_INTERVAL_MS,
   SerialRxDrainScheduler,
@@ -55,7 +55,7 @@ test('small RX bursts restart the configurable inactivity timer', () => {
 
   drain.notify();
   assert.equal(fake.timers.length, 1);
-  assert.equal(fake.timers[0].delay, SERIAL_RX_DRAIN_INTERVAL_MS);
+  assert.equal(fake.timers[0].delay, DEFAULT_RX_FRAME_GAP_MS);
   drain.notify();
   assert.equal(fake.timers.length, 2);
   assert.equal(fake.timers[0].cancelled, true);

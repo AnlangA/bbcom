@@ -56,6 +56,14 @@ mod tests {
                 "requestId": "req-1"
             })
         );
+        let rate_limited = IpcError::new(
+            AppErrorCode::RateLimited,
+            "error.rate_limited",
+            true,
+            "run_ai_request",
+        )
+        .with_retry_after(750);
+        assert_eq!(rate_limited.retry_after_ms, Some(750));
 
         let export = BeginExportRequest {
             format: ExportFormat::Jsonl,

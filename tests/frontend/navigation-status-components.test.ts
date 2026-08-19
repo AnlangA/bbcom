@@ -1565,6 +1565,7 @@ test('App reflects the active theme and mounts the application shell through the
 test('AiWindow never broadcasts visibility and only debounces content-size updates', async () => {
   vi.useFakeTimers();
   const callbacks: Array<() => void> = [];
+  const frameCallbacks: FrameRequestCallback[] = [];
   class TestResizeObserver {
     constructor(callback: () => void) {
       callbacks.push(callback);
@@ -1573,6 +1574,12 @@ test('AiWindow never broadcasts visibility and only debounces content-size updat
     disconnect() {}
   }
   vi.stubGlobal('ResizeObserver', TestResizeObserver);
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    frameCallbacks.push(callback);
+    return frameCallbacks.length;
+  });
+  const originalInnerHeight = window.innerHeight;
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 400 });
   setupSessions();
   const wrapper = mount(AiWindow, { global: { stubs: { AiPanel: true } } });
   const content = wrapper.find('.ai-window-content');
@@ -1590,11 +1597,31 @@ test('AiWindow never broadcasts visibility and only debounces content-size updat
   expect(visibilityCalls).toEqual([]);
   expect(callbacks).toHaveLength(1);
   callbacks[0]!();
+  callbacks[0]!();
   await vi.advanceTimersByTimeAsync(60);
   expect(nativeMocks.resizeAiWindow).toHaveBeenCalledWith(801, 501);
+  expect(nativeMocks.resizeAiWindow).toHaveBeenCalledTimes(1);
+  frameCallbacks.shift()!(0);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(nativeMocks.resizeAiWindow).toHaveBeenLastCalledWith(801, 602);
+  await vi.advanceTimersByTimeAsync(120);
+
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 700 });
+  callbacks[0]!();
+  await vi.advanceTimersByTimeAsync(60);
+  frameCallbacks.shift()!(0);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(nativeMocks.resizeAiWindow).toHaveBeenCalledTimes(3);
+  expect(nativeMocks.resizeAiWindow).toHaveBeenLastCalledWith(801, 501);
   await wrapper.unmount();
   expect(nativeMocks.tauriEmit.mock.calls.filter((call) => call[0] === 'ai-window-state')).toEqual(
     [],
   );
+  Object.defineProperty(window, 'innerHeight', {
+    configurable: true,
+    value: originalInnerHeight,
+  });
   vi.unstubAllGlobals();
 });

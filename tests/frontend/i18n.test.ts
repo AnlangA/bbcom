@@ -92,6 +92,7 @@ test('default (zh) catalog is sync while the en catalog loads lazily', async () 
   // Default locale resolves immediately, with no loader awaited.
   fresh.setLocale('zh');
   assert.equal(fresh.t('session.connect'), '连接');
+  assert.throws(() => fresh.missingLocaleKeys('zh'), /catalog for "en" is not loaded yet/);
 
   // Before the lazy chunk lands, English lookups deterministically return the
   // key itself (the import promise cannot settle before this sync assert).

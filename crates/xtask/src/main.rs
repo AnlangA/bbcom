@@ -138,6 +138,13 @@ mod tests {
         );
         assert!(parse_args(["bindings", "--check", "--check"]).is_err());
         assert!(parse_args(["unknown"]).is_err());
+        assert_eq!(
+            parse_args(["bindings"]).expect("default output"),
+            Options {
+                check: false,
+                output: default_output(),
+            }
+        );
 
         let missing = std::env::temp_dir().join(format!(
             "bbcom-bindings-check-missing-{}-{}.ts",
@@ -152,5 +159,12 @@ mod tests {
             !missing.exists(),
             "check mode must not create a missing binding"
         );
+
+        write_if_changed(&missing, b"generated").expect("create generated binding");
+        write_if_changed(&missing, b"generated").expect("leave matching binding unchanged");
+        assert_eq!(fs::read(&missing).expect("read generated binding"), b"generated");
+        fs::remove_file(&missing).expect("remove generated binding");
+
+        assert!(write_if_changed(Path::new(""), b"generated").is_err());
     }
 }

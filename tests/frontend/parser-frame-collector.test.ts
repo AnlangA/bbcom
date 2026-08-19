@@ -40,6 +40,16 @@ test('parserConfigKey changes for each parser mode option', () => {
     }),
     'length:1:2:0:3',
   );
+  assert.equal(
+    parserConfigKey({
+      kind: 'length',
+      lengthOffset: 0,
+      lengthSize: 1,
+      bigEndian: true,
+      lengthAdjust: 0,
+    }),
+    'length:0:1:1:0',
+  );
 });
 
 test('collector incrementally parses RX frames and preserves stream offsets', () => {

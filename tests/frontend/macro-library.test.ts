@@ -64,6 +64,18 @@ test('importMacros rejects future versions instead of guessing their shape', () 
   });
 });
 
+test('importMacros rejects a file whose macros field is not an array', () => {
+  const payload = JSON.stringify({
+    app: 'bbcom',
+    kind: 'macro-library',
+    version: 1,
+    macros: null,
+  });
+  assert.throws(() => importMacros(payload), {
+    message: t('macroLibrary.missingMacros'),
+  });
+});
+
 test('importMacros rejects a file with no valid macros', () => {
   const payload = JSON.stringify({ app: 'bbcom', kind: 'macro-library', version: 1, macros: [] });
   assert.throws(() => importMacros(payload), {
@@ -104,6 +116,23 @@ test('importMacros drops macros with empty names or no valid steps', () => {
       { name: '', steps: [{ data: 'x', isHex: false }] }, // empty name -> dropped
       { name: 'NoSteps', steps: [{ data: '', isHex: false }] }, // all steps invalid -> dropped
       { name: 'Good', steps: [{ data: 'x', isHex: false }] }, // kept
+    ],
+  });
+  const imported = importMacros(payload);
+  assert.equal(imported.length, 1);
+  assert.equal(imported[0].name, 'Good');
+});
+
+test('importMacros ignores non-object macros and invalid field types', () => {
+  const payload = JSON.stringify({
+    app: 'bbcom',
+    kind: 'macro-library',
+    version: 1,
+    macros: [
+      null,
+      { name: 42, steps: [{ data: 'x', isHex: false }] },
+      { name: 'Missing steps', steps: null },
+      { name: 'Good', steps: [{ data: 'x', isHex: false }] },
     ],
   });
   const imported = importMacros(payload);

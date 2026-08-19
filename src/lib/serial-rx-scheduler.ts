@@ -1,9 +1,7 @@
 import { DEFAULT_RX_FRAME_GAP_MS, normalizeRxFrameGapMs } from './serial-framing';
 
-export const SERIAL_RX_DRAIN_BYTES = 64 * 1024;
-export const SERIAL_RX_DRAIN_CHUNKS = 64;
-/** @deprecated Use a session's configurable RX frame gap. */
-export const SERIAL_RX_DRAIN_INTERVAL_MS = DEFAULT_RX_FRAME_GAP_MS;
+const SERIAL_RX_DRAIN_BYTES = 64 * 1024;
+const SERIAL_RX_DRAIN_CHUNKS = 64;
 export const SERIAL_UI_VISIBLE_INTERVAL_MS = 17;
 export const SERIAL_UI_HIDDEN_INTERVAL_MS = 250;
 
@@ -161,7 +159,6 @@ export class SerialUiPublishScheduler {
     this.timer = this.scheduler.schedule(() => {
       if (generation !== this.generation) return;
       this.timer = null;
-      if (!this.dirty) return;
       this.dirty = false;
       this.publish();
     }, delay);
