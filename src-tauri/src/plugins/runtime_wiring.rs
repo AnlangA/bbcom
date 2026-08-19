@@ -95,20 +95,24 @@ static ACTIVE_LIFECYCLE: Mutex<Option<Arc<dyn super::bootstrap::PluginRuntimeLif
 static PUSH_WORKERS: OnceLock<()> = OnceLock::new();
 
 /// Non-blocking sink handed to every host reader thread.
-struct NativeHostPushSink {
+struct NativeHostPushSink<E> {
     proposals: mpsc::Sender<bbcom_plugin_contracts::generated::SerialProposalEvent>,
-    queries: mpsc::Sender<bbcom_plugin_contracts::generated::SessionQueryRequest>,
+    environment: Arc<E>,
+    query_registry: Arc<SessionQueryResultRegistry>,
 }
 
-impl bbcom_plugin_manager::HostPushSink for NativeHostPushSink {
+impl<E: HostUpstreamEnvironment> bbcom_plugin_manager::HostPushSink for NativeHostPushSink<E> {
     fn serial_proposal(&self, event: bbcom_plugin_contracts::generated::SerialProposalEvent) {
         // Bounded, non-blocking: the host reader thread must never stall on a
         // full queue; drops are covered by the sidecar's own TTL bound.
         let _ = self.proposals.send(event);
     }
 
-    fn session_query(&self, request: bbcom_plugin_contracts::generated::SessionQueryRequest) {
-        let _ = self.queries.send(request);
+    fn session_query(
+        &self,
+        request: bbcom_plugin_contracts::generated::SessionQueryRequest,
+    ) -> bbcom_plugin_contracts::generated::SessionQueryResponse {
+        answer_session_query(&*self.environment, &self.query_registry, request)
     }
 }
 
@@ -164,15 +168,12 @@ fn active_lifecycle() -> Option<Arc<dyn super::bootstrap::PluginRuntimeLifecycle
 
 fn spawn_push_workers<E: HostUpstreamEnvironment>(
     environment: &Arc<E>,
-    registry: &Arc<SessionQueryResultRegistry>,
     proposals: mpsc::Receiver<bbcom_plugin_contracts::generated::SerialProposalEvent>,
-    queries: mpsc::Receiver<bbcom_plugin_contracts::generated::SessionQueryRequest>,
 ) {
     if PUSH_WORKERS.set(()).is_err() {
         return; // Workers from an earlier composition keep draining.
     }
     let proposal_environment = Arc::clone(environment);
-    let query_environment = Arc::clone(environment);
     std::thread::Builder::new()
         .name("bbcom-plugin-proposals".to_owned())
         .spawn(move || {
@@ -187,22 +188,13 @@ fn spawn_push_workers<E: HostUpstreamEnvironment>(
             }
         })
         .expect("proposal worker thread");
-    let registry = Arc::clone(registry);
-    std::thread::Builder::new()
-        .name("bbcom-plugin-queries".to_owned())
-        .spawn(move || {
-            while let Ok(request) = queries.recv() {
-                answer_session_query(&*query_environment, &registry, request);
-            }
-        })
-        .expect("session query worker thread");
 }
 
 fn answer_session_query<E: HostUpstreamEnvironment>(
     environment: &E,
     registry: &SessionQueryResultRegistry,
     request: bbcom_plugin_contracts::generated::SessionQueryRequest,
-) {
+) -> bbcom_plugin_contracts::generated::SessionQueryResponse {
     use bbcom_contracts::{PluginSessionQuery, PluginSessionQueryKind};
     use bbcom_plugin_contracts::generated::session_query_request::Query;
 
@@ -217,13 +209,11 @@ fn answer_session_query<E: HostUpstreamEnvironment>(
             max_bytes: capture.max_bytes,
         },
         None => {
-            deliver_query_error(environment, &plugin_id, &query_id, "invalid-input");
-            return;
+            return query_error_response(&query_id, "invalid-input");
         }
     };
     let Some(waiter) = registry.register(&query_id) else {
-        deliver_query_error(environment, &plugin_id, &query_id, "limit-exceeded");
-        return;
+        return query_error_response(&query_id, "limit-exceeded");
     };
     let event = serde_json::to_value(PluginSessionQuery {
         query_id: query_id.clone(),
@@ -232,39 +222,23 @@ fn answer_session_query<E: HostUpstreamEnvironment>(
     });
     let Ok(event) = event else {
         registry.discard(&query_id);
-        deliver_query_error(environment, &plugin_id, &query_id, "invalid-input");
-        return;
+        return query_error_response(&query_id, "invalid-input");
     };
     if environment
         .emit_to_main(SESSION_QUERY_EVENT_NAME, &event)
         .is_err()
     {
         registry.discard(&query_id);
-        deliver_query_error(environment, &plugin_id, &query_id, "invalid-input");
-        return;
+        return query_error_response(&query_id, "invalid-input");
     }
-    let result = waiter.recv_timeout(SESSION_QUERY_RESULT_TIMEOUT);
-    let payload = match result {
+    match waiter.recv_timeout(SESSION_QUERY_RESULT_TIMEOUT) {
         Ok(result) if result.ok => build_query_response(&query_id, &result),
-        Ok(_) => {
-            // The webview answered with a domain error.
-            deliver_query_error_code(environment, &plugin_id, &query_id, "permission-denied");
-            return;
-        }
+        Ok(_) => query_error_response(&query_id, "permission-denied"),
         Err(_) => {
             registry.discard(&query_id);
-            bbcom_plugin_contracts::generated::SessionQueryResponse {
-                query_id,
-                ok: false,
-                error_code: "unavailable".to_owned(),
-                sessions: Vec::new(),
-                frames: Vec::new(),
-                next_sequence: 0,
-                has_more: false,
-            }
+            query_error_response(&query_id, "unavailable")
         }
-    };
-    deliver_query_response(environment, &plugin_id, payload);
+    }
 }
 
 fn build_query_response(
@@ -306,28 +280,11 @@ fn build_query_response(
     }
 }
 
-fn deliver_query_error<E: HostUpstreamEnvironment>(
-    environment: &E,
-    plugin_id: &str,
+fn query_error_response(
     query_id: &str,
     error_code: &str,
-) {
-    deliver_query_error_code(environment, plugin_id, query_id, error_code);
-}
-
-fn deliver_query_error_code<E: HostUpstreamEnvironment>(
-    environment: &E,
-    _plugin_id: &str,
-    query_id: &str,
-    error_code: &str,
-) {
-    // The error response still needs a running host to reach; if none is
-    // active the sidecar's own timeout resolves the call.
-    let Some(lifecycle) = active_lifecycle() else {
-        return;
-    };
-    let _ = environment;
-    let payload = bbcom_plugin_contracts::generated::SessionQueryResponse {
+) -> bbcom_plugin_contracts::generated::SessionQueryResponse {
+    bbcom_plugin_contracts::generated::SessionQueryResponse {
         query_id: query_id.to_owned(),
         ok: false,
         error_code: error_code.to_owned(),
@@ -335,25 +292,7 @@ fn deliver_query_error_code<E: HostUpstreamEnvironment>(
         frames: Vec::new(),
         next_sequence: 0,
         has_more: false,
-    };
-    let _ = lifecycle.deliver_envelope(
-        _plugin_id,
-        bbcom_plugin_contracts::generated::envelope::Payload::SessionQueryResponse(payload),
-    );
-}
-
-fn deliver_query_response<E: HostUpstreamEnvironment>(
-    _environment: &E,
-    plugin_id: &str,
-    payload: bbcom_plugin_contracts::generated::SessionQueryResponse,
-) {
-    let Some(lifecycle) = active_lifecycle() else {
-        return;
-    };
-    let _ = lifecycle.deliver_envelope(
-        plugin_id,
-        bbcom_plugin_contracts::generated::envelope::Payload::SessionQueryResponse(payload),
-    );
+    }
 }
 
 /// Application-owned bridge the plugin upstream ports use to reach the main
@@ -689,15 +628,15 @@ fn compose_from_parts<E: HostUpstreamEnvironment>(
         next_correlation: AtomicU64::new(1),
     };
 
-    // Push pipeline: reader threads enqueue into these channels; the
-    // process-lifetime workers forward proposals to the actor and answer
-    // session queries through the webview round trip.
+    // Proposal pushes can flow through the lifecycle actor. Session queries
+    // answer synchronously through the host reader's independent stdin path,
+    // because the actor may itself be waiting for plugin initialization.
     let (proposal_tx, proposal_rx) = mpsc::channel();
-    let (query_tx, query_rx) = mpsc::channel();
-    spawn_push_workers(&environment, &query_registry, proposal_rx, query_rx);
+    spawn_push_workers(&environment, proposal_rx);
     let push_sink: Arc<dyn bbcom_plugin_manager::HostPushSink> = Arc::new(NativeHostPushSink {
         proposals: proposal_tx,
-        queries: query_tx,
+        environment: Arc::clone(&environment),
+        query_registry,
     });
 
     ProductionPluginRuntimeBuilder::new()
@@ -1472,6 +1411,79 @@ fn current_target_triple() -> &'static str {
         ("windows", "x86_64") => "x86_64-pc-windows-msvc",
         ("windows", "aarch64") => "aarch64-pc-windows-msvc",
         _ => "",
+    }
+}
+
+#[cfg(test)]
+mod session_query_tests {
+    use super::*;
+    use bbcom_contracts::{PluginSessionQueryResult, PluginSessionSummary};
+    use bbcom_plugin_contracts::generated::{SessionListQuery, session_query_request};
+
+    struct QueryEnvironment {
+        registry: SessionQueryResultRegistry,
+    }
+
+    impl HostUpstreamEnvironment for QueryEnvironment {
+        fn emit_to_main(&self, event: &'static str, payload: &serde_json::Value) -> Result<(), ()> {
+            assert_eq!(event, SESSION_QUERY_EVENT_NAME);
+            let query_id = payload
+                .get("queryId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(())?;
+            assert!(self.registry.complete(PluginSessionQueryResult {
+                query_id: query_id.to_owned(),
+                ok: true,
+                error_code: None,
+                sessions: vec![PluginSessionSummary {
+                    session_id: "session-1".to_owned(),
+                    name: "COM1".to_owned(),
+                    kind: "serial".to_owned(),
+                    connected: true,
+                    rx_bytes: 12,
+                    tx_bytes: 3,
+                }],
+                frames: Vec::new(),
+                next_sequence: 0,
+                has_more: false,
+            }));
+            Ok(())
+        }
+
+        fn active_workspace(
+            &self,
+        ) -> Option<crate::commands::workspace::NativePluginWorkspaceSnapshot> {
+            None
+        }
+
+        fn set_plugin_expected_enabled(
+            &self,
+            _plugin_id: &str,
+            _expected_enabled: bool,
+        ) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn session_query_returns_directly_to_the_waiting_host_reader() {
+        let registry = SessionQueryResultRegistry::default();
+        let environment = QueryEnvironment {
+            registry: registry.clone(),
+        };
+        let response = answer_session_query(
+            &environment,
+            &registry,
+            bbcom_plugin_contracts::generated::SessionQueryRequest {
+                plugin_id: "dev.bbcom.counter-panel".to_owned(),
+                query_id: "query-1".to_owned(),
+                query: Some(session_query_request::Query::List(SessionListQuery {})),
+            },
+        );
+
+        assert!(response.ok);
+        assert_eq!(response.sessions.len(), 1);
+        assert_eq!(response.sessions[0].session_id, "session-1");
     }
 }
 

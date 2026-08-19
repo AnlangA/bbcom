@@ -81,6 +81,17 @@ describe('PluginCenterService', () => {
     expect(port.subscribe).toHaveBeenCalledOnce();
   });
 
+  test('retries an expected-enabled plugin after the renderer bridge is ready', async () => {
+    const plugin = { ...installedPlugin(), status: 'failed' as const, enabled: true };
+    const { port } = createPort(data({ installed: [plugin] }));
+    const service = new PluginCenterService(port);
+
+    await service.start();
+
+    expect(port.setEnabled).toHaveBeenCalledOnce();
+    expect(port.setEnabled).toHaveBeenCalledWith(plugin.pluginId, true, expect.any(AbortSignal));
+  });
+
   test('keeps serial proposals per request without an authorization workflow', async () => {
     const proposal = {
       runtime: {

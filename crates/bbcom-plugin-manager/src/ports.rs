@@ -131,7 +131,10 @@ pub trait HostLauncher {
 /// Receiver for sidecar push requests routed out of the host reader thread.
 pub trait HostPushSink: Send + Sync + 'static {
     fn serial_proposal(&self, event: bbcom_plugin_contracts::generated::SerialProposalEvent);
-    fn session_query(&self, request: bbcom_plugin_contracts::generated::SessionQueryRequest);
+    fn session_query(
+        &self,
+        request: bbcom_plugin_contracts::generated::SessionQueryRequest,
+    ) -> bbcom_plugin_contracts::generated::SessionQueryResponse;
 }
 
 pub trait Clock {

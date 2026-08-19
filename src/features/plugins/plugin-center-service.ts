@@ -115,7 +115,7 @@ export class PluginCenterService {
         // Browser-only shells provide no native event API.
       });
     this.notify();
-    return this.refresh();
+    return this.refreshAndRecoverExpectedPlugins();
   }
 
   refresh(): Promise<void> {
@@ -274,6 +274,21 @@ export class PluginCenterService {
         this.action = null;
       }
       this.notify();
+    }
+  }
+
+  private async refreshAndRecoverExpectedPlugins(): Promise<void> {
+    await this.refresh();
+    // Native composition runs before the renderer session-query bridge is
+    // listening. A plugin that reads session metadata during initialize can
+    // therefore retain the user's enabled expectation while its first host
+    // start fails. Once this application service starts, the bridge is ready;
+    // retry each such plugin exactly once without changing that expectation.
+    const recoverable = this.data.installed.filter(
+      (plugin) => plugin.enabled && plugin.status === 'failed',
+    );
+    for (const plugin of recoverable) {
+      await this.run('enable', (signal) => this.port.setEnabled(plugin.pluginId, true, signal));
     }
   }
 

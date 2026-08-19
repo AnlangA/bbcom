@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
@@ -31,6 +31,18 @@ use bbcom_plugin_manager::{
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const PROCESS_EXIT_POLL: Duration = Duration::from_millis(10);
+
+fn handshake_capabilities(granted: &BTreeSet<Permission>) -> Vec<String> {
+    granted
+        .iter()
+        .copied()
+        .chain([Permission::UiPanel, Permission::PluginStorage])
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(Permission::as_str)
+        .map(str::to_owned)
+        .collect()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginStatePersistenceKey {
@@ -358,13 +370,15 @@ struct HostProcess {
     plugin_id: String,
     version: String,
     child: SandboxedChild,
-    stdin: Box<dyn Write + Send>,
+    stdin: SharedHostStdin,
     responses: Receiver<Result<Option<Envelope>, HostFailure>>,
     next_request_id: u64,
     state_key: PluginStatePersistenceKey,
     initial_state: PluginPersistedState,
     published_panel: Option<HostPanel>,
 }
+
+type SharedHostStdin = Arc<Mutex<Box<dyn Write + Send>>>;
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -549,9 +563,7 @@ where
             request_id,
             payload: Some(payload),
         };
-        FrameWriter::new(&mut process.stdin)
-            .write_envelope(&envelope)
-            .map_err(|_| HostFailure::Transport)?;
+        write_host_envelope(&process.stdin, &envelope)?;
         let response = receive_response(&process.responses, timeout)?;
         if response.request_id != request_id {
             return Err(HostFailure::Transport);
@@ -772,6 +784,8 @@ where
             terminate_child(&mut child);
             return Err(HostFailure::Launch);
         };
+        let stdin: SharedHostStdin = Arc::new(Mutex::new(stdin));
+        let push_stdin = Arc::clone(&stdin);
         let (sender, responses) = mpsc::sync_channel(32);
         let sink_cell = Arc::clone(&self.push_sink);
         if thread::Builder::new()
@@ -794,7 +808,19 @@ where
                                 continue;
                             }
                             Some(envelope::Payload::SessionQueryRequest(query)) => {
-                                sink.session_query(query.clone());
+                                let response = sink.session_query(query.clone());
+                                let reply = Envelope {
+                                    protocol_major: PROTOCOL_MAJOR,
+                                    protocol_minor: PROTOCOL_MINOR,
+                                    request_id: envelope.request_id,
+                                    payload: Some(envelope::Payload::SessionQueryResponse(
+                                        response,
+                                    )),
+                                };
+                                if write_host_envelope(&push_stdin, &reply).is_err() {
+                                    let _ = sender.send(Err(HostFailure::Transport));
+                                    return;
+                                }
                                 continue;
                             }
                             _ => {}
@@ -822,13 +848,11 @@ where
             initial_state,
             published_panel: None,
         };
-        let granted_capabilities = request
-            .granted_permissions
-            .iter()
-            .copied()
-            .map(Permission::as_str)
-            .map(str::to_owned)
-            .collect();
+        // The sidecar always provides panel rendering and private plugin
+        // storage. Its handshake expectation includes those two baseline
+        // capabilities even when a manifest only requests an optional host
+        // capability, so attest the complete effective set on the wire.
+        let granted_capabilities = handshake_capabilities(&request.granted_permissions);
         let handshake = Self::process_request(
             &mut process,
             envelope::Payload::HostHello(HostHello {
@@ -1050,10 +1074,10 @@ where
         .map_err(|_| HostFailure::Transport)?;
         let mut processes = self.lock_processes()?;
         let process = exact_process(&mut processes, handle)?;
-        process
-            .stdin
+        let mut stdin = process.stdin.lock().map_err(|_| HostFailure::Transport)?;
+        stdin
             .write_all(&frame)
-            .and_then(|()| process.stdin.flush())
+            .and_then(|()| stdin.flush())
             .map_err(|_| HostFailure::Transport)
     }
 
@@ -1062,6 +1086,13 @@ where
             *current = Some(sink);
         }
     }
+}
+
+fn write_host_envelope(stdin: &SharedHostStdin, envelope: &Envelope) -> Result<(), HostFailure> {
+    let mut stdin = stdin.lock().map_err(|_| HostFailure::Transport)?;
+    FrameWriter::new(&mut **stdin)
+        .write_envelope(envelope)
+        .map_err(|_| HostFailure::Transport)
 }
 
 fn receive_response(
@@ -1229,6 +1260,29 @@ mod tests {
             observes_crashed_process: true,
             terminates_hung_process: true,
         }
+    }
+
+    #[test]
+    fn handshake_attests_baseline_and_manifest_capabilities() {
+        let granted = BTreeSet::from([Permission::SessionMetadataRead]);
+        assert_eq!(
+            handshake_capabilities(&granted),
+            vec![
+                "ui.panel".to_owned(),
+                "plugin.storage".to_owned(),
+                "session.metadata.read".to_owned(),
+            ]
+        );
+
+        let explicit_baseline = BTreeSet::from([
+            Permission::UiPanel,
+            Permission::PluginStorage,
+            Permission::SessionMetadataRead,
+        ]);
+        assert_eq!(
+            handshake_capabilities(&explicit_baseline),
+            handshake_capabilities(&granted)
+        );
     }
 
     #[test]
