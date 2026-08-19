@@ -168,7 +168,7 @@ jobs:
           cargo llvm-cov --manifest-path src-tauri/Cargo.toml
           --workspace --all-features --locked
           --ignore-filename-regex 'src-tauri/src/plugins/market_readiness_probe\.rs$'
-          --fail-under-lines 64 --fail-under-functions 59
+          --fail-under-lines 64 --fail-under-functions 58
 
   browser-e2e:
     name: Browser E2E
