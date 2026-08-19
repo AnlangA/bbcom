@@ -663,6 +663,28 @@ test('deleting the final project drains and clears the active workspace without 
   ]);
 });
 
+test('completed reset restoration stays idle after the final project was deleted', async () => {
+  const system = createSystem([]);
+
+  const outcome = await system.application.restoreLastActiveWorkspace('deleted-reset-workspace');
+
+  assert.equal(outcome.outcome, 'completed');
+  assert.equal(system.application.snapshot().status, 'idle');
+  assert.equal(system.application.snapshot().currentWorkspace, null);
+  assert.deepEqual(system.coordinator.snapshot().library.projects, []);
+  assert.deepEqual(system.openTargets, []);
+});
+
+test('completed reset restoration chooses an available project when its fallback was deleted', async () => {
+  const system = createSystem([definition('available-project', 0)]);
+
+  const outcome = await system.application.restoreLastActiveWorkspace('deleted-reset-workspace');
+
+  assert.equal(outcome.outcome, 'completed');
+  assert.equal(system.application.snapshot().currentWorkspace?.workspaceId, 'available-project');
+  assert.deepEqual(system.openTargets, ['available-project']);
+});
+
 test('failed stopped-runtime staging rolls native state back and restores the prior runtime set', async () => {
   const events: string[] = [];
   const lifecycle: WorkspaceRuntimeLifecycle = {

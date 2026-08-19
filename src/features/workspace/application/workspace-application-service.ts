@@ -256,7 +256,17 @@ export class WorkspaceApplicationService {
     const refreshed = await this.coordinator.refreshCatalog();
     if (signal?.aborted) return Object.freeze({ outcome: 'cancelled' });
     if (refreshed.outcome !== 'completed') return refreshed;
-    const workspaceId = refreshed.value.library.activeWorkspaceId ?? fallbackWorkspaceId;
+    const library = refreshed.value.library;
+    const fallbackExists = library.projects.some(
+      (project) => project.workspaceId === fallbackWorkspaceId,
+    );
+    const workspaceId =
+      library.activeWorkspaceId ??
+      (fallbackExists ? fallbackWorkspaceId : library.projects[0]?.workspaceId);
+    // A completed legacy-reset journal may outlive its bootstrap workspace.
+    // Deleting the final project is a valid idle state, so startup must not
+    // reopen that deleted fallback and re-lock the app behind the reset gate.
+    if (!workspaceId) return completed(this.snapshot());
     return this.openWorkspace(workspaceId);
   }
 
