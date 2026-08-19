@@ -212,8 +212,8 @@ export interface WorkspaceApplicationActivation {
   deleteWorkspace(workspaceId: string): Promise<WorkspaceApplicationOutcome>;
   /** Cancel the currently reversible native activation/hydration attempt. */
   cancelActivation(): boolean;
-  /** Restore the native last-active project, falling back to the reset
-   * workspace only when no durable selection exists. */
+  /** Restore the native last-active project, then an existing reset fallback
+   * or catalog project. An empty catalog completes in the idle state. */
   restoreLastActiveWorkspace?(
     fallbackWorkspaceId: string,
     signal?: AbortSignal,
