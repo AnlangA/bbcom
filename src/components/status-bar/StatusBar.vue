@@ -32,6 +32,7 @@
           <span class="stat-value dropped">{{ droppedDisplay }}</span>
         </div>
       </div>
+      <div class="status-spacer"></div>
       <div class="status-group">
         <div class="stat">
           <span class="stat-label">{{ t('status.duration') }}</span>
@@ -181,7 +182,7 @@ const connectionAnnouncement = computed(() => {
   align-items: center;
   /* Groups separate by whitespace alone: wider between groups, tighter
      inside a group — no literal divider glyphs to scan past. */
-  gap: var(--space-lg);
+  gap: var(--space-md);
   background: var(--bg-secondary);
   color: var(--text-secondary);
   font-size: var(--font-size-sm);
@@ -193,11 +194,17 @@ const connectionAnnouncement = computed(() => {
   overflow-y: hidden;
 }
 
+.status-spacer {
+  flex: 1 1 auto;
+  min-width: var(--space-md);
+}
+
 .status-group {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
   min-width: 0;
+  flex-shrink: 0;
 }
 
 .stat {
@@ -239,6 +246,7 @@ const connectionAnnouncement = computed(() => {
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
+  flex-shrink: 0;
 }
 
 .mini-stat {

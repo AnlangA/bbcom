@@ -278,6 +278,7 @@ function tabTooltip(session: SerialSession): string {
     background var(--transition-normal),
     color var(--transition-normal),
     border-color var(--transition-normal),
+    box-shadow var(--transition-normal),
     opacity var(--transition-fast);
   user-select: none;
   position: relative;
@@ -307,10 +308,16 @@ function tabTooltip(session: SerialSession): string {
 }
 
 .tab-item.active {
-  background: var(--bg-primary);
+  background: linear-gradient(180deg, var(--edge-highlight), transparent), var(--bg-primary);
   color: var(--text-primary);
   border-color: var(--border-subtle);
-  box-shadow: inset 0 2px 0 var(--color-primary);
+  box-shadow:
+    inset 0 2px 0 var(--color-primary),
+    var(--shadow-sm);
+}
+
+.tab-item.active .tab-port {
+  color: var(--text-primary);
 }
 
 .tab-item.dragging {
@@ -348,11 +355,29 @@ function tabTooltip(session: SerialSession): string {
   flex-shrink: 0;
   border-radius: var(--radius-full);
   background: var(--text-dim);
+  transition: background var(--transition-normal);
 }
 
 .tab-status-dot.connected {
   background: var(--accent-green);
   box-shadow: 0 0 0 3px var(--accent-green-subtle);
+  animation: tab-dot-pulse 2.4s ease infinite;
+}
+
+@keyframes tab-dot-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px var(--accent-green-subtle);
+  }
+  50% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-status-dot.connected {
+    animation: none;
+  }
 }
 
 .tab-close {
@@ -392,11 +417,15 @@ function tabTooltip(session: SerialSession): string {
   cursor: pointer;
   width: 28px;
   height: 28px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-full);
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  transition: all var(--transition-normal);
+  transition:
+    color var(--transition-normal),
+    border-color var(--transition-normal),
+    background var(--transition-normal),
+    transform var(--transition-normal);
   margin-left: 6px;
   /* Vertically centered by the header's align-items:center; a manual bottom
      margin would push the + button below the tabs' baseline, making it read as
@@ -408,6 +437,6 @@ function tabTooltip(session: SerialSession): string {
   border-style: solid;
   color: var(--accent-green);
   background: var(--accent-green-subtle);
-  transform: scale(1.05);
+  transform: scale(1.08);
 }
 </style>

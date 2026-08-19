@@ -2,7 +2,7 @@
  * Unified formatting utilities for the application
  */
 
-import type { ChecksumType, Direction, DisplayMode, LineEnding } from '../types';
+import type { ChecksumType, Direction, DisplayMode, LineEnding, PortConfig } from '../types';
 import { CHECKSUM_BYTE_LENGTH } from './checksum-constants';
 
 // Singleton decoders for better performance
@@ -123,6 +123,26 @@ export function formatRate(bytesPerSec: number): string {
   if (bytesPerSec < 1024) return `${bytesPerSec} B/s`;
   if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
   return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
+/**
+ * Compact UART line-coding notation, e.g. "115200 8N1" (baud + dataBits +
+ * parity initial + stopBits). The canonical shorthand embedded developers
+ * scan at a glance.
+ */
+export function formatLineCoding(config: PortConfig): string {
+  const parity = config.parity === 'none' ? 'N' : config.parity === 'even' ? 'E' : 'O';
+  return `${config.baudRate} ${config.dataBits}${parity}${config.stopBits}`;
+}
+
+/**
+ * Short flow-control tag: "none" | "hw" | "sw". Appended after the line
+ * coding so the status chip reads e.g. "115200 8N1 · hw".
+ */
+export function formatFlowControlShort(flowControl: PortConfig['flowControl']): string {
+  if (flowControl === 'hardware') return 'hw';
+  if (flowControl === 'software') return 'sw';
+  return 'none';
 }
 
 /**

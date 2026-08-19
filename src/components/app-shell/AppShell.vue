@@ -409,16 +409,17 @@ useAppShortcuts({
 }
 
 .brand-mark {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
   color: var(--color-primary);
-  background: var(--color-primary-subtle);
+  background:
+    linear-gradient(160deg, var(--color-primary-subtle), transparent 140%), var(--bg-elevated);
   border: 1px solid var(--color-primary-muted);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-inset);
+  box-shadow: var(--shadow-sm);
 }
 
 .brand-mark-icon {
@@ -535,27 +536,41 @@ useAppShortcuts({
 
 .workspace-mode-tabs {
   display: flex;
-  gap: var(--space-xs);
-  padding: var(--space-sm) var(--space-md);
+  gap: var(--space-2xs);
+  padding: var(--space-xs) var(--space-md);
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-secondary);
   flex-shrink: 0;
 }
 
 .workspace-mode-tabs button {
-  min-height: 28px;
-  padding: 4px 12px;
+  min-height: 26px;
+  padding: 4px 14px;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-full);
   background: transparent;
   color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
   cursor: pointer;
+  transition:
+    background var(--transition-normal),
+    color var(--transition-normal),
+    border-color var(--transition-normal),
+    box-shadow var(--transition-normal);
+}
+
+.workspace-mode-tabs button:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
 }
 
 .workspace-mode-tabs button.active {
-  border-color: var(--border-color);
-  background: var(--bg-primary);
-  color: var(--text-primary);
+  border-color: var(--color-primary-muted);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-weight: var(--font-weight-semibold);
+  box-shadow: var(--shadow-sm);
 }
 
 .workspace-mode-tabs button:focus-visible {
@@ -612,16 +627,22 @@ useAppShortcuts({
 }
 
 .empty-mark {
-  width: 54px;
-  height: 54px;
+  width: 64px;
+  height: 64px;
   display: grid;
   place-items: center;
   color: var(--color-primary);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-inset);
+  background: linear-gradient(180deg, var(--edge-highlight), transparent), var(--bg-elevated);
+  border: 1px solid var(--color-primary-muted);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-md);
   animation: scale-in 400ms ease;
+}
+
+.empty-mark .icon-lg {
+  width: 26px;
+  height: 26px;
+  stroke-width: 1.6;
 }
 
 .empty-title {
