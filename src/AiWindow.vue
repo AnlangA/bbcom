@@ -61,8 +61,29 @@ function scheduleResize() {
 async function resizeToContent() {
   if (!contentEl.value) return;
   const rect = contentEl.value.getBoundingClientRect();
-  // Content size only — the Rust side adds the measured titlebar height.
-  await resizeAiWindow(Math.ceil(rect.width), Math.ceil(rect.height));
+  const width = Math.ceil(rect.width);
+  const height = Math.ceil(rect.height);
+  await resizeAiWindow(width, height);
+  // On macOS the webview lays out to the safe area, leaving the viewport
+  // shorter than requested by the titlebar inset (not measurable from Rust).
+  // Read the deficit from the live viewport and re-request once so the
+  // visible client area truly covers the content box. rAF may stall while
+  // the OS window is still hidden, so the wait is bounded.
+  await new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (!settled) {
+        settled = true;
+        resolve(null);
+      }
+    };
+    requestAnimationFrame(done);
+    setTimeout(done, 120);
+  });
+  const deficit = height - window.innerHeight;
+  if (deficit > 1) {
+    await resizeAiWindow(width, height + deficit);
+  }
 }
 
 // Visibility is OS-window state owned by the Rust side: the show/hide/close

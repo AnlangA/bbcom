@@ -57,10 +57,14 @@ export const themeOverrides: GlobalThemeOverrides = {
     borderPrimary: '1px solid var(--color-primary)',
     borderHoverPrimary: '1px solid var(--color-primary-hover)',
     borderPressedPrimary: '1px solid var(--color-primary-pressed)',
-    colorPrimary: 'var(--color-primary)',
-    colorHoverPrimary: 'var(--color-primary-hover)',
-    colorPressedPrimary: 'var(--color-primary-pressed)',
-    colorFocusPrimary: 'var(--color-primary-hover)',
+    // Secondary/dashed/ghost buttons run these through changeColor() to derive
+    // alpha variants, so var() strings would throw in seemly's rgba parser.
+    // The primary palette is theme-invariant (light only overrides surfaces),
+    // so these literals mirror variables.css for both palettes.
+    colorPrimary: '#3ddc97',
+    colorHoverPrimary: '#5ee6aa',
+    colorPressedPrimary: '#26b879',
+    colorFocusPrimary: '#5ee6aa',
   },
   Input: {
     color: 'var(--bg-inset)',
