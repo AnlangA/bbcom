@@ -437,7 +437,7 @@ fn generated_mcumgr_initializes_through_real_sidecar_within_two_seconds() {
         .prepare_local_install(&source_package)
         .expect("release MCUmgr package must pass production prepare validation");
     assert_eq!(prepared.plugin_id(), PLUGIN_ID);
-    assert_eq!(prepared.requested_capabilities().len(), 12);
+    assert_eq!(prepared.requested_capabilities().len(), 11);
     let capabilities = prepared.requested_capabilities().clone();
     let active = installer
         .commit_prepared(&prepared)

@@ -118,6 +118,10 @@ impl PluginAuthorizationCoordinatorV2 {
                 display_name: request.plugin_id.clone(),
                 development_source: false,
             });
+        let mut requested_capabilities = requested.into_iter().collect::<Vec<_>>();
+        requested_capabilities.sort_unstable_by_key(|capability| capability.as_str());
+        let mut added_capabilities = added.into_iter().collect::<Vec<_>>();
+        added_capabilities.sort_unstable_by_key(|capability| capability.as_str());
         self.pending
             .lock()
             .map_err(|_| PluginAuthorizationError::Io)?
@@ -129,8 +133,8 @@ impl PluginAuthorizationCoordinatorV2 {
                     version: request.plugin_version.clone(),
                     digest_sha256: request.component_sha256.clone(),
                     development_source: presentation.development_source,
-                    requested_capabilities: requested.into_iter().collect(),
-                    added_capabilities: added.into_iter().collect(),
+                    requested_capabilities,
+                    added_capabilities,
                 },
             );
         Ok(())
@@ -802,6 +806,13 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].display_name, "MCUmgr");
         assert!(pending[0].development_source);
+        assert_eq!(
+            pending[0].requested_capabilities,
+            vec![
+                PluginCapabilityV2::SerialIo,
+                PluginCapabilityV2::UiWorkspace
+            ]
+        );
         coordinator
             .resolve(
                 &store,

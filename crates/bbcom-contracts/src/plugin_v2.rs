@@ -53,6 +53,27 @@ impl PluginCapabilityV2 {
         Self::PluginStorage,
         Self::ProjectStateReadWrite,
     ];
+
+    /// Stable wire/display spelling used when capability collections cross
+    /// the native-to-renderer boundary. Renderer contracts canonicalize those
+    /// collections lexicographically by this value, not by Rust enum order.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UiWorkspace => "ui.workspace",
+            Self::UiDetachedWindow => "ui.detached-window",
+            Self::SerialPortsRead => "serial.ports.read",
+            Self::SerialSessionsManage => "serial.sessions.manage",
+            Self::SerialIo => "serial.io",
+            Self::SerialControlLines => "serial.control-lines",
+            Self::SessionCaptureRead => "session.capture.read",
+            Self::SessionCommandsReadWrite => "session.commands.read-write",
+            Self::FileOpenRead => "file.open-read",
+            Self::FileSaveWrite => "file.save-write",
+            Self::PluginStorage => "plugin.storage",
+            Self::ProjectStateReadWrite => "project.state.read-write",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]

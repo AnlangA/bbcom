@@ -659,7 +659,9 @@ fn valid_version(value: &str) -> bool {
 
 fn canonical_capabilities(capabilities: &[bbcom_contracts::PluginCapabilityV2]) -> bool {
     capabilities.len() <= bbcom_contracts::PluginCapabilityV2::ALL.len()
-        && capabilities.windows(2).all(|pair| pair[0] < pair[1])
+        && capabilities
+            .windows(2)
+            .all(|pair| pair[0].as_str() < pair[1].as_str())
 }
 
 fn finite_number(value: &str) -> Result<f64, &'static str> {
@@ -912,8 +914,8 @@ mod tests {
     #[test]
     fn authorization_capabilities_must_be_canonical_and_added_is_a_subset() {
         let mut requested = vec![
-            bbcom_contracts::PluginCapabilityV2::SerialIo,
             bbcom_contracts::PluginCapabilityV2::UiWorkspace,
+            bbcom_contracts::PluginCapabilityV2::SerialIo,
         ];
         let mut request = PluginAuthorizationRequestV2 {
             plugin_id: "dev.bbcom.mcumgr".to_owned(),
@@ -926,7 +928,7 @@ mod tests {
         };
         assert!(validate_authorization_request(&request).is_err());
 
-        requested.sort();
+        requested.sort_unstable_by_key(|capability| capability.as_str());
         request.requested_capabilities = requested;
         assert!(validate_authorization_request(&request).is_ok());
         request.added_capabilities = vec![bbcom_contracts::PluginCapabilityV2::FileOpenRead];
