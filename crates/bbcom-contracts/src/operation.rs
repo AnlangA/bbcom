@@ -24,9 +24,6 @@ pub enum OperationKind {
     WorkspaceMigration,
     SerialSend,
     AiRequest,
-    PluginInstall,
-    PluginUpdate,
-    PluginTask,
 }
 
 /// Queryable operation state. Progress uses bounded integer units, not prose.
@@ -40,8 +37,6 @@ pub struct OperationRecord {
     pub workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plugin_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_units: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

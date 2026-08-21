@@ -1,77 +1,26 @@
 # BBCOM 优化与功能完善执行计划
 
-> 插件协议说明（2026-08-19）：插件系统仅接受
-> [ADR-0005](docs/ADR-0005-PLUGIN-PROTOCOL-V2.md) 定义的 v2 契约。插件 v2
-> 以首次启用/新增能力确认、串口事务
-> 租约、富声明式 surface 和 opaque file grant 为当前执行基线。
+> 原生可扩展插件系统已从仓库移除。本文件只保留既有架构优化和 UI 去重清单。
 >
 > 状态：本地可执行范围已收口，发布验收尚未完成。
-> 已完成：G-00～G-01、A-01～A-14、P-01～P-02、P-04、P-06～P-07、
-> P-09～P-10、U-01～U-08。部分完成：P-03、P-05、P-08、P-11～P-12、
+> 已完成：G-00～G-01、A-01～A-14、U-01、U-05～U-08。部分完成：
 > U-09、Q-01、Q-03。外部阻塞：Q-02。
 > 具体差距和恢复条件见“当前收口矩阵”；不得把部分完成项或平台外部验收标记为 `DONE`。
->
-> 用途：本文件保留既有架构优化和 UI 去重清单；插件 v2 的规范与发布条件以
-> ADR-0005 及其协议测试为准。
 
 ## 1. 总体目标与固定决策
 
-本计划同时完成三个目标：
+本计划同时完成两个目标：
 
-1. 完善插件系统，实现应用无重启的安装、启用、停用、更新、回滚、卸载和开发目录热重载。
-2. 优化软件架构，建立清晰的 UI、application、domain、infrastructure 边界，消除重复状态和超大服务。
-3. 优化 UI，删除重复入口、重复表单、重复状态和重复视觉实现，建立统一组件、主题与可访问性标准。
+1. 优化软件架构，建立清晰的 UI、application、domain、infrastructure 边界，消除重复状态和超大服务。
+2. 优化 UI，删除重复入口、重复表单、重复状态和重复视觉实现，建立统一组件、主题与可访问性标准。
 
 以下决策已经锁定，实施时不得再次自行变更：
 
-- 不实现插件包签名、TUF、Ed25519、发布者身份认证。
-- 首次启用必须展示排序后的完整能力集合；拒绝时插件保持禁用。授权按
-  `plugin ID + capability set` 持久化，版本或 digest 变化但能力未增加时不重复询问，
-  新增能力必须重新确认；卸载删除授权，禁用保留授权。
-- Manifest v2 声明且用户已批准的能力才可进入宿主网关；未知能力拒绝安装或启动，
-  已知但当前平台不可用的操作返回 `unavailable`。
-- 保留包和 Wasm 组件 SHA-256 完整性检查；SHA 不代表发布者身份。
-- 保留 Wasm 沙箱、OS 沙箱、内存、fuel、epoch、调用超时和应用自身的安装包签名/公证。
-- 支持本地包、开发目录和用户配置的无签名 HTTPS 插件源。
-- 远程源自动检查更新提示，但下载、安装和切换版本必须由用户手动触发。
-- 开发目录 watcher 默认关闭，仅对用户明确启用的开发来源生效。
-- 插件全局安装；启用状态和项目状态按 workspace 保存。
-- 新安装插件默认不启用；进入 workspace 时自动启动该 workspace 中 `expected_enabled=true` 的插件。
-- 非 v2 包在 manifest 边界直接拒绝，不进入库存或 runtime。
-- 串口访问只通过主程序事务租约和写调度器；租约绑定
-  `workspace + plugin + instance + generation`，不能绕过物理 drain、自动化暂停或 generation 校验。
-- Disable、崩溃重启、升级、热重载、workspace 切换、窗口关闭、取消和卸载均撤销旧租约与运行资源。
-- 卸载清除包、watcher 和全部私有 `plugin.storage`，并将 workspace 启用状态复位；保留 workspace 中可移植的插件 project state。
-- 插件中心是 AppShell 顶层主内容工作区，不再嵌入 Settings。
 - 主窗口最低尺寸固定为 960×640；本轮不实现移动端布局。
-- 非插件的现有 IPC、workspace 导出格式和串口 wire 行为保持兼容。
-
-首版插件能力范围固定为：
-
-- `ui.workspace`
-- `ui.detached-window`
-- `serial.ports.read`
-- `serial.sessions.manage`
-- `serial.io`
-- `serial.control-lines`
-- `session.capture.read`
-- `session.commands.read-write`
-- `file.open-read`
-- `file.save-write`
-- `plugin.storage`
-- `project.state.read-write`
-
-插件没有 AI、任意路径文件、剪贴板、通知、网络、BLE 或 UDP 权限。完整用户级串口
-能力仍受主程序会话、租约、写调度、workspace mutation gate 与 shutdown 协议约束；
-不会暴露原生串口对象、系统路径、Tauri API、`forceClose/closeAll` 或内部恢复接口。
+- 现有 IPC、workspace 导出格式和串口 wire 行为保持兼容。
 
 明确不在本轮范围：
 
-- Native 动态库插件。
-- 插件自带任意 HTML、JavaScript 或 Vue 页面。
-- 私有仓库认证、Cookie、Bearer Token 或带凭据 URL。
-- 插件自动下载或自动更新。
-- 插件市场发布者认证。
 - 移动端 UI。
 - 应用自身自动更新系统。
 
@@ -88,26 +37,21 @@
 
 1. 开始工作包前，确认其所有依赖均为 `DONE`。
 2. 每个工作包指定唯一 owner；并行工作不得同时修改同一 composition root。
-3. `src/main.ts` 和原生插件 runtime composition 由 A-13/P-08 的集成 owner 统一合入。
+3. `src/main.ts` 的 composition 由 A-13 的集成 owner 统一合入。
 4. 不得重置、覆盖或清理当前工作树中的用户修改。
 5. 部分已有实现不能直接视为完成，必须重新通过本计划的真实生产链验收。
-6. 插件 fake host 测试不能代替真实 installer、resolver、sidecar 和 Tauri capability 测试。
-7. 每个工作包完成时在本文件记录完成日期、关联提交、测试命令、结果和已知限制。
-8. 对持久化、IPC 或生命周期语义的任何偏离，必须先修改本计划及对应架构文档。
-9. 不得通过长期 allowlist、双写或永久兼容 façade 掩盖未完成迁移。
+6. 每个工作包完成时在本文件记录完成日期、关联提交、测试命令、结果和已知限制。
+7. 对持久化、IPC 或生命周期语义的任何偏离，必须先修改本计划及对应架构文档。
+8. 不得通过长期 allowlist、双写或永久兼容 façade 掩盖未完成迁移。
 
 当前收口矩阵，日期为 2026-08-16：
 
-| 状态          | 工作包                                   | 证据或剩余条件                                                                                                                                                                                                                      |
-| ------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DONE`        | G-00～G-01、A-01～A-14                   | 架构硬门禁扫描 255 个模块、零违规、零循环；Settings、serial、session runtime、workspace gateway/save/transition/UI state 均已收敛为单一 owner；旧 façade、worker persistence 和重复 runtime 已删除。                                |
-| `DONE`        | P-01～P-02、P-04、P-06～P-07、P-09～P-10 | 旧 trust/authorization 链已删除；无签名 SHA 完整性模型、v2 授权 gate、进程 actor、typed 双向 RPC、generation-bound surface/task/lease、HTTPS source 与仅 index 自动检查已接通。                                                     |
-| `DONE`        | U-01～U-08                               | 统一 token/基础组件、顶层插件中心、授权与任务中心、会话入口去重、列表组件化、960×640 最低尺寸、focus trap/tab/ARIA/live-region 与 axe gate 已完成。                                                                                 |
-| `IN_PROGRESS` | P-03、P-05、P-08                         | 热安装/启停/升级/卸载和回滚主链已实现，但仓储仍使用 installer 自身的 `plugins/.staging` 布局，尚未完全迁移为第 3.5 节 `objects/records/journals/tombstones` 固定布局；因此逐 journal 阶段 production 故障注入不能标记完成。         |
-| `IN_PROGRESS` | P-11                                     | Native-only dev source watcher、500 ms 稳定读取、SHA 校验、断连健康状态、卸载清理均已实现；当前 installer 仍拒绝“同版本、不同 digest”，稳定热重载需要 manifest 版本增加，尚未满足同版本 dev digest 验收。                           |
-| `DONE`        | P-12                                     | 旧插件包、状态、授权和 autostart 兼容路径已删除；非 v2 manifest 在进入库存前直接拒绝。                                                                                                                                              |
-| `IN_PROGRESS` | U-09、Q-01、Q-03                         | Browser mock 两条 Chrome E2E 与真实 axe gate通过；全局覆盖率和 P0 覆盖率通过。Rust workspace coverage 当前为 lines 65.54%、functions 59.97%，未达到 80%/75% 门禁；仍需确定性视觉截图基线及与未完成插件迁移/磁盘事务一致的发布文档。 |
-| `BLOCKED`     | Q-02                                     | 当前 Linux 环境不能证明 Windows NSIS、macOS DMG/App 签名/公证和三平台 packaged sidecar；24 小时 soak 也未执行。恢复条件：三平台签名 runner、真实打包产物与连续 24 小时测试窗口。                                                    |
+| 状态          | 工作包                 | 证据或剩余条件                                                                                                                                                                                       |
+| ------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DONE`        | G-00～G-01、A-01～A-14 | 架构硬门禁扫描 255 个模块、零违规、零循环；Settings、serial、session runtime、workspace gateway/save/transition/UI state 均已收敛为单一 owner；旧 façade、worker persistence 和重复 runtime 已删除。 |
+| `DONE`        | U-01、U-05～U-08       | 统一 token/基础组件、会话入口去重、列表组件化、960×640 最低尺寸、focus trap/tab/ARIA/live-region 与 axe gate 已完成。                                                                                |
+| `IN_PROGRESS` | U-09、Q-01、Q-03       | Browser mock 两条 Chrome E2E 与真实 axe gate通过；全局覆盖率和 P0 覆盖率通过。Rust workspace coverage 当前为 lines 65.54%、functions 59.97%，未达到 80%/75% 门禁；仍需确定性视觉截图基线与发布文档。 |
+| `BLOCKED`     | Q-02                   | 当前 Linux 环境不能证明 Windows NSIS、macOS DMG/App 签名/公证和三平台 packaged 安装；24 小时 soak 也未执行。恢复条件：三平台签名 runner、真实打包产物与连续 24 小时测试窗口。                        |
 
 已确认的本地质量基线：
 
@@ -151,181 +95,19 @@ App bootstrap / composition root
 Vue components
   → application facade
     → typed Tauri port
-      → PluginRuntimeActor / WorkspaceApplicationService
-        → host, repository, SQLite, serial and filesystem adapters
+      → WorkspaceApplicationService
+        → SQLite, serial and filesystem adapters
 ```
 
 禁止的依赖：
 
 - Domain 导入 Vue、Pinia、Naive UI、Tauri 或 serial SDK。
 - Application service 导入 Vue component 或直接调用 Tauri SDK。
-- UI 直接持有串口、文件路径、SQLite connection、sidecar handle。
+- UI 直接持有串口、文件路径、SQLite connection。
 - 跨 feature 导入对方私有模块。
-- `src/main.ts` 编排具体 workspace 回滚、session runtime 或插件生命周期细节。
+- `src/main.ts` 编排具体 workspace 回滚或 session runtime 细节。
 
-### 3.2 插件核心类型
-
-```text
-ArtifactDescriptor {
-  plugin_id,
-  version,
-  package_sha256,
-  component_sha256,
-  source: {
-    source_id,
-    kind: local-package | dev-directory | https
-  },
-  declared_capabilities,
-  effective_capabilities,
-  unavailable_capabilities
-}
-
-RuntimeInstanceKey {
-  workspace_id,
-  plugin_id,
-  instance_id,
-  generation
-}
-
-WorkspacePluginContext {
-  workspace_id,
-  bindings: [{
-    plugin_id,
-    expected_enabled,
-    version_requirement,
-    project_state
-  }]
-}
-```
-
-`publisher.name` 和 `publisher.website` 仅作为插件自述信息。未知发布者身份字段直接拒绝，且不得参与安装、更新、状态判断或 UI 徽标。
-
-### 3.3 插件快照
-
-`PluginRuntimeSnapshot` 必须是 renderer 的唯一权威数据源，包含：
-
-- 单调递增的 `revision`。
-- 当前 workspace ID。
-- 全局 source 列表及健康状态。
-- Catalog 项和更新候选。
-- 全局已安装插件。
-- 当前 workspace 的启用状态。
-- 每个插件的 lifecycle、原因、当前版本、待切换版本、来源、摘要和 watcher 状态。
-- 有界 operation 列表及进度。
-- 当前 generation 的能力授权请求和任务终态。
-- 带 `RuntimeInstanceKey` 的声明式 surfaces。
-- 稳定错误码，不包含原生路径、串口 handle 或敏感 project state。
-
-Lifecycle 状态固定为：
-
-```text
-disabled | stopped | starting | running |
-updating | rolling-back | failed
-```
-
-授权请求与 lifecycle 分离，拒绝授权时插件保持 disabled。
-
-### 3.4 Tauri 插件命令
-
-保留 correlation、operation ID、expected revision 和取消机制。命令边界固定为：
-
-```text
-plugin_center_snapshot
-plugin_request_local_source_grant
-plugin_install_local
-plugin_install
-plugin_update
-plugin_uninstall
-plugin_set_enabled
-plugin_source_add
-plugin_source_update
-plugin_source_remove
-plugin_source_refresh
-plugin_set_watch_enabled
-plugin_emit_surface_event_v2
-plugin_resolve_authorization_v2
-plugin_cancel_task_v2
-plugin_run_command_v2
-plugin_set_surface_placement_v2
-plugin_detached_surface_snapshot_v2
-plugin_detached_emit_surface_event_v2
-plugin_detached_cancel_task_v2
-plugin_cancel_operation
-plugin_serial_capability_reply_v2
-plugin_notify_port_catalog_changed_v2
-plugin_update_host_context_v2
-```
-
-规则：
-
-- `plugin_request_local_source_grant` 调用原生目录/文件选择器，只返回短期 opaque grant、显示名称和来源类型。
-- `plugin_install_local` 只接受 grant ID，renderer 不传真实路径。
-- 只有 source add/update 命令可接收 HTTPS URL；安装和更新只接受 `source_id`、`catalog_id`、`plugin_id` 和版本。
-- `plugin_serial_capability_reply_v2` 返回 typed capability result；串口写入结果包含真实 requested/sent/outcome。
-- 授权、surface、任务和 detached-window 命令只接受 v2 generation-bound DTO。
-- 所有命令仅允许主窗口，并加入 `plugin-main-window.toml` capability。
-
-### 3.5 插件磁盘布局
-
-Native-only 布局固定为：
-
-```text
-plugins-v2/
-  objects/<package-sha256>/
-  records/<plugin-id>.json
-  staging/<operation-id>/
-  journals/<operation-id>.json
-  tombstones/
-
-plugin-state-v2/
-  <workspace-id>/<plugin-id>/active/
-  <workspace-id>/<plugin-id>/prepared/<operation-id>/
-
-plugin-sources-v2.json
-```
-
-约束：
-
-- Installer 和 Host resolver 必须使用同一 canonical package root。
-- Project state 只以 workspace SQLite 的 `plugin_project_state` 为权威。
-- `plugin-state-v2` 只保存插件私有 `plugin.storage`。
-- 更新保留 active 与最近一个 last-known-good 包。
-- 所有关键指针使用临时文件、flush/fsync 和原子 rename。
-- Journal 完成前不得删除旧版本或旧状态。
-
-### 3.6 远程无签名源格式
-
-Repository index 保持 JSON schema 1，移除发布者身份要求：
-
-```json
-{
-  "schema": 1,
-  "generatedAt": "2026-08-16T00:00:00Z",
-  "origin": "https://plugins.example.com",
-  "updatePolicy": "manual",
-  "plugins": [
-    {
-      "id": "example.counter",
-      "name": "Counter",
-      "description": "Example plugin",
-      "packages": [
-        {
-          "version": "1.0.0",
-          "url": "https://plugins.example.com/example.counter-1.0.0.zip",
-          "sha256": "<64 lowercase hex>",
-          "downloadBytes": 1024,
-          "expandedBytes": 4096,
-          "files": 2
-        }
-      ]
-    }
-  ]
-}
-```
-
-旧 index 中的 `publisherIdentity` 可兼容读取但忽略。新 index 不生成该字段。
-
-### 3.7 新架构端口
+### 3.2 新架构端口
 
 本轮必须形成以下稳定端口：
 
@@ -334,8 +116,7 @@ Repository index 保持 JSON schema 1，移除发布者身份要求：
 - `ValidatedWorkspaceGateway`：无状态、带校验和取消的 native workspace adapter。
 - `WorkspaceSaveCoordinator`：唯一 revision、save queue、save health 权威。
 - `SessionRuntimeStatusRegistry`：唯一运行状态权威。
-- `WorkspaceTransitionParticipant`：session/plugin 在 workspace 切换中的事务参与者。
-- `PluginRuntimeActor`：唯一插件生命周期、operation、surface、task 和 revision 写入者。
+- `WorkspaceTransitionParticipant`：session 在 workspace 切换中的事务参与者。
 
 ## 4. 总体依赖关系
 
@@ -348,7 +129,6 @@ flowchart TD
   G01 --> A03["A-03 清理旧 session persistence"]
   G01 --> A04["A-04 SerialConnectionController"]
   G01 --> A05["A-05 WorkspaceGateway"]
-  G01 --> P01["P-01 插件契约与安全模型重置"]
   G01 --> U01["U-01 Design tokens 与基础组件"]
 
   A03 --> A06["A-06 Session store graph"]
@@ -366,52 +146,15 @@ flowchart TD
   A09 --> A13
   A10 --> A13
 
-  P01 --> P02["P-02 PluginRuntimeActor"]
-  P01 --> P03["P-03 包、状态与事务"]
-  P01 --> P09["P-09 HTTPS 无签名源"]
-  P02 --> P04["P-04 Sidecar 双向能力 RPC"]
-  P03 --> P04
-  P02 --> P05["P-05 本地生命周期"]
-  P03 --> P05
-  P04 --> P05
-  P04 --> P06["P-06 Panel 与首次串口确认"]
-  P05 --> P06
-  A09 --> P06
-  P02 --> P07["P-07 IPC 与 Tauri capability"]
-  P05 --> P07
-  P06 --> P07
-  P07 --> P08["P-08 本地生产链门禁"]
-  A13 --> P08
-
-  P08 --> P10["P-10 更新检查与手动远程更新"]
-  P09 --> P10
-  P05 --> P11["P-11 开发目录 watcher"]
-  P08 --> P11
-  P10 --> P12["P-12 迁移与旧数据收口"]
-  P11 --> P12
-
-  P07 --> U02["U-02 Plugin presenter"]
-  U01 --> U03["U-03 全局授权与任务交互"]
-  U02 --> U03
-  P06 --> U03
-  U01 --> U04["U-04 顶层插件工作区"]
-  U02 --> U04
-  P09 --> U04
-  P10 --> U04
-  P11 --> U04
   U01 --> U05["U-05 创建会话去重"]
   A06 --> U05
   U01 --> U07["U-07 工具列表组件化"]
 
-  U03 --> U06["U-06 AppShell/Settings/Status 去重"]
-  U04 --> U06
-  U05 --> U06
+  U05 --> U06["U-06 AppShell/Settings/Status 去重"]
   A09 --> U06
   A11 --> U06
 
-  U03 --> U08["U-08 可访问性闭环"]
-  U04 --> U08
-  U05 --> U08
+  U05 --> U08["U-08 可访问性闭环"]
   U06 --> U08
   U07 --> U08
 
@@ -419,17 +162,12 @@ flowchart TD
   A11 --> A14
   A12 --> A14
   A13 --> A14
-  P07 --> A14
   U06 --> A14
   U07 --> A14
 
   U08 --> U09["U-09 视觉与浏览器回归"]
-  P08 --> U09
-  P10 --> U09
-  P11 --> U09
 
   A14 --> Q01["Q-01 全量集成验收"]
-  P12 --> Q01
   U09 --> Q01
   Q01 --> Q02["Q-02 三平台、故障与长稳"]
   Q02 --> Q03["Q-03 文档、清理与发布门禁"]
@@ -437,27 +175,23 @@ flowchart TD
 
 可并行波次：
 
-| 波次 | 可并行工作包                       | 完成条件                             |
-| ---- | ---------------------------------- | ------------------------------------ |
-| 0    | G-00、G-01                         | 计划落盘且基线可重复                 |
-| 1    | A-01～A-05、P-01、U-01             | 基础边界明确                         |
-| 2    | A-06～A-08、P-02、P-03、P-09、U-07 | 单一状态所有者开始形成               |
-| 3    | A-09、A-10、P-04                   | 运行时与工作区主链可用               |
-| 4    | A-11～A-13、P-05、U-05             | 本地生命周期和 composition root 就绪 |
-| 5    | P-06、P-07                         | 新 IPC 和实例安全边界完成            |
-| 6    | P-08、U-02                         | 本地真实生产链闭环                   |
-| 7    | P-10、P-11、U-03                   | 远程更新、watcher、全局提示完成      |
-| 8    | P-12、U-04、U-06                   | 完整插件工作区和重复 UI 清理         |
-| 9    | A-14、U-08                         | 架构和可访问性硬门禁                 |
-| 10   | U-09、Q-01                         | 自动化集成验收                       |
-| 11   | Q-02、Q-03                         | 发布级验收与收口                     |
+| 波次 | 可并行工作包     | 完成条件               |
+| ---- | ---------------- | ---------------------- |
+| 0    | G-00、G-01       | 计划落盘且基线可重复   |
+| 1    | A-01～A-05、U-01 | 基础边界明确           |
+| 2    | A-06～A-08、U-07 | 单一状态所有者开始形成 |
+| 3    | A-09、A-10       | 运行时与工作区主链可用 |
+| 4    | A-11～A-13、U-05 | composition root 就绪  |
+| 5    | U-06             | 重复 UI 清理           |
+| 6    | A-14、U-08       | 架构和可访问性硬门禁   |
+| 7    | U-09、Q-01       | 自动化集成验收         |
+| 8    | Q-02、Q-03       | 发布级验收与收口       |
 
 关键路径：
 
 ```text
-G-00 → G-01 → P-01 → P-02/P-03 → P-04 → P-05
-→ P-06 → P-07 → P-08 → P-10/P-11
-→ U-04 → U-06 → U-08 → U-09 → Q-01 → Q-02 → Q-03
+G-00 → G-01 → A-01～A-13 → A-14
+→ U-05 → U-06 → U-08 → U-09 → Q-01 → Q-02 → Q-03
 ```
 
 ## 5. 基线与计划治理
@@ -504,8 +238,6 @@ G-00 → G-01 → P-01 → P-02/P-03 → P-04 → P-05
 - Session create、remove、undo、rebind、capture trim、waveform cursor。
 - Shutdown participant 顺序和失败策略。
 - 旧 `bbcom-v1:app-settings`、`bbcom-v1:serial-settings`。
-- 旧插件 manifest、index、安装记录、autostart、private state、project state、授权数据。
-- 当前插件 fake host 和 real sidecar 的行为差异。
 
 保存以下基线指标：
 
@@ -590,7 +322,7 @@ GlobalSettingsV2
 
 - API key 和 AI 运行状态。
 - Sidebar 宽度与折叠状态。
-- Session、workspace 和插件数据。
+- Session 和 workspace 数据。
 
 持久化规则：
 
@@ -955,7 +687,7 @@ A-06、A-09。
 
 **目标**
 
-把 workspace/session/plugin transaction 从 `src/main.ts` 移入 application 层。
+把 workspace/session transaction 从 `src/main.ts` 移入 application 层。
 
 **实现**
 
@@ -982,7 +714,6 @@ WorkspaceTransitionParticipant {
 实现：
 
 - `SessionRuntimeWorkspaceParticipant`
-- `PluginRuntimeWorkspaceParticipant`
 
 `src/main.ts` 最终只负责：
 
@@ -1022,7 +753,7 @@ A-02、A-09、A-10。
 
 **依赖**
 
-A-01、A-11、A-12、A-13、P-07、U-06、U-07。
+A-01、A-11、A-12、A-13、U-06、U-07。
 
 **验收**
 
@@ -1030,443 +761,10 @@ A-01、A-11、A-12、A-13、P-07、U-06、U-07。
 - 每条规则都有失败 fixture。
 - Quality workflow 将 architecture 设为 required。
 - Cycle、orphan、production reachability 保持有效。
-- 非插件 IPC、workspace schema、导出格式和串口 wire 行为未改变。
+- 现有 IPC、workspace schema、导出格式和串口 wire 行为未改变。
 - Frontend benchmark 和 serial benchmark 退化均不超过 10%。
 
-## 7. 插件功能完善工作包
-
-### P-01 — 重置插件契约、身份与能力模型
-
-**目标**
-
-彻底断开签名、发布者身份和能力审批，同时保留完整性与沙箱。
-
-**实现**
-
-- `PluginArtifact` 使用包 SHA、组件 SHA、来源和 v2 capability 集合。
-- 首次启用通过授权 gate 生成精确 launch ticket；新增能力必须重新确认。
-- 已知未实现操作返回 unavailable，未知能力拒绝 manifest。
-- 未知 publisher 字段拒绝解析。
-- 从 workspace、Cargo 依赖和生产组合删除 `bbcom-plugin-trust`。
-- 删除旧 authorization/trust 类型；v2 receipt 只表示用户批准能力，不表示发布者身份。
-- `bbcom-plugin-broker` 只保留 typed capability gateway、stream mux、limits 和 error model。
-- 应用安装包签名和 sandbox 配置不变。
-
-**依赖**
-
-G-01。
-
-**验收**
-
-- 正确 SHA 的无签名包可准备安装。
-- 包或组件 SHA 错误必须失败。
-- 改变 publisher 自述信息不再触发身份变化。
-- `cargo tree` 中生产图不存在 trust/auth store。
-- UI/DTO 不存在 verified publisher。
-- 未声明或未实现能力不能进入 host grants。
-
-### P-02 — 进程级单一 PluginRuntimeActor
-
-**目标**
-
-消除 manager、adapter、command service 和 autostart 的多份插件状态。
-
-**实现**
-
-Actor 唯一持有：
-
-- Installed records。
-- Active workspace context。
-- Runtime instances。
-- Panels 和 first-write reviews。
-- Sources、catalog 和 watcher 状态。
-- Operations 和单调 revision。
-
-所有 Tauri command、host exit、watcher 和 update check 都发送 actor message。
-
-并发约束：
-
-- Host、网络、文件任务在 worker/supervisor 执行。
-- Actor 使用有界 channel。
-- Actor 不得持锁等待 sidecar。
-- Active operations 上限 128。
-- 已完成 operation ring 上限 256，保留 15 分钟后淘汰。
-- Terminal correlation 必须释放，不能在约 1024 次操作后耗尽。
-
-删除：
-
-- 全局 `plugins-autostart.json` 作为运行权威。
-- `enabled_overrides`。
-- Workspace 切换时的 runtime/command-service 重建。
-
-**依赖**
-
-P-01。
-
-**验收**
-
-- Workspace A/B 启用状态互不影响。
-- Workspace 切换后 revision 严格递增。
-- 无 workspace 时仍能浏览、安装和卸载。
-- Actor 外没有 lifecycle、surface、task 或 enabled 可变缓存。
-- 5000 次完成操作不会耗尽 operation registry。
-- Sandbox self-test 每进程只执行一次。
-
-### P-03 — 统一包根、状态端口和可恢复事务
-
-**目标**
-
-修复 installer/resolver 根不一致、private/project state 混用和升级非原子问题。
-
-**实现**
-
-- 使用第 3.5 节统一布局。
-- Project state 只经 workspace native port 读写。
-- Private storage 支持 active/prepared clone、promote、discard、restore。
-- 更新 journal 固定阶段：
-
-```text
-prepared
-→ preflighted
-→ old-stopped
-→ artifact-activated
-→ state-promoted
-→ workspace-committed
-→ new-started
-→ complete
-```
-
-- Preflight 禁止写 active project state 或执行串口副作用。
-- 卸载先停 watcher/host，再将 package 和 storage rename 到 tombstone。
-- 逻辑提交后异步删除；提交前失败恢复旧路径。
-- 保留最近一个 last-known-good artifact/state。
-
-**依赖**
-
-P-01。
-
-**验收**
-
-- Production resolver 可启动 active 和 prepared 包。
-- 每个 journal 阶段故障注入后，只能恢复完整旧版本或完整新版本。
-- Preflight 不污染 active storage/project state。
-- 卸载不先丢失安装记录。
-- Project state 在卸载后保持。
-
-### P-04 — Sidecar v2 双向能力 RPC
-
-**目标**
-
-接通 typed session、capture、serial lease、初始 surface、task 和 command 回程。
-
-**实现**
-
-- Hello 协商同 major 的最高公共 minor，非 v2 major 直接拒绝。
-- 所有请求携带 `RuntimeInstanceKey`。
-- Transport 多路复用 request/response/event/cancel/stream envelope。
-- 增加：
-  - session/port/capture capability RPC。
-  - serial acquire/read/write/control/release。
-  - surface snapshot/patch/event。
-  - task progress/cancel/terminal state。
-- 每个调用设置 deadline、消息大小、分页、HostCall 次数和取消限制。
-- Actor 等待 guest 时仍能处理 HostCall，避免双向 RPC 死锁。
-- Session/capture 只能读取当前 workspace 已提交数据。
-- Project/private state 在 guest 调用边界持久化。
-- Preflight 模式禁止 serial side effect。
-
-**依赖**
-
-P-02、P-03。
-
-**验收**
-
-- Real sidecar 能读到非空 session metadata 和 capture page。
-- Initialize surfaces 直接出现在 snapshot。
-- Surface event 到达准确 instance 并返回新 surface/state。
-- Serial lease 和 RX 只到达准确 runtime generation。
-- Timeout、乱序、超限和 stale instance 全部 fail closed。
-- 新旧协议不兼容时握手失败，不降级为 stub。
-
-### P-05 — 本地安装、启停、更新、回滚和卸载
-
-**目标**
-
-实现无需重启应用的完整本地热插拔生命周期。
-
-**实现**
-
-- 使用原生 picker 和单次 opaque grant。
-- 安装全局记录，当前 workspace 默认 disabled。
-- 显式 enable 后启动。
-- Workspace 激活后启动 `expected_enabled=true` 的已安装插件。
-- 更新流程：
-  - Stage。
-  - SHA 验证。
-  - Clone private state。
-  - Prepared preflight。
-  - 停旧实例。
-  - 原子提交。
-  - 启动新实例。
-- 任一阶段失败时自动恢复旧包、旧 private state、旧 project state 和旧实例。
-- 远程更新要求版本增加。
-- Dev-directory 允许同版本、不同 package SHA。
-- 每次启动、崩溃恢复、升级、watch reload 均创建新 generation。
-- Disable/uninstall 清理旧 surface、task、lease、grant 和 runtime authorization。
-
-**依赖**
-
-P-02、P-03、P-04。
-
-**验收**
-
-- Install、enable、disable、update、uninstall 均不重启应用。
-- 每个插件最多一个 active instance。
-- Prepared instance 可并存但没有外部副作用。
-- 更新成功时 state 连续，失败时旧版本继续运行。
-- 同版本同 SHA 为 no-op。
-- 同版本不同 SHA 仅 dev-directory 可接受。
-- 卸载后重装可重新读取保留的 workspace project state。
-
-### P-06 — Surface 实例绑定与串口事务租约
-
-**目标**
-
-阻止 stale UI 操作新实例，并确保插件串口访问只能经过 generation-bound 事务租约。
-
-**实现**
-
-- Surface、event、task 和 lease 都携带完整 `RuntimeInstanceKey`。
-- Actor 只接受当前 instance/generation。
-- 获取租约前等待物理写 drain，并暂停宏、循环发送、Modbus 和触发响应。
-- 插件写入必须携带当前 lease token，经统一 scheduler 返回真实 requested/sent/outcome。
-- RX 同时进入终端、捕获和有界插件缓冲；溢出时撤销租约并返回明确错误。
-- Disable、crash、update、reload、workspace switch、cancel 和 uninstall 立即撤销旧租约与资源句柄。
-
-**依赖**
-
-P-04、P-05、A-09。
-
-**验收**
-
-- 同一会话只能有一个协议租约，其他写入源在租约期间不能交叉写。
-- Stale lease/event、重复 release 和旧 generation 资源全部拒绝。
-- Session 断开或 generation 变化必定撤销租约。
-- Surface 在停用或卸载后的同一快照 revision 中消失。
-
-### P-07 — IPC、Tauri capability 与前端领域契约
-
-**目标**
-
-使 renderer 只面对一个与新生命周期一致的命令和快照边界。
-
-**实现**
-
-- 删除旧 authorization review、decision 和 risk-combination DTO，保留 v2 capability receipt。
-- 更新 Rust DTO、生成 TypeScript、frontend port 和 service。
-- 增加 source、watch、update、operation、instance-bound surface、authorization 和 task projection。
-- 补齐所有命令的 main-window capability。
-- `plugin-center-changed` 成为 revisioned snapshot 推送事件。
-- Renderer 不接收真实路径、sidecar handle、SQLite connection 或任意临时安装 URL。
-- Rust DTO、生成 TS 和 frontend service 必须在同一提交切换。
-
-**依赖**
-
-P-02、P-05、P-06。
-
-**验收**
-
-- 每个注册命令都有真实 Tauri main-window command test。
-- 非主窗口调用全部拒绝。
-- Workspace 切换后 frontend 接受更高 revision。
-- Generated bindings check 通过。
-- 源码中旧 authorization 命令、类型和 store 均不可达。
-- `plugin-main-window.toml` 不再遗漏 install、update、uninstall 和 v2 capability result。
-
-### P-08 — 本地热插拔生产链门禁
-
-**目标**
-
-证明本地热插拔运行在真实 production graph，而不是 fake ports。
-
-**实现**
-
-使用：
-
-- 真实 installer/resolver。
-- 真实 sidecar fixture。
-- 临时 app-data/workspace。
-- Tauri command boundary。
-- 故障注入器。
-- Session/capture/serial mock runtime，但保持真实 application port。
-
-完整场景：
-
-```text
-选择来源
-→ 安装
-→ workspace 启用
-→ capability authorization
-→ initial surfaces
-→ surface event / command
-→ session/capture
-→ serial transaction lease
-→ typed read/write result
-→ 停用
-→ 重启应用恢复
-→ 更新/回滚
-→ 卸载
-```
-
-**依赖**
-
-P-01～P-07、A-13。
-
-**验收**
-
-- Production artifact root、Tauri capability、sidecar handshake 全部覆盖。
-- Workspace A/B 启用隔离和 revision 单调通过。
-- 1.0→1.1、同版本 dev digest 变化和失败回滚通过。
-- 卸载清包/watcher/private storage，保留 project state。
-- 失败后无需重启应用。
-- Trust/auth 静态检查为空。
-- Sandbox、memory、fuel、epoch、timeout 测试继续通过。
-
-### P-09 — 用户配置的 HTTPS 无签名来源
-
-**目标**
-
-提供安全边界明确、但不认证发布者的远程插件源。
-
-**实现**
-
-Source registry 持久化：
-
-```text
-source_id
-url
-enabled
-last_attempt
-last_success
-health
-etag
-last_modified
-```
-
-网络规则：
-
-- 仅 HTTPS。
-- 禁止 credentials、query、fragment 和 IP literal。
-- 每次请求重新解析 DNS。
-- 拒绝 loopback、link-local、private、reserved 地址。
-- Redirect 最多 5 次且必须同 origin。
-- 不发送 Cookie、认证头或 renderer 自定义 header。
-- Index 最大 4 MiB。
-- Package 必须匹配 index 中的 URL、长度和 SHA。
-- Package 继续使用现有限额。
-- 保留 last-known-good index。
-- 安装记录绑定原 source ID；换源必须显式执行。
-
-**依赖**
-
-P-01、P-03。
-
-**验收**
-
-- 错误 SHA、超限、私网 DNS、跨 origin redirect、重复版本均拒绝。
-- 删除或禁用 source 不影响已安装插件运行。
-- Renderer 提供的临时 package URL 不能进入下载路径。
-- UI 不显示 publisher verified/unverified。
-- HTTPS/SHA 文案不暗示签名认证。
-
-### P-10 — 自动检查提示与手动远程更新
-
-**目标**
-
-自动发现更新，但绝不自动下载或安装。
-
-**实现**
-
-- 应用启动时，如果距上次检查达到 24 小时，则刷新一次。
-- 应用持续运行时每 24 小时检查一次。
-- 用户可关闭自动检查，并可随时手动刷新。
-- 使用 ETag/Last-Modified 条件请求。
-- 后台检查只下载 index。
-- 只接受原 source 中的更高 semver。
-- 远程同版本不同 SHA 标为 source conflict，不提供普通更新。
-- 用户点击更新后复用 P-05 事务。
-
-**依赖**
-
-P-08、P-09。
-
-**验收**
-
-- 未点击更新前，不下载 package，不改变 host、artifact 或 state。
-- 离线/超时只更新 source health。
-- 更新成功后 workspace 启用状态不变。
-- 更新失败时旧版本继续运行。
-- 自动检查关闭后只响应手动刷新。
-
-### P-11 — 开发目录 watcher 热重载
-
-**目标**
-
-开发目录稳定变化后自动执行安全热重载。
-
-**实现**
-
-- 只监听显式 `dev-directory` 来源。
-- Watcher native-only，renderer 不接收路径。
-- 使用 500 ms debounce。
-- Manifest 和 component 必须连续两次稳定读取，两次间隔 250 ms。
-- SHA 必须匹配 manifest 后才生成 deterministic package。
-- 不修改开发目录或自动重写 manifest。
-- 快速连续变化只保留最新 digest。
-- 更新进行中最多保留一个 pending digest。
-- Disabled 插件可更新 artifact，但不得自动启用。
-- 来源缺失标为 disconnected，保留已安装包。
-- Uninstall 在提交前停 watcher 并删除注册。
-
-**依赖**
-
-P-05、P-08。
-
-**验收**
-
-- 稳定修改无需重启应用即可切换 generation。
-- Reload 后重新触发首次串口确认。
-- 半写文件、SHA 不匹配和写入风暴不会停止旧实例。
-- Uninstall 后修改原目录不会产生 actor event。
-- 重启应用可恢复仍启用的 watcher。
-- Watcher 可按 source 关闭。
-
-### P-12 — v2-only 数据收口
-
-**目标**
-
-删除旧插件安装、状态、授权和 autostart 兼容路径，只保留 v2 数据模型。
-
-**实现**
-
-- Manifest 只接受 `bbcom:plugin@2`，其他 major 在安装边界返回不兼容错误。
-- 安装库存、private state、project state、授权 receipt 和 dev source 只读写 v2 目录/字段。
-- 不扫描、不导入、不保留旧插件包和旧状态目录。
-- 卸载通过持久 intent 原子清理 package、workspace contributions、private state 和授权。
-- Project state 仅按 v2 API/schema generation 迁移，失败保持原字节。
-
-**依赖**
-
-P-10、P-11。
-
-**验收**
-
-- 非 v2 包不会进入库存或 runtime。
-- 中途崩溃不会得到半安装、半卸载或跨存储错配。
-- 已卸载插件重装后不会继承旧授权或 private state。
-- Project state 在 v2 schema 迁移失败时保持原值。
-
-## 8. UI 优化与重复 UI 清理工作包
+## 7. UI 优化与重复 UI 清理工作包
 
 ### U-01 — 统一 design tokens 与基础组件
 
@@ -1478,7 +776,7 @@ P-10、P-11。
 
 - `variables.css` 成为唯一 semantic token 来源。
 - Naive theme override 引用 semantic variables。
-- 删除插件组件中的未定义 token。
+- 删除未定义 CSS token。
 - 增加静态 CSS variable 检查。
 - 建立：
   - `AppModal`
@@ -1506,120 +804,6 @@ G-01。
 - 所有 icon-only 按钮都有可访问名称。
 - Export select 被读为“格式/方向/范围”，而不是当前值。
 - AppSelect 和 AI 现有测试通过。
-
-### U-02 — App-scoped Plugin Presenter
-
-**目标**
-
-使插件状态独立于插件工作区是否挂载，并消除重复 start/subscription。
-
-**实现**
-
-- App bootstrap 只启动一次 `PluginCenterService`。
-- Presenter 只建立一次 snapshot subscription。
-- Workspace、授权对话框和任务中心使用同一 readonly snapshot/action façade。
-- Action 带 target：
-  - Plugin。
-  - Source。
-  - Operation。
-  - Global。
-- Busy 只锁定冲突行，不全局冻结插件中心。
-- Plugin workspace 关闭时仍接收 runtime、watcher 和 update 事件。
-
-**依赖**
-
-P-07。
-
-**验收**
-
-- 应用中只有一次 service start 和一次 presenter subscription。
-- 工作区关闭时热更新，重新打开立即显示最新 revision。
-- 不产生重复提示、刷新或 action。
-- 不相关插件可以并行执行无冲突操作。
-
-### U-03 — 全局授权与任务交互
-
-**目标**
-
-确保插件工作区关闭时仍能处理能力授权、危险操作确认和长期任务。
-
-**实现**
-
-- 在 AppShell 顶层挂载 `PluginAuthorizationDialog` 和 `PluginTaskCenter`。
-- 授权按 plugin ID 与规范化能力集合持久化；新增能力必须再次确认。
-- 危险按钮由宿主渲染动作专属确认文案，插件不能注入 HTML/DOM。
-- 任务显示 progress、terminal state 和 cancel；实例退出或卸载后立即撤销运行资源。
-- 使用统一 AppModal、focus trap、ARIA live region 和键盘导航。
-
-**依赖**
-
-U-01、U-02、P-06。
-
-**验收**
-
-- Settings 和插件工作区都关闭时仍可看到授权请求和任务状态。
-- 相同能力集合不重复询问，新增能力会再次提示。
-- 多个授权请求不堆叠、不跳序、不重复。
-- Enter、Escape、Tab、Shift+Tab 和焦点恢复正确。
-- Stale authorization/task action 不可提交。
-- 卸载后不遗留 modal。
-
-### U-04 — 顶层插件主内容工作区
-
-**目标**
-
-用一套可持续操作的插件工作区替代 Settings 中的插件面板。
-
-**实现**
-
-AppShell 增加顶层 workspace mode：
-
-```text
-sessions | plugins
-```
-
-插件工作区包含：
-
-1. `Installed`
-   - 全局安装列表。
-   - 当前 workspace 启用状态。
-   - Lifecycle、原因、版本、pending version、来源、SHA、能力和 watcher 状态。
-   - Enable、disable、update、rollback retry、uninstall、cancel。
-2. `Catalog`
-   - 聚合启用的 HTTPS sources。
-   - 显示可安装版本和更新候选。
-   - 安装/更新必须由用户点击。
-3. `Sources`
-   - 添加、编辑、启用、禁用、删除、刷新 HTTPS source。
-   - 选择本地 package 或 dev directory。
-   - 开关 watcher 和显示断开/错误状态。
-4. `Panels`
-   - 当前 workspace 运行实例的声明式 panels。
-   - Panel key 使用完整 `RuntimeInstanceKey`。
-
-界面规则：
-
-- 从 Settings 完全删除插件管理。
-- 不保留第二个可操作入口。
-- 本地安装不显示路径输入框。
-- 不显示 publisher verified/unverified。
-- 只在 Sources 说明一次“插件未进行签名认证，SHA 仅用于完整性”。
-- 每行显示独立进度、失败、重试和取消。
-- Installed/Catalog 达到 100 项时使用虚拟列表。
-- 切换回 sessions 不停止插件 runtime。
-
-**依赖**
-
-U-01、U-02、P-09、P-10、P-11。
-
-**验收**
-
-- Settings 中不存在插件安装、启停、更新或面板。
-- 唯一插件工作区可完成全部 lifecycle/source/watch/surface/task 操作。
-- Disable/uninstall 后 surface 在同一 revision 消失。
-- 100 个插件不会撑破页面或触发全窗口滚动。
-- 操作失败只影响目标行。
-- Light/dark 和 960×640 均可使用。
 
 ### U-05 — 创建会话流程去重
 
@@ -1682,7 +866,7 @@ U-01、A-06。
 
 **依赖**
 
-U-03、U-04、U-05、A-09、A-11。
+U-01、U-05、A-09、A-11。
 
 **验收**
 
@@ -1727,23 +911,19 @@ U-01。
 
 - Toolbar 四种视图采用 radio 或明确 `aria-pressed`。
 - Auto-scroll、ANSI、line-break、timestamp、auto-log 暴露当前状态。
-- 插件 tabs 支持 Left/Right、Home/End 和 roving tabindex。
 - SessionTabs 增加 `Alt+Shift+Left/Right` 键盘重排。
 - 重排结果通过 live region 报告。
 - 所有 modal 验证初始焦点、trap、Escape、busy 和焦点恢复。
 - 所有 AppSelect 显式命名。
 - Axe 场景覆盖：
   - Create Session。
-  - Plugin Installed/Catalog/Sources/Panels。
-  - First-write review。
   - Export。
   - Tools 编辑。
-  - Hot disable/uninstall。
-- 删除 authorization 场景和旧自制 focus trap 测试。
+- 删除旧自制 focus trap 测试。
 
 **依赖**
 
-U-03、U-04、U-05、U-06、U-07。
+U-01、U-05、U-06、U-07。
 
 **验收**
 
@@ -1751,18 +931,18 @@ U-03、U-04、U-05、U-06、U-07。
 - 所有主要操作可仅用键盘完成。
 - Select、toggle、tab 的名称和状态稳定正确。
 - Prompt、连接变化、数据损失、重排各只播报一次。
-- Focus 在热卸载或删除行后落到相邻行或空状态。
+- Focus 在删除行后落到相邻行或空状态。
 
 ### U-09 — 确定性 browser fixture 与视觉回归
 
 **目标**
 
-将新布局、主题、重复 UI 删除和插件热插拔状态纳入持续回归。
+将新布局、主题和重复 UI 删除纳入持续回归。
 
 **实现**
 
 - 扩展现有 WebdriverIO browser-mock fixture。
-- 固定时间、端口、session、frame rate、workspace、plugins 和 source 数据。
+- 固定时间、端口、session、frame rate 和 workspace 数据。
 - 保持真实组件树，只替换原生边界。
 - 建立截图基线和审核更新流程。
 - 动态时间、速率区域固定或显式 mask。
@@ -1771,25 +951,22 @@ U-03、U-04、U-05、U-06、U-07。
   - 960×640、1024×768、1280×800。
   - Empty、connected、disconnected、readOnly。
   - Create session。
-  - Plugin empty、installed、busy、failed、update available、watch reload。
-  - First-write approve/reject。
   - Tools editing。
 - 同一 fixture 执行 axe、DOM 和 overflow 检查。
 - Native E2E 只验证 picker、window min size 和真实 hotplug event chain。
 
 **依赖**
 
-U-08、P-08、P-10、P-11。
+U-08。
 
 **验收**
 
 - 固定 Linux runner 和字体环境下截图可重复。
 - Mask 后像素差异不超过 0.1%。
 - 所有目标尺寸无意外横向滚动。
-- Hot install/enable/update/disable/uninstall 同时有截图和 DOM 断言。
 - 视觉、axe、browser smoke 纳入 frontend quality gate。
 
-## 9. 集成、质量与发布门禁
+## 8. 集成、质量与发布门禁
 
 ### Q-01 — 全量集成验收
 
@@ -1825,13 +1002,11 @@ pnpm run precommit:full
 - Create session→connect→send→receive。
 - Tab 切换保持 runtime。
 - Workspace switch 成功、失败和 rollback。
-- Plugin local、remote、watcher lifecycle。
-- First serial write approve/reject。
-- Shutdown 时 settings/workspace/plugin journal flush。
+- Shutdown 时 settings/workspace flush。
 
 **依赖**
 
-A-14、P-12、U-09。
+A-14、U-09。
 
 **验收**
 
@@ -1839,8 +1014,6 @@ A-14、P-12、U-09。
 - Coverage 门禁不下降。
 - Bundle gate 通过。
 - Generated bindings 无差异。
-- 无 trust/auth production dependency。
-- 无空 Catalog、stub capability 或假成功 lifecycle。
 - `AGENTS_PLAN.md` 中所有前置包均记录验收证据。
 
 ### Q-02 — 三平台、故障注入、性能与长稳
@@ -1859,23 +1032,14 @@ A-14、P-12、U-09。
 
 故障矩阵：
 
-- 每个 plugin journal 阶段崩溃。
 - 磁盘满、权限拒绝、只读 workspace。
-- 网络离线、超时、错误 SHA、DNS rebinding、redirect 攻击。
-- Sidecar crash、timeout、malformed HostCall。
-- Watcher 写入风暴、半写文件和来源消失。
 - Workspace 快速切换、取消和 rollback failure。
-- Stale surface/task/lease/serial result。
 - 应用 shutdown 中途退出。
 
 压力矩阵：
 
 - 20 resident serial sessions。
-- 100 installed plugins。
-- 20 running plugin sidecars 或平台允许的上限。
-- 5000 lifecycle operations。
 - 连续 workspace A/B 切换。
-- 24 小时 watcher/source/host crash soak。
 
 **依赖**
 
@@ -1883,10 +1047,8 @@ Q-01。
 
 **验收**
 
-- 三平台 packaged sidecar 可启动。
-- OS sandbox self-test 通过。
+- 三平台 packaged 安装可启动。
 - 应用签名/公证流程不受影响。
-- 无线程、operation、task、surface、lease、watcher、tombstone 泄漏。
 - 无 unbounded collection。
 - Serial/frontend benchmark 退化不超过 10%。
 - 任一失败后得到完整旧状态或完整新状态，不出现半提交状态。
@@ -1905,29 +1067,12 @@ Q-01。
 - `ARCHITECTURE.md`。
 - `SECURITY.md`。
 - `CONTRIBUTING.md`。
-- 插件 contracts/host/manager/repository README。
 - `CHANGELOG.md`。
-- Release 和 plugin market gate 文档。
-
-文档必须明确：
-
-- 插件不做签名或发布者认证。
-- SHA 只验证完整性。
-- 支持的能力和 unavailable 能力。
-- 全局安装、workspace 启用规则。
-- 串口事务租约、控制线和取消语义。
-- HTTPS source 安全限制。
-- Watcher 仅用于显式 dev-directory。
-- 卸载数据策略和迁移策略。
 
 删除：
 
-- Trust crate 和文档。
-- 旧 authorization UI、DTO、store、文案和测试。
-- 旧 plugin autostart runtime。
 - 重复 UI 和 CSS。
 - 已无调用方的 compatibility exports。
-- 假实现、空 repository provider、stub host capability。
 
 保留并标注 sunset：
 
@@ -1940,7 +1085,6 @@ Q-02。
 
 **验收**
 
-- `rg` 不再发现生产期 trust、authorization、verified publisher 或重复插件入口。
 - 架构、测试、打包、E2E 和长稳门禁全部通过。
 - 文档与实际命令、UI、数据策略一致。
 - `AGENTS_PLAN.md` 所有工作包为 `DONE`，且每项均有测试证据。

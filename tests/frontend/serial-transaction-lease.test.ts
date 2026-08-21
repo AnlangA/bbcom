@@ -130,19 +130,8 @@ test('acquisition drains existing writes, pauses in order, gates writes, and res
   assert.equal(coordinator.snapshot().manualWriteAllowed, false);
   assert.equal(
     coordinator.authorizesSchedulerWrite({
-      source: 'plugin',
-      ownerId: 'plugin.mcumgr',
-      generation: 7,
-      leaseToken: grant.token,
-    }),
-    true,
-  );
-  assert.equal(
-    coordinator.authorizesSchedulerWrite({
-      source: 'plugin',
-      ownerId: 'plugin.mcumgr',
-      generation: 7,
-      leaseToken: 'forged',
+      source: 'host',
+      ownerId: 'session-1',
     }),
     false,
   );

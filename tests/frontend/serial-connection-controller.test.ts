@@ -215,7 +215,7 @@ describe('SerialConnectionController (framework-free)', () => {
     await expect(controller.sendBreak()).resolves.toBe(false);
     await expect(
       controller.serialTransactions.write(grant.token, Uint8Array.of(3, 4)),
-    ).resolves.toMatchObject({ outcome: 'complete', sentBytes: 2 });
+    ).rejects.toMatchObject({ code: 'unavailable' });
 
     fake.handlers?.onData(Uint8Array.of(9, 8, 7));
     await expect(controller.serialTransactions.read(grant.token, { maxBytes: 2 })).resolves.toEqual(

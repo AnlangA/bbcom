@@ -108,21 +108,6 @@ pub struct WorkspaceIntegrityReport {
     pub message: String,
 }
 
-/// Native-only plugin context. Project state is intentionally raw bytes here;
-/// it never enters general workspace hydration or renderer DTOs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkspacePluginBindingSnapshot {
-    pub plugin_id: String,
-    pub repository_origin: String,
-    pub version_requirement: String,
-    pub expected_enabled: bool,
-    pub project_state: Option<Vec<u8>>,
-    /// Plugin API generation that owns `project_state`.
-    pub project_state_api_generation: Option<u32>,
-    /// Guest-owned schema version for v2 state.
-    pub project_state_schema_version: Option<u32>,
-}
-
 pub(crate) fn read_header(connection: &Connection) -> Result<WorkspaceDocumentHeader> {
     let (workspace_id, name, revision, active_session_id, layout_json): (
         String,

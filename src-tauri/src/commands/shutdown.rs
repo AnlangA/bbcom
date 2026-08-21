@@ -150,9 +150,6 @@ pub fn confirm_exit(
 ) -> Result<(), IpcError> {
     require_main_window_label(window.label(), CONFIRM_OPERATION)?;
     state.confirm(&confirmation)?;
-    // The gate has completed: force-stop every plugin host before exit. A
-    // never-composed plugin runtime makes this a no-op.
-    crate::plugins::close_plugin_project(&app);
     app.exit(0);
     Ok(())
 }

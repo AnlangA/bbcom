@@ -14,11 +14,6 @@ devtools = ["tauri/devtools"]
 
 [dependencies]
 bbcom-contracts = { path = "../crates/bbcom-contracts" }
-bbcom-plugin-contracts = { path = "../crates/bbcom-plugin-contracts" }
-bbcom-plugin-broker = { path = "../crates/bbcom-plugin-broker" }
-bbcom-plugin-host = { path = "../crates/bbcom-plugin-host" }
-bbcom-plugin-manager = { path = "../crates/bbcom-plugin-manager" }
-bbcom-plugin-repository = { path = "../crates/bbcom-plugin-repository" }
 bbcom-workspace = { path = "../crates/bbcom-workspace" }
 tauri = { version = "=2.11.5", features = [] }
 tauri-plugin-serialplugin = "=3.0.0"
@@ -26,18 +21,15 @@ tauri-plugin-dialog = "=2.7.1"
 tauri-plugin-opener = "=2.5.4"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
-semver = "=1.0.27"
 sha2 = "=0.10.9"
 thiserror = "=2.0.18"
 crc = "=3.4.0"
 chrono = "=0.4.45"
 getrandom = "=0.4.3"
-reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 zai-rs = "=0.5.0"
-wat = "=1.252.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [

@@ -575,33 +575,19 @@ export class SerialTransactionLeaseCoordinator<WriteResult = unknown> {
   /** Revalidates scheduler provenance immediately before physical I/O. */
   authorizesSchedulerWrite(
     admission: Readonly<{
-      source: 'host' | 'plugin';
+      source: 'host';
       ownerId: string;
-      generation?: number;
-      leaseToken?: string;
     }>,
   ): boolean {
-    if (admission.source === 'host') {
-      return (
-        !this.disposed &&
-        // An acquisition first closes the public manual-write gate, then
-        // drains writes that were already admitted. Those writes must remain
-        // authorized through their final chunk; no later host write can enter
-        // because runManualWrite() rejects while the phase is `acquiring`.
-        (this.phase === 'idle' || this.phase === 'acquiring') &&
-        this.manualWritesInFlight > 0 &&
-        admission.ownerId.length > 0
-      );
-    }
-    const lease = this.active;
     return (
       !this.disposed &&
-      this.phase === 'active' &&
-      lease !== null &&
-      admission.ownerId === lease.grant.ownerId &&
-      admission.generation === lease.grant.generation &&
-      admission.leaseToken === lease.grant.token &&
-      this.isGenerationCurrent(lease.grant)
+      // An acquisition first closes the public manual-write gate, then
+      // drains writes that were already admitted. Those writes must remain
+      // authorized through their final chunk; no later host write can enter
+      // because runManualWrite() rejects while the phase is `acquiring`.
+      (this.phase === 'idle' || this.phase === 'acquiring') &&
+      this.manualWritesInFlight > 0 &&
+      admission.ownerId.length > 0
     );
   }
 

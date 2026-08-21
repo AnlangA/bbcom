@@ -139,7 +139,7 @@ export interface SerialConnectionController {
   sendBytes(payload: Uint8Array, options?: SerialWriteOptions): Promise<SerialSendResult>;
   sendBreak(durationMs?: number): Promise<boolean>;
   rawBytes(callback: (bytes: Uint8Array) => void): () => void;
-  /** Exclusive protocol transaction boundary shared by plugins and built-in writers. */
+  /** Exclusive protocol transaction boundary for built-in writers. */
   readonly serialTransactions: SerialTransactionLeaseCoordinator<SerialSendResult>;
   stop(): Promise<SerialStopResult>;
   visibilityChanged(): void;
@@ -329,25 +329,11 @@ export function createSerialConnectionController(
         }
         await connection.scheduler.waitForIdle(signal);
       },
-      async write(payload, context) {
-        const connection = activeConnection;
-        if (
-          context.signal.aborted ||
-          !isConnected.value ||
-          !connection?.scheduler ||
-          connection.generation !== context.generation ||
-          connection.generation !== connectionGeneration
-        ) {
-          throw new SerialTransactionLeaseError(
-            context.signal.aborted ? 'cancelled' : 'stale-handle',
-          );
+      async write(_payload, context) {
+        if (context.signal.aborted) {
+          throw new SerialTransactionLeaseError('cancelled');
         }
-        return enqueuePayload(payload, undefined, {
-          source: 'plugin',
-          ownerId: context.ownerId,
-          generation: context.generation,
-          leaseToken: context.leaseToken,
-        });
+        throw new SerialTransactionLeaseError('unavailable');
       },
       async clearBuffers(selection, context) {
         const connection = currentTransactionConnection(context);

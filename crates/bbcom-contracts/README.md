@@ -13,9 +13,8 @@ The first contract version deliberately covers only:
 - the foundation types for workspace state, operations, serial-send results,
   and port leases.
 
-Feature-specific workspace mutations and plugin protocol payloads belong to
-their later implementation goals. They must be added here before either side
-starts using them.
+Feature-specific workspace mutations belong to their later implementation
+goals. They must be added here before either side starts using them.
 
 ## Generate and check bindings
 

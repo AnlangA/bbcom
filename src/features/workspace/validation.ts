@@ -48,7 +48,6 @@ const ERROR_CODES = new Set([
   'WORKSPACE_READ_ONLY',
   'WORKSPACE_CORRUPT',
   'PORT_IN_USE',
-  'PLUGIN_PERMISSION_DENIED',
 ]);
 
 export class InvalidWorkspaceResponseError extends Error {

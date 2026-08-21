@@ -75,7 +75,6 @@ function facadeSnapshot(
       connections: 'disconnected',
       automation: 'stopped',
       ai: 'stopped',
-      plugins: 'stopped',
     },
   };
 }

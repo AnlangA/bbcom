@@ -280,10 +280,6 @@ jobs:
           }
           $application = Get-ChildItem -Path $installRoot -Filter 'bbcom.exe' -Recurse | Select-Object -First 1
           if ($null -eq $application) { throw 'NSIS installation did not contain bbcom.exe' }
-          $sidecars = @(Get-ChildItem -Path $installRoot -Filter 'bbcom-plugin-host*.exe' -File -Recurse)
-          if ($sidecars.Count -ne 1) {
-            throw "NSIS installation must contain exactly one bbcom-plugin-host sidecar; found $($sidecars.Count)"
-          }
 
           $process = Start-Process -FilePath $application.FullName -PassThru
           Start-Sleep -Seconds 8
@@ -339,9 +335,6 @@ jobs:
             > release-assets/macos-signing-status.txt
           cp -R "${mounted_app[0]}" "$installed_app"
           test -x "$installed_app/Contents/MacOS/bbcom"
-          sidecars=("$installed_app/Contents/MacOS"/bbcom-plugin-host*)
-          test "${#sidecars[@]}" -eq 1
-          test -x "${sidecars[0]}"
 
           "$installed_app/Contents/MacOS/bbcom" > "$RUNNER_TEMP/bbcom-macos-smoke.log" 2>&1 &
           app_pid="$!"
@@ -393,16 +386,6 @@ jobs:
           }
 
           chmod +x "${appimage[0]}"
-          extract_dir="$RUNNER_TEMP/bbcom-appimage-extract"
-          mkdir -p "$extract_dir"
-          (
-            cd "$extract_dir"
-            "${GITHUB_WORKSPACE}/${appimage[0]}" --appimage-extract >/dev/null
-          )
-          mapfile -t appimage_sidecars < <(
-            find "$extract_dir/squashfs-root" -type f -name 'bbcom-plugin-host*' -perm -111
-          )
-          test "${#appimage_sidecars[@]}" -eq 1
           run_gui_smoke appimage env APPIMAGE_EXTRACT_AND_RUN=1 "${GITHUB_WORKSPACE}/${appimage[0]}"
           dpkg-deb --info "${deb[0]}" >/dev/null
           package="$(dpkg-deb -f "${deb[0]}" Package)"
@@ -412,11 +395,8 @@ jobs:
             -o Acquire::https::Timeout=30 \
             install -y "${GITHUB_WORKSPACE}/${deb[0]}"
           binary="$(dpkg -L "$package" | awk '/^\/usr\/bin\// { print; exit }')"
-          sidecar="$(dpkg -L "$package" | awk '/bbcom-plugin-host/ { print; exit }')"
           test -n "$binary"
           test -x "$binary"
-          test -n "$sidecar"
-          test -x "$sidecar"
           run_gui_smoke deb "$binary"
           sudo apt-get remove -y "$package"
           test "$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)" != installed

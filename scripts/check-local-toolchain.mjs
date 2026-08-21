@@ -14,6 +14,9 @@ function commandVersion(command, args, label, expression) {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    // Windows .cmd shims (pnpm.cmd) require a shell; spawnSync without one
+    // fails with EINVAL in some host environments.
+    shell: process.platform === 'win32',
   });
   if (result.error) {
     errors.push(`${label} is unavailable: ${result.error.message}`);

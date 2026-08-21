@@ -23,7 +23,6 @@ pub enum AppErrorCode {
     WorkspaceReadOnly,
     WorkspaceCorrupt,
     PortInUse,
-    PluginPermissionDenied,
 }
 
 /// Structured IPC failure with no native paths, payload bytes, prompts, or keys.

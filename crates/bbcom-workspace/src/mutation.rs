@@ -1,12 +1,11 @@
 use bbcom_contracts::{
-    ApplyWorkspaceBatchRequest, MAX_PLUGIN_STATE_BYTES, MAX_WORKSPACE_AI_BYTES,
-    MAX_WORKSPACE_AI_MESSAGE_BYTES, MAX_WORKSPACE_AI_MESSAGES, MAX_WORKSPACE_BATCH_BYTES,
-    MAX_WORKSPACE_CAPTURE_BYTES, MAX_WORKSPACE_FRAME_BYTES, MAX_WORKSPACE_FRAMES,
-    MAX_WORKSPACE_FRAMES_PER_SESSION, MAX_WORKSPACE_PLUGIN_STATE_BYTES, MAX_WORKSPACE_SESSIONS,
-    WorkspaceAiMessagesPayload, WorkspaceAiRole, WorkspaceConfigRow, WorkspaceFeatureKind,
-    WorkspaceFeatureStatePayload, WorkspaceFramePayload, WorkspaceMetadataPayload,
-    WorkspaceMutation, WorkspaceSessionCollectionsPayload, WorkspaceSessionKind,
-    WorkspaceSessionUpsertPayload, WorkspaceWaveformChannelsPayload,
+    ApplyWorkspaceBatchRequest, MAX_WORKSPACE_AI_BYTES, MAX_WORKSPACE_AI_MESSAGE_BYTES,
+    MAX_WORKSPACE_AI_MESSAGES, MAX_WORKSPACE_BATCH_BYTES, MAX_WORKSPACE_CAPTURE_BYTES,
+    MAX_WORKSPACE_FRAME_BYTES, MAX_WORKSPACE_FRAMES, MAX_WORKSPACE_FRAMES_PER_SESSION,
+    MAX_WORKSPACE_SESSIONS, WorkspaceAiMessagesPayload, WorkspaceAiRole, WorkspaceConfigRow,
+    WorkspaceFeatureKind, WorkspaceFeatureStatePayload, WorkspaceFramePayload,
+    WorkspaceMetadataPayload, WorkspaceMutation, WorkspaceSessionCollectionsPayload,
+    WorkspaceSessionKind, WorkspaceSessionUpsertPayload, WorkspaceWaveformChannelsPayload,
     WorkspaceWaveformSamplesPayload,
 };
 use rusqlite::{Connection, Statement, params};
@@ -20,6 +19,8 @@ use crate::{Result, WorkspaceError};
 
 /// One sequence is one plotted row; this matches the renderer's bounded cache.
 const MAX_WAVEFORM_SAMPLE_GROUPS: usize = 600;
+const MAX_PLUGIN_STATE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_WORKSPACE_PLUGIN_STATE_BYTES: usize = 64 * 1024 * 1024;
 
 const INSERT_FRAME_SQL: &str = "INSERT INTO frames (
    session_id, seq, id, direction, timestamp_ms, data, tx_status, requested_bytes,

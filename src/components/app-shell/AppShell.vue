@@ -86,68 +86,45 @@
     ></div>
 
     <main class="main">
-      <nav class="workspace-mode-tabs" :aria-label="t('app.name')">
-        <button
-          type="button"
-          :class="{ active: workspaceMode === 'sessions' }"
-          :aria-pressed="workspaceMode === 'sessions'"
-          @click="workspaceMode = 'sessions'"
-        >
-          {{ t('workspaceMode.sessions') }}
-        </button>
-        <button
-          type="button"
-          :class="{ active: workspaceMode === 'plugins' }"
-          :aria-pressed="workspaceMode === 'plugins'"
-          @click="workspaceMode = 'plugins'"
-        >
-          {{ t('plugins.title') }}
-        </button>
-      </nav>
-      <template v-if="workspaceMode === 'sessions'">
-        <div
-          v-if="mutationPolicy.persistenceReadOnly.value"
-          class="persistence-readonly-banner"
-          role="status"
-          aria-live="polite"
-        >
-          <strong>{{ t('persistence.readOnly.title') }}</strong>
-          <span>{{ t('persistence.readOnly.description') }}</span>
-        </div>
-        <SessionTabs @create="requestCreateSession" />
-        <div class="session-viewport">
-          <div v-if="sessions.length === 0" class="empty-state">
-            <div class="empty-mark">
-              <Cable class="icon-lg" />
-            </div>
-            <div class="empty-title">{{ t('session.empty.title') }}</div>
-            <div class="empty-text">{{ t('session.empty.hint') }}</div>
-            <div class="empty-actions">
-              <n-button
-                type="primary"
-                size="medium"
-                :disabled="!mutationPolicy.userMutationsAllowed.value"
-                @click="requestCreateSession()"
-              >
-                <template #icon>
-                  <Plus class="icon-sm" />
-                </template>
-                {{ t('common.newSession') }}
-              </n-button>
-            </div>
-            <div class="empty-shortcuts">
-              <span class="shortcut"
-                ><kbd>Ctrl</kbd>+<kbd>N</kbd> {{ t('shortcut.newSession') }}</span
-              >
-            </div>
-          </div>
-          <SessionRuntimeHost :sessions="sessions" :active-session-id="activeSession?.id ?? null" />
-        </div>
-        <StatusBar :session="activeSession" :frames-version="activeFramesVersion" />
-      </template>
-      <div v-else class="plugin-workspace">
-        <PluginCenterPanel />
+      <div
+        v-if="mutationPolicy.persistenceReadOnly.value"
+        class="persistence-readonly-banner"
+        role="status"
+        aria-live="polite"
+      >
+        <strong>{{ t('persistence.readOnly.title') }}</strong>
+        <span>{{ t('persistence.readOnly.description') }}</span>
       </div>
+      <SessionTabs @create="requestCreateSession" />
+      <div class="session-viewport">
+        <div v-if="sessions.length === 0" class="empty-state">
+          <div class="empty-mark">
+            <Cable class="icon-lg" />
+          </div>
+          <div class="empty-title">{{ t('session.empty.title') }}</div>
+          <div class="empty-text">{{ t('session.empty.hint') }}</div>
+          <div class="empty-actions">
+            <n-button
+              type="primary"
+              size="medium"
+              :disabled="!mutationPolicy.userMutationsAllowed.value"
+              @click="requestCreateSession()"
+            >
+              <template #icon>
+                <Plus class="icon-sm" />
+              </template>
+              {{ t('common.newSession') }}
+            </n-button>
+          </div>
+          <div class="empty-shortcuts">
+            <span class="shortcut"
+              ><kbd>Ctrl</kbd>+<kbd>N</kbd> {{ t('shortcut.newSession') }}</span
+            >
+          </div>
+        </div>
+        <SessionRuntimeHost :sessions="sessions" :active-session-id="activeSession?.id ?? null" />
+      </div>
+      <StatusBar :session="activeSession" :frames-version="activeFramesVersion" />
     </main>
 
     <CreateSessionDialog v-model:show="showCreateDialog" :preferred-port="preferredCreatePort" />
@@ -184,7 +161,6 @@ import {
 const CreateSessionDialog = defineAsyncComponent(() => import('./CreateSessionDialog.vue'));
 const SettingsModal = defineAsyncComponent(() => import('./SettingsModal.vue'));
 const AiSettingsPanel = defineAsyncComponent(() => import('../ai/AiSettingsPanel.vue'));
-const PluginCenterPanel = defineAsyncComponent(() => import('../plugins/PluginCenterPanel.vue'));
 
 const catalog = useSessionCatalog();
 const mutationPolicy = useSessionMutationPolicy();
@@ -200,7 +176,6 @@ const activeFramesVersion = computed(() =>
 const showCreateDialog = ref(false);
 const preferredCreatePort = ref('');
 const showSettings = ref(false);
-const workspaceMode = ref<'sessions' | 'plugins'>('sessions');
 const message = useMessage();
 
 function requestCreateSession(preferredPort = ''): void {
@@ -530,57 +505,6 @@ useAppShortcuts({
   overflow: hidden;
   background: var(--bg-primary);
   min-width: 0;
-}
-
-.workspace-mode-tabs {
-  display: flex;
-  gap: var(--space-2xs);
-  padding: var(--space-xs) var(--space-md);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-secondary);
-  flex-shrink: 0;
-}
-
-.workspace-mode-tabs button {
-  min-height: 26px;
-  padding: 4px 14px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-full);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-  transition:
-    background var(--transition-normal),
-    color var(--transition-normal),
-    border-color var(--transition-normal),
-    box-shadow var(--transition-normal);
-}
-
-.workspace-mode-tabs button:hover {
-  color: var(--text-secondary);
-  background: var(--bg-hover);
-}
-
-.workspace-mode-tabs button.active {
-  border-color: var(--color-primary-muted);
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
-  font-weight: var(--font-weight-semibold);
-  box-shadow: var(--shadow-sm);
-}
-
-.workspace-mode-tabs button:focus-visible {
-  outline: none;
-  box-shadow: var(--shadow-focus);
-}
-
-.plugin-workspace {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: var(--space-lg);
 }
 
 .persistence-readonly-banner {

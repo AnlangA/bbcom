@@ -99,8 +99,7 @@ function layerOf(portablePath) {
     portablePath.startsWith('src/stores/') ||
     portablePath.startsWith('src/composables/') ||
     portablePath === 'src/App.vue' ||
-    portablePath === 'src/AiWindow.vue' ||
-    portablePath === 'src/PluginWindow.vue'
+    portablePath === 'src/AiWindow.vue'
   ) {
     return 'ui';
   }
@@ -229,7 +228,6 @@ function ruleReports(files, fileSet, resolveImport, displayPath) {
           specifier.startsWith('./styles/') ||
           targetPath === 'src/App.vue' ||
           targetPath === 'src/AiWindow.vue' ||
-          targetPath === 'src/PluginWindow.vue' ||
           targetPath?.startsWith('src/stores/') ||
           /^src\/features\/[^/]+\/index\.ts$/.test(targetPath ?? '') ||
           specifier === 'vue' ||
@@ -358,7 +356,7 @@ function scanSourceTree(rootDir) {
 // Rust workspace dependency direction
 // ---------------------------------------------------------------------------
 
-const WORKSPACE_LEAF_CRATES = new Set(['bbcom-contracts', 'bbcom-plugin-contracts']);
+const WORKSPACE_LEAF_CRATES = new Set(['bbcom-contracts']);
 const APP_CRATE = 'bbcom';
 
 function rustWorkspaceReports() {

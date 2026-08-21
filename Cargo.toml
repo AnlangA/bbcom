@@ -2,12 +2,6 @@
 members = [
   "src-tauri",
   "crates/bbcom-contracts",
-  "crates/bbcom-plugin-contracts",
-  "crates/bbcom-plugin-broker",
-  "crates/bbcom-plugin-host",
-  "crates/bbcom-plugin-manager",
-  "crates/bbcom-plugin-repository",
-  "crates/bbcom-plugin-sdk",
   "crates/bbcom-workspace",
   "crates/xtask",
 ]

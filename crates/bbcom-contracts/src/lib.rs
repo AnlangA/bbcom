@@ -9,8 +9,6 @@ mod current;
 mod error;
 mod limits;
 mod operation;
-mod plugin;
-mod plugin_v2;
 mod serial;
 mod shutdown;
 mod state;
@@ -21,8 +19,6 @@ pub use current::*;
 pub use error::*;
 pub use limits::*;
 pub use operation::*;
-pub use plugin::*;
-pub use plugin_v2::*;
 pub use serial::*;
 pub use shutdown::*;
 pub use state::*;
@@ -166,9 +162,6 @@ mod tests {
             "export type BeginExportRequest",
             "export type StateEnvelope",
             "export type OperationRecord",
-            "export type PluginCommandResponse",
-            "export type PluginCenterData",
-            "export type InstalledPluginView",
             "export type SerialSendResult",
             "export type PortLeaseConflict",
             "export const IPC_LIMITS",

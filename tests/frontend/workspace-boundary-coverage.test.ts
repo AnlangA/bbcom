@@ -170,7 +170,6 @@ test('workspace operation failures preserve every generated error code and sanit
     'WORKSPACE_READ_ONLY',
     'WORKSPACE_CORRUPT',
     'PORT_IN_USE',
-    'PLUGIN_PERMISSION_DENIED',
   ] as const;
 
   for (const [index, code] of codes.entries()) {

@@ -8,11 +8,6 @@ a Rust backend. The most important ownership rule is simple: the frontend owns
 sessions and protocol behavior; Rust owns privileged desktop work and small,
 typed command surfaces.
 
-> **Workspace architecture:** [ADR-0001](docs/ADR-0001-WORKSPACE-RUNTIME-PLUGIN.md)
-> is implemented for the R1 workspace release. Its former encryption,
-> migration, plugin authorization, trust, and sandbox decisions are superseded
-> by [ADR-0005](docs/ADR-0005-PLUGIN-PROTOCOL-V2.md).
-
 ## Topology
 
 ```text
@@ -62,7 +57,6 @@ typed command surfaces.
 │ Rust backend: src-tauri/src/                                       │
 │                                                                    │
 │ commands/     ai, checksum, export/log session, window commands    │
-│ plugins/      runtime_wiring composition root + command adapter    │
 │ export/       TXT/CSV/JSONL/BIN formatters                         │
 │ models/       IPC structs, AppError, single IpcError mapper        │
 │ utils/        checksum, HEX, timestamp helpers                      │
@@ -91,13 +85,6 @@ typed command surfaces.
 - **Tauri plugins:** serialplugin provides binary serial channels. Native save
   dialogs and application settings remain behind Rust commands; no updater
   plugin is shipped.
-- **Native plugin runtime:** `plugins/runtime_wiring.rs` connects the installer,
-  sidecar, protocol-v2 gateway, project state, file dialogs, surfaces, tasks,
-  detached windows, and serial bridge. Plugin manifests are parsed only to
-  locate the Component and display metadata. All current capabilities are
-  enabled automatically; there is no digest, signature, publisher,
-  authorization, or sandbox gate. Workspace switches and shutdown still stop
-  hosts and release runtime resources.
 - **Bulk IPC payloads are base64-first.** Export batches, workspace frame
   hydration, and checksum inputs use dual-channel DTOs (`data` number array or
   `dataB64` string, validators enforce exactly one). The frontend converts at

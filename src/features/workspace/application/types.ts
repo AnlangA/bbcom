@@ -22,7 +22,6 @@ export const WORKSPACE_STOPPED_ACTIVITY_POLICY = Object.freeze({
   connections: 'disconnected',
   automation: 'stopped',
   ai: 'stopped',
-  plugins: 'stopped',
 } as const);
 
 export type WorkspaceStoppedActivityPolicy = typeof WORKSPACE_STOPPED_ACTIVITY_POLICY;
@@ -164,7 +163,7 @@ export interface WorkspaceRuntimeCommitContext {
  * then permanently removes every old resident runtime before the facade swap,
  * including runtimes whose session id also exists in the next workspace.
  * `activateStopped` may stage/reconcile the next workspace but must not connect,
- * send, run automation, request AI, or start plugins. `restore` discards any
+ * send, run automation, or request AI. `restore` discards any
  * staged next-workspace state and recreates exactly the prior resident runtime
  * set after native rollback. All methods must be idempotent per transition id.
  */

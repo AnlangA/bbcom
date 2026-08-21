@@ -203,20 +203,11 @@ Node 24.13.0 的 zlib 口径揭示总量门禁仅余 497 B，仍然偏紧；下�
 
 ### 8.3 过程中发现并修复的缺陷（非本轮改动引入）
 
-1. **plugins/state prepared 槽位持久化必然失败（HEAD 既有、可静态证明）**：
-   `address()` 将 prepared 槽位标识构造为 `prepared\0<token>`（内嵌 NUL），
-   而 `put_string`→`validate_identity` 拒绝含 NUL/控制字符的字符串，导致
-   prepared 槽位 `persist_state` 在任何平台都返回 `Initialization`。该路径
-   从未成功写入过，故将分隔符改为 `:`（`prepared:<token>`）无磁盘兼容性
-   影响。修复后 `plugins::state` 4/4 测试通过。
-2. **waveform_samples 通道存在性检查恒真（T2 过程中发现）**：mutation.rs 使用
+1. **waveform_samples 通道存在性检查恒真（T2 过程中发现）**：mutation.rs 使用
    `SELECT EXISTS(...)` 搭配 rusqlite `Statement::exists()`——`SELECT EXISTS`
    总是返回一行，`exists()` 恒为 true。改为 `SELECT 1` + `exists()`。
-3. **时间戳 UTC+8 跨日本地日缓存键缺失（T2 新测试捕获）**：仅按 UTC epoch-day
+2. **时间戳 UTC+8 跨日本地日缓存键缺失（T2 新测试捕获）**：仅按 UTC epoch-day
    缓存日期前缀时，UTC+8 的晚间捕获永远命中不了缓存；已改为本地日键。
-4. **plugin-dialog-safety.test.ts 缺少 happy-dom 指令（HEAD 既有）**：该文件用
-   `@vue/test-utils` 挂载组件但未声明 `@vitest-environment happy-dom`，导致
-   `ReferenceError: document is not defined`，3/3 用例在 HEAD 上即失败。已补指令。
 
 ### 8.4 Wave 2：IPC 通道基准与改造（T5）
 
@@ -238,14 +229,10 @@ hydration、checksum 三条路径全部切换为双通道 DTO（`data`/`dataB64`
 - `Permission`（13 变体）与 `RepositoryEndpoint`/`RepositoryConfiguration`/
   `MAX_REDIRECTS`/id 字符集校验合一；command_adapter 的 36 行双向转换删除；
   TS 绑定零 diff（线格式不变）。
-- `RiskCombination` 保持 plugin-contracts 本地：broker 的穷尽 3 臂 match
-  （authorization.rs）依赖其子集语义，统一属后续独立决策。
 - AppError→IpcError 双 mapper 合一（以 models/ipc_error.rs 为准）。语义
   修正：AI 路径的 ConfigError 现映射 SecurityDenied（原 InvalidInput）、
   Io/Export 错误映射 ExportReplaceFailed（原 InvalidInput）、Limit/Validation
   的字段名收敛到稳定词表 "request"。
-- bbcom-plugin-host 的 `g45_fixture_contract` 2 个 wasm-fixture 测试在干净
-  HEAD 上同样失败（属 --ignored 门控测试，不在常规套件内），非本轮引入。
 
 ### 8.6 Wave 2 末前后对比（同会话/干净环境）
 
@@ -272,27 +259,9 @@ sessions_push -11% 均为并发负载所致，单独重跑后消失；log_text_v
 
 ### 8.7 后续问题处理（2026-08-15 第二批）
 
-1. **g45_fixture_contract 既有失败（修复）**：根因是五个 fixture 在组件根导出
-   裸函数、且函数签名引用的 record/enum 类型从未进入导出集合，触发
-   wasmparser 0.252 的命名类型规则（`func/type not valid to be used as
-export`）。修复：类型改为经 `bbcom:plugin/types@2.0.0` 实例导出，函数经
-   `alias export` 引用导出后的类型（对齐 wit-component 真实产物形状）；
-   ambient fixture 的空实例导入会被 wasmtime 平凡满足，改为类型化实例导入
-   （要求 `resolve` 函数）使其必然链接失败；两测试以 HOST_STORE_LOCK 串行
-   （宿主进程级单 store 守卫）。顺带修复同文件既有的 listener 竞态
-   （`events.last()` 可能读到超时动作的旧 correlation id）。
-2. **本地 Rust 门禁覆盖缺口（修复）**：`test:rust` 此前不带 `--workspace`，
-   只运行 bbcom 包——插件系列 crate 的测试从未进入本地全量（CI 的
-   llvm-cov 带 --workspace 会运行）。已补齐并对齐。
-3. **插件组合重试（实现）**：新增 `ensure_plugin_runtime`，setup 装入
-   fail-closed 默认托管态（一次性 manage 空生命周期句柄与 ack 注册表，
-   之后全部内部替换、避免 Tauri 弃用的 unsafe `unmanage`）；
-   `create_workspace`/`open_workspace` 成功后在阻塞线程重组插件运行时——
-   首次启动无活动工作区不再需要重启，工作区切换自动重绑新 workspace。
-   重组失败时旧（已 close_project）运行时降级为 Unavailable（无部分行为）。
-   轮询循环带世代号，重组后旧循环自动退出。wiring 函数泛型化到
-   `R: tauri::Runtime` 以支持 `tauri::test::mock_app` 回归测试。
-4. **vendored glib（结论：保留）**：上游 glib 0.18 线在 0.18.5 后停止发版
+1. **本地 Rust 门禁覆盖缺口（修复）**：`test:rust` 此前不带 `--workspace`，
+   只运行 bbcom 包。已补齐并对齐 CI 的 `cargo llvm-cov --workspace`。
+2. **vendored glib（结论：保留）**：上游 glib 0.18 线在 0.18.5 后停止发版
    （修复只进 0.19/0.20 线），而 tauri 2.11.5（2026-07-01，当前最新）的
    Linux 后端仍解析 0.18 线。补丁在下一个升级 wry/tao 依赖的 Tauri 发布
    之前无法移除；维持现状并保留 vendor README 的移除条件。
@@ -327,8 +296,8 @@ export`）。修复：类型改为经 `bbcom:plugin/types@2.0.0` 实例导出，
 useAiSessionBridge 1,011→587；workspace-coordinator 1,004→704；
 sessions facade 68→54 成员（+waveform/persistence 两个薄 facade，核心店
 单例共享）；Rust workspace.rs 2,032→目录模块（mod 1,275+operations 290+
-grants 285+hydration 290）；插件服务 5 泛型→dyn 端口（净 −129 行）；
-secure_settings 三拆；测试助手去重 9 文件 ~87 行。
+grants 285+hydration 290）；secure_settings 三拆；测试助手去重 9 文件
+~87 行。
 
 **方法学注记**：本会话机器状态较 §8.6 降速约 2 倍（前端零改动锚点
 serialrxqueue −47%、Rust 零改动锚点 checksum/sum8 +127%，跨工具链一致）。

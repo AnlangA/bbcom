@@ -159,163 +159,13 @@ jobs:
 
       # cargo llvm-cov executes the complete Rust test suite. A separate
       # cargo test step would only duplicate the same tests.
-      # The installed-app market probe is exercised by the blocking G46 gate
-      # on all three native packages, so it is excluded from unit percentages.
       # Keep the enforced floor aligned with the measured workspace baseline;
       # AGENTS_PLAN.md tracks the staged increase toward 80% lines / 75% functions.
       - name: Test Rust and enforce coverage
         run: >-
           cargo llvm-cov --manifest-path src-tauri/Cargo.toml
           --workspace --all-features --locked
-          --ignore-filename-regex 'src-tauri/src/plugins/market_readiness_probe\.rs$'
           --fail-under-lines 64 --fail-under-functions 58
-
-  plugin-components:
-    name: Protocol v2 plugin Components
-    runs-on: ubuntu-22.04
-    timeout-minutes: 45
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-
-      - name: Install native build dependencies for the production-chain host
-        run: |
-          sudo apt-get \
-            -o Acquire::Languages=none \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libudev-dev
-
-      - name: Setup Rust 1.97.0 and Component target
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
-        with:
-          toolchain: 1.97.0
-          targets: wasm32-wasip2
-          components: clippy,rustfmt
-
-      - name: Cache standalone plugin workspaces
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: |
-            . -> target
-            plugins/counter-v2 -> target
-            plugins/mcumgr-client -> target
-            plugins/plugin-component-audit -> target
-            plugins/plugin-guest-runtime -> target
-            plugins/plugin-packager -> target
-
-      - name: Check standalone plugin formatting
-        run: |
-          cargo fmt --manifest-path plugins/counter-v2/Cargo.toml \
-            -p bbcom-counter-v2 -p bbcom-counter-v2-packager -- --check
-          cargo fmt --manifest-path plugins/mcumgr-client/Cargo.toml \
-            -p bbcom-mcumgr-core -p bbcom-mcumgr-guest \
-            -p bbcom-mcumgr-packager -- --check
-          cargo fmt --manifest-path plugins/plugin-component-audit/Cargo.toml -- --check
-          cargo fmt --manifest-path plugins/plugin-guest-runtime/Cargo.toml -- --check
-          cargo fmt --manifest-path plugins/plugin-packager/Cargo.toml -- --check
-          cargo fmt \
-            --manifest-path tests/fixtures/plugins/malicious/guest/Cargo.toml \
-            -- --check
-
-      # These are independent workspaces by design. Keeping every invocation
-      # explicit prevents root host builds from silently acquiring a Wasm target.
-      - name: Build release Components
-        run: |
-          cargo build -p bbcom-plugin-host --release --locked
-          cargo build --manifest-path plugins/counter-v2/Cargo.toml \
-            -p bbcom-counter-v2 --release --target wasm32-wasip2 --locked
-          cargo build --manifest-path plugins/mcumgr-client/Cargo.toml \
-            -p bbcom-mcumgr-guest --release --target wasm32-wasip2 --locked
-
-      - name: Test plugin logic and package manifests
-        run: |
-          cargo test --manifest-path plugins/counter-v2/Cargo.toml \
-            --workspace --all-features --locked
-          cargo test --manifest-path plugins/mcumgr-client/Cargo.toml \
-            --workspace --all-features --locked
-          cargo test --manifest-path plugins/plugin-component-audit/Cargo.toml --locked
-          cargo test --manifest-path plugins/plugin-guest-runtime/Cargo.toml --locked
-          cargo test --manifest-path plugins/plugin-packager/Cargo.toml --locked
-
-      - name: Audit final Component imports and exports
-        run: |
-          cargo test --manifest-path plugins/counter-v2/Cargo.toml \
-            -p bbcom-counter-v2 --test import_audit --locked
-          cargo test --manifest-path plugins/mcumgr-client/Cargo.toml \
-            -p bbcom-mcumgr-guest --test import_audit --locked
-
-      - name: Regenerate and execute reviewed G45 v2 fixtures
-        run: |
-          bash tests/fixtures/plugins/malicious/generate.sh
-          git diff --exit-code -- tests/fixtures/plugins/malicious
-          cargo test -p bbcom-plugin-host --test g45_v2_fixtures \
-            --locked -- --test-threads=1
-
-      - name: Lint native and Wasm plugin targets
-        run: |
-          cargo clippy --manifest-path plugins/counter-v2/Cargo.toml \
-            --workspace --all-targets --all-features --locked -- -D warnings
-          cargo clippy --manifest-path plugins/counter-v2/Cargo.toml \
-            -p bbcom-counter-v2 --target wasm32-wasip2 \
-            --release --locked -- -D warnings
-          cargo clippy --manifest-path plugins/mcumgr-client/Cargo.toml \
-            --workspace --all-targets --all-features --locked -- -D warnings
-          cargo clippy --manifest-path plugins/mcumgr-client/Cargo.toml \
-            -p bbcom-mcumgr-guest --target wasm32-wasip2 \
-            --release --locked -- -D warnings
-          cargo clippy --manifest-path plugins/plugin-component-audit/Cargo.toml \
-            --all-targets --locked -- -D warnings
-          cargo clippy --manifest-path plugins/plugin-guest-runtime/Cargo.toml \
-            --all-targets --locked -- -D warnings
-          cargo clippy --manifest-path plugins/plugin-guest-runtime/Cargo.toml \
-            --target wasm32-wasip2 --release --locked -- -D warnings
-          cargo clippy --manifest-path plugins/plugin-packager/Cargo.toml \
-            --all-targets --locked -- -D warnings
-          cargo clippy \
-            --manifest-path tests/fixtures/plugins/malicious/guest/Cargo.toml \
-            --target wasm32-wasip2 --release --locked -- -D warnings
-
-      - name: Generate digest-pinned installable directories
-        run: |
-          cargo run --manifest-path plugins/counter-v2/Cargo.toml \
-            -p bbcom-counter-v2-packager --locked -- \
-            plugins/counter-v2/target/wasm32-wasip2/release/bbcom_counter_v2.wasm \
-            plugins/counter-v2/target/package/counter-v2
-          cargo run --manifest-path plugins/mcumgr-client/Cargo.toml \
-            -p bbcom-mcumgr-packager --locked -- \
-            plugins/mcumgr-client/target/wasm32-wasip2/release/bbcom_mcumgr_guest.wasm \
-            plugins/mcumgr-client/target/package/mcumgr-client
-          test -s plugins/counter-v2/target/package/counter-v2/plugin.toml
-          test -s plugins/counter-v2/target/package/counter-v2/component/plugin.wasm
-          test -s plugins/mcumgr-client/target/package/mcumgr-client/plugin.toml
-          test -s plugins/mcumgr-client/target/package/mcumgr-client/component/plugin.wasm
-
-      - name: Install generated packages through the production validator
-        env:
-          BBCOM_COUNTER_V2_PACKAGE: plugins/counter-v2/target/package/counter-v2
-          BBCOM_MCUMGR_V2_PACKAGE: plugins/mcumgr-client/target/package/mcumgr-client
-        run: |
-          cargo test -p bbcom-plugin-repository \
-            --test generated_v2_packages --locked -- --ignored
-
-      - name: Initialize MCUmgr through the production sidecar and v2 gateway
-        env:
-          BBCOM_MCUMGR_V2_PACKAGE: plugins/mcumgr-client/target/package/mcumgr-client
-          BBCOM_PLUGIN_HOST_V2_SIDECAR: target/release/bbcom-plugin-host
-        run: |
-          cargo test -p bbcom --test mcumgr_production_chain --locked -- \
-            --ignored --nocapture --test-threads=1
 
   browser-e2e:
     name: Browser E2E
@@ -346,7 +196,6 @@ jobs:
     needs:
       - frontend
       - rust
-      - plugin-components
       - browser-e2e
     runs-on: ubuntu-22.04
     timeout-minutes: 5
@@ -355,12 +204,10 @@ jobs:
         env:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           RUST_RESULT: ${{ needs.rust.result }}
-          PLUGIN_COMPONENTS_RESULT: ${{ needs['plugin-components'].result }}
           BROWSER_E2E_RESULT: ${{ needs['browser-e2e'].result }}
         run: |
           test "$FRONTEND_RESULT" = success
           test "$RUST_RESULT" = success
-          test "$PLUGIN_COMPONENTS_RESULT" = success
           test "$BROWSER_E2E_RESULT" = success
 
   benchmark:

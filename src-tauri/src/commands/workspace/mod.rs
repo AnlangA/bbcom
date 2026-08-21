@@ -35,7 +35,7 @@ pub use hydration::{
     hydrate_workspace_waveform,
 };
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -50,7 +50,6 @@ use bbcom_contracts::{
     DeleteWorkspaceResponse, ExportProjectRequest, ExportProjectResponse, FlushWorkspaceRequest,
     FlushWorkspaceResponse, ImportProjectRequest, ImportProjectResponse, IpcError,
     OpenWorkspaceRequest, OpenWorkspaceResponse, WorkspaceCatalogRequest, WorkspaceCatalogResponse,
-    WorkspaceMacro, WorkspaceQuickCommand,
 };
 use bbcom_workspace::WorkspaceService;
 use bbcom_workspace::container::{
@@ -64,58 +63,14 @@ use tokio::sync::Mutex as AsyncMutex;
 
 const ACTIVE_WORKSPACE_FILE: &str = ".active-workspace-v1";
 const MAX_ACTIVE_WORKSPACE_FILE_BYTES: u64 = 256;
-const PLUGIN_CONTRIBUTION_INTENT_FILE: &str = ".plugin-contribution-uninstall-v2.json";
-const PLUGIN_CONTRIBUTION_INTENT_FORMAT: &str = "bbcom-plugin-contribution-uninstall-v2";
-const MAX_PLUGIN_CONTRIBUTION_INTENT_BYTES: u64 = 4 * 1_024;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum DurablePluginContributionDisposition {
-    Delete,
-    ConvertToUser,
-}
-
-impl From<bbcom_workspace::PluginContributionDisposition> for DurablePluginContributionDisposition {
-    fn from(value: bbcom_workspace::PluginContributionDisposition) -> Self {
-        match value {
-            bbcom_workspace::PluginContributionDisposition::Delete => Self::Delete,
-            bbcom_workspace::PluginContributionDisposition::ConvertToUser => Self::ConvertToUser,
-        }
-    }
-}
-
-impl From<DurablePluginContributionDisposition> for bbcom_workspace::PluginContributionDisposition {
-    fn from(value: DurablePluginContributionDisposition) -> Self {
-        match value {
-            DurablePluginContributionDisposition::Delete => Self::Delete,
-            DurablePluginContributionDisposition::ConvertToUser => Self::ConvertToUser,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PluginContributionUninstallIntent {
-    format: String,
-    plugin_id: String,
-    disposition: DurablePluginContributionDisposition,
-}
 
 #[derive(Debug)]
 pub struct WorkspaceManager {
     library: ProjectLibrary,
     active: Mutex<Option<WorkspaceService>>,
     active_marker: PathBuf,
-    plugin_contribution_intent: PathBuf,
     grants: AsyncMutex<HashMap<String, ProjectGrant>>,
     operations: Mutex<HashMap<String, Arc<WorkspaceOperationControl>>>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct NativePluginWorkspaceSnapshot {
-    pub workspace_id: String,
-    pub bindings: Vec<bbcom_plugin_manager::WorkspacePluginBinding>,
-    pub states: Vec<bbcom_plugin_manager::OpaqueProjectPluginState>,
 }
 
 impl WorkspaceManager {
@@ -124,378 +79,16 @@ impl WorkspaceManager {
         let library = ProjectLibrary::open(&root)?;
         let root = fs::canonicalize(&root)?;
         let active_marker = root.join(ACTIVE_WORKSPACE_FILE);
-        let plugin_contribution_intent = root.join(PLUGIN_CONTRIBUTION_INTENT_FILE);
         let active = read_active_workspace(&library, &active_marker)?;
         Ok(Self {
             library,
             active: Mutex::new(active),
             active_marker,
-            plugin_contribution_intent,
             grants: AsyncMutex::new(HashMap::new()),
             operations: Mutex::new(HashMap::new()),
         })
     }
-
-    // --- plugin runtime wiring (additive, native-only) ---
-    /// Identity of the active workspace for plugin bootstrap. Opaque
-    /// per-project plugin state and repository-derived installed artifact
-    /// descriptors stay empty until a reviewed repository configuration ships
-    /// (ADR-0004); nothing here exposes native paths.
-    pub(crate) fn plugin_workspace_snapshot(&self) -> Option<NativePluginWorkspaceSnapshot> {
-        let active = self.active.lock().ok()?;
-        let service = active.as_ref()?;
-        let workspace_id = service.summary().ok()?.workspace_id;
-        let persisted = service.plugin_bindings().ok()?;
-        let mut bindings = Vec::with_capacity(persisted.len());
-        let mut states = Vec::new();
-        // A single malformed binding must not silently drop plugin activation
-        // for the whole workspace: skip it, keep the rest, and leave a trail.
-        let mut skipped = 0usize;
-        for item in persisted {
-            match bbcom_plugin_manager::WorkspacePluginBinding::new(
-                item.plugin_id.clone(),
-                item.expected_enabled,
-                item.version_requirement,
-            ) {
-                Ok(binding) => {
-                    bindings.push(binding);
-                    match (
-                        item.project_state,
-                        item.project_state_api_generation,
-                        item.project_state_schema_version,
-                    ) {
-                        (Some(bytes), Some(2), Some(schema_version @ 1..=u32::MAX)) => {
-                            match bbcom_plugin_manager::OpaqueProjectPluginState::new_with_versions(
-                                item.plugin_id,
-                                bytes,
-                                2,
-                                Some(schema_version),
-                            ) {
-                                Ok(state) => states.push(state),
-                                Err(_) => skipped += 1,
-                            }
-                        }
-                        (None, None, None) => {}
-                        _ => skipped += 1,
-                    }
-                }
-                Err(_) => skipped += 1,
-            }
-        }
-        if skipped > 0 {
-            tracing::warn!(
-                "skipped {skipped} malformed plugin binding(s) for workspace {workspace_id}"
-            );
-        }
-        Some(NativePluginWorkspaceSnapshot {
-            workspace_id,
-            bindings,
-            states,
-        })
-    }
-
-    pub(crate) fn set_plugin_expected_enabled(
-        &self,
-        plugin_id: &str,
-        expected_enabled: bool,
-    ) -> Result<(), ()> {
-        let mut active = self.active.lock().map_err(|_| ())?;
-        active
-            .as_mut()
-            .ok_or(())?
-            .set_plugin_expected_enabled(plugin_id, expected_enabled)
-            .map_err(|error| {
-                tracing::warn!(
-                    ?error,
-                    plugin_id,
-                    expected_enabled,
-                    "workspace rejected plugin enabled-state persistence"
-                );
-            })
-    }
-
-    pub(crate) fn set_plugin_project_state(
-        &self,
-        workspace_id: &str,
-        plugin_id: &str,
-        state: &[u8],
-        api_generation: u32,
-        schema_version: Option<u32>,
-    ) -> Result<(), bbcom_workspace::WorkspaceError> {
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| bbcom_workspace::WorkspaceError::Busy)?;
-        let service = active
-            .as_mut()
-            .ok_or(bbcom_workspace::WorkspaceError::NotFound)?;
-        if service.summary()?.workspace_id != workspace_id {
-            return Err(bbcom_workspace::WorkspaceError::NotFound);
-        }
-        service.set_plugin_project_state(plugin_id, state, api_generation, schema_version)
-    }
-
-    pub(crate) fn upsert_plugin_quick_command(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-        command: &WorkspaceQuickCommand,
-    ) -> Result<(), bbcom_workspace::WorkspaceError> {
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| bbcom_workspace::WorkspaceError::Busy)?;
-        let service = active
-            .as_mut()
-            .ok_or(bbcom_workspace::WorkspaceError::NotFound)?;
-        if service.summary()?.workspace_id != workspace_id {
-            return Err(bbcom_workspace::WorkspaceError::NotFound);
-        }
-        service.upsert_plugin_quick_command(session_id, command)
-    }
-
-    pub(crate) fn delete_plugin_quick_command(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-        contribution_id: &str,
-        plugin_id: &str,
-    ) -> Result<(), bbcom_workspace::WorkspaceError> {
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| bbcom_workspace::WorkspaceError::Busy)?;
-        let service = active
-            .as_mut()
-            .ok_or(bbcom_workspace::WorkspaceError::NotFound)?;
-        if service.summary()?.workspace_id != workspace_id {
-            return Err(bbcom_workspace::WorkspaceError::NotFound);
-        }
-        service.delete_plugin_quick_command(session_id, contribution_id, plugin_id)
-    }
-
-    pub(crate) fn upsert_plugin_macro(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-        value: &WorkspaceMacro,
-    ) -> Result<(), bbcom_workspace::WorkspaceError> {
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| bbcom_workspace::WorkspaceError::Busy)?;
-        let service = active
-            .as_mut()
-            .ok_or(bbcom_workspace::WorkspaceError::NotFound)?;
-        if service.summary()?.workspace_id != workspace_id {
-            return Err(bbcom_workspace::WorkspaceError::NotFound);
-        }
-        service.upsert_plugin_macro(session_id, value)
-    }
-
-    pub(crate) fn delete_plugin_macro(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-        contribution_id: &str,
-        plugin_id: &str,
-    ) -> Result<(), bbcom_workspace::WorkspaceError> {
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| bbcom_workspace::WorkspaceError::Busy)?;
-        let service = active
-            .as_mut()
-            .ok_or(bbcom_workspace::WorkspaceError::NotFound)?;
-        if service.summary()?.workspace_id != workspace_id {
-            return Err(bbcom_workspace::WorkspaceError::NotFound);
-        }
-        service.delete_plugin_macro(session_id, contribution_id, plugin_id)
-    }
-
-    pub(crate) fn cleanup_plugin_contributions(
-        &self,
-        plugin_id: &str,
-        disposition: bbcom_workspace::PluginContributionDisposition,
-    ) -> Result<bbcom_workspace::PluginContributionCleanupReport, ()> {
-        let mut active = self.active.lock().map_err(|_| ())?;
-        let active_id = active
-            .as_ref()
-            .and_then(|service| service.summary().ok())
-            .map(|summary| summary.workspace_id);
-        let mut report = bbcom_workspace::PluginContributionCleanupReport::default();
-        if let Some(service) = active.as_mut() {
-            let cleaned = service
-                .cleanup_plugin_contributions(plugin_id, disposition)
-                .map_err(|_| ())?;
-            report.quick_commands = report
-                .quick_commands
-                .checked_add(cleaned.quick_commands)
-                .ok_or(())?;
-            report.macros = report.macros.checked_add(cleaned.macros).ok_or(())?;
-        }
-        for workspace_id in self.library.list_workspace_ids().map_err(|_| ())? {
-            if active_id.as_deref() == Some(workspace_id.as_str()) {
-                continue;
-            }
-            let mut service = self.library.open_project(&workspace_id).map_err(|_| ())?;
-            let cleaned = service
-                .cleanup_plugin_contributions(plugin_id, disposition)
-                .map_err(|_| ())?;
-            report.quick_commands = report
-                .quick_commands
-                .checked_add(cleaned.quick_commands)
-                .ok_or(())?;
-            report.macros = report.macros.checked_add(cleaned.macros).ok_or(())?;
-        }
-        Ok(report)
-    }
-
-    /// Executes package removal while every managed workspace contribution
-    /// cleanup remains inside an uncommitted SQLite transaction. The caller's
-    /// `false` result rolls every workspace back; `true` commits every cleanup.
-    ///
-    /// A fixed, native-owned intent is fsynced before the first transaction.
-    /// If the process stops in the narrow package-removal/commit interval,
-    /// startup recovery uses authoritative installer inventory: an installed
-    /// plugin means SQLite already rolled back, while an absent plugin means
-    /// cleanup is replayed idempotently before any guest can launch.
-    pub(crate) fn with_plugin_contribution_uninstall(
-        &self,
-        plugin_id: &str,
-        disposition: bbcom_workspace::PluginContributionDisposition,
-        action: impl FnOnce() -> bool,
-    ) -> Result<bool, ()> {
-        if self.plugin_contribution_intent.exists() {
-            return Err(());
-        }
-
-        let mut active = self.active.lock().map_err(|_| ())?;
-        let active_id = active
-            .as_ref()
-            .and_then(|service| service.summary().ok())
-            .map(|summary| summary.workspace_id);
-        let mut closed = Vec::new();
-        for workspace_id in self.library.list_workspace_ids().map_err(|_| ())? {
-            if active_id.as_deref() == Some(workspace_id.as_str()) {
-                continue;
-            }
-            closed.push(self.library.open_project(&workspace_id).map_err(|_| ())?);
-        }
-
-        let intent = PluginContributionUninstallIntent {
-            format: PLUGIN_CONTRIBUTION_INTENT_FORMAT.to_owned(),
-            plugin_id: plugin_id.to_owned(),
-            disposition: disposition.into(),
-        };
-        persist_plugin_contribution_intent(&self.plugin_contribution_intent, &intent)
-            .map_err(|_| ())?;
-
-        let mut action_outcome = None;
-        let mut action = Some(|| {
-            let outcome = action();
-            action_outcome = Some(outcome);
-            outcome
-        });
-        let staged = if let Some(service) = active.as_mut() {
-            let mut nested_error = None;
-            let stage =
-                service.with_staged_plugin_contribution_cleanup(plugin_id, disposition, || {
-                    match stage_closed_plugin_contribution_cleanup(
-                        &mut closed,
-                        plugin_id,
-                        disposition,
-                        &mut action,
-                    ) {
-                        Ok(committed) => committed,
-                        Err(error) => {
-                            nested_error = Some(error);
-                            false
-                        }
-                    }
-                });
-            match stage {
-                Ok((committed, _)) if nested_error.is_none() => Ok(committed),
-                Ok(_) | Err(_) => Err(()),
-            }
-        } else {
-            stage_closed_plugin_contribution_cleanup(
-                &mut closed,
-                plugin_id,
-                disposition,
-                &mut action,
-            )
-            .map_err(|_| ())
-        };
-
-        match staged {
-            Ok(committed) => {
-                if let Err(error) =
-                    remove_plugin_contribution_intent(&self.plugin_contribution_intent)
-                {
-                    // The authoritative result is already committed/rolled
-                    // back. Keep a durable, idempotent recovery marker rather
-                    // than changing an irreversible package result to Failed.
-                    tracing::warn!(
-                        plugin_id,
-                        %error,
-                        "plugin contribution uninstall intent removal deferred"
-                    );
-                }
-                Ok(committed)
-            }
-            Err(()) => {
-                // If the callback was never consumed, package removal never
-                // crossed its irreversible boundary. Every opened SQLite
-                // transaction has rolled back (explicitly or by RAII), so the
-                // durable intent can be removed and a same-process retry is
-                // safe. Once the callback ran, retain the intent: recovery
-                // must consult authoritative installer inventory.
-                let action_not_run = action.is_some();
-                drop(action);
-                drop(closed);
-                drop(active);
-                if action_not_run {
-                    let _ = remove_plugin_contribution_intent(&self.plugin_contribution_intent);
-                    return Err(());
-                }
-                if action_outcome == Some(true) {
-                    // Package removal succeeded but at least one SQLite commit
-                    // failed. Replay cleanup outside the staged connections;
-                    // it is idempotent for already-committed workspaces. A
-                    // remaining failure retains the intent for startup.
-                    if self
-                        .cleanup_plugin_contributions(plugin_id, disposition)
-                        .is_ok()
-                    {
-                        let _ = remove_plugin_contribution_intent(&self.plugin_contribution_intent);
-                        return Ok(true);
-                    }
-                }
-                Err(())
-            }
-        }
-    }
-
-    /// Resolves a durable uninstall intent before plugin workspace activation.
-    /// Malformed or unrecoverable state fails closed so no guest is launched
-    /// against ambiguous contribution ownership.
-    pub(crate) fn recover_plugin_contribution_uninstall(
-        &self,
-        installed_plugin_ids: &BTreeSet<String>,
-    ) -> Result<(), ()> {
-        let Some(intent) =
-            read_plugin_contribution_intent(&self.plugin_contribution_intent).map_err(|_| ())?
-        else {
-            return Ok(());
-        };
-        if !installed_plugin_ids.contains(&intent.plugin_id) {
-            self.cleanup_plugin_contributions(&intent.plugin_id, intent.disposition.into())?;
-        }
-        remove_plugin_contribution_intent(&self.plugin_contribution_intent).map_err(|_| ())
-    }
 }
-
 /// Runs one main-window workspace core on the blocking pool: the active
 /// workspace's SQLite work must stay off the async runtime workers.
 async fn dispatch_workspace_core<T, F>(
@@ -647,25 +240,6 @@ fn delete_workspace_from_label(
     })
 }
 
-/// After a workspace switch attempt, activate the plugin runtime for the
-/// workspace that is active when the dust settles: the new one on success, or
-/// the unchanged previous one on failure — the plugin project closed up front
-/// must never stay closed because a switch happened to fail. When no runtime
-/// was ever composed (a failed setup composition), retry composition first so
-/// transient bootstrap failures heal without an application restart.
-fn activate_plugin_runtime_after_attempt<T>(
-    app: &tauri::AppHandle,
-    result: Result<T, IpcError>,
-) -> Result<T, IpcError> {
-    let app = app.clone();
-    // Detached: the workspace response never waits on plugin composition.
-    let _detached = tauri::async_runtime::spawn_blocking(move || {
-        crate::plugins::ensure_plugin_runtime(&app);
-        crate::plugins::activate_plugin_workspace(&app);
-    });
-    result
-}
-
 #[tauri::command]
 pub async fn create_workspace(
     window: WebviewWindow,
@@ -674,17 +248,12 @@ pub async fn create_workspace(
 ) -> Result<CreateWorkspaceCommandResponse, IpcError> {
     const OPERATION: &str = "create_workspace";
     let label = window.label().to_string();
-    // Reject invalid requests before tearing down the plugin project — label
-    // and requestId checks never depend on workspace state.
     require_main_window_label(&label, OPERATION)?;
     validate_opaque_id(&request.request_id, "requestId", OPERATION)?;
-    // Close the plugin project before the active workspace is replaced.
-    crate::plugins::close_plugin_project(&app);
-    let result = dispatch_workspace_core(app.clone(), label, OPERATION, |manager, label| {
+    dispatch_workspace_core(app, label, OPERATION, |manager, label| {
         create_workspace_from_label(manager, label, request)
     })
-    .await;
-    activate_plugin_runtime_after_attempt(&app, result)
+    .await
 }
 
 fn create_workspace_from_label(
@@ -735,18 +304,13 @@ pub async fn open_workspace(
 ) -> Result<OpenWorkspaceResponse, IpcError> {
     const OPERATION: &str = "open_workspace";
     let label = window.label().to_string();
-    // Same precondition set as open_workspace_from_label, checked before the
-    // plugin project is closed so a rejected request leaves plugins running.
     require_main_window_label(&label, OPERATION)?;
     validate_opaque_id(&request.request_id, "requestId", OPERATION)?;
     WorkspaceUuid::parse(&request.workspace_id).map_err(|error| project_error(error, OPERATION))?;
-    // Close the plugin project before the active workspace is replaced.
-    crate::plugins::close_plugin_project(&app);
-    let result = dispatch_workspace_core(app.clone(), label, OPERATION, |manager, label| {
+    dispatch_workspace_core(app, label, OPERATION, |manager, label| {
         open_workspace_from_label(manager, label, request)
     })
-    .await;
-    activate_plugin_runtime_after_attempt(&app, result)
+    .await
 }
 
 fn open_workspace_from_label(
@@ -1049,145 +613,6 @@ fn read_active_workspace(
     }
 }
 
-fn stage_closed_plugin_contribution_cleanup<F>(
-    services: &mut [WorkspaceService],
-    plugin_id: &str,
-    disposition: bbcom_workspace::PluginContributionDisposition,
-    action: &mut Option<F>,
-) -> Result<bool, bbcom_workspace::WorkspaceError>
-where
-    F: FnOnce() -> bool,
-{
-    let Some((service, remaining)) = services.split_first_mut() else {
-        return action
-            .take()
-            .map(|action| action())
-            .ok_or(bbcom_workspace::WorkspaceError::Busy);
-    };
-    let mut nested_error = None;
-    let (committed, _) =
-        service.with_staged_plugin_contribution_cleanup(plugin_id, disposition, || {
-            match stage_closed_plugin_contribution_cleanup(
-                remaining,
-                plugin_id,
-                disposition,
-                action,
-            ) {
-                Ok(committed) => committed,
-                Err(error) => {
-                    nested_error = Some(error);
-                    false
-                }
-            }
-        })?;
-    match nested_error {
-        Some(error) => Err(error),
-        None => Ok(committed),
-    }
-}
-
-fn read_plugin_contribution_intent(
-    path: &Path,
-) -> std::io::Result<Option<PluginContributionUninstallIntent>> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    if !metadata.file_type().is_file() || metadata.len() > MAX_PLUGIN_CONTRIBUTION_INTENT_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid plugin contribution uninstall intent",
-        ));
-    }
-    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or_default());
-    File::open(path)?
-        .take(MAX_PLUGIN_CONTRIBUTION_INTENT_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_PLUGIN_CONTRIBUTION_INTENT_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "oversized plugin contribution uninstall intent",
-        ));
-    }
-    let intent: PluginContributionUninstallIntent = serde_json::from_slice(&bytes)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let valid_plugin_id = intent.plugin_id.len() >= 3
-        && intent.plugin_id.len() <= 128
-        && intent.plugin_id.contains('.')
-        && intent.plugin_id.split('.').all(|part| {
-            !part.is_empty()
-                && part.bytes().enumerate().all(|(index, byte)| match byte {
-                    b'a'..=b'z' | b'0'..=b'9' => true,
-                    b'-' => index > 0 && index + 1 < part.len(),
-                    _ => false,
-                })
-        });
-    if intent.format != PLUGIN_CONTRIBUTION_INTENT_FORMAT || !valid_plugin_id {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "unsupported plugin contribution uninstall intent",
-        ));
-    }
-    Ok(Some(intent))
-}
-
-fn persist_plugin_contribution_intent(
-    path: &Path,
-    intent: &PluginContributionUninstallIntent,
-) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(intent)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    if bytes.len() as u64 > MAX_PLUGIN_CONTRIBUTION_INTENT_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "oversized plugin contribution uninstall intent",
-        ));
-    }
-    let parent = path.parent().ok_or_else(|| {
-        std::io::Error::other("plugin contribution intent has no parent directory")
-    })?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let staged = parent.join(format!(
-        ".plugin-contribution-uninstall-{}-{nonce}.part",
-        std::process::id()
-    ));
-    let result = (|| {
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&staged)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        atomic_replace_file(&staged, path)?;
-        sync_native_directory(parent)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&staged);
-    }
-    result
-}
-
-fn remove_plugin_contribution_intent(path: &Path) -> std::io::Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    }
-    match path.parent() {
-        Some(parent) => sync_native_directory(parent),
-        None => Ok(()),
-    }
-}
-
 fn persist_active_workspace(marker: &Path, workspace_id: &WorkspaceUuid) -> std::io::Result<()> {
     let parent = marker
         .parent()
@@ -1463,348 +888,6 @@ mod tests {
         }
     }
 
-    fn add_owned_contribution(service: &mut WorkspaceService, workspace_id: &str) {
-        let mutation = serde_json::from_value(serde_json::json!({
-            "kind": "upsert-session",
-            "sequence": 1,
-            "sessionId": "session-a",
-            "payload": {
-                "name": "Session A",
-                "sortOrder": 0,
-                "kind": "live",
-                "portConfig": {},
-                "document": {}
-            }
-        }))
-        .expect("session mutation");
-        service
-            .apply_batch(ApplyWorkspaceBatchRequest {
-                workspace_id: workspace_id.to_owned(),
-                client_batch_id: "create-session".to_owned(),
-                base_revision: 0,
-                mutations: vec![mutation],
-            })
-            .expect("create session");
-        service
-            .upsert_plugin_quick_command(
-                "session-a",
-                &WorkspaceQuickCommand {
-                    id: "plugin:dev.bbcom.fixture:status".to_owned(),
-                    name: "Status".to_owned(),
-                    data: "status".to_owned(),
-                    is_hex: false,
-                    owner_plugin_id: Some("dev.bbcom.fixture".to_owned()),
-                },
-            )
-            .expect("owned contribution");
-    }
-
-    #[test]
-    fn uninstall_cleanup_covers_active_and_closed_managed_workspaces() {
-        let root = temporary_root("plugin-contribution-cleanup");
-        let manager = WorkspaceManager::open(&root).expect("open manager");
-        let active_id =
-            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000021").expect("active id");
-        let closed_id =
-            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000022").expect("closed id");
-        let mut active = manager
-            .library
-            .create_project(&active_id, "active", 1)
-            .expect("create active");
-        add_owned_contribution(&mut active, active_id.as_str());
-        commit_active_workspace(&manager, active_id.as_str(), active, "test")
-            .expect("commit active");
-        let mut closed = manager
-            .library
-            .create_project(&closed_id, "closed", 2)
-            .expect("create closed");
-        add_owned_contribution(&mut closed, closed_id.as_str());
-        drop(closed);
-
-        let report = manager
-            .cleanup_plugin_contributions(
-                "dev.bbcom.fixture",
-                bbcom_workspace::PluginContributionDisposition::Delete,
-            )
-            .expect("cleanup all projects");
-        assert_eq!(report.quick_commands, 2);
-        assert_eq!(report.macros, 0);
-        assert!(
-            lock_active(&manager, "test")
-                .expect("active lock")
-                .as_ref()
-                .expect("active workspace")
-                .hydrate_session_collections("session-a")
-                .expect("active collections")
-                .quick_commands
-                .is_empty()
-        );
-        assert!(
-            manager
-                .library
-                .open_project(&closed_id)
-                .expect("open closed")
-                .hydrate_session_collections("session-a")
-                .expect("closed collections")
-                .quick_commands
-                .is_empty()
-        );
-        drop(manager);
-        fs::remove_dir_all(root).expect("remove test root");
-    }
-
-    #[test]
-    fn failed_artifact_action_rolls_back_active_and_closed_contributions() {
-        let root = temporary_root("plugin-contribution-rollback");
-        let manager = WorkspaceManager::open(&root).expect("open manager");
-        let active_id =
-            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000031").expect("active id");
-        let closed_id =
-            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000032").expect("closed id");
-        let mut active = manager
-            .library
-            .create_project(&active_id, "active", 1)
-            .expect("create active");
-        add_owned_contribution(&mut active, active_id.as_str());
-        let active_before = active
-            .hydrate_session_collections("session-a")
-            .expect("active before");
-        commit_active_workspace(&manager, active_id.as_str(), active, "test")
-            .expect("commit active");
-        let mut closed = manager
-            .library
-            .create_project(&closed_id, "closed", 2)
-            .expect("create closed");
-        add_owned_contribution(&mut closed, closed_id.as_str());
-        let closed_before = closed
-            .hydrate_session_collections("session-a")
-            .expect("closed before");
-        drop(closed);
-
-        let action_called = std::cell::Cell::new(false);
-        let committed = manager
-            .with_plugin_contribution_uninstall(
-                "dev.bbcom.fixture",
-                bbcom_workspace::PluginContributionDisposition::ConvertToUser,
-                || {
-                    action_called.set(true);
-                    false
-                },
-            )
-            .expect("staged uninstall");
-        assert!(action_called.get());
-        assert!(!committed);
-        assert!(!manager.plugin_contribution_intent.exists());
-        assert_eq!(
-            lock_active(&manager, "test")
-                .expect("active lock")
-                .as_ref()
-                .expect("active workspace")
-                .hydrate_session_collections("session-a")
-                .expect("active after"),
-            active_before
-        );
-        assert_eq!(
-            manager
-                .library
-                .open_project(&closed_id)
-                .expect("open closed")
-                .hydrate_session_collections("session-a")
-                .expect("closed after"),
-            closed_before
-        );
-        drop(manager);
-        fs::remove_dir_all(root).expect("remove test root");
-    }
-
-    #[test]
-    fn successful_artifact_action_commits_cleanup_across_all_workspaces() {
-        let root = temporary_root("plugin-contribution-commit");
-        let manager = WorkspaceManager::open(&root).expect("open manager");
-        let active_id =
-            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000036").expect("active id");
-        let closed_id =
-            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000037").expect("closed id");
-        let mut active = manager
-            .library
-            .create_project(&active_id, "active", 1)
-            .expect("create active");
-        add_owned_contribution(&mut active, active_id.as_str());
-        commit_active_workspace(&manager, active_id.as_str(), active, "test")
-            .expect("commit active");
-        let mut closed = manager
-            .library
-            .create_project(&closed_id, "closed", 2)
-            .expect("create closed");
-        add_owned_contribution(&mut closed, closed_id.as_str());
-        drop(closed);
-
-        assert!(
-            manager
-                .with_plugin_contribution_uninstall(
-                    "dev.bbcom.fixture",
-                    bbcom_workspace::PluginContributionDisposition::ConvertToUser,
-                    || true,
-                )
-                .expect("staged uninstall")
-        );
-        for collections in [
-            lock_active(&manager, "test")
-                .expect("active lock")
-                .as_ref()
-                .expect("active workspace")
-                .hydrate_session_collections("session-a")
-                .expect("active collections"),
-            manager
-                .library
-                .open_project(&closed_id)
-                .expect("open closed")
-                .hydrate_session_collections("session-a")
-                .expect("closed collections"),
-        ] {
-            assert_eq!(collections.quick_commands.len(), 1);
-            assert_eq!(collections.quick_commands[0].id, "status");
-            assert_eq!(collections.quick_commands[0].owner_plugin_id, None);
-        }
-        assert!(!manager.plugin_contribution_intent.exists());
-        drop(manager);
-        fs::remove_dir_all(root).expect("remove test root");
-    }
-
-    #[test]
-    fn durable_contribution_intent_recovers_before_guest_activation() {
-        let root = temporary_root("plugin-contribution-recovery");
-        let manager = WorkspaceManager::open(&root).expect("open manager");
-        let workspace_id =
-            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000033").expect("workspace id");
-        let mut service = manager
-            .library
-            .create_project(&workspace_id, "workspace", 1)
-            .expect("create workspace");
-        add_owned_contribution(&mut service, workspace_id.as_str());
-        commit_active_workspace(&manager, workspace_id.as_str(), service, "test")
-            .expect("commit active");
-        persist_plugin_contribution_intent(
-            &manager.plugin_contribution_intent,
-            &PluginContributionUninstallIntent {
-                format: PLUGIN_CONTRIBUTION_INTENT_FORMAT.to_owned(),
-                plugin_id: "dev.bbcom.fixture".to_owned(),
-                disposition: DurablePluginContributionDisposition::Delete,
-            },
-        )
-        .expect("persist crash intent");
-        drop(manager);
-
-        let recovered = WorkspaceManager::open(&root).expect("reopen manager");
-        recovered
-            .recover_plugin_contribution_uninstall(&BTreeSet::new())
-            .expect("recover absent artifact");
-        assert!(!recovered.plugin_contribution_intent.exists());
-        assert!(
-            lock_active(&recovered, "test")
-                .expect("active lock")
-                .as_ref()
-                .expect("active workspace")
-                .hydrate_session_collections("session-a")
-                .expect("collections")
-                .quick_commands
-                .is_empty()
-        );
-        drop(recovered);
-        fs::remove_dir_all(root).expect("remove test root");
-    }
-
-    #[test]
-    fn recovery_preserves_rows_when_artifact_is_still_installed() {
-        let root = temporary_root("plugin-contribution-installed-recovery");
-        let manager = WorkspaceManager::open(&root).expect("open manager");
-        let workspace_id =
-            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000034").expect("workspace id");
-        let mut service = manager
-            .library
-            .create_project(&workspace_id, "workspace", 1)
-            .expect("create workspace");
-        add_owned_contribution(&mut service, workspace_id.as_str());
-        commit_active_workspace(&manager, workspace_id.as_str(), service, "test")
-            .expect("commit active");
-        persist_plugin_contribution_intent(
-            &manager.plugin_contribution_intent,
-            &PluginContributionUninstallIntent {
-                format: PLUGIN_CONTRIBUTION_INTENT_FORMAT.to_owned(),
-                plugin_id: "dev.bbcom.fixture".to_owned(),
-                disposition: DurablePluginContributionDisposition::ConvertToUser,
-            },
-        )
-        .expect("persist crash intent");
-        let installed = BTreeSet::from(["dev.bbcom.fixture".to_owned()]);
-        manager
-            .recover_plugin_contribution_uninstall(&installed)
-            .expect("recover installed artifact");
-        let commands = &lock_active(&manager, "test")
-            .expect("active lock")
-            .as_ref()
-            .expect("active workspace")
-            .hydrate_session_collections("session-a")
-            .expect("collections")
-            .quick_commands;
-        assert_eq!(commands.len(), 1);
-        assert_eq!(
-            commands[0].owner_plugin_id.as_deref(),
-            Some("dev.bbcom.fixture")
-        );
-        assert!(!manager.plugin_contribution_intent.exists());
-        drop(manager);
-        fs::remove_dir_all(root).expect("remove test root");
-    }
-
-    #[test]
-    fn pre_action_staging_failure_clears_intent_for_same_process_retry() {
-        let root = temporary_root("plugin-contribution-staging-retry");
-        let manager = WorkspaceManager::open(&root).expect("open manager");
-        let workspace_id =
-            WorkspaceUuid::parse("00000000-0000-4000-8000-000000000035").expect("workspace id");
-        let service = manager
-            .library
-            .create_project(&workspace_id, "workspace", 1)
-            .expect("create workspace");
-        commit_active_workspace(&manager, workspace_id.as_str(), service, "test")
-            .expect("commit active");
-
-        let invalid_action_called = std::cell::Cell::new(false);
-        assert!(
-            manager
-                .with_plugin_contribution_uninstall(
-                    "",
-                    bbcom_workspace::PluginContributionDisposition::Delete,
-                    || {
-                        invalid_action_called.set(true);
-                        false
-                    },
-                )
-                .is_err()
-        );
-        assert!(!invalid_action_called.get());
-        assert!(!manager.plugin_contribution_intent.exists());
-
-        let retry_action_called = std::cell::Cell::new(false);
-        assert!(
-            !manager
-                .with_plugin_contribution_uninstall(
-                    "dev.bbcom.fixture",
-                    bbcom_workspace::PluginContributionDisposition::Delete,
-                    || {
-                        retry_action_called.set(true);
-                        false
-                    },
-                )
-                .expect("retry staged uninstall")
-        );
-        assert!(retry_action_called.get());
-        assert!(!manager.plugin_contribution_intent.exists());
-        drop(manager);
-        fs::remove_dir_all(root).expect("remove test root");
-    }
-
     #[test]
     fn last_active_workspace_survives_manager_restart() {
         let root = temporary_root("last-active");
@@ -1828,6 +911,7 @@ mod tests {
             .expect("active header");
         assert_eq!(header.workspace_id, workspace_id.as_str());
         drop(active);
+        drop(reopened);
         fs::remove_dir_all(root).expect("remove test root");
     }
 
@@ -1891,6 +975,7 @@ mod tests {
                 .field,
             Some("workspaceId")
         );
+        drop(manager);
         fs::remove_dir_all(root).expect("remove test root");
     }
 
@@ -2043,6 +1128,7 @@ mod tests {
                 .workspace_id,
             active_id.as_str()
         );
+        drop(manager);
         fs::remove_dir_all(root).expect("remove test root");
     }
 
