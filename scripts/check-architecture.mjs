@@ -87,7 +87,7 @@ function makeResolver(rootDir, fileSet) {
 }
 
 // ---------------------------------------------------------------------------
-// Layer classification (AGENTS_PLAN.md §3.1)
+// Layer classification used by the architecture gate.
 // ---------------------------------------------------------------------------
 
 function layerOf(portablePath) {

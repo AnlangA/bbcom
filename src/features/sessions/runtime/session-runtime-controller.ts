@@ -33,7 +33,6 @@ import { SessionProtocolRuntime } from './session-protocol-runtime';
 import { SessionRuntimeStatusRegistry } from './session-runtime-status';
 import type { SessionRuntimeUiState } from './session-ui-state';
 import { createSessionShellController, type SessionShellController } from '../../serial-shell';
-import type { SerialShellSnapshot } from '../../../types/serial-shell';
 
 let nextRuntimeInstanceId = 0;
 
@@ -82,9 +81,11 @@ export interface SessionRuntimeProtocolView {
 export type SessionRuntimeModbusController = ReturnType<typeof useSessionModbus>;
 export type SessionRuntimeMcumgrController = ReturnType<typeof useSessionMcumgr>;
 export interface SessionRuntimeShellController {
-  readonly snapshot: Readonly<Ref<SerialShellSnapshot>>;
-  submitLine: SessionShellController['submitLine'];
-  submitKey: SessionShellController['submitKey'];
+  replay: SessionShellController['replay'];
+  onOutput: SessionShellController['onOutput'];
+  onReset: SessionShellController['onReset'];
+  handleTerminalData: SessionShellController['handleTerminalData'];
+  clear: SessionShellController['clear'];
 }
 export type SessionRuntimeMacroController = ReturnType<typeof useMacroRunner> & {
   readonly status: Readonly<Ref<'idle' | 'running'>>;
@@ -307,40 +308,33 @@ export function useSessionRuntimeController(
     modbusValueDrafts: ref<Record<string, string>>({}),
     shellSearch: ref(''),
   };
-  const shellSnapshot = shallowRef<SerialShellSnapshot>({
-    lines: [],
-    current: { id: 0, text: '', timestamp: 0 },
-    droppedLines: 0,
-    droppedBytes: 0,
-    resetVersion: 0,
+  const shellController = createSessionShellController(() => session.value.shellConfig, {
+    sendBytes: (payload, writeOptions) => serial.sendBytes(payload, writeOptions),
+    rawBytes: (callback) => serial.rawBytes(callback),
+    registerAutomation: (port) => serial.serialTransactions.registerAutomation(port),
+    onCleared: (listener) => capture.onCleared(listener),
   });
-  const shellController = createSessionShellController(
-    () => session.value.shellConfig,
-    (history) => sessionDocument.setShellConfig(session.value.id, { history }),
-    {
-      sendBytes: (payload, writeOptions) => serial.sendBytes(payload, writeOptions),
-      rawBytes: (callback) => serial.rawBytes(callback),
-      registerAutomation: (port) => serial.serialTransactions.registerAutomation(port),
-      onCleared: (listener) => capture.onCleared(listener),
-    },
-    (snapshot) => {
-      shellSnapshot.value = snapshot;
-    },
-  );
   const stopShellConfigWatch = watch(
     () => session.value.shellConfig,
     (config) => shellController.configure(config),
   );
   const shell: SessionRuntimeShellController = {
-    snapshot: readonly(shellSnapshot),
-    submitLine: (text) => shellController.submitLine(text),
-    submitKey: (key) => shellController.submitKey(key),
+    replay: () => shellController.replay(),
+    onOutput: (listener) => shellController.onOutput(listener),
+    onReset: (listener) => shellController.onReset(listener),
+    handleTerminalData: (data) => shellController.handleTerminalData(data),
+    clear: () => shellController.clear(),
   };
   const mcumgr = useSessionMcumgr({
     session: computed(() => session.value),
-    serialTransactions: serial.serialTransactions,
-    rawBytes: (callback) => serial.rawBytes(callback),
     isConnected: serial.isConnected,
+    // Port yield: MCUmgr operations close the frontend connection cleanly,
+    // let Rust own the port for the operation, then reconnect afterwards.
+    suspendConnection: async () => {
+      stopSendLoop();
+      await serial.stop();
+    },
+    resumeConnection: () => serial.start(),
     setConfig: (patch) => sessionDocument.setMcumgrConfig(session.value.id, patch),
   });
   const modbus = useSessionModbus({
@@ -420,6 +414,8 @@ export function useSessionRuntimeController(
 
   async function connect(): Promise<boolean> {
     if (disposed) return false;
+    // While MCUmgr owns the port the toolbar cannot open a competing handle.
+    if (mcumgr.busy.value) return false;
     const ok = await serial.start();
     if (!ok && serial.error.value) {
       notifications.error(
@@ -432,6 +428,7 @@ export function useSessionRuntimeController(
   }
 
   async function disconnect(): Promise<void> {
+    if (mcumgr.busy.value) return;
     stopSendLoop();
     await serial.stop();
   }

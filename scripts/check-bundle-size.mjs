@@ -7,7 +7,9 @@ import { join, relative, resolve, sep } from 'node:path';
 // The workspace/runtime architecture landed as one coordinated feature set.
 // Keep a small regression allowance above that complete baseline instead of
 // forcing feature work into byte-level micro-optimisation.
-const TOTAL_JS_GZIP_LIMIT = 416 * 1024;
+// 2026-08: +36 KiB for the xterm.js terminal (lazy SerialShellPanel chunk,
+// startup graphs unaffected), partially offset by deleting the TS MCUmgr stack.
+const TOTAL_JS_GZIP_LIMIT = 452 * 1024;
 const BOOTSTRAP_JS_GZIP_LIMIT = 85 * 1024;
 const CHUNK_JS_GZIP_LIMIT = 105 * 1024;
 // main.ts conditionally imports exactly one window root before mounting. Vite

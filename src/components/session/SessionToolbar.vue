@@ -20,6 +20,7 @@
           type="primary"
           size="small"
           :loading="isConnecting"
+          :disabled="connectionLocked"
           @click="$emit('connect')"
         >
           <template #icon>
@@ -27,7 +28,14 @@
           </template>
           {{ t('session.connect') }}
         </n-button>
-        <n-button v-else type="error" size="small" ghost @click="$emit('disconnect')">
+        <n-button
+          v-else
+          type="error"
+          size="small"
+          ghost
+          :disabled="connectionLocked"
+          @click="$emit('disconnect')"
+        >
           <template #icon>
             <PowerOff class="icon-sm" />
           </template>
@@ -333,6 +341,8 @@ defineProps<{
   sendingBreak: boolean;
   isExporting: boolean;
   viewMode: SessionViewMode;
+  /** True while MCUmgr owns the port; connect/disconnect must stay locked. */
+  connectionLocked?: boolean;
 }>();
 
 defineEmits<{

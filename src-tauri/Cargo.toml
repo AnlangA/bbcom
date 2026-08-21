@@ -1,6 +1,6 @@
 [package]
 name = "bbcom"
-version = "0.7.3"
+version = "1.0.0"
 description = "Serial Port Assistant"
 edition = "2024"
 rust-version = "1.97"
@@ -26,6 +26,10 @@ thiserror = "=2.0.18"
 crc = "=3.4.0"
 chrono = "=0.4.45"
 getrandom = "=0.4.3"
+mcumgr-toolkit = "=0.16.0"
+serialport = { version = "=4.9.0", default-features = false }
+ciborium = "=0.2.2"
+hex = "=0.4.3"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }

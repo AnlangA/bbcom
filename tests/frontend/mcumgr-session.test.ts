@@ -1,105 +1,261 @@
-import { test, vi } from 'vitest';
+import { afterEach, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
-import { effectScope, ref } from 'vue';
-import { useSessionMcumgr, MCUMGR_OWNER_ID } from '../../src/composables/useSessionMcumgr.ts';
-import {
-  DEFAULT_MCUMGR_CONFIG,
-  encodeConsolePacket,
-  encodeSmpRequest,
-  encodeOsEcho,
-  SMP_GROUP,
-  SMP_OP,
-} from '../../src/lib/mcumgr/index.ts';
-import type { SerialSession } from '../../src/types/session.ts';
-import type { SerialSendResult } from '../../src/types/serial.ts';
-import type { SerialTransactionLeaseCoordinator } from '../../src/features/serial/application/serial-transaction-lease.ts';
+import { ref } from 'vue';
 
-test('useSessionMcumgr acquires the first-class lease owner and writes through it', async () => {
-  const observers = new Set<(bytes: Uint8Array) => void>();
-  const writes: Uint8Array[] = [];
+const mocked = vi.hoisted(() => ({
+  invoke: vi.fn<(command: string, args?: unknown) => Promise<unknown>>(),
+}));
+
+vi.mock('@tauri-apps/api/core', () => {
+  class MockChannel<T> {
+    onmessage: (message: T) => void = () => {};
+  }
+  return { invoke: mocked.invoke, Channel: MockChannel };
+});
+
+import { useSessionMcumgr } from '../../src/composables/useSessionMcumgr.ts';
+import { DEFAULT_MCUMGR_CONFIG } from '../../src/lib/mcumgr-config.ts';
+import type { McumgrClientConfig, SerialSession } from '../../src/types.ts';
+import type { McumgrProgress } from '../../src/generated/ipc-contracts.ts';
+
+afterEach(() => {
+  mocked.invoke.mockReset();
+  vi.useRealTimers();
+});
+
+interface Harness {
+  controller: ReturnType<typeof useSessionMcumgr>;
+  session: ReturnType<typeof ref<SerialSession>>;
+  suspends: number[];
+  resumes: number[];
+  patches: Partial<McumgrClientConfig>[];
+  setConnected: (value: boolean) => void;
+  resumeResult: { value: boolean };
+}
+
+function createHarness(options: { connected?: boolean; portName?: string } = {}): Harness {
   const session = ref({
     id: 's1',
+    portName: options.portName ?? '/dev/ttyUSB0',
+    portConfig: { baudRate: 115_200 },
     mcumgrConfig: { ...DEFAULT_MCUMGR_CONFIG, shellHistory: [] },
   } as SerialSession);
-  const token = 'lease-token' as never;
-  const serialTransactions = {
-    acquire: vi.fn(async (ownerId: string) => {
-      assert.equal(ownerId, MCUMGR_OWNER_ID);
-      return { token, ownerId, generation: 1 };
-    }),
-    release: vi.fn(async () => ({ reason: 'released' })),
-    write: vi.fn(async (_token: unknown, payload: Uint8Array) => {
-      writes.push(payload);
-      const result: SerialSendResult = {
-        outcome: 'complete',
-        requestedBytes: payload.length,
-        sentBytes: payload.length,
-      };
-      queueMicrotask(() => {
-        const request = encodeSmpRequest({
-          version: 2,
-          op: SMP_OP.write,
-          group: SMP_GROUP.os,
-          command: 0,
-          sequence: 0,
-          payload: encodeOsEcho('hi'),
-        });
-        const response = encodeSmpRequest({
-          version: 2,
-          op: SMP_OP.write,
-          group: SMP_GROUP.os,
-          command: 0,
-          sequence: 0,
-          payload: encodeOsEcho('hi'),
-        });
-        // Response op must be writeRsp. Build from the request header.
-        const framed = encodeConsolePacket(
-          Uint8Array.from([
-            (0b01 << 3) | SMP_OP.writeRsp,
-            0,
-            0,
-            6,
-            0,
-            0,
-            0,
-            0,
-            0xa1,
-            0x61,
-            0x72,
-            0x62,
-            0x68,
-            0x69,
-          ]),
-          127,
-        );
-        for (const observer of observers) observer(framed);
-        void request;
-        void response;
-      });
-      return result;
-    }),
-  } as unknown as SerialTransactionLeaseCoordinator<SerialSendResult>;
+  const isConnected = ref(options.connected ?? true);
+  const suspends: number[] = [];
+  const resumes: number[] = [];
+  const patches: Partial<McumgrClientConfig>[] = [];
+  const resumeResult = { value: true };
+  const controller = useSessionMcumgr({
+    session: session as never,
+    isConnected,
+    suspendConnection: async () => {
+      suspends.push(Date.now());
+      isConnected.value = false;
+    },
+    resumeConnection: async () => {
+      resumes.push(Date.now());
+      if (resumeResult.value) isConnected.value = true;
+      return resumeResult.value;
+    },
+    setConfig: (patch) => {
+      patches.push(patch);
+      session.value!.mcumgrConfig = { ...session.value!.mcumgrConfig, ...patch };
+    },
+  });
+  return {
+    controller,
+    session: session as never,
+    suspends,
+    resumes,
+    patches,
+    setConnected: (value) => {
+      isConnected.value = value;
+    },
+    resumeResult,
+  };
+}
 
-  const scope = effectScope();
-  const mcumgr = scope.run(() =>
-    useSessionMcumgr({
-      session,
-      serialTransactions,
-      rawBytes: (callback) => {
-        observers.add(callback);
-        return () => observers.delete(callback);
-      },
-      isConnected: ref(true),
-      setConfig: (patch) => {
-        session.value.mcumgrConfig = { ...session.value.mcumgrConfig, ...patch };
-      },
-    }),
+test('execute yields the port around the invoke and restores the connection', async () => {
+  const harness = createHarness({ connected: true });
+  mocked.invoke.mockImplementation(async (command, args) => {
+    assert.equal(command, 'mcumgr_execute');
+    const request = (args as { request: Record<string, unknown> }).request;
+    assert.deepEqual(request.port, {
+      path: '/dev/ttyUSB0',
+      baudRate: 115_200,
+      timeoutMs: DEFAULT_MCUMGR_CONFIG.timeoutMs,
+      retries: DEFAULT_MCUMGR_CONFIG.retries,
+      autoFrameSize: true,
+      frameSize: DEFAULT_MCUMGR_CONFIG.frameSize,
+    });
+    assert.deepEqual(request.op, { kind: 'os-echo', message: 'hi' });
+    // The frontend connection must already be suspended while Rust runs.
+    assert.equal(harness.suspends.length, 1);
+    assert.equal(harness.resumes.length, 0);
+    return { resultJson: '{"r":"hi"}' };
+  });
+
+  const result = await harness.controller.execute('echo', { kind: 'os-echo', message: 'hi' });
+
+  assert.equal(result, JSON.stringify({ r: 'hi' }, null, 2));
+  assert.equal(harness.controller.lastResult.value, result);
+  assert.equal(harness.resumes.length, 1);
+  assert.deepEqual(harness.controller.status.value, { kind: 'idle' });
+});
+
+test('execute skips port yielding when the session is disconnected', async () => {
+  const harness = createHarness({ connected: false });
+  mocked.invoke.mockResolvedValue({ resultJson: '{}' });
+
+  await harness.controller.execute('echo', { kind: 'os-echo', message: 'hi' });
+
+  assert.equal(harness.suspends.length, 0);
+  assert.equal(harness.resumes.length, 0);
+  assert.deepEqual(harness.controller.status.value, { kind: 'idle' });
+});
+
+test('execute reports a noPort error without invoking when the session has no port', async () => {
+  const harness = createHarness({ portName: '' });
+
+  const result = await harness.controller.execute('echo', { kind: 'os-echo', message: 'hi' });
+
+  assert.equal(result, null);
+  assert.equal(mocked.invoke.mock.calls.length, 0);
+  assert.equal(harness.controller.status.value.kind, 'error');
+});
+
+test('device errors surface rc and group and still restore the connection', async () => {
+  const harness = createHarness({ connected: true });
+  mocked.invoke.mockRejectedValue({
+    kind: 'device',
+    message: 'device rejected the request (group 1, rc 3)',
+    rc: 3,
+    group: 1,
+  });
+
+  const result = await harness.controller.execute('image-state', { kind: 'image-state' });
+
+  assert.equal(result, null);
+  assert.deepEqual(harness.controller.status.value, {
+    kind: 'error',
+    message: 'device rejected the request (group 1, rc 3)',
+    rc: 3,
+    group: 1,
+  });
+  assert.equal(harness.resumes.length, 1);
+});
+
+test('timeout errors map to the timeout status', async () => {
+  const harness = createHarness({ connected: false });
+  mocked.invoke.mockRejectedValue({ kind: 'timeout', message: 'timed out' });
+
+  await harness.controller.execute('echo', { kind: 'os-echo', message: 'hi' });
+
+  assert.deepEqual(harness.controller.status.value, { kind: 'timeout' });
+});
+
+test('a second operation is rejected while one is running', async () => {
+  const harness = createHarness({ connected: false });
+  let release: (() => void) | undefined;
+  mocked.invoke.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = () => resolve({ resultJson: '{}' });
+      }),
   );
-  assert.ok(mcumgr);
-  const echoed = await mcumgr.run('echo', (client) => client.echo('hi'));
-  assert.equal(echoed, 'hi');
-  assert.equal(serialTransactions.acquire.mock.calls[0]?.[0], 'mcumgr-client');
-  assert.equal(serialTransactions.release.mock.calls.length, 1);
-  assert.ok(writes[0] && writes[0][0] === 0x06 && writes[0][1] === 0x09);
-  scope.stop();
+
+  const first = harness.controller.execute('echo', { kind: 'os-echo', message: 'a' });
+  await Promise.resolve();
+  const second = await harness.controller.execute('echo', { kind: 'os-echo', message: 'b' });
+
+  assert.equal(second, null);
+  assert.equal(mocked.invoke.mock.calls.length, 1);
+  release?.();
+  await first;
+});
+
+test('firmware update forwards channel progress into the status', async () => {
+  const harness = createHarness({ connected: false });
+  const seen: McumgrProgress[] = [];
+  mocked.invoke.mockImplementation(async (command, args) => {
+    assert.equal(command, 'mcumgr_firmware_update');
+    const { request, onProgress } = args as {
+      request: Record<string, unknown>;
+      onProgress: { onmessage: (progress: McumgrProgress) => void };
+    };
+    assert.equal(request.fileToken, 'grant-1');
+    assert.equal(request.upgradeOnly, true);
+    const progress: McumgrProgress = {
+      phase: 'uploading',
+      detail: null,
+      offset: 512,
+      total: 1024,
+    };
+    seen.push(progress);
+    onProgress.onmessage(progress);
+    assert.deepEqual(harness.controller.status.value, {
+      kind: 'progress',
+      action: 'firmware-update',
+      phase: 'uploading',
+      detail: undefined,
+      offset: 512,
+      total: 1024,
+    });
+    return { resultJson: '"ok"' };
+  });
+
+  const result = await harness.controller.firmwareUpdate('grant-1', { upgradeOnly: true });
+
+  assert.equal(seen.length, 1);
+  assert.equal(result, '"ok"');
+  assert.deepEqual(harness.controller.status.value, { kind: 'idle' });
+});
+
+test('cancelled long operations return to idle instead of error', async () => {
+  const harness = createHarness({ connected: false });
+  mocked.invoke.mockRejectedValue({ kind: 'cancelled', message: 'cancelled' });
+
+  await harness.controller.imageUpload('grant-2');
+
+  assert.deepEqual(harness.controller.status.value, { kind: 'idle' });
+});
+
+test('resume failures after the operation surface as an error status', async () => {
+  vi.useFakeTimers();
+  const harness = createHarness({ connected: true });
+  harness.resumeResult.value = false;
+  mocked.invoke.mockResolvedValue({ resultJson: '{}' });
+
+  const pending = harness.controller.execute('echo', { kind: 'os-echo', message: 'hi' });
+  await vi.runAllTimersAsync();
+  await pending;
+
+  // All retry delays exhausted (immediate + 1s + 2.5s backoff attempts).
+  assert.equal(harness.resumes.length, 3);
+  assert.equal(harness.controller.status.value.kind, 'error');
+});
+
+test('rememberShell appends deduplicated history through setConfig', () => {
+  const harness = createHarness();
+  harness.controller.rememberShell('kernel uptime');
+  harness.controller.rememberShell('device list');
+  harness.controller.rememberShell('kernel uptime');
+
+  const history = harness.session.value!.mcumgrConfig.shellHistory;
+  assert.deepEqual(history, ['device list', 'kernel uptime']);
+  assert.equal(harness.patches.length, 3);
+});
+
+test('fs download reports the saved file name and byte count', async () => {
+  const harness = createHarness({ connected: false });
+  mocked.invoke.mockImplementation(async (command) => {
+    assert.equal(command, 'mcumgr_fs_download');
+    return { displayName: 'log.txt', bytes: 2048 };
+  });
+
+  const result = await harness.controller.fsDownload('/lfs/log.txt', 'save-grant');
+
+  assert.ok(result);
+  assert.match(result, /log\.txt/);
+  assert.match(result, /2048/);
 });

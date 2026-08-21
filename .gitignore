@@ -22,9 +22,10 @@ src-tauri/binaries/
 .DS_Store
 Thumbs.db
 
-# AI
+# AI / local tooling
 .claude
 .factory
+.cursor
 .mimocode
 .pnpm-store
 .codex

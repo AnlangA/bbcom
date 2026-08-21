@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
   AiRequestResult,
   AiRisk,
@@ -16,6 +16,18 @@ import type {
   ExportFramePayload,
   ExportSource,
   LogAiResponse,
+  McumgrCommandResult,
+  McumgrError,
+  McumgrExecuteRequest,
+  McumgrFilePick,
+  McumgrFilePurpose,
+  McumgrFirmwareUpdateRequest,
+  McumgrFsDownloadRequest,
+  McumgrFsDownloadResult,
+  McumgrFsUploadRequest,
+  McumgrImageUploadRequest,
+  McumgrProgress,
+  McumgrSavePick,
   RunAiRequest,
   SaveTargetGrant,
   SaveTargetPurpose,
@@ -40,6 +52,14 @@ export type {
   ExportFramePayload,
   ExportSource,
   LogAiResponse,
+  McumgrCommandResult,
+  McumgrError,
+  McumgrExecuteRequest,
+  McumgrFilePick,
+  McumgrFilePurpose,
+  McumgrFsDownloadResult,
+  McumgrProgress,
+  McumgrSavePick,
   SaveTargetGrant,
   SaveTargetPurpose,
   TerminalAiResponse,
@@ -162,6 +182,91 @@ export async function invokeFinishAutoLog(logId: string): Promise<void> {
 
 export async function invokeAbortAutoLog(logId: string): Promise<void> {
   return invoke<void>('abort_auto_log', { request: { logId } });
+}
+
+/**
+ * MCUmgr commands. The Rust side opens the serial port itself, so callers
+ * must have yielded (closed) the frontend connection first. Progress-bearing
+ * operations stream `McumgrProgress` over a channel.
+ */
+export async function invokeMcumgrExecute(
+  request: McumgrExecuteRequest,
+): Promise<McumgrCommandResult> {
+  return invoke<McumgrCommandResult>('mcumgr_execute', { request });
+}
+
+export function createMcumgrProgressChannel(
+  onProgress: (progress: McumgrProgress) => void,
+): Channel<McumgrProgress> {
+  const channel = new Channel<McumgrProgress>();
+  channel.onmessage = onProgress;
+  return channel;
+}
+
+export async function invokeMcumgrFirmwareUpdate(
+  request: McumgrFirmwareUpdateRequest,
+  onProgress: Channel<McumgrProgress>,
+): Promise<McumgrCommandResult> {
+  return invoke<McumgrCommandResult>('mcumgr_firmware_update', { request, onProgress });
+}
+
+export async function invokeMcumgrImageUpload(
+  request: McumgrImageUploadRequest,
+  onProgress: Channel<McumgrProgress>,
+): Promise<McumgrCommandResult> {
+  return invoke<McumgrCommandResult>('mcumgr_image_upload', { request, onProgress });
+}
+
+export async function invokeMcumgrFsUpload(
+  request: McumgrFsUploadRequest,
+  onProgress: Channel<McumgrProgress>,
+): Promise<McumgrCommandResult> {
+  return invoke<McumgrCommandResult>('mcumgr_fs_upload', { request, onProgress });
+}
+
+export async function invokeMcumgrFsDownload(
+  request: McumgrFsDownloadRequest,
+  onProgress: Channel<McumgrProgress>,
+): Promise<McumgrFsDownloadResult> {
+  return invoke<McumgrFsDownloadResult>('mcumgr_fs_download', { request, onProgress });
+}
+
+export async function invokeMcumgrCancel(): Promise<void> {
+  return invoke<void>('mcumgr_cancel');
+}
+
+export async function invokeMcumgrPickFile(
+  purpose: McumgrFilePurpose,
+): Promise<McumgrFilePick | null> {
+  return invoke<McumgrFilePick | null>('mcumgr_pick_file', { request: { purpose } });
+}
+
+export async function invokeMcumgrPickSaveTarget(
+  suggestedName: string,
+): Promise<McumgrSavePick | null> {
+  return invoke<McumgrSavePick | null>('mcumgr_pick_save_target', {
+    request: { suggestedName },
+  });
+}
+
+const MCUMGR_ERROR_KINDS = new Set([
+  'busy',
+  'cancelled',
+  'timeout',
+  'port',
+  'device',
+  'protocol',
+  'invalid-input',
+  'io',
+]);
+
+/** Narrow an unknown rejected Tauri value to the MCUmgr error contract. */
+export function asMcumgrError(error: unknown): McumgrError | null {
+  if (!error || typeof error !== 'object') return null;
+  const value = error as Partial<McumgrError>;
+  if (typeof value.kind !== 'string' || !MCUMGR_ERROR_KINDS.has(value.kind)) return null;
+  if (typeof value.message !== 'string') return null;
+  return value as McumgrError;
 }
 
 /** The Rust process owns and retrieves the API key; this DTO contains none. */

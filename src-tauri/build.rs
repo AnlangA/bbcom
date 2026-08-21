@@ -49,6 +49,14 @@ fn main() {
             "import_project",
             "export_project",
             "cancel_workspace_operation",
+            "mcumgr_execute",
+            "mcumgr_firmware_update",
+            "mcumgr_image_upload",
+            "mcumgr_fs_upload",
+            "mcumgr_fs_download",
+            "mcumgr_cancel",
+            "mcumgr_pick_file",
+            "mcumgr_pick_save_target",
         ]),
     ))
     .expect("failed to build bbcom Tauri command permissions");

@@ -3,7 +3,7 @@ import { cloneParserConfig } from '../../../lib/session-persistence';
 import { normalizeLogAiFrameLimit } from '../../../lib/session-store-helpers';
 import { cloneModbusConfig } from '../../../lib/modbus';
 import { cloneSerialShellConfig } from '../../../lib/serial-shell';
-import { cloneMcumgrConfig } from '../../../lib/mcumgr';
+import { cloneMcumgrConfig } from '../../../lib/mcumgr-config';
 import type { AiModel, LogAiContextMode } from '../../../types/ai';
 import type { ModbusMasterConfig } from '../../../types/modbus';
 import type { McumgrClientConfig } from '../../../types/mcumgr';

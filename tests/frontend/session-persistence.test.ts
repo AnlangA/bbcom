@@ -31,13 +31,13 @@ test('createSessionRecord centralizes session defaults', () => {
   assert.deepEqual(session.frames, []);
   assert.equal(session.modbusConfig.transport, 'rtu');
   assert.equal(session.modbusConfig.enabled, false);
-  assert.equal(session.shellConfig.inputMode, 'line');
-  assert.equal(session.shellConfig.txNewline, 'crlf');
+  assert.equal(session.shellConfig.localEcho, false);
+  assert.equal(session.shellConfig.txNewline, 'cr');
   assert.equal(session.parserState.presetId, 'at-crlf');
   assert.equal(session.terminalAiModel, 'glm-4.5-air');
 });
 
-test('hydrateSession restores serial-shell config and defaults a missing one', () => {
+test('hydrateSession restores serial-shell config and drops legacy fields', () => {
   const withShell = hydrateSession({
     portName: 'COM2',
     portConfig: cfg,
@@ -53,9 +53,13 @@ test('hydrateSession restores serial-shell config and defaults a missing one', (
     },
   });
   assert.ok(withShell);
-  assert.equal(withShell.shellConfig.inputMode, 'char');
-  assert.equal(withShell.shellConfig.encoding, 'gbk');
-  assert.deepEqual(withShell.shellConfig.history, ['help']);
+  assert.deepEqual(withShell.shellConfig, {
+    localEcho: false,
+    txNewline: 'lf',
+    rxNewline: 'cr',
+    encoding: 'gbk',
+    backspace: 'del',
+  });
 
   const persisted = serializeSessionSnapshots([withShell], withShell.id);
   const restored = hydrateSession(persisted.sessions[0]);
@@ -64,8 +68,8 @@ test('hydrateSession restores serial-shell config and defaults a missing one', (
 
   const legacy = hydrateSession({ portName: 'COM3', portConfig: cfg });
   assert.ok(legacy);
-  assert.equal(legacy.shellConfig.inputMode, 'line');
-  assert.equal(legacy.shellConfig.localEcho, true);
+  assert.equal(legacy.shellConfig.txNewline, 'cr');
+  assert.equal(legacy.shellConfig.localEcho, false);
 });
 
 test('hydrateSession restores frames, totals, tools, and decorates frames', () => {

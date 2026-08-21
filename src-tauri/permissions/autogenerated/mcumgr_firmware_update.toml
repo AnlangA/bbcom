@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mcumgr-firmware-update"
+description = "Enables the mcumgr_firmware_update command without any pre-configured scope."
+commands.allow = ["mcumgr_firmware_update"]
+
+[[permission]]
+identifier = "deny-mcumgr-firmware-update"
+description = "Denies the mcumgr_firmware_update command without any pre-configured scope."
+commands.deny = ["mcumgr_firmware_update"]

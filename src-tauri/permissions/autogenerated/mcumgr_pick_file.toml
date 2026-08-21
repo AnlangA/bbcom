@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mcumgr-pick-file"
+description = "Enables the mcumgr_pick_file command without any pre-configured scope."
+commands.allow = ["mcumgr_pick_file"]
+
+[[permission]]
+identifier = "deny-mcumgr-pick-file"
+description = "Denies the mcumgr_pick_file command without any pre-configured scope."
+commands.deny = ["mcumgr_pick_file"]
