@@ -106,7 +106,7 @@ pub(crate) fn migrate_schema(connection: &Connection, writable: bool) -> Result<
     if user_version == WORKSPACE_SCHEMA_VERSION {
         return Ok(());
     }
-    if !writable || !matches!(user_version, 1 | 2 | 3) {
+    if !writable || !matches!(user_version, 1..=3) {
         return Err(WorkspaceError::Corrupt {
             reason: "user_version",
         });
