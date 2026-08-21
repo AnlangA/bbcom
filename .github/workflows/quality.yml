@@ -98,10 +98,8 @@ jobs:
       - name: Enforce bundle budgets
         run: pnpm run bundle:check
 
-      # The coverage command executes the complete Vitest suite. Do not add a
-      # separate test:frontend step here; that would run every test twice.
-      - name: Test frontend and enforce coverage
-        run: node scripts/run-frontend-coverage-gates.mjs
+      - name: Test frontend
+        run: pnpm run test:frontend
 
   rust:
     name: Rust correctness and coverage

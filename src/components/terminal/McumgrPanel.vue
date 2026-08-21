@@ -621,11 +621,11 @@ function hexReplacer(_key: string, value: unknown): unknown {
 .mc-status {
   flex: 1;
   font-size: 12px;
-  color: var(--text-2);
+  color: var(--text-muted);
 }
 .mc-status.is-error,
 .mc-status.is-timeout {
-  color: var(--error);
+  color: var(--color-error);
 }
 .mc-close {
   border: 0;
@@ -644,22 +644,22 @@ function hexReplacer(_key: string, value: unknown): unknown {
 .mc-body input,
 .mc-body select,
 .mc-body textarea {
-  background: var(--bg-2);
+  background: var(--bg-secondary);
   color: inherit;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 2px 6px;
 }
 .mc-tabs button {
   border: 0;
   background: transparent;
-  color: var(--text-2);
+  color: var(--text-muted);
   cursor: pointer;
   padding: 4px 8px;
 }
 .mc-tabs button.active {
-  color: var(--text-1);
-  border-bottom: 2px solid var(--primary);
+  color: var(--text-primary);
+  border-bottom: 2px solid var(--color-primary);
 }
 .mc-body {
   flex: 1;
@@ -682,7 +682,7 @@ function hexReplacer(_key: string, value: unknown): unknown {
 }
 .mc-file {
   font-size: 12px;
-  color: var(--text-2);
+  color: var(--text-muted);
 }
 .mc-history {
   display: flex;
@@ -691,8 +691,8 @@ function hexReplacer(_key: string, value: unknown): unknown {
 }
 .mc-history button {
   font-size: 12px;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   color: inherit;
   border-radius: 4px;
   cursor: pointer;
@@ -703,7 +703,7 @@ function hexReplacer(_key: string, value: unknown): unknown {
   max-height: 180px;
   overflow: auto;
   font-size: 12px;
-  background: var(--bg-2);
+  background: var(--bg-secondary);
   padding: 8px;
   border-radius: 6px;
 }
