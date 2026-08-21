@@ -5,6 +5,35 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-21
+
+### Added
+
+- xterm.js serial shell terminal with Fit/Search addons, theme sync, and
+  connection-aware chrome.
+- Rust MCUmgr backend on `mcumgr-toolkit` with typed IPC, progress channels,
+  cancel, and purpose-bound file grants.
+- One-click firmware update flow plus FS upload/download that write real files.
+- Port-yield orchestration so MCUmgr works while the session is disconnected
+  and restores the serial connection afterward.
+
+### Changed
+
+- Serial shell config converged to terminal settings (local echo, newlines,
+  encoding, backspace); legacy fields are dropped on hydrate.
+- MCUmgr config converged to auto/manual frame size, timeout, and retries;
+  raw-UART transport and manual SMP version selection are removed.
+- Shell and MCUmgr panels redesigned to match the Modbus/Parser chrome.
+- Release workflow no longer hard-requires platform signing secrets; unsigned
+  builds remain allowed with explicit signing-status manifests.
+- Quality gate focuses on correctness (lint/build/tests/E2E); benchmark and
+  coverage enforcement jobs were removed from CI.
+
+### Removed
+
+- TypeScript MCUmgr protocol stack under `src/lib/mcumgr/`.
+- Planning/audit Markdown under `docs/` and `AGENTS_PLAN.md`.
+
 ### Fixed: plugin bootstrap self-inflicted permission failure
 
 - The plugin state store root (`plugin-state-v2`) was pre-created by the

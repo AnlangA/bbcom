@@ -1,119 +1,234 @@
-import { computed, onScopeDispose, ref, watch, type Ref } from 'vue';
+import { computed, ref, type Ref } from 'vue';
 import {
-  McumgrClient,
-  McumgrError,
-  MCUMGR_LEASE_OWNER,
-  appendShellHistory,
-  type McumgrWriteResult,
-} from '../lib/mcumgr';
-import {
-  SerialTransactionLeaseError,
-  type SerialTransactionLeaseCoordinator,
-  type SerialTransactionLeaseToken,
-} from '../features/serial';
+  asMcumgrError,
+  createMcumgrProgressChannel,
+  invokeMcumgrCancel,
+  invokeMcumgrExecute,
+  invokeMcumgrFirmwareUpdate,
+  invokeMcumgrFsDownload,
+  invokeMcumgrFsUpload,
+  invokeMcumgrImageUpload,
+  invokeMcumgrPickFile,
+  invokeMcumgrPickSaveTarget,
+} from '../features/native/tauri-ipc';
+import { appendShellHistory } from '../lib/mcumgr-config';
+import { t } from '../lib/i18n';
 import type {
-  McumgrClientConfig,
-  McumgrClientStatus,
-  SerialSendResult,
-  SerialSession,
-} from '../types';
+  McumgrError,
+  McumgrFilePick,
+  McumgrFilePurpose,
+  McumgrOp,
+  McumgrPortRequest,
+  McumgrProgress,
+  McumgrSavePick,
+} from '../generated/ipc-contracts';
+import type { McumgrClientConfig, McumgrClientStatus, SerialSession } from '../types';
 
-export const MCUMGR_OWNER_ID = MCUMGR_LEASE_OWNER;
+export interface McumgrFirmwareUpdateOptions {
+  skipReboot?: boolean;
+  forceConfirm?: boolean;
+  upgradeOnly?: boolean;
+}
 
 export interface UseSessionMcumgrOptions {
   session: Ref<SerialSession>;
-  serialTransactions: SerialTransactionLeaseCoordinator<SerialSendResult>;
-  rawBytes: (callback: (bytes: Uint8Array) => void) => () => void;
   isConnected: Ref<boolean>;
+  /** Cleanly closes the frontend serial connection (port yield). */
+  suspendConnection: () => Promise<void>;
+  /** Re-opens the frontend serial connection after the operation. */
+  resumeConnection: () => Promise<boolean>;
   setConfig: (patch: Partial<McumgrClientConfig>) => void;
 }
 
+const RESUME_RETRY_DELAYS_MS = [0, 1_000, 2_500];
+
+/**
+ * MCUmgr orchestration: yields the session's serial port to the Rust backend
+ * (which opens it directly for `mcumgr-toolkit`), then restores the previous
+ * connection state. Works on disconnected sessions without any yielding.
+ */
 export function useSessionMcumgr({
   session,
-  serialTransactions,
-  rawBytes,
   isConnected,
+  suspendConnection,
+  resumeConnection,
   setConfig,
 }: UseSessionMcumgrOptions) {
   const status = ref<McumgrClientStatus>({ kind: 'idle' });
   const lastResult = ref('');
   const busy = computed(() => status.value.kind === 'busy' || status.value.kind === 'progress');
-  let activeToken: SerialTransactionLeaseToken | null = null;
-  let operationAbort: AbortController | null = null;
 
-  const client = new McumgrClient({
-    write: async (payload) => {
-      if (!activeToken) throw new McumgrError('io-error', 'MCUMgr has no serial lease');
-      return mapWriteResult(await serialTransactions.write(activeToken, payload));
-    },
-    config: () => session.value.mcumgrConfig,
-  });
+  function portRequest(): McumgrPortRequest | null {
+    const path = session.value.portName.trim();
+    if (!path) return null;
+    const config = session.value.mcumgrConfig;
+    return {
+      path,
+      baudRate: session.value.portConfig.baudRate,
+      timeoutMs: config.timeoutMs,
+      retries: config.retries,
+      autoFrameSize: config.autoFrameSize,
+      frameSize: config.frameSize,
+    };
+  }
 
-  const stopRx = rawBytes((bytes) => client.receive(bytes));
-  const stopTransportWatch = watch(
-    () => [session.value.mcumgrConfig.transport, session.value.mcumgrConfig.lineLength] as const,
-    () => {
-      if (!client.hasPending()) client.rebuildTransport();
-    },
-  );
-  const stopConnectionWatch = watch(isConnected, (connected) => {
-    if (!connected) cancel();
-  });
+  async function resumeWithRetry(): Promise<boolean> {
+    // Reset-style operations drop the USB CDC port for a moment; retry with
+    // backoff so the session comes back without manual intervention.
+    for (const delay of RESUME_RETRY_DELAYS_MS) {
+      if (delay > 0) await sleep(delay);
+      try {
+        if (await resumeConnection()) return true;
+      } catch {
+        // The controller records its own failure state; keep retrying.
+      }
+    }
+    return false;
+  }
 
   async function run<T>(
     action: string,
-    work: (instance: McumgrClient, signal: AbortSignal) => Promise<T>,
+    work: (port: McumgrPortRequest) => Promise<T>,
   ): Promise<T | null> {
     if (busy.value) return null;
-    if (!isConnected.value) {
-      status.value = { kind: 'error', message: 'serial is disconnected' };
+    const port = portRequest();
+    if (!port) {
+      status.value = { kind: 'error', message: t('mcumgr.error.noPort') };
       return null;
     }
     status.value = { kind: 'busy', action };
     lastResult.value = '';
-    operationAbort = new AbortController();
+    const wasConnected = isConnected.value;
+    let outcome: T | null = null;
     try {
-      const grant = await serialTransactions.acquire(MCUMGR_OWNER_ID, {
-        signal: operationAbort.signal,
-      });
-      activeToken = grant.token;
-      client.rebuildTransport();
-      const result = await work(client, operationAbort.signal);
+      if (wasConnected) await suspendConnection();
+      outcome = await work(port);
       status.value = { kind: 'idle' };
-      return result;
     } catch (error) {
-      const classified = mapError(error);
-      status.value =
-        classified.kind === 'timeout'
-          ? { kind: 'timeout' }
-          : classified.kind === 'cancelled'
-            ? { kind: 'idle' }
-            : {
-                kind: 'error',
-                message: classified.message,
-                rc: classified.rc,
-                group: classified.group,
-              };
-      lastResult.value = classified.message;
-      return null;
+      applyFailure(error);
     } finally {
-      client.cancel();
-      const token = activeToken;
-      activeToken = null;
-      operationAbort = null;
-      if (token) {
-        try {
-          await serialTransactions.release(token);
-        } catch {
-          // Release is best-effort; a dropped connection already invalidated the lease.
-        }
+      if (wasConnected && !(await resumeWithRetry())) {
+        status.value = { kind: 'error', message: t('mcumgr.error.resumeFailed') };
       }
+    }
+    return outcome;
+  }
+
+  function applyFailure(error: unknown): void {
+    const mapped = asMcumgrError(error) ?? fallbackError(error);
+    if (mapped.kind === 'timeout') {
+      status.value = { kind: 'timeout' };
+    } else if (mapped.kind === 'cancelled') {
+      status.value = { kind: 'idle' };
+    } else {
+      status.value = {
+        kind: 'error',
+        message: mapped.message,
+        rc: mapped.rc,
+        group: mapped.group,
+      };
+    }
+    lastResult.value = mapped.message;
+  }
+
+  function progressChannel(action: string) {
+    return createMcumgrProgressChannel((progress: McumgrProgress) => {
+      if (status.value.kind !== 'busy' && status.value.kind !== 'progress') return;
+      status.value = {
+        kind: 'progress',
+        action,
+        phase: progress.phase,
+        detail: progress.detail ?? undefined,
+        offset: progress.offset ?? undefined,
+        total: progress.total ?? undefined,
+      };
+    });
+  }
+
+  async function execute(action: string, op: McumgrOp): Promise<string | null> {
+    const result = await run(action, async (port) => invokeMcumgrExecute({ port, op }));
+    if (result === null) return null;
+    lastResult.value = prettyJson(result.resultJson);
+    return lastResult.value;
+  }
+
+  async function firmwareUpdate(
+    fileToken: string,
+    options: McumgrFirmwareUpdateOptions = {},
+  ): Promise<string | null> {
+    const action = 'firmware-update';
+    const result = await run(action, async (port) =>
+      invokeMcumgrFirmwareUpdate(
+        {
+          port,
+          fileToken,
+          skipReboot: options.skipReboot ?? false,
+          forceConfirm: options.forceConfirm ?? false,
+          upgradeOnly: options.upgradeOnly ?? false,
+        },
+        progressChannel(action),
+      ),
+    );
+    if (result === null) return null;
+    lastResult.value = prettyJson(result.resultJson);
+    return lastResult.value;
+  }
+
+  async function imageUpload(fileToken: string, upgradeOnly = false): Promise<string | null> {
+    const action = 'image-upload';
+    const result = await run(action, async (port) =>
+      invokeMcumgrImageUpload({ port, fileToken, upgradeOnly }, progressChannel(action)),
+    );
+    if (result === null) return null;
+    lastResult.value = prettyJson(result.resultJson);
+    return lastResult.value;
+  }
+
+  async function fsUpload(fileToken: string, remotePath: string): Promise<string | null> {
+    const action = 'fs-upload';
+    const result = await run(action, async (port) =>
+      invokeMcumgrFsUpload({ port, fileToken, remotePath }, progressChannel(action)),
+    );
+    if (result === null) return null;
+    lastResult.value = prettyJson(result.resultJson);
+    return lastResult.value;
+  }
+
+  async function fsDownload(remotePath: string, saveToken: string): Promise<string | null> {
+    const action = 'fs-download';
+    const result = await run(action, async (port) =>
+      invokeMcumgrFsDownload({ port, remotePath, saveToken }, progressChannel(action)),
+    );
+    if (result === null) return null;
+    lastResult.value = prettyJson(
+      JSON.stringify({ savedAs: result.displayName, bytes: result.bytes }),
+    );
+    return lastResult.value;
+  }
+
+  async function pickFile(purpose: McumgrFilePurpose): Promise<McumgrFilePick | null> {
+    try {
+      return await invokeMcumgrPickFile(purpose);
+    } catch (error) {
+      applyFailure(error);
+      return null;
+    }
+  }
+
+  async function pickSaveTarget(suggestedName: string): Promise<McumgrSavePick | null> {
+    try {
+      return await invokeMcumgrPickSaveTarget(suggestedName);
+    } catch (error) {
+      applyFailure(error);
+      return null;
     }
   }
 
   function cancel(): void {
-    operationAbort?.abort();
-    client.cancel();
+    if (!busy.value) return;
+    void invokeMcumgrCancel().catch(() => {
+      // Cancellation is best-effort; the operation also ends on timeout.
+    });
   }
 
   function patchConfig(patch: Partial<McumgrClientConfig>): void {
@@ -126,63 +241,47 @@ export function useSessionMcumgr({
     });
   }
 
-  function reportProgress(action: string, offset: number, total: number): void {
-    status.value = { kind: 'progress', action, offset, total };
-  }
-
   function setResult(text: string): void {
     lastResult.value = text;
   }
-
-  onScopeDispose(() => {
-    cancel();
-    stopRx();
-    stopTransportWatch();
-    stopConnectionWatch();
-  });
 
   return {
     status,
     lastResult,
     busy,
-    run,
+    execute,
+    firmwareUpdate,
+    imageUpload,
+    fsUpload,
+    fsDownload,
+    pickFile,
+    pickSaveTarget,
     cancel,
     patchConfig,
     rememberShell,
-    reportProgress,
     setResult,
-    client,
   };
 }
 
-function mapWriteResult(result: SerialSendResult): McumgrWriteResult {
-  if (result.outcome === 'cancelled') {
-    throw new McumgrError('cancelled', 'serial write cancelled');
-  }
-  if (
-    result.outcome === 'complete' ||
-    result.outcome === 'partial' ||
-    result.outcome === 'failed'
-  ) {
-    return {
-      outcome: result.outcome,
-      requestedBytes: result.requestedBytes,
-      sentBytes: result.sentBytes,
-    };
-  }
-  throw new McumgrError('unknown-outcome', 'serial write finished without a confirmed outcome');
+function fallbackError(error: unknown): McumgrError {
+  return {
+    kind: 'protocol',
+    message: error instanceof Error ? error.message : String(error ?? 'MCUmgr failed'),
+  };
 }
 
-function mapError(error: unknown): McumgrError {
-  if (error instanceof McumgrError) return error;
-  if (error instanceof SerialTransactionLeaseError) {
-    if (error.code === 'cancelled') return new McumgrError('cancelled', error.message);
-    if (error.code === 'timeout') return new McumgrError('timeout', error.message);
-    if (error.code === 'partial-write') return new McumgrError('partial-write', error.message);
-    if (error.code === 'unknown-outcome') return new McumgrError('unknown-outcome', error.message);
-    return new McumgrError('io-error', error.message);
+function prettyJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
   }
-  return new McumgrError('io-error', error instanceof Error ? error.message : 'MCUMgr failed');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 export type SessionMcumgrController = ReturnType<typeof useSessionMcumgr>;

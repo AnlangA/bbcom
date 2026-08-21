@@ -623,15 +623,11 @@ function runtimeController() {
       resetVersion: ref(0),
     },
     shell: {
-      snapshot: ref({
-        lines: [],
-        current: { id: 0, text: '', timestamp: 0 },
-        droppedLines: 0,
-        droppedBytes: 0,
-        resetVersion: 0,
-      }),
-      submitLine: vi.fn(async () => ({ outcome: 'complete', requestedBytes: 0, sentBytes: 0 })),
-      submitKey: vi.fn(async () => null),
+      replay: vi.fn(() => ''),
+      onOutput: vi.fn(() => () => undefined),
+      onReset: vi.fn(() => () => undefined),
+      handleTerminalData: vi.fn(),
+      clear: vi.fn(),
     },
     macro: {
       running: ref(false),

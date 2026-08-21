@@ -41,7 +41,7 @@ import {
   cloneMcumgrConfig,
   normalizeMcumgrConfig,
   persistableMcumgrConfig,
-} from './mcumgr';
+} from './mcumgr-config';
 
 export const SESSION_STORAGE_KEY = 'bbcom-session-snapshots';
 export const SESSION_STORAGE_VERSION = 3;

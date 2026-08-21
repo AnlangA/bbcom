@@ -25,8 +25,8 @@ typed command surfaces.
 │   useSerialConnection   serial open/listen/write/reconnect         │
 │   serial/               port lease, stop evidence, error taxonomy   │
 │   useModbusMaster       Modbus read/write/replay orchestration     │
-│   useSessionMcumgr      MCUMgr lease + SMP client                  │
-│   serial-shell          interactive console engine + session ctl   │
+│   useSessionMcumgr      MCUMgr port-yield orchestration            │
+│   serial-shell          xterm bridge session controller            │
 │   useSessionFrames      frame append/clear helpers                 │
 │   usePacket*            virtual scroll, filters, format cache      │
 │   useExport             dialog + export command routing            │
@@ -45,8 +45,7 @@ typed command surfaces.
 │                                                                    │
 │ lib/                                                               │
 │   modbus/               protocol core, batching, transport, loops  │
-│   mcumgr/               SMP/CBOR/console transport, image/FS xfer  │
-│   serial-shell/         dumb-terminal engine, encoding, newlines   │
+│   serial-shell/         terminal TX keys, encoding, newline maps   │
 │   serial-rx-queue       bounded RX buffering                       │
 │   protocol-parser       delimiter/fixed/length frame parsing       │
 │   waveform*             parsing, viewport math, canvas rendering   │
@@ -60,7 +59,7 @@ typed command surfaces.
 ┌────────────────────────────────────────────────────────────────────┐
 │ Rust backend: src-tauri/src/                                       │
 │                                                                    │
-│ commands/     ai, checksum, export/log session, window commands    │
+│ commands/     ai, checksum, export/log session, mcumgr, window     │
 │ export/       TXT/CSV/JSONL/BIN formatters                         │
 │ models/       IPC structs, AppError, single IpcError mapper        │
 │ utils/        checksum, HEX, timestamp helpers                      │
@@ -72,7 +71,7 @@ typed command surfaces.
 - **Frontend session store:** source of truth for ports, frames, parser state,
   Modbus config, MCUMgr config, serial-shell config, macros, triggers,
   highlights, AI chat state, and persisted snapshots.
-- **Frontend protocol engines:** parser, waveform, Modbus, MCUMgr, serial shell,
+- **Frontend protocol engines:** parser, waveform, Modbus, serial shell,
   triggers, and simple send/delay macros are implemented in framework-free
   TypeScript where possible so they can be unit-tested headlessly.
 - **Shared layout rules:** reusable geometry (such as sidebar bounds and
@@ -80,8 +79,9 @@ typed command surfaces.
   UI consume the same values, so persisted state, pointer resizing, and
   accessibility controls cannot drift.
 - **Rust command layer:** file dialogs, streaming export/logging, checksum
-  calculation, bounded AI network calls, plain application settings, and
-  window management.
+  calculation, bounded AI network calls, plain application settings, window
+  management, and the full MCUMgr/SMP protocol (`mcumgr-toolkit` over a
+  directly opened `serialport` handle).
 - **AI provider boundary:** role-separated messages are built locally, while a
   request-scoped `ZaiClient` owns the API secret, validated provider endpoints,
   and HTTP transport. `ChatCompletion` values contain request data only and
@@ -101,7 +101,7 @@ typed command surfaces.
 
 1. `tauri-plugin-serialplugin` delivers raw binary channel data to the resident
    session runtime.
-2. Raw-byte observers receive the exact plugin chunk first. Modbus and MCUMgr use this
+2. Raw-byte observers receive the exact plugin chunk first. Modbus uses this
    path to validate CRCs and match responses before display coalescing happens.
 3. The chunk enters `SerialRxQueue`, capped at 2 MiB/512 chunks, which records
    cumulative drops.
@@ -152,10 +152,13 @@ These are the rules most likely to protect users from subtle serial bugs:
   `writeChain`; concurrent serial writes can interleave at the driver.
 - **Modbus is half-duplex.** Keep one outstanding transaction at a time through
   `ModbusTransactionRunner` and `ModbusLoopCoordinator`.
-- **MCUMgr is a first-class serial client beside Modbus.** Protocol codecs live
-  in `src/lib/mcumgr`. Every operation acquires `SerialTransactionLease` as
-  `mcumgr-client`, writes through `lease.write`, and reads `rawBytes`. Writes
-  that have already left the host never retry.
+- **MCUMgr operations own the port exclusively (port yield).** The protocol
+  runs in Rust (`commands/mcumgr.rs` on `mcumgr-toolkit`); the OS serial handle
+  cannot be shared, so `useSessionMcumgr` cleanly closes a connected session
+  before invoking, and restores it with retries afterwards. One operation runs
+  at a time (`McumgrState` busy flag) and the toolbar connect/disconnect stays
+  locked while it runs. Files cross IPC as opaque purpose-bound grants, never
+  as paths.
 - **RX bytes reach protocol observers before display batching.** Protocol
   engines need exact chunks; UI frames may be coalesced.
 - **Frame arrays stay shallow and bounded.** Use per-session frame versions and
@@ -165,7 +168,7 @@ These are the rules most likely to protect users from subtle serial bugs:
 - **Persistence remains migration-safe.** Shape changes require an explicit
   migration and test; future schemas are never re-stamped by older builds.
 - **Hot paths stay framework-free when practical.** Queueing, formatting,
-  parsing, Modbus/MCUMgr codecs, waveform math, and export filters should remain
+  parsing, Modbus codecs, waveform math, and export filters should remain
   testable without a Tauri webview.
 
 ## Upstream Constraints
@@ -184,33 +187,23 @@ These are the rules most likely to protect users from subtle serial bugs:
 
 ## Quality Gates
 
-| Area                        | Command                  |
-| --------------------------- | ------------------------ |
-| Frontend lint               | `pnpm lint`              |
-| Formatting                  | `pnpm format:check`      |
-| Type-check + frontend build | `pnpm build`             |
-| Frontend tests              | `pnpm test:frontend`     |
-| Rust tests                  | `pnpm test:rust`         |
-| Frontend coverage           | `pnpm coverage:frontend` |
-| P0 per-domain coverage      | `pnpm coverage:p0`       |
-| Frontend benchmarks         | `pnpm bench:frontend`    |
-| Rust benchmarks             | `pnpm bench:rust`        |
-| TypeScript import cycles    | `pnpm cycles`            |
-| Fast local commit gate      | `pnpm precommit`         |
-| Full local pre-push gate    | `pnpm precommit:full`    |
+| Area                        | Command               |
+| --------------------------- | --------------------- |
+| Frontend lint               | `pnpm lint`           |
+| Formatting                  | `pnpm format:check`   |
+| Type-check + frontend build | `pnpm build`          |
+| Frontend tests              | `pnpm test:frontend`  |
+| Rust tests                  | `pnpm test:rust`      |
+| TypeScript import cycles    | `pnpm cycles`         |
+| Fast local commit gate      | `pnpm precommit`      |
+| Full local pre-push gate    | `pnpm precommit:full` |
 
 The repository's `.githooks/pre-commit` invokes the fast `pnpm precommit` gate
 (lint, formatting, architecture, build, bundle budgets), while
-`.githooks/pre-push` runs the full `pnpm precommit:full` gate — the same
-correctness boundaries plus coverage, browser-mock E2E, and the benchmark
-comparison — before commits are published. `.github/workflows/quality.yml`
-runs the full gate for every pull request, every `master` push, and every
-tagged release. The workflow runs the complete Vitest suite exactly once through V8 coverage and the complete
-Rust suite exactly once through `cargo llvm-cov`; it does not duplicate those
-tests with separate `test` jobs. Browser-mock E2E is a separate required check.
-The benchmark comparison runs only on `master` and manual workflow dispatches,
-so feature work is protected against regressions without turning byte-level or
-microbenchmark tuning into a release prerequisite.
+`.githooks/pre-push` runs the full `pnpm precommit:full` gate before commits
+are published. `.github/workflows/quality.yml` runs the correctness gate for
+every pull request, every `master` push, and every tagged release: frontend
+lint/build/tests, Rust audit/clippy/tests, and browser-mock E2E.
 
 ## Manual Verification
 
@@ -222,6 +215,10 @@ or external credential:
 - Sustained high-baud captures from a real serial source.
 - End-to-end export through native save dialogs.
 - Live Modbus RTU/PDU polling, writes, and replay against a device.
+- Interactive serial shell against a device shell (arrow keys, device-side
+  history, Ctrl+C, ANSI colors) in the xterm terminal.
+- MCUMgr against a Zephyr device: echo/image list, the one-click firmware
+  update flow, FS upload/download, and port restore after a device reset.
 - Waveform canvas rendering and parser panel interactions in the app.
 - Light/dark visual inspection.
 - Live Z.ai requests with a valid API key and network access.
@@ -244,3 +241,6 @@ reproduction steps, and the relevant log line or captured frame.
   `src-tauri/src/commands/ai/service.rs`.
 - Modbus changed: run the full Modbus frontend test set and manually test with
   a device when transport timing changed.
+- MCUMgr changed: run the Rust command tests (`pnpm test:rust`) plus the
+  `useSessionMcumgr` orchestration tests, and regenerate bindings when
+  contracts moved.

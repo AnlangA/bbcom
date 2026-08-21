@@ -22,6 +22,7 @@ pub fn run() {
         .manage(export::session::ExportSessionManager::default())
         .manage(commands::log::AutoLogSessionManager::default())
         .manage(commands::ai::request_manager::AiRequestManager::default())
+        .manage(commands::mcumgr::McumgrState::default())
         .manage(commands::shutdown::ShutdownGate::default())
         .setup(move |app| {
             let app_data_root = app.path().app_data_dir()?;
@@ -118,6 +119,14 @@ pub fn run() {
             commands::log::append_auto_log_batch,
             commands::log::begin_auto_log,
             commands::log::finish_auto_log,
+            commands::mcumgr::mcumgr_execute,
+            commands::mcumgr::mcumgr_firmware_update,
+            commands::mcumgr::mcumgr_image_upload,
+            commands::mcumgr::mcumgr_fs_upload,
+            commands::mcumgr::mcumgr_fs_download,
+            commands::mcumgr::mcumgr_cancel,
+            commands::mcumgr::mcumgr_pick_file,
+            commands::mcumgr::mcumgr_pick_save_target,
             commands::serial_drain::drain_serial_input,
             commands::shutdown::submit_shutdown_report,
             commands::shutdown::confirm_exit,

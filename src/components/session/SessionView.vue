@@ -23,6 +23,7 @@
       :sending-break="runtime.sendingBreak.value"
       :is-exporting="isExporting"
       :view-mode="viewMode"
+      :connection-locked="runtime.mcumgr.busy.value"
       @connect="connect"
       @disconnect="disconnect"
       @clear="clear"
@@ -117,10 +118,8 @@
           v-else-if="viewMode === 'shell'"
           :session-id="props.session.id"
           :config="props.session.shellConfig"
-          :snapshot="runtime.shell.snapshot.value"
           :is-connected="runtime.isConnected.value"
-          :on-submit-line="runtime.shell.submitLine"
-          :on-submit-key="runtime.shell.submitKey"
+          :shell="runtime.shell"
           @close="viewMode = 'terminal'"
         />
         <McumgrPanel

@@ -1,173 +1,183 @@
 <!--
-  Interactive serial console. Presentational plus session-document patches:
-  the resident SessionRuntime owns RX/TX and the display engine.
+  Interactive serial console rendered by xterm.js. The resident SessionRuntime
+  owns RX/TX and the replay buffer; this panel owns the terminal instance and
+  replays retained output on mount so scrollback survives remounts.
 -->
 <template>
   <div class="shell-panel">
-    <div class="shell-header">
-      <span class="shell-title">
-        <Keyboard class="icon-sm" />
-        {{ t('shell.title') }}
-      </span>
-      <AppSelect
-        :value="config.inputMode"
-        :aria-label="t('shell.mode')"
-        :options="modeOptions"
-        size="tiny"
-        style="width: var(--control-w-lg)"
-        @update:value="(value) => patch({ inputMode: value })"
-      />
-      <n-checkbox
-        :checked="config.localEcho"
-        size="small"
-        @update:checked="(value) => patch({ localEcho: value })"
-      >
-        {{ t('shell.echo') }}
-      </n-checkbox>
-      <AppSelect
-        :value="config.txNewline"
-        :aria-label="t('shell.txNewline')"
-        :options="txNewlineOptions"
-        size="tiny"
-        style="width: var(--control-w-md)"
-        @update:value="(value) => patch({ txNewline: value })"
-      />
-      <AppSelect
-        :value="config.rxNewline"
-        :aria-label="t('shell.rxNewline')"
-        :options="rxNewlineOptions"
-        size="tiny"
-        style="width: var(--control-w-md)"
-        @update:value="(value) => patch({ rxNewline: value })"
-      />
-      <AppSelect
-        :value="config.encoding"
-        :aria-label="t('shell.encoding')"
-        :options="encodingOptions"
-        size="tiny"
-        style="width: var(--control-w-md)"
-        @update:value="(value) => patch({ encoding: value })"
-      />
-      <n-checkbox
-        :checked="config.showTimestamp"
-        size="small"
-        @update:checked="(value) => patch({ showTimestamp: value })"
-      >
-        {{ t('shell.timestamp') }}
-      </n-checkbox>
-      <button
-        class="shell-close"
-        type="button"
-        :title="t('common.close')"
-        :aria-label="t('common.close')"
-        @click="emit('close')"
-      >
-        <X class="icon-sm" />
-      </button>
-    </div>
+    <div class="shell-chrome">
+      <div class="shell-brand">
+        <TerminalSquare class="icon-sm" />
+        <span class="shell-title">{{ t('shell.title') }}</span>
+        <span
+          class="shell-link"
+          :class="isConnected ? 'is-online' : 'is-offline'"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="shell-link-dot" aria-hidden="true" />
+          {{ isConnected ? t('shell.link.online') : t('shell.link.offline') }}
+        </span>
+      </div>
 
-    <div class="shell-toolbar">
-      <input
-        class="shell-search"
-        type="search"
+      <n-input
         :value="search"
+        size="tiny"
+        clearable
+        class="shell-search"
         :placeholder="t('shell.search')"
         :aria-label="t('shell.search')"
-        @input="search = ($event.target as HTMLInputElement).value"
-      />
-      <span v-if="snapshot.droppedLines > 0" class="shell-dropped">
-        {{ t('shell.dropped', { lines: snapshot.droppedLines }) }}
-      </span>
-    </div>
+        @update:value="onSearchInput"
+        @keydown="onSearchKeydown"
+      >
+        <template #prefix>
+          <Search class="icon-sm" />
+        </template>
+      </n-input>
 
-    <div
-      ref="scrollRef"
-      class="shell-body scrollbar-thin"
-      :class="{ 'is-char': config.inputMode === 'char' }"
-      tabindex="0"
-      role="log"
-      :aria-label="t('shell.title')"
-      @keydown="onSurfaceKeydown"
-    >
-      <div v-if="rows.length === 1 && !rows[0]?.text" class="shell-empty">
-        {{ t('shell.empty') }}
-      </div>
-      <div v-else class="shell-window" :style="{ height: `${virtualizer.getTotalSize()}px` }">
-        <div
-          v-for="row in virtualizer.getVirtualItems()"
-          :key="row.index"
-          class="shell-line"
-          :style="{
-            height: `${row.size}px`,
-            transform: `translateY(${row.start}px)`,
-          }"
+      <div class="shell-chrome-actions">
+        <IconActionButton :label="t('shell.searchPrevious')" @click="findPrevious">
+          <ChevronUp class="icon-sm" />
+        </IconActionButton>
+        <IconActionButton :label="t('shell.searchNext')" @click="findNext">
+          <ChevronDown class="icon-sm" />
+        </IconActionButton>
+        <IconActionButton
+          :label="t('shell.settings')"
+          toggleable
+          :active="settingsOpen"
+          @click="settingsOpen = !settingsOpen"
         >
-          <span v-if="config.showTimestamp && rows[row.index]?.timestamp" class="shell-ts">
-            {{ formatTimestamp(rows[row.index]!.timestamp) }}
-          </span>
-          <span
-            v-if="useAnsi"
-            class="shell-text"
-            v-html="formatLine(rows[row.index]?.text ?? '')"
-          ></span>
-          <span v-else class="shell-text">{{ rows[row.index]?.text ?? '' }}</span>
-        </div>
+          <Settings2 class="icon-sm" />
+        </IconActionButton>
+        <IconActionButton :label="t('shell.clear')" @click="clearTerminal">
+          <Eraser class="icon-sm" />
+        </IconActionButton>
+        <IconActionButton :label="t('common.close')" @click="emit('close')">
+          <X class="icon-sm" />
+        </IconActionButton>
       </div>
     </div>
 
-    <form v-if="config.inputMode === 'line'" class="shell-input-row" @submit.prevent="sendLine">
-      <input
-        v-model="draft"
-        class="shell-input"
-        type="text"
-        :disabled="!isConnected"
-        :placeholder="t('shell.input')"
-        :aria-label="t('shell.input')"
-        autocomplete="off"
-        @keydown="onLineKeydown"
-      />
-      <n-button type="primary" size="small" :disabled="!isConnected" attr-type="submit">
-        {{ t('shell.send') }}
-      </n-button>
-    </form>
-    <div v-else class="shell-char-hint">{{ t('shell.charHint') }}</div>
+    <Transition name="shell-settings">
+      <div v-if="settingsOpen" class="shell-settings">
+        <n-checkbox
+          :checked="config.localEcho"
+          size="small"
+          @update:checked="(value) => patch({ localEcho: value })"
+        >
+          {{ t('shell.echo') }}
+        </n-checkbox>
+
+        <label class="shell-field">
+          <span class="shell-field-label">{{ t('shell.txNewline') }}</span>
+          <AppSelect
+            :value="config.txNewline"
+            :aria-label="t('shell.txNewline')"
+            :options="txNewlineOptions"
+            size="tiny"
+            style="width: var(--control-w-md)"
+            @update:value="(value) => patch({ txNewline: value })"
+          />
+        </label>
+
+        <label class="shell-field">
+          <span class="shell-field-label">{{ t('shell.rxNewline') }}</span>
+          <AppSelect
+            :value="config.rxNewline"
+            :aria-label="t('shell.rxNewline')"
+            :options="rxNewlineOptions"
+            size="tiny"
+            style="width: var(--control-w-md)"
+            @update:value="(value) => patch({ rxNewline: value })"
+          />
+        </label>
+
+        <label class="shell-field">
+          <span class="shell-field-label">{{ t('shell.encoding') }}</span>
+          <AppSelect
+            :value="config.encoding"
+            :aria-label="t('shell.encoding')"
+            :options="encodingOptions"
+            size="tiny"
+            style="width: var(--control-w-sm)"
+            @update:value="(value) => patch({ encoding: value })"
+          />
+        </label>
+
+        <label class="shell-field">
+          <span class="shell-field-label">{{ t('shell.backspace') }}</span>
+          <AppSelect
+            :value="config.backspace"
+            :aria-label="t('shell.backspace')"
+            :options="backspaceOptions"
+            size="tiny"
+            style="width: var(--control-w-sm)"
+            @update:value="(value) => patch({ backspace: value })"
+          />
+        </label>
+
+        <span class="shell-key-hint">{{ t('shell.copyHint') }}</span>
+      </div>
+    </Transition>
+
+    <div class="shell-stage">
+      <div
+        ref="terminalHost"
+        class="shell-body"
+        :class="{ 'is-disconnected': !isConnected }"
+        :aria-label="t('shell.title')"
+        role="log"
+      ></div>
+      <div v-if="!isConnected" class="shell-overlay" role="status" aria-live="polite">
+        <span class="shell-overlay-pill">{{ t('shell.disconnected') }}</span>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, inject, nextTick, ref, watch } from 'vue';
-import { NButton, NCheckbox } from 'naive-ui';
-import { useVirtualizer } from '@tanstack/vue-virtual';
-import { AnsiUp } from 'ansi_up';
-import { Keyboard, X } from '@lucide/vue';
+import {
+  computed,
+  inject,
+  nextTick,
+  onActivated,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue';
+import { NCheckbox, NInput } from 'naive-ui';
+import { Terminal, type ITheme } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon } from '@xterm/addon-search';
+import '@xterm/xterm/css/xterm.css';
+import { ChevronDown, ChevronUp, Eraser, Search, Settings2, TerminalSquare, X } from '@lucide/vue';
 import AppSelect from '../ui/AppSelect.vue';
+import IconActionButton from '../ui/IconActionButton.vue';
 import { useSessionDocument } from '../../features/sessions';
 import { SESSION_UI_STATE_KEY } from '../../features/sessions/runtime/session-ui-state';
+import type { SessionRuntimeShellController } from '../../features/sessions/runtime/session-runtime-controller';
 import { useAppStore } from '../../stores/app';
-import { formatTimestamp } from '../../lib/format';
 import { t } from '../../lib/i18n';
-import { serialShellKeyFromKeyboard } from '../../lib/serial-shell';
-import type { SerialShellConfig, SerialShellLine, SerialShellSnapshot } from '../../types';
-import type { SerialSendResult } from '../../types/serial';
-import type { SerialShellKey } from '../../lib/serial-shell';
+import type { SerialShellConfig } from '../../types';
 
 const props = defineProps<{
   sessionId: string;
   config: SerialShellConfig;
-  snapshot: SerialShellSnapshot;
   isConnected: boolean;
-  onSubmitLine: (text: string) => Promise<SerialSendResult>;
-  onSubmitKey: (key: SerialShellKey) => Promise<SerialSendResult | null>;
+  shell: SessionRuntimeShellController;
 }>();
 
 const emit = defineEmits<{
   close: [];
 }>();
 
-const document = useSessionDocument(props.sessionId);
+const document_ = useSessionDocument(props.sessionId);
 const appStore = useAppStore();
 const retainedUiState = inject(SESSION_UI_STATE_KEY, null);
 const localSearch = ref('');
+const settingsOpen = ref(false);
 const search = computed({
   get: () => retainedUiState?.shellSearch.value ?? localSearch.value,
   set: (value) => {
@@ -175,16 +185,15 @@ const search = computed({
     else localSearch.value = value;
   },
 });
-const draft = ref('');
-const historyIndex = ref(-1);
-const scrollRef = ref<HTMLElement | null>(null);
-const ansiUp = new AnsiUp();
-ansiUp.use_classes = true;
+const terminalHost = ref<HTMLElement | null>(null);
 
-const modeOptions = [
-  { label: t('shell.mode.line'), value: 'line' as const },
-  { label: t('shell.mode.char'), value: 'char' as const },
-];
+let terminal: Terminal | null = null;
+let fitAddon: FitAddon | null = null;
+let searchAddon: SearchAddon | null = null;
+let resizeObserver: ResizeObserver | null = null;
+let stopOutput: (() => void) | null = null;
+let stopReset: (() => void) | null = null;
+
 const newlineChoices = [
   { label: t('shell.newline.none'), value: 'none' as const },
   { label: t('shell.newline.cr'), value: 'cr' as const },
@@ -193,83 +202,187 @@ const newlineChoices = [
 ];
 const txNewlineOptions = newlineChoices;
 const rxNewlineOptions = [
-  ...newlineChoices,
   { label: t('shell.newline.auto'), value: 'auto' as const },
+  ...newlineChoices,
 ];
 const encodingOptions = [
   { label: 'UTF-8', value: 'utf-8' as const },
   { label: 'GBK', value: 'gbk' as const },
   { label: 'Latin-1', value: 'latin1' as const },
 ];
+const backspaceOptions = [
+  { label: t('shell.backspace.bs'), value: 'bs' as const },
+  { label: t('shell.backspace.del'), value: 'del' as const },
+];
 
-const useAnsi = computed(() => appStore.ansiColorEnabled);
-const rows = computed<readonly SerialShellLine[]>(() => {
-  const all = [...props.snapshot.lines, props.snapshot.current];
-  const query = search.value.trim().toLowerCase();
-  if (!query) return all;
-  return all.filter((line) => line.text.toLowerCase().includes(query));
+const DARK_ANSI: Partial<ITheme> = {
+  black: '#1a1f26',
+  red: '#ff6b7a',
+  green: '#3ddc97',
+  yellow: '#ffbf5f',
+  blue: '#5aa9ff',
+  magenta: '#d670d6',
+  cyan: '#2dd4bf',
+  white: '#c8d0d8',
+  brightBlack: '#5f6974',
+  brightRed: '#ff8a96',
+  brightGreen: '#5ee6aa',
+  brightYellow: '#ffd28a',
+  brightBlue: '#7cb9ff',
+  brightMagenta: '#e39fe3',
+  brightCyan: '#5ee8d8',
+  brightWhite: '#eef3f7',
+};
+const LIGHT_ANSI: Partial<ITheme> = {
+  black: '#0f1620',
+  red: '#c22f3e',
+  green: '#0e8f5b',
+  yellow: '#9a6a00',
+  blue: '#0b62d6',
+  magenta: '#a33ba3',
+  cyan: '#0d8f83',
+  white: '#5c6773',
+  brightBlack: '#8a96a3',
+  brightRed: '#e04553',
+  brightGreen: '#12aa6e',
+  brightYellow: '#b57f00',
+  brightBlue: '#2f7fe0',
+  brightMagenta: '#c057c0',
+  brightCyan: '#12a99a',
+  brightWhite: '#303a45',
+};
+
+function cssVariable(name: string): string {
+  if (typeof window === 'undefined') return '';
+  return getComputedStyle(window.document.documentElement).getPropertyValue(name).trim();
+}
+
+function terminalTheme(): ITheme {
+  const dark = appStore.theme === 'dark';
+  return {
+    background: cssVariable('--bg-inset') || (dark ? '#0a0c0f' : '#e4e9ee'),
+    foreground: cssVariable('--text-primary') || (dark ? '#eef3f7' : '#0f1620'),
+    cursor: cssVariable('--color-primary') || '#3ddc97',
+    cursorAccent: cssVariable('--bg-inset') || (dark ? '#0a0c0f' : '#e4e9ee'),
+    selectionBackground: 'rgba(90, 169, 255, 0.35)',
+    ...(dark ? DARK_ANSI : LIGHT_ANSI),
+  };
+}
+
+function safeFit(): void {
+  const host = terminalHost.value;
+  if (!fitAddon || !host || host.clientWidth === 0 || host.clientHeight === 0) return;
+  fitAddon.fit();
+}
+
+function handleCustomKey(event: KeyboardEvent): boolean {
+  if (event.type !== 'keydown') return true;
+  if (event.ctrlKey && event.shiftKey && event.code === 'KeyC') {
+    const selection = terminal?.getSelection();
+    if (selection) void navigator.clipboard.writeText(selection);
+    return false;
+  }
+  if (event.ctrlKey && event.shiftKey && event.code === 'KeyV') {
+    void navigator.clipboard.readText().then((text) => {
+      if (text) terminal?.paste(text);
+    });
+    return false;
+  }
+  return true;
+}
+
+onMounted(() => {
+  const host = terminalHost.value;
+  if (!host) return;
+  const term = new Terminal({
+    cursorBlink: true,
+    scrollback: 5_000,
+    fontFamily: cssVariable('--font-mono') || 'monospace',
+    fontSize: 13,
+    lineHeight: 1.35,
+    theme: terminalTheme(),
+  });
+  fitAddon = new FitAddon();
+  searchAddon = new SearchAddon();
+  term.loadAddon(fitAddon);
+  term.loadAddon(searchAddon);
+  term.open(host);
+  term.attachCustomKeyEventHandler(handleCustomKey);
+  terminal = term;
+  safeFit();
+  const replay = props.shell.replay();
+  if (replay.length > 0) term.write(replay, () => term.scrollToBottom());
+  stopOutput = props.shell.onOutput((chunk) => term.write(chunk));
+  stopReset = props.shell.onReset(() => term.reset());
+  term.onData((data) => {
+    if (props.isConnected) props.shell.handleTerminalData(data);
+  });
+  resizeObserver = new ResizeObserver(() => safeFit());
+  resizeObserver.observe(host);
+  term.focus();
 });
 
-const virtualizer = useVirtualizer(
-  computed(() => ({
-    count: rows.value.length,
-    getScrollElement: () => scrollRef.value,
-    estimateSize: () => 18,
-    overscan: 12,
-  })),
-);
+onActivated(() => {
+  safeFit();
+  terminal?.scrollToBottom();
+  terminal?.focus();
+});
 
-function patch(next: Partial<SerialShellConfig>): void {
-  document.setShellConfig(props.sessionId, next);
-}
-
-function formatLine(text: string): string {
-  return ansiUp.ansi_to_html(text);
-}
-
-async function sendLine(): Promise<void> {
-  if (!props.isConnected) return;
-  const text = draft.value;
-  draft.value = '';
-  historyIndex.value = -1;
-  await props.onSubmitLine(text);
-}
-
-function onLineKeydown(event: KeyboardEvent): void {
-  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-  const history = props.config.history;
-  if (history.length === 0) return;
-  event.preventDefault();
-  if (event.key === 'ArrowUp') {
-    historyIndex.value =
-      historyIndex.value < 0 ? history.length - 1 : Math.max(0, historyIndex.value - 1);
-  } else if (historyIndex.value >= 0) {
-    historyIndex.value = historyIndex.value >= history.length - 1 ? -1 : historyIndex.value + 1;
-  }
-  draft.value = historyIndex.value < 0 ? '' : (history[historyIndex.value] ?? '');
-}
-
-function onSurfaceKeydown(event: KeyboardEvent): void {
-  if (props.config.inputMode !== 'char' || !props.isConnected) return;
-  const key = serialShellKeyFromKeyboard(event);
-  if (!key) return;
-  event.preventDefault();
-  void props.onSubmitKey(key);
-}
+onBeforeUnmount(() => {
+  stopOutput?.();
+  stopOutput = null;
+  stopReset?.();
+  stopReset = null;
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+  searchAddon = null;
+  fitAddon = null;
+  terminal?.dispose();
+  terminal = null;
+});
 
 watch(
-  () =>
-    [
-      props.snapshot.resetVersion,
-      props.snapshot.lines.length,
-      props.snapshot.current.text,
-    ] as const,
+  () => appStore.theme,
   async () => {
-    if (!appStore.autoScroll) return;
     await nextTick();
-    virtualizer.value.scrollToIndex(Math.max(0, rows.value.length - 1), { align: 'end' });
+    if (terminal) terminal.options.theme = terminalTheme();
   },
 );
+
+watch(settingsOpen, async () => {
+  await nextTick();
+  safeFit();
+});
+
+function patch(next: Partial<SerialShellConfig>): void {
+  document_.setShellConfig(props.sessionId, next);
+}
+
+function clearTerminal(): void {
+  props.shell.clear();
+  terminal?.focus();
+}
+
+function onSearchInput(value: string | null): void {
+  const next = value ?? '';
+  search.value = next;
+  if (next) searchAddon?.findNext(next, { incremental: true });
+}
+
+function onSearchKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  if (event.shiftKey) findPrevious();
+  else findNext();
+}
+
+function findNext(): void {
+  if (search.value) searchAddon?.findNext(search.value);
+}
+
+function findPrevious(): void {
+  if (search.value) searchAddon?.findPrevious(search.value);
+}
 </script>
 
 <style scoped>
@@ -279,123 +392,189 @@ watch(
   background: var(--bg-inset);
   flex: 1;
   min-height: 0;
+  height: 100%;
 }
 
-.shell-header,
-.shell-toolbar,
-.shell-input-row,
-.shell-char-hint {
+.shell-chrome {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: 4px 10px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-secondary);
-  flex-wrap: wrap;
+  background: linear-gradient(180deg, var(--surface-lift), transparent), var(--bg-secondary);
+  box-shadow: var(--shadow-inset);
   flex-shrink: 0;
 }
 
+.shell-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
 .shell-title {
+  text-transform: uppercase;
+  letter-spacing: 0.55px;
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.shell-link {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-2xs);
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-inset);
 }
 
-.shell-close {
-  width: 18px;
-  height: 18px;
-  display: grid;
-  place-items: center;
-  background: transparent;
-  border: 0;
-  color: var(--text-dim);
-  cursor: pointer;
-  padding: 0;
-  border-radius: var(--radius-sm);
-  margin-left: auto;
+.shell-link.is-online {
+  color: var(--color-primary);
+  border-color: var(--color-primary-muted);
+  background: var(--color-primary-subtle);
 }
 
-.shell-close:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
+.shell-link.is-offline {
+  color: var(--accent-amber);
+  border-color: var(--accent-amber-border);
+  background: var(--accent-amber-subtle);
+}
+
+.shell-link-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 0 currentColor;
+}
+
+.shell-link.is-online .shell-link-dot {
+  animation: shell-pulse 1.8s ease-out infinite;
 }
 
 .shell-search {
   flex: 1;
-  min-width: 160px;
-  background: var(--bg-inset);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-primary);
-  border-radius: var(--radius-sm);
-  padding: 2px 8px;
-  font-size: var(--font-size-sm);
+  min-width: 140px;
+  max-width: 360px;
 }
 
-.shell-dropped {
-  font-size: var(--font-size-sm);
+.shell-chrome-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.shell-settings {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-tertiary);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.shell-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shell-field-label {
+  font-size: var(--font-size-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   color: var(--text-dim);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.shell-key-hint {
+  margin-left: auto;
+  font-size: var(--font-size-2xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.shell-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .shell-body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
-  padding: 6px 10px;
+  overflow: hidden;
+  padding: 8px 8px 8px 10px;
+  transition: opacity var(--transition-normal);
 }
 
-.shell-body.is-char:focus {
-  outline: 1px solid var(--border-focus);
+.shell-body.is-disconnected {
+  opacity: 0.42;
+  filter: saturate(0.7);
 }
 
-.shell-empty,
-.shell-char-hint {
-  color: var(--text-dim);
-  font-size: var(--font-size-sm);
+.shell-body :deep(.xterm) {
+  height: 100%;
 }
 
-.shell-window {
-  position: relative;
-  width: 100%;
+.shell-body :deep(.xterm-viewport) {
+  overflow-y: auto;
 }
 
-.shell-line {
+.shell-overlay {
   position: absolute;
-  left: 0;
-  right: 0;
+  inset: auto 0 12px 0;
   display: flex;
-  gap: var(--space-sm);
-  white-space: pre-wrap;
-  word-break: break-all;
+  justify-content: center;
+  pointer-events: none;
 }
 
-.shell-ts {
-  color: var(--text-dim);
-  flex-shrink: 0;
-}
-
-.shell-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.shell-input {
-  flex: 1;
-  min-width: 0;
-  background: var(--bg-inset);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-primary);
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
+.shell-overlay-pill {
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--accent-amber-border);
+  background: color-mix(in srgb, var(--bg-elevated) 88%, var(--accent-amber-subtle));
+  color: var(--accent-amber);
+  font-size: var(--font-size-sm);
   font-family: var(--font-mono);
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(8px);
 }
 
-.shell-char-hint {
-  border-bottom: 0;
-  border-top: 1px solid var(--border-subtle);
+.shell-settings-enter-active,
+.shell-settings-leave-active {
+  transition:
+    opacity var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.shell-settings-enter-from,
+.shell-settings-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+@keyframes shell-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
 }
 </style>

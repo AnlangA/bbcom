@@ -172,27 +172,24 @@ chmod +x scripts/dev.sh
 
 ## 脚本
 
-| 命令                        | 说明                                |
-| --------------------------- | ----------------------------------- |
-| `pnpm dev`                  | 启动 Vite 开发服务器                |
-| `pnpm build`                | Vue 类型检查并构建前端              |
-| `pnpm preview`              | 预览前端构建产物                    |
-| `pnpm tauri:dev`            | 以 HMR 方式运行 Tauri 桌面应用      |
-| `pnpm tauri:build`          | 构建桌面应用包                      |
-| `pnpm format`               | 格式化前端与 Rust 代码              |
-| `pnpm format:check`         | 检查前端与 Rust 格式                |
-| `pnpm lint`                 | 对 `src/` 运行 ESLint               |
-| `pnpm test:frontend`        | 运行前端单元测试                    |
-| `pnpm test:rust`            | 运行 Rust 单元测试                  |
-| `pnpm test`                 | 运行前端与 Rust 测试                |
-| `pnpm coverage:frontend`    | 运行 Vitest V8 全局覆盖率门禁       |
-| `pnpm coverage:p0`          | 运行 P0 数据路径的严格覆盖率门禁    |
-| `pnpm bench:frontend`       | 运行前端热路径基准                  |
-| `pnpm bench:frontend:write` | 刷新本机前端基准基线                |
-| `pnpm bench:rust`           | 运行 Rust criterion 基准            |
-| `pnpm cycles`               | 检查 TypeScript 导入环              |
-| `pnpm check`                | 运行 lint、格式检查、构建和单元测试 |
-| `pnpm precommit`            | 运行提交前必须通过的完整本地门禁    |
+| 命令                 | 说明                                  |
+| -------------------- | ------------------------------------- |
+| `pnpm dev`           | 启动 Vite 开发服务器                  |
+| `pnpm build`         | Vue 类型检查并构建前端                |
+| `pnpm preview`       | 预览前端构建产物                      |
+| `pnpm tauri:dev`     | 以 HMR 方式运行 Tauri 桌面应用        |
+| `pnpm tauri:build`   | 构建桌面应用包                        |
+| `pnpm format`        | 格式化前端与 Rust 代码                |
+| `pnpm format:check`  | 检查前端与 Rust 格式                  |
+| `pnpm lint`          | 对 `src/` 运行 ESLint                 |
+| `pnpm test:frontend` | 运行前端单元测试                      |
+| `pnpm test:rust`     | 运行 Rust 单元测试                    |
+| `pnpm test`          | 运行前端与 Rust 测试                  |
+| `pnpm cycles`        | 检查 TypeScript 导入环                |
+| `pnpm check`         | 运行 lint、格式检查、构建和单元测试   |
+| `pnpm precommit`     | 运行提交前必须通过的完整本地门禁      |
+| `pnpm version:sync`  | 以 package.json 同步 Cargo/Tauri 版本 |
+| `pnpm version:check` | 校验 package/Cargo/Tauri 版本一致     |
 
 ## 项目地图
 

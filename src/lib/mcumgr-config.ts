@@ -1,29 +1,40 @@
-import type { McumgrClientConfig, McumgrSmpVersion, McumgrTransportMode } from '../../types/mcumgr';
+/**
+ * MCUMgr per-session configuration helpers. The protocol itself runs in the
+ * Rust command layer (`mcumgr-toolkit`); the frontend only persists transport
+ * tuning plus the shell history and forwards it with each invoke.
+ */
+
+import type { McumgrClientConfig } from '../types/mcumgr';
 
 export const MCUMGR_SHELL_HISTORY_LIMIT = 50;
 
 export const DEFAULT_MCUMGR_CONFIG: McumgrClientConfig = {
-  transport: 'console',
-  lineLength: 127,
-  mtu: 512,
+  autoFrameSize: true,
+  frameSize: 512,
   timeoutMs: 10_000,
-  firstChunkTimeoutMs: 60_000,
-  subsequentTimeoutMs: 3_000,
-  retries: 1,
-  smpVersion: 2,
+  retries: 3,
   shellHistory: [],
 };
 
 export const MCUMGR_CONFIG_KEYS = [
+  'autoFrameSize',
+  'frameSize',
+  'timeoutMs',
+  'retries',
+  'shellHistory',
+] as const;
+
+/**
+ * Legacy keys from the removed TypeScript SMP stack. Persisted sessions may
+ * still carry them; hydration tolerates and drops them.
+ */
+export const MCUMGR_LEGACY_CONFIG_KEYS = [
   'transport',
   'lineLength',
   'mtu',
-  'timeoutMs',
+  'smpVersion',
   'firstChunkTimeoutMs',
   'subsequentTimeoutMs',
-  'retries',
-  'smpVersion',
-  'shellHistory',
 ] as const;
 
 export function cloneMcumgrConfig(config: McumgrClientConfig): McumgrClientConfig {
@@ -35,25 +46,14 @@ export function cloneMcumgrConfig(config: McumgrClientConfig): McumgrClientConfi
 
 export function normalizeMcumgrConfig(raw: unknown): McumgrClientConfig {
   const source = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  // The legacy `mtu` field was the SMP body budget (default 512); it seeds the
+  // manual frame size so tuned setups keep their value across the migration.
+  const frameSeed = source.frameSize ?? source.mtu;
   return {
-    transport: normalizeTransport(source.transport),
-    lineLength: clampInt(source.lineLength, 16, 8192, DEFAULT_MCUMGR_CONFIG.lineLength),
-    mtu: clampInt(source.mtu, 64, 65_535, DEFAULT_MCUMGR_CONFIG.mtu),
+    autoFrameSize: typeof source.autoFrameSize === 'boolean' ? source.autoFrameSize : true,
+    frameSize: clampInt(frameSeed, 64, 65_535, DEFAULT_MCUMGR_CONFIG.frameSize),
     timeoutMs: clampInt(source.timeoutMs, 100, 120_000, DEFAULT_MCUMGR_CONFIG.timeoutMs),
-    firstChunkTimeoutMs: clampInt(
-      source.firstChunkTimeoutMs,
-      100,
-      180_000,
-      DEFAULT_MCUMGR_CONFIG.firstChunkTimeoutMs,
-    ),
-    subsequentTimeoutMs: clampInt(
-      source.subsequentTimeoutMs,
-      100,
-      60_000,
-      DEFAULT_MCUMGR_CONFIG.subsequentTimeoutMs,
-    ),
-    retries: clampInt(source.retries, 0, 5, DEFAULT_MCUMGR_CONFIG.retries),
-    smpVersion: normalizeVersion(source.smpVersion),
+    retries: clampInt(source.retries, 0, 16, DEFAULT_MCUMGR_CONFIG.retries),
     shellHistory: normalizeHistory(source.shellHistory),
   };
 }
@@ -70,18 +70,12 @@ export function validateMcumgrConfig(config: McumgrClientConfig, field: string):
   for (const key of MCUMGR_CONFIG_KEYS) {
     if (!(key in config)) throw new TypeError(`${field}.${key} is required`);
   }
-  if (normalized.transport !== config.transport) throw new TypeError(`${field}.transport`);
-  if (normalized.lineLength !== config.lineLength) throw new TypeError(`${field}.lineLength`);
-  if (normalized.mtu !== config.mtu) throw new TypeError(`${field}.mtu`);
+  if (normalized.autoFrameSize !== config.autoFrameSize) {
+    throw new TypeError(`${field}.autoFrameSize`);
+  }
+  if (normalized.frameSize !== config.frameSize) throw new TypeError(`${field}.frameSize`);
   if (normalized.timeoutMs !== config.timeoutMs) throw new TypeError(`${field}.timeoutMs`);
-  if (normalized.firstChunkTimeoutMs !== config.firstChunkTimeoutMs) {
-    throw new TypeError(`${field}.firstChunkTimeoutMs`);
-  }
-  if (normalized.subsequentTimeoutMs !== config.subsequentTimeoutMs) {
-    throw new TypeError(`${field}.subsequentTimeoutMs`);
-  }
   if (normalized.retries !== config.retries) throw new TypeError(`${field}.retries`);
-  if (normalized.smpVersion !== config.smpVersion) throw new TypeError(`${field}.smpVersion`);
 }
 
 export function appendShellHistory(history: readonly string[], command: string): string[] {
@@ -90,14 +84,6 @@ export function appendShellHistory(history: readonly string[], command: string):
   const next = history.filter((item) => item !== trimmed);
   next.push(trimmed);
   return next.slice(-MCUMGR_SHELL_HISTORY_LIMIT);
-}
-
-function normalizeTransport(raw: unknown): McumgrTransportMode {
-  return raw === 'raw-uart' ? 'raw-uart' : 'console';
-}
-
-function normalizeVersion(raw: unknown): McumgrSmpVersion {
-  return raw === 1 ? 1 : 2;
 }
 
 function normalizeHistory(raw: unknown): string[] {

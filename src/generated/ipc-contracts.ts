@@ -91,6 +91,74 @@ export type OperationRecord = { operationId: string, kind: OperationKind, status
 
 export type CancelOperationRequest = { operationId: string, };
 
+export type McumgrPortRequest = {
+/**
+ * Native port path exactly as enumerated by the serial plugin.
+ */
+path: string, baudRate: number,
+/**
+ * Per-request response timeout in milliseconds.
+ */
+timeoutMs: number,
+/**
+ * Extra read-only attempts after the first try.
+ */
+retries: number,
+/**
+ * Negotiate the SMP frame size from the device's reported buffer sizes.
+ */
+autoFrameSize: boolean,
+/**
+ * Manual SMP frame size used when auto negotiation is off or fails.
+ */
+frameSize: number, };
+
+export type McumgrOp = { "kind": "os-echo", message: string, } | { "kind": "os-tasks" } | { "kind": "os-memory-pools" } | { "kind": "os-datetime" } | { "kind": "os-info", format: string | null, } | { "kind": "os-params" } | { "kind": "os-bootloader-info" } | { "kind": "os-reset", force: boolean, } | { "kind": "image-state" } | { "kind": "image-test", hashHex: string, } | { "kind": "image-confirm", hashHex: string | null, } | { "kind": "image-erase", slot: number | null, } | { "kind": "image-slot-info" } | { "kind": "shell", line: string, } | { "kind": "fs-status", path: string, } | { "kind": "fs-hash", path: string, } | { "kind": "fs-close" } | { "kind": "settings-read", name: string, } | { "kind": "settings-write", name: string, valueB64: string, } | { "kind": "settings-delete", name: string, } | { "kind": "settings-commit" } | { "kind": "settings-load" } | { "kind": "settings-save" } | { "kind": "stats-list" } | { "kind": "stats-show", name: string, } | { "kind": "enum-count" } | { "kind": "enum-list" } | { "kind": "enum-details" } | { "kind": "zephyr-erase-storage" } | { "kind": "raw", group: number, command: number, write: boolean,
+/**
+ * JSON object encoded to CBOR as the request payload.
+ */
+payloadJson: string | null,
+/**
+ * Raw CBOR payload bytes; wins over `payloadJson` when both are set.
+ */
+payloadB64: string | null, };
+
+export type McumgrExecuteRequest = { port: McumgrPortRequest, op: McumgrOp, };
+
+export type McumgrCommandResult = { resultJson: string, };
+
+export type McumgrErrorKind = "busy" | "cancelled" | "timeout" | "port" | "device" | "protocol" | "invalid-input" | "io";
+
+export type McumgrError = { kind: McumgrErrorKind, message: string, rc?: number, group?: number, };
+
+export type McumgrPhase = "detecting-bootloader" | "bootloader-found" | "parsing-image" | "querying-state" | "update-info" | "uploading" | "activating" | "rebooting" | "downloading";
+
+export type McumgrProgress = { phase: McumgrPhase,
+/**
+ * Human-readable phase detail (bootloader name, version transition).
+ */
+detail?: string, offset: number, total: number, };
+
+export type McumgrFilePurpose = "firmware" | "fs-upload";
+
+export type McumgrPickFileRequest = { purpose: McumgrFilePurpose, };
+
+export type McumgrFilePick = { token: string, displayName: string, sizeBytes: number, };
+
+export type McumgrPickSaveRequest = { suggestedName: string, };
+
+export type McumgrSavePick = { token: string, displayName: string, };
+
+export type McumgrFirmwareUpdateRequest = { port: McumgrPortRequest, fileToken: string, skipReboot: boolean, forceConfirm: boolean, upgradeOnly: boolean, };
+
+export type McumgrImageUploadRequest = { port: McumgrPortRequest, fileToken: string, image?: number, upgradeOnly: boolean, };
+
+export type McumgrFsUploadRequest = { port: McumgrPortRequest, fileToken: string, remotePath: string, };
+
+export type McumgrFsDownloadRequest = { port: McumgrPortRequest, remotePath: string, saveToken: string, };
+
+export type McumgrFsDownloadResult = { bytes: number, displayName: string, };
+
 export type SerialSendOutcome = "complete" | "partial" | "failed" | "cancelled";
 
 export type SerialSendResult = { outcome: SerialSendOutcome, requestedBytes: number, sentBytes: number, error?: IpcError, };

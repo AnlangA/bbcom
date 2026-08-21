@@ -104,15 +104,18 @@ export function validateModbusConfig(
 }
 
 export const SERIAL_SHELL_CONFIG_KEYS = [
-  'inputMode',
   'localEcho',
   'txNewline',
   'rxNewline',
   'encoding',
   'backspace',
-  'showTimestamp',
-  'history',
 ] as const;
+
+/**
+ * Fields written by the pre-terminal shell (input box + line history). Old
+ * snapshots still carry them; hydration tolerates and drops them.
+ */
+export const SERIAL_SHELL_LEGACY_CONFIG_KEYS = ['inputMode', 'showTimestamp', 'history'] as const;
 
 export function validateSerialShellConfig(value: SerialShellConfig, field: string): void;
 export function validateSerialShellConfig(value: Record<string, unknown>, field: string): void;
@@ -120,9 +123,6 @@ export function validateSerialShellConfig(
   value: SerialShellConfig | Record<string, unknown>,
   field: string,
 ): void {
-  if (value.inputMode !== 'line' && value.inputMode !== 'char') {
-    throw new WorkspaceAdapterValidationError(`${field}.inputMode`);
-  }
   expectBoolean(value.localEcho, `${field}.localEcho`);
   if (
     value.txNewline !== 'none' &&
@@ -146,10 +146,6 @@ export function validateSerialShellConfig(
   }
   if (value.backspace !== 'bs' && value.backspace !== 'del') {
     throw new WorkspaceAdapterValidationError(`${field}.backspace`);
-  }
-  expectBoolean(value.showTimestamp, `${field}.showTimestamp`);
-  if (!Array.isArray(value.history) || value.history.some((entry) => typeof entry !== 'string')) {
-    throw new WorkspaceAdapterValidationError(`${field}.history`);
   }
 }
 

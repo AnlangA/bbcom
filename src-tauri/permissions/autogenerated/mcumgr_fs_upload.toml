@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mcumgr-fs-upload"
+description = "Enables the mcumgr_fs_upload command without any pre-configured scope."
+commands.allow = ["mcumgr_fs_upload"]
+
+[[permission]]
+identifier = "deny-mcumgr-fs-upload"
+description = "Denies the mcumgr_fs_upload command without any pre-configured scope."
+commands.deny = ["mcumgr_fs_upload"]

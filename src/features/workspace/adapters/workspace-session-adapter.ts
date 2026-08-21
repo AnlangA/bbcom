@@ -31,7 +31,7 @@ import {
   normalizeMcumgrConfig,
   persistableMcumgrConfig,
   validateMcumgrConfig,
-} from '../../../lib/mcumgr';
+} from '../../../lib/mcumgr-config';
 import type { SerialSession, SessionWaveformFrameCursor } from '../../../types';
 import {
   WorkspaceAdapterLimitError,
@@ -54,6 +54,7 @@ import {
 import {
   WORKSPACE_SESSION_PROJECTION_VERSION,
   SERIAL_SHELL_CONFIG_KEYS,
+  SERIAL_SHELL_LEGACY_CONFIG_KEYS,
   assertExactKeys,
   assertLimit,
   assertMutationSize,
@@ -610,7 +611,12 @@ function hydrateShell(value: Record<string, unknown>): SerialSession['shellConfi
   assertExactKeys(value, ['schemaVersion', 'shell'], 'sendPreferences');
   expectVersion(value.schemaVersion, 'sendPreferences.schemaVersion');
   if (!isRecord(value.shell)) throw new WorkspaceAdapterValidationError('sendPreferences.shell');
-  assertExactKeys(value.shell, SERIAL_SHELL_CONFIG_KEYS, 'sendPreferences.shell');
+  // Pre-terminal snapshots persisted extra fields; tolerate and drop them.
+  assertExactKeys(
+    value.shell,
+    [...SERIAL_SHELL_CONFIG_KEYS, ...SERIAL_SHELL_LEGACY_CONFIG_KEYS],
+    'sendPreferences.shell',
+  );
   validateSerialShellConfig(value.shell, 'sendPreferences.shell');
   return normalizeSerialShellConfig(value.shell);
 }

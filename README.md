@@ -183,27 +183,24 @@ chmod +x scripts/dev.sh
 
 ## Scripts
 
-| Command                     | Description                                   |
-| --------------------------- | --------------------------------------------- |
-| `pnpm dev`                  | Start the Vite dev server                     |
-| `pnpm build`                | Type-check the Vue app and build the frontend |
-| `pnpm preview`              | Preview the frontend build                    |
-| `pnpm tauri:dev`            | Run the Tauri desktop app with frontend HMR   |
-| `pnpm tauri:build`          | Build the desktop application bundle          |
-| `pnpm format`               | Format frontend and Rust code                 |
-| `pnpm format:check`         | Check frontend and Rust formatting            |
-| `pnpm lint`                 | Run ESLint on `src/`                          |
-| `pnpm test:frontend`        | Run frontend unit tests                       |
-| `pnpm test:rust`            | Run Rust unit tests                           |
-| `pnpm test`                 | Run frontend and Rust tests                   |
-| `pnpm coverage:frontend`    | Run the Vitest V8 global coverage gate        |
-| `pnpm coverage:p0`          | Run strict coverage gates for P0 data paths   |
-| `pnpm bench:frontend`       | Run frontend hot-path benchmarks              |
-| `pnpm bench:frontend:write` | Refresh the local frontend benchmark baseline |
-| `pnpm bench:rust`           | Run Rust criterion benchmarks                 |
-| `pnpm cycles`               | Fail on TypeScript import cycles              |
-| `pnpm check`                | Run lint, format check, build, and unit tests |
-| `pnpm precommit`            | Run the complete mandatory local commit gate  |
+| Command              | Description                                   |
+| -------------------- | --------------------------------------------- |
+| `pnpm dev`           | Start the Vite dev server                     |
+| `pnpm build`         | Type-check the Vue app and build the frontend |
+| `pnpm preview`       | Preview the frontend build                    |
+| `pnpm tauri:dev`     | Run the Tauri desktop app with frontend HMR   |
+| `pnpm tauri:build`   | Build the desktop application bundle          |
+| `pnpm format`        | Format frontend and Rust code                 |
+| `pnpm format:check`  | Check frontend and Rust formatting            |
+| `pnpm lint`          | Run ESLint on `src/`                          |
+| `pnpm test:frontend` | Run frontend unit tests                       |
+| `pnpm test:rust`     | Run Rust unit tests                           |
+| `pnpm test`          | Run frontend and Rust tests                   |
+| `pnpm cycles`        | Fail on TypeScript import cycles              |
+| `pnpm check`         | Run lint, format check, build, and unit tests |
+| `pnpm precommit`     | Run the complete mandatory local commit gate  |
+| `pnpm version:sync`  | Sync Cargo/Tauri versions from package.json   |
+| `pnpm version:check` | Verify package/Cargo/Tauri versions match     |
 
 ## Project Map
 
