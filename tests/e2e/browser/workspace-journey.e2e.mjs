@@ -3,16 +3,16 @@
 import axe from 'axe-core';
 import { browser, expect, $, $$ } from '@wdio/globals';
 
-const RESET_WORKSPACE_ID = '00000000-0000-4000-8000-000000000001';
+const INITIAL_WORKSPACE_ID = '00000000-0000-4000-8000-000000000001';
 const CREATED_WORKSPACE_ID = '00000000-0000-4000-8000-000000000002';
-const RESET_WORKSPACE_NAME = 'Clean install workspace';
+const INITIAL_WORKSPACE_NAME = 'Clean install workspace';
 const CREATED_WORKSPACE_NAME = 'Browser journey workspace';
 
 describe('project workspace browser journey', () => {
   let preload;
 
   beforeAll(async () => {
-    await clearLegacyRendererState();
+    await clearRendererState();
     preload = await installCleanInstallBackend();
     await browser.url('/');
   });
@@ -22,9 +22,11 @@ describe('project workspace browser journey', () => {
     await preload?.remove();
   });
 
-  it('resets a clean install, creates and reopens projects, and passes the real axe gate', async () => {
+  it('opens a clean install, creates and reopens projects, and passes the real axe gate', async () => {
     await expect($('.app-layout')).toExist();
-    await expect($('.workspace-current')).toHaveText(expect.stringContaining(RESET_WORKSPACE_NAME));
+    await expect($('.workspace-current')).toHaveText(
+      expect.stringContaining(INITIAL_WORKSPACE_NAME),
+    );
     await browser.waitUntil(async () => {
       const evidence = await readBootstrapEvidence();
       return evidence.commands.at(-1) === 'workspace_catalog';
@@ -32,16 +34,11 @@ describe('project workspace browser journey', () => {
 
     const bootstrap = await readBootstrapEvidence();
     expect(bootstrap.commands).toEqual([
-      'get_legacy_reset_journal',
-      'prepare_legacy_reset',
+      'workspace_catalog',
       'open_workspace',
       'hydrate_workspace_sessions',
-      'complete_legacy_reset',
       'workspace_catalog',
     ]);
-    expect(bootstrap.emptyLegacyState).toBe(true);
-    expect(bootstrap.completedWorkspaceId).toBe(RESET_WORKSPACE_ID);
-    expect(bootstrap.marker).toBe('completed');
 
     const mocks = await installInteractiveWorkspaceMocks();
     await $('.workspace-actions button:first-child').click();
@@ -61,16 +58,18 @@ describe('project workspace browser journey', () => {
     expect(mocks.create.mock.results[0].value.workspace.workspaceId).toBe(CREATED_WORKSPACE_ID);
 
     const initialProjectOrder = await projectOrder();
-    expect(initialProjectOrder).toEqual([RESET_WORKSPACE_NAME, CREATED_WORKSPACE_NAME]);
+    expect(initialProjectOrder).toEqual([INITIAL_WORKSPACE_NAME, CREATED_WORKSPACE_NAME]);
 
-    const resetProjectButton = await findProject(RESET_WORKSPACE_NAME);
-    await resetProjectButton.click();
-    await expect($('.workspace-current')).toHaveText(expect.stringContaining(RESET_WORKSPACE_NAME));
+    const initialProjectButton = await findProject(INITIAL_WORKSPACE_NAME);
+    await initialProjectButton.click();
+    await expect($('.workspace-current')).toHaveText(
+      expect.stringContaining(INITIAL_WORKSPACE_NAME),
+    );
     expect(await projectOrder()).toEqual(initialProjectOrder);
 
     await mocks.open.update();
     expect(mocks.open.mock.calls.length).toBe(1);
-    expect(mocks.open.mock.calls[0][0].request.workspaceId).toBe(RESET_WORKSPACE_ID);
+    expect(mocks.open.mock.calls[0][0].request.workspaceId).toBe(INITIAL_WORKSPACE_ID);
     await mocks.flush.update();
     await mocks.hydrate.update();
     expect(mocks.flush.mock.calls.length).toBe(2);
@@ -84,13 +83,13 @@ describe('project workspace browser journey', () => {
   });
 });
 
-async function clearLegacyRendererState() {
+async function clearRendererState() {
   await browser.execute(() => globalThis.localStorage.clear());
   const result = await browser.executeAsync((databaseName, done) => {
     const request = globalThis.indexedDB.deleteDatabase(databaseName);
     request.onsuccess = () => done({ ok: true });
     request.onerror = () => done({ ok: false, error: request.error?.message ?? 'delete failed' });
-    request.onblocked = () => done({ ok: false, error: 'legacy database deletion was blocked' });
+    request.onblocked = () => done({ ok: false, error: 'database deletion was blocked' });
   }, 'bbcom-session-state');
   if (!result.ok) throw new Error(`Unable to prepare clean-install fixture: ${result.error}`);
 }
@@ -100,9 +99,8 @@ async function installCleanInstallBackend() {
     (fixture) => {
       const state = {
         calls: [],
-        marker: 'required',
       };
-      globalThis.__bbcomG33 = state;
+      globalThis.__bbcomBrowserJourney = state;
       const mocks = (globalThis.__wdio_mocks__ ??= {});
 
       const summary = (workspaceId, name) => ({
@@ -123,25 +121,6 @@ async function installCleanInstallBackend() {
         state.calls.push({ command, args });
       };
 
-      mocks.get_legacy_reset_journal = (args) => {
-        record('get_legacy_reset_journal', args);
-        return {
-          requestId: args.request.requestId,
-          journal: { phase: 'required' },
-        };
-      };
-      mocks.prepare_legacy_reset = (args) => {
-        record('prepare_legacy_reset', args);
-        state.marker = 'workspaceReady';
-        return {
-          requestId: args.request.requestId,
-          journal: {
-            phase: 'workspaceReady',
-            workspaceId: fixture.workspaceId,
-            expectedRevision: 0,
-          },
-        };
-      };
       mocks.open_workspace = (args) => {
         record('open_workspace', args);
         return {
@@ -159,18 +138,6 @@ async function installCleanInstallBackend() {
           sessions: [],
         };
       };
-      mocks.complete_legacy_reset = (args) => {
-        record('complete_legacy_reset', args);
-        state.marker = 'completed';
-        return {
-          requestId: args.request.requestId,
-          journal: {
-            phase: 'completed',
-            workspaceId: fixture.workspaceId,
-            expectedRevision: 0,
-          },
-        };
-      };
       mocks.workspace_catalog = (args) => {
         record('workspace_catalog', args);
         return {
@@ -183,31 +150,23 @@ async function installCleanInstallBackend() {
       mocks['plugin:serialplugin|available_ports'] = () => ({});
     },
     {
-      workspaceId: RESET_WORKSPACE_ID,
-      workspaceName: RESET_WORKSPACE_NAME,
+      workspaceId: INITIAL_WORKSPACE_ID,
+      workspaceName: INITIAL_WORKSPACE_NAME,
     },
   );
 }
 
 async function readBootstrapEvidence() {
   return browser.execute(() => {
-    const state = globalThis.__bbcomG33;
-    const resetCommands = new Set([
-      'get_legacy_reset_journal',
-      'prepare_legacy_reset',
+    const state = globalThis.__bbcomBrowserJourney;
+    const bootstrapCommands = new Set([
+      'workspace_catalog',
       'open_workspace',
       'hydrate_workspace_sessions',
-      'complete_legacy_reset',
-      'workspace_catalog',
     ]);
-    const calls = state.calls.filter(({ command }) => resetCommands.has(command));
-    const prepare = calls.find(({ command }) => command === 'prepare_legacy_reset');
-    const complete = calls.find(({ command }) => command === 'complete_legacy_reset');
+    const calls = state.calls.filter(({ command }) => bootstrapCommands.has(command));
     return {
       commands: calls.map(({ command }) => command),
-      emptyLegacyState: prepare?.args.request.emptyLegacyState,
-      completedWorkspaceId: complete?.args.request.workspaceId,
-      marker: state.marker,
     };
   });
 }

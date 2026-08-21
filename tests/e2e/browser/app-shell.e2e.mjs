@@ -11,12 +11,7 @@ describe('main window in browser mock mode', () => {
         updatedAtMs: 1,
         saveHealth: 'clean',
       };
-      const journal = { phase: 'completed', workspaceId, expectedRevision: 0 };
       const mocks = (globalThis.__wdio_mocks__ ??= {});
-      mocks.get_legacy_reset_journal = ({ request }) => ({
-        requestId: request.requestId,
-        journal,
-      });
       mocks.open_workspace = ({ request }) => ({
         requestId: request.requestId,
         workspace: summary,
