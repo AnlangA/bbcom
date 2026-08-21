@@ -73,6 +73,7 @@ fn hydrate_workspace_sessions_from_label(
                 parser_state: session.parser_state,
                 feature_state: session.feature_state,
                 modbus_config: session.modbus_config,
+                mcumgr_config: session.mcumgr_config,
             })
         })
         .collect::<Result<Vec<_>, IpcError>>()?;

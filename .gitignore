@@ -10,7 +10,7 @@ package-lock.json
 **/target/
 src-tauri/target
 src-tauri/gen
-src-tauri/binaries/bbcom-plugin-host-*
+src-tauri/binaries/
 
 # IDE
 .idea
@@ -37,6 +37,3 @@ coverage/
 
 # Local agent session artifacts (plans, transcripts)
 .zcode/
-
-# Plugin guest workspaces (standalone, built per-plugin)
-plugins/*/target

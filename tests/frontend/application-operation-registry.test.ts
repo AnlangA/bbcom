@@ -23,7 +23,6 @@ test('operations preserve ownership and enforce legal monotonic progress transit
     kind: 'workspace-export',
     workspaceId: 'workspace-1',
     sessionId: 'session-1',
-    pluginId: 'plugin.example',
     progress: { completedUnits: 0, totalUnits: 4 },
   });
 
@@ -33,7 +32,6 @@ test('operations preserve ownership and enforce legal monotonic progress transit
     status: 'queued',
     workspaceId: 'workspace-1',
     sessionId: 'session-1',
-    pluginId: 'plugin.example',
     completedUnits: 0,
     totalUnits: 4,
   });
@@ -58,14 +56,6 @@ test('operations preserve ownership and enforce legal monotonic progress transit
       kind: 'ai-request',
       workspaceId: 'workspace-1',
       sessionId: '',
-    }),
-  );
-  assert.throws(() =>
-    registry.create({
-      operationId: 'operation-empty-plugin',
-      kind: 'ai-request',
-      workspaceId: 'workspace-1',
-      pluginId: '',
     }),
   );
   assert.throws(() =>
@@ -176,7 +166,7 @@ test('failed operations retain only the stable IPC error projection', () => {
   const registry = new OperationRegistry();
   registry.create({
     operationId: 'operation-failed',
-    kind: 'plugin-install',
+    kind: 'workspace-import',
     workspaceId: 'workspace-1',
   });
   const untrusted = {

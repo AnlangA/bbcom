@@ -4,8 +4,6 @@ import type { AiKeyStatus } from '../../generated/ipc-contracts';
 /** The only renderer-visible representation of an AI credential. */
 export type { AiKeyStatus } from '../../generated/ipc-contracts';
 
-const LEGACY_STORAGE_KEY = 'bbcom-app-settings:ai-api-key';
-
 function isTauriRuntime(): boolean {
   if (typeof window === 'undefined') return false;
   const candidate = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
@@ -13,11 +11,9 @@ function isTauriRuntime(): boolean {
 }
 
 /**
- * Both webviews share an origin, so the floating AI window must never read a
- * pre-v0.5 plaintext localStorage key during startup. The AI window's
- * capability deliberately does NOT grant `get_ai_key_status` (see the
- * ai_window_capability test): its key status arrives solely via the
- * main-window authority bridge, never from the command surface.
+ * Both webviews share an origin. The AI window's capability deliberately does
+ * NOT grant `get_ai_key_status` (see the ai_window_capability test): its key
+ * status arrives solely via the main-window authority bridge.
  */
 export function isAiAssistantWindow(): boolean {
   if (typeof window === 'undefined') return false;
@@ -25,7 +21,7 @@ export function isAiAssistantWindow(): boolean {
 }
 
 function missing(): AiKeyStatus {
-  return { configured: false, durability: 'missing' };
+  return { configured: false };
 }
 
 export async function getAiKeyStatus(): Promise<AiKeyStatus> {
@@ -41,28 +37,4 @@ export async function setAiApiKey(value: string): Promise<AiKeyStatus> {
 export async function clearAiApiKey(): Promise<void> {
   if (!isTauriRuntime()) throw new Error('native AI key storage is unavailable');
   await invoke<void>('clear_ai_api_key');
-}
-
-/**
- * One-time migration from the legacy localStorage entry. Rust also checks the
- * old `secure-settings.json` itself. Plaintext is removed only after Rust
- * confirms an OS-keyring read-back (`durability === 'os'`).
- */
-export async function migrateLegacyAiApiKey(): Promise<AiKeyStatus> {
-  if (!isTauriRuntime()) return missing();
-  if (isAiAssistantWindow()) return getAiKeyStatus();
-  const legacy = localStorage.getItem(LEGACY_STORAGE_KEY)?.trim() ?? '';
-  const status = await invoke<AiKeyStatus>('migrate_ai_api_key', {
-    request: { value: legacy || undefined },
-  });
-  if (status.durability === 'os' && legacy) localStorage.removeItem(LEGACY_STORAGE_KEY);
-  return status;
-}
-
-export const AI_KEY_LEGACY_STORAGE_KEY = LEGACY_STORAGE_KEY;
-
-/** Explicit clearing may safely erase an old plaintext copy even offline. */
-export function removeLegacyAiApiKey(): void {
-  if (isAiAssistantWindow()) return;
-  localStorage.removeItem(LEGACY_STORAGE_KEY);
 }

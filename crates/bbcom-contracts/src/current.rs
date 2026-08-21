@@ -520,41 +520,19 @@ pub struct ResizeAiWindowRequest {
     pub height: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
-pub enum AiKeyDurability {
-    Os,
-    Session,
-    Missing,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AiKeyStatus {
     pub configured: bool,
-    pub durability: AiKeyDurability,
 }
 
 impl AiKeyStatus {
     pub const fn missing() -> Self {
-        Self {
-            configured: false,
-            durability: AiKeyDurability::Missing,
-        }
+        Self { configured: false }
     }
 
-    pub const fn os() -> Self {
-        Self {
-            configured: true,
-            durability: AiKeyDurability::Os,
-        }
-    }
-
-    pub const fn session() -> Self {
-        Self {
-            configured: true,
-            durability: AiKeyDurability::Session,
-        }
+    pub const fn configured() -> Self {
+        Self { configured: true }
     }
 }
 
@@ -563,13 +541,4 @@ impl AiKeyStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetAiApiKeyRequest {
     pub value: String,
-}
-
-/// One-way migration request. Its value is intentionally absent from responses.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[ts(optional_fields)]
-pub struct MigrateAiApiKeyRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
 }

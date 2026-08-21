@@ -613,7 +613,7 @@ function runtimeController() {
     connectionFailure: ref(null),
     totalDroppedBytes: ref(0),
     sendingBreak: ref(false),
-    viewMode: ref<'terminal' | 'waveform' | 'parser' | 'modbus'>('terminal'),
+    viewMode: ref<'terminal' | 'waveform' | 'parser' | 'modbus' | 'shell' | 'mcumgr'>('terminal'),
     looping: ref(false),
     parser: {
       frames: ref([]),
@@ -622,11 +622,34 @@ function runtimeController() {
       throughputBps: ref(0),
       resetVersion: ref(0),
     },
+    shell: {
+      snapshot: ref({
+        lines: [],
+        current: { id: 0, text: '', timestamp: 0 },
+        droppedLines: 0,
+        droppedBytes: 0,
+        resetVersion: 0,
+      }),
+      submitLine: vi.fn(async () => ({ outcome: 'complete', requestedBytes: 0, sentBytes: 0 })),
+      submitKey: vi.fn(async () => null),
+    },
     macro: {
       running: ref(false),
       status: computed(() => 'idle' as const),
       run: method(),
       abort: method(),
+    },
+    mcumgr: {
+      status: ref({ kind: 'idle' as const }),
+      lastResult: ref(''),
+      busy: computed(() => false),
+      run: method(),
+      cancel: method(),
+      patchConfig: method(),
+      rememberShell: method(),
+      reportProgress: method(),
+      setResult: method(),
+      client: {},
     },
     modbus,
     connect: method(),
@@ -642,7 +665,7 @@ function runtimeController() {
 }
 
 interface SessionViewSetup {
-  viewMode: 'terminal' | 'waveform' | 'parser' | 'modbus';
+  viewMode: 'terminal' | 'waveform' | 'parser' | 'modbus' | 'shell' | 'mcumgr';
   exportDialogVisible: boolean;
   rebindDialogVisible: boolean;
   connect: () => Promise<void>;
@@ -799,22 +822,13 @@ interface WorkspaceSetup {
   applicationSnapshot: Record<string, unknown>;
   librarySnapshot: Record<string, unknown>;
   showCreate: boolean;
-  showImport: boolean;
-  showExport: boolean;
   projectName: string;
-  passphrase: string;
-  passphraseConfirmation: string;
   openProject: (workspaceId: string) => Promise<void>;
   createProject: () => Promise<void>;
   deleteProject: (workspaceId: string) => Promise<void>;
-  beginImport: () => void;
-  cancelImport: () => void;
-  importPlaintext: () => Promise<void>;
-  importEncrypted: () => Promise<void>;
-  exportPlaintext: () => Promise<void>;
-  exportEncrypted: () => Promise<void>;
+  importProject: () => Promise<void>;
+  exportProject: () => Promise<void>;
   cancelProjectExport: () => Promise<void>;
-  clearPassphrases: () => void;
 }
 
 function applicationSnapshot() {
@@ -935,87 +949,42 @@ describe('WorkspacePanel', () => {
     });
     await setup.createProject();
 
-    setup.beginImport();
-    expect(setup.showImport).toBe(true);
-    library.navigationAction = 'import';
-    coordinatorListener?.(library);
-    setup.cancelImport();
-    expect(application.cancelActivation).toHaveBeenCalledOnce();
-    library.navigationAction = null;
-    coordinatorListener?.(library);
-    setup.cancelImport();
-    expect(application.cancelActivation).toHaveBeenCalledOnce();
-
-    setup.showImport = true;
     application.importWorkspace.mockResolvedValueOnce({ outcome: 'completed' });
-    await setup.importPlaintext();
-    expect(application.importWorkspace).toHaveBeenCalledWith({ mode: 'plaintext' });
-    expect(setup.showImport).toBe(false);
+    await setup.importProject();
+    expect(application.importWorkspace).toHaveBeenCalledWith();
     application.importWorkspace.mockResolvedValueOnce({
       outcome: 'failed',
       messageKey: 'workspace.import_failed',
     });
-    await setup.importPlaintext();
-    setup.passphrase = 'short';
-    await setup.importEncrypted();
+    await setup.importProject();
     expect(application.importWorkspace).toHaveBeenCalledTimes(2);
-    setup.passphrase = 'long-enough-passphrase';
-    application.importWorkspace.mockResolvedValueOnce({ outcome: 'completed' });
-    await setup.importEncrypted();
-    expect(application.importWorkspace).toHaveBeenLastCalledWith({
-      mode: 'age-passphrase',
-      passphrase: 'long-enough-passphrase',
-    });
 
-    setup.showExport = true;
     application.exportWorkspace.mockResolvedValueOnce({ outcome: 'completed' });
-    await setup.exportPlaintext();
-    expect(application.exportWorkspace).toHaveBeenCalledWith('Lab.bbcom', { mode: 'plaintext' });
-    expect(setup.showExport).toBe(false);
+    await setup.exportProject();
+    expect(application.exportWorkspace).toHaveBeenCalledWith('Lab.bbcom');
     appSnapshot.currentWorkspace = null;
     appListener?.(appSnapshot);
-    await setup.exportPlaintext();
-    setup.passphrase = 'matching-passphrase';
-    setup.passphraseConfirmation = 'matching-passphrase';
-    await setup.exportEncrypted();
+    await setup.exportProject();
     expect(application.exportWorkspace).toHaveBeenCalledTimes(1);
     appSnapshot.currentWorkspace = { workspaceId: 'workspace-a', name: 'Lab' };
     appListener?.(appSnapshot);
-    setup.passphraseConfirmation = 'mismatch-passphrase';
-    await setup.exportEncrypted();
-    expect(application.exportWorkspace).toHaveBeenCalledTimes(1);
-    setup.passphraseConfirmation = 'matching-passphrase';
-    application.exportWorkspace.mockResolvedValueOnce({ outcome: 'completed' });
-    await setup.exportEncrypted();
-    expect(application.exportWorkspace).toHaveBeenLastCalledWith('Lab.bbcom', {
-      mode: 'age-passphrase',
-      passphrase: 'matching-passphrase',
-    });
 
-    setup.showExport = true;
     application.cancelExport.mockResolvedValueOnce(null);
     await setup.cancelProjectExport();
-    expect(setup.showExport).toBe(false);
-    setup.showExport = true;
     application.cancelExport.mockResolvedValueOnce({ outcome: 'completed' });
     await setup.cancelProjectExport();
     expect(uiMocks.messages.info).toHaveBeenCalled();
-    setup.showExport = true;
     application.cancelExport.mockResolvedValueOnce({
       outcome: 'failed',
       messageKey: 'workspace.export_failed',
     });
     await setup.cancelProjectExport();
-    expect(setup.showExport).toBe(true);
     expect(uiMocks.messages.error).toHaveBeenCalledWith(expect.any(String));
 
     appListener?.({ ...appSnapshot, hydrating: true, messageKey: 'workspace.hydrating' });
     coordinatorListener?.({ ...library, exporting: true });
     await nextTick();
     expect(wrapper.find('.workspace-error').exists()).toBe(true);
-    setup.clearPassphrases();
-    expect(setup.passphrase).toBe('');
-    expect(setup.passphraseConfirmation).toBe('');
     wrapper.unmount();
     expect(stopApplication).toHaveBeenCalledOnce();
     expect(stopCoordinator).toHaveBeenCalledOnce();
@@ -1030,14 +999,8 @@ describe('WorkspacePanel', () => {
     setup.projectName = 'Name';
     await setup.createProject();
     await setup.deleteProject('workspace-a');
-    setup.beginImport();
-    setup.cancelImport();
-    await setup.importPlaintext();
-    setup.passphrase = 'long-enough-passphrase';
-    await setup.importEncrypted();
-    await setup.exportPlaintext();
-    setup.passphraseConfirmation = 'long-enough-passphrase';
-    await setup.exportEncrypted();
+    await setup.importProject();
+    await setup.exportProject();
     await setup.cancelProjectExport();
     wrapper.unmount();
   });

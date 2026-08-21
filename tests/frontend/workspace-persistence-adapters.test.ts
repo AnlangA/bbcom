@@ -133,7 +133,7 @@ function roundTripParts(projection: ReturnType<typeof projectWorkspaceSessionMut
     (mutation): mutation is Extract<WorkspaceMutation, { kind: 'upsert-feature-state' }> =>
       mutation.kind === 'upsert-feature-state',
   );
-  const feature = (kind: 'preferences' | 'parser' | 'modbus' | 'waveform') => {
+  const feature = (kind: 'preferences' | 'parser' | 'modbus' | 'waveform' | 'shell' | 'mcumgr') => {
     const found = features.find((mutation) => mutation.payload.feature === kind);
     assert.ok(found);
     return found.payload.state;
@@ -149,10 +149,11 @@ function roundTripParts(projection: ReturnType<typeof projectWorkspaceSessionMut
       portConfig: upsert.payload.portConfig,
       document: upsert.payload.document,
       displayPreferences: feature('waveform'),
-      sendPreferences: {},
+      sendPreferences: feature('shell'),
       parserState: feature('parser'),
       featureState: feature('preferences'),
       modbusConfig: feature('modbus'),
+      mcumgrConfig: feature('mcumgr'),
     } satisfies WorkspaceSessionSnapshot,
     collections: mutationOf(mutations, 'replace-session-collections').payload,
     aiMessages: mutations
@@ -203,6 +204,8 @@ test('session projection covers every persisted feature and strips all runtime s
       'upsert-feature-state',
       'upsert-feature-state',
       'upsert-feature-state',
+      'upsert-feature-state',
+      'upsert-feature-state',
       'replace-session-collections',
       'clear-ai-messages',
       'replace-waveform-channels',
@@ -212,9 +215,9 @@ test('session projection covers every persisted feature and strips all runtime s
   );
   assert.deepEqual(
     projection.mutations.map((mutation) => mutation.sequence),
-    [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
   );
-  assert.equal(projection.nextSequence, 20);
+  assert.equal(projection.nextSequence, 22);
 
   const withoutWaveformSidecar = projectWorkspaceSessionMutations(session, {
     sequenceStart: 0,
@@ -293,6 +296,7 @@ test('session projection covers every persisted feature and strips all runtime s
   assert.deepEqual(hydrated.session.triggers, session.triggers);
   assert.deepEqual(hydrated.session.highlights, session.highlights);
   assert.deepEqual(hydrated.session.logAiMessages, session.logAiMessages);
+  assert.deepEqual(hydrated.session.shellConfig, session.shellConfig);
   assert.equal(hydrated.session.modbusRegisters[0]?.value, null);
   assert.equal(hydrated.session.modbusRegisters[0]?.values, null);
   assert.equal(hydrated.session.modbusRegisters[0]?.valueTs, null);

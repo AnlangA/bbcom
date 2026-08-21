@@ -1,6 +1,6 @@
 import type { WorkspaceMutation } from '../../../generated/ipc-contracts';
 import { IPC_LIMITS } from '../../../generated/ipc-contracts';
-import type { ModbusMasterConfig } from '../../../types';
+import type { ModbusMasterConfig, SerialShellConfig } from '../../../types';
 import {
   WorkspaceAdapterLimitError,
   WorkspaceAdapterValidationError,
@@ -101,6 +101,56 @@ export function validateModbusConfig(
   boundedInteger(value.pollIntervalMs, 100, 10_000, `${field}.pollIntervalMs`);
   boundedInteger(value.writeIntervalMs, 100, 10_000, `${field}.writeIntervalMs`);
   boundedInteger(value.timeoutMs, 50, 5_000, `${field}.timeoutMs`);
+}
+
+export const SERIAL_SHELL_CONFIG_KEYS = [
+  'inputMode',
+  'localEcho',
+  'txNewline',
+  'rxNewline',
+  'encoding',
+  'backspace',
+  'showTimestamp',
+  'history',
+] as const;
+
+export function validateSerialShellConfig(value: SerialShellConfig, field: string): void;
+export function validateSerialShellConfig(value: Record<string, unknown>, field: string): void;
+export function validateSerialShellConfig(
+  value: SerialShellConfig | Record<string, unknown>,
+  field: string,
+): void {
+  if (value.inputMode !== 'line' && value.inputMode !== 'char') {
+    throw new WorkspaceAdapterValidationError(`${field}.inputMode`);
+  }
+  expectBoolean(value.localEcho, `${field}.localEcho`);
+  if (
+    value.txNewline !== 'none' &&
+    value.txNewline !== 'cr' &&
+    value.txNewline !== 'lf' &&
+    value.txNewline !== 'crlf'
+  ) {
+    throw new WorkspaceAdapterValidationError(`${field}.txNewline`);
+  }
+  if (
+    value.rxNewline !== 'none' &&
+    value.rxNewline !== 'cr' &&
+    value.rxNewline !== 'lf' &&
+    value.rxNewline !== 'crlf' &&
+    value.rxNewline !== 'auto'
+  ) {
+    throw new WorkspaceAdapterValidationError(`${field}.rxNewline`);
+  }
+  if (value.encoding !== 'utf-8' && value.encoding !== 'gbk' && value.encoding !== 'latin1') {
+    throw new WorkspaceAdapterValidationError(`${field}.encoding`);
+  }
+  if (value.backspace !== 'bs' && value.backspace !== 'del') {
+    throw new WorkspaceAdapterValidationError(`${field}.backspace`);
+  }
+  expectBoolean(value.showTimestamp, `${field}.showTimestamp`);
+  if (!Array.isArray(value.history) || value.history.some((entry) => typeof entry !== 'string')) {
+    throw new WorkspaceAdapterValidationError(`${field}.history`);
+  }
 }
 
 export function assertEmptyRecord(value: Record<string, unknown>, field: string): void {

@@ -18,7 +18,7 @@ const HEX_LOWER_TABLE = Array.from({ length: 256 }, (_, i) => i.toString(16).pad
 // Flat ASCII byte-pair lookup: for each byte value b, BYTE_HEX_PAIR[b*2..b*2+1]
 // holds the two ASCII hex characters. Expanding into a pre-sized Uint8Array and
 // decoding once avoids the per-byte String allocation + Array.join the previous
-// implementation did (the measured top frontend hot path — see perf.bench.ts).
+// implementation did (the measured top frontend hot path).
 // Upper/lowercase variants split so formatHex (upper, spaced) and the lowercase
 // continuous search index share one fast path.
 const BYTE_HEX_PAIRS_UPPER = (() => {

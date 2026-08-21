@@ -33,7 +33,7 @@ requirements or optimization targets.
 The initial workspace baseline amendment set the gzip ceilings to:
 
 - all JavaScript: 368 KiB (376,832 bytes), superseded for the total only by
-  the plugin boundary addendum below;
+  the later total-only addenda below;
 - main-window startup graph: 290 KiB (296,960 bytes);
 - AI-window startup graph: 145 KiB (148,480 bytes).
 
@@ -42,27 +42,24 @@ The revised limits leave only bounded build variance and regression headroom
 above the measured integrated baseline; they do not authorize a performance
 project or further feature scope.
 
-### Plugin boundary addendum
+### 2026-08-15 total-only addendum
 
-The generated plugin IPC boundary and host-rendered plugin controls were later
-made production-reachable behind a fail-closed service injection. The complete
-build then measured 368.11 KiB total while every startup, window, and chunk
-ceiling remained satisfied. Removing accepted validation or accessibility code
-to recover 109 gzip bytes would be the byte-level optimization project this ADR
-excludes. The total-only ceiling is therefore amended once to 376 KiB (385,024
-bytes). The 290/145 KiB window, 85 KiB bootstrap, and 105 KiB chunk ceilings are
-unchanged. This addendum does not enable plugins or the marketplace; ADR-0004's
-platform gates remain authoritative.
+The complete build later measured 368.11 KiB total while every startup, window,
+and chunk ceiling remained satisfied. Removing accepted validation or
+accessibility code to recover 109 gzip bytes would be the byte-level
+optimization project this ADR excludes. The total-only ceiling is therefore
+amended once to 376 KiB (385,024 bytes). The 290/145 KiB window, 85 KiB
+bootstrap, and 105 KiB chunk ceilings are unchanged.
 
 ### 2026-08-16 tri-domain fix batch addendum
 
-The navigation/UI/plugin fix batch (docs/BUGFIX_AUDIT_2026-08.md) added
-accepted production surface: the `tauri-plugin-opener` JS binding for external
-links, ~30 locale keys in both catalogs, dark-mode overrides for the remaining
-Naive controls, session view-state retention, and command-receipt protocol
-handling. The complete build measured 378.60 KiB total while every startup,
-window, chunk, and bootstrap ceiling remained satisfied. Following the plugin
-boundary precedent, the total-only ceiling is amended once more to 380 KiB
+The navigation/UI fix batch (docs/BUGFIX_AUDIT_2026-08.md) added accepted
+production surface: the `tauri-plugin-opener` JS binding for external links,
+~30 locale keys in both catalogs, dark-mode overrides for the remaining Naive
+controls, session view-state retention, and command-receipt protocol handling.
+The complete build measured 378.60 KiB total while every startup, window,
+chunk, and bootstrap ceiling remained satisfied. Following the earlier
+total-only precedent, the total-only ceiling is amended once more to 380 KiB
 (389,120 bytes); all other ceilings are unchanged.
 
 ### 2026-08-19 managed project deletion addendum

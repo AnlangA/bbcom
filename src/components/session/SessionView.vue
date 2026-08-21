@@ -60,7 +60,7 @@
         first use, then KeepAlive preserves their local viewport/editor state
         while the user switches modes.
       -->
-      <KeepAlive :max="4">
+      <KeepAlive :max="6">
         <WaveformPanel
           v-if="viewMode === 'waveform'"
           ref="waveformRef"
@@ -113,6 +113,24 @@
           :parser-reset-version="runtime.parser.resetVersion.value"
           @close="viewMode = 'terminal'"
         />
+        <SerialShellPanel
+          v-else-if="viewMode === 'shell'"
+          :session-id="props.session.id"
+          :config="props.session.shellConfig"
+          :snapshot="runtime.shell.snapshot.value"
+          :is-connected="runtime.isConnected.value"
+          :on-submit-line="runtime.shell.submitLine"
+          :on-submit-key="runtime.shell.submitKey"
+          @close="viewMode = 'terminal'"
+        />
+        <McumgrPanel
+          v-else-if="viewMode === 'mcumgr'"
+          :session-id="props.session.id"
+          :config="props.session.mcumgrConfig"
+          :is-connected="runtime.isConnected.value"
+          :mcumgr="runtime.mcumgr"
+          @close="viewMode = 'terminal'"
+        />
         <DataPacketList
           v-else
           :frames="props.session.frames"
@@ -121,7 +139,7 @@
         />
       </KeepAlive>
     </div>
-    <div class="send-area">
+    <div v-if="viewMode !== 'shell' && viewMode !== 'mcumgr'" class="send-area">
       <SendPanel
         :on-send="handleSend"
         :macro-runner="runtime.macro"
@@ -194,6 +212,8 @@ provide(SESSION_UI_STATE_KEY, props.runtime.uiState);
 const WaveformPanel = defineAsyncComponent(() => import('../terminal/WaveformPanel.vue'));
 const ParserPanel = defineAsyncComponent(() => import('../terminal/ParserPanel.vue'));
 const ModbusPanel = defineAsyncComponent(() => import('../terminal/ModbusPanel.vue'));
+const SerialShellPanel = defineAsyncComponent(() => import('../terminal/SerialShellPanel.vue'));
+const McumgrPanel = defineAsyncComponent(() => import('../terminal/McumgrPanel.vue'));
 const ExportDialog = defineAsyncComponent(() => import('./ExportDialog.vue'));
 
 const catalog = useSessionCatalog();
@@ -241,9 +261,8 @@ useSessionShortcuts({
 });
 
 // Single view-mode switcher for the display area: terminal (default, dense),
-// waveform (live RX plot), parser (frame reassembly), or modbus (register
-// table). Only the selected view renders, so they never stack and compete for
-// vertical space.
+// waveform (live RX plot), parser (frame reassembly), modbus (register
+// table), serial shell, or MCUMgr. Only the selected view renders.
 const viewMode = runtime.viewMode;
 
 // --- Modbus master ---------------------------------------------------------

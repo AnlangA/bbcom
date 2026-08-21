@@ -24,9 +24,9 @@ pub use types::{
     TerminalAiResponse,
 };
 
+use crate::ai_settings::load_ai_key_for_request;
 use crate::models::errors::AppError;
 use crate::models::ipc_error::{AppErrorCode, IpcError, from_app_error};
-use crate::secure_settings::{SecureSettingsState, load_ai_key_for_request};
 use crate::utils::window::require_main_window_label;
 use parser::{parse_log_ai_response, parse_terminal_ai_response};
 use prompts::{LOG_SYSTEM_PROMPT, TERMINAL_SYSTEM_PROMPT};
@@ -35,7 +35,7 @@ use service::{
     MAX_AI_CONTEXT_BYTES, MAX_AI_CONTEXT_MODE_BYTES, MAX_AI_MODEL_BYTES, MAX_AI_PROMPT_BYTES,
     MAX_AI_SESSION_META_BYTES, MAX_AI_SHELL_BYTES, build_ai_messages, run_ai_chat,
 };
-use tauri::{State, WebviewWindow};
+use tauri::{Manager, State, WebviewWindow};
 
 /// Webview window label for the standalone AI assistant window.
 pub const AI_WINDOW_LABEL: &str = "ai-assistant";
@@ -153,7 +153,6 @@ async fn dispatch_v050_request(
 #[tauri::command]
 pub async fn run_ai_request(
     window: WebviewWindow,
-    settings: State<'_, SecureSettingsState>,
     requests: State<'_, AiRequestManager>,
     request: RunAiRequest,
 ) -> Result<AiRequestResult, IpcError> {
@@ -164,7 +163,7 @@ pub async fn run_ai_request(
     let cancellation = requests.begin(&request_id)?;
 
     let result = async {
-        let api_key = load_ai_key_for_request(settings).await?;
+        let api_key = load_ai_key_for_request(window.app_handle())?;
         tokio::select! {
             result = dispatch_v050_request(&request, api_key.as_str()) => {
                 result.map_err(|error| from_app_error(&error, OPERATION).with_request_id(&request_id))

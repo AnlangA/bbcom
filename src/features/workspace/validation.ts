@@ -48,7 +48,6 @@ const ERROR_CODES = new Set([
   'WORKSPACE_READ_ONLY',
   'WORKSPACE_CORRUPT',
   'PORT_IN_USE',
-  'PLUGIN_PERMISSION_DENIED',
 ]);
 
 export class InvalidWorkspaceResponseError extends Error {
@@ -411,7 +410,6 @@ function rejectFilesystemData(value: unknown, seen = new WeakSet<object>()): voi
       normalized.includes('handle') ||
       normalized.includes('token') ||
       normalized.includes('grant') ||
-      normalized.includes('keyring') ||
       normalized === 'key' ||
       normalized.endsWith('apikey') ||
       normalized.includes('secret')

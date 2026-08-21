@@ -308,18 +308,13 @@ test('safe failures whitelist IPC codes/message keys and reject filesystem/capab
     'nativeHandle',
     'accessToken',
     'grantId',
-    'keyringId',
     'key',
     'providerApiKey',
     'clientSecret',
   ]) {
     assert.throws(() =>
       createSequencedMutation(
-        {
-          kind: 'upsert-feature-state',
-          entityId: 'plugin:test',
-          payload: { feature: 'plugin', state: { [key]: 'opaque' } },
-        },
+        { kind: 'set-metadata', payload: { name: 'Workspace', [key]: 'opaque' } } as never,
         0,
       ),
     );
@@ -329,11 +324,7 @@ test('safe failures whitelist IPC codes/message keys and reject filesystem/capab
   cyclic.self = cyclic;
   assert.throws(() =>
     createSequencedMutation(
-      {
-        kind: 'upsert-feature-state',
-        entityId: 'plugin:test',
-        payload: { feature: 'plugin', state: cyclic },
-      },
+      { kind: 'set-metadata', payload: { name: 'Workspace', extra: cyclic } } as never,
       0,
     ),
   );

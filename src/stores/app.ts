@@ -3,17 +3,16 @@ import { computed, ref, watch } from 'vue';
 import type { DisplayMode, LineEnding, PacketViewMode, SearchMode } from '../types';
 import { settingsService } from '../features/settings';
 import {
-  clearAiApiKey as clearAiApiKeyInKeyring,
+  clearAiApiKey as clearStoredAiApiKey,
   getAiKeyStatus,
   isAiAssistantWindow,
-  removeLegacyAiApiKey,
-  setAiApiKey as setAiApiKeyInKeyring,
+  setAiApiKey as storeAiApiKey,
   type AiKeyStatus,
 } from '../features/settings';
 import { maxBufferFrames, setMaxBufferFrames } from '../lib/buffer-config';
 import { locale, setLocale, ensureLocaleLoaded } from '../lib/i18n';
 
-const MISSING_AI_KEY_STATUS: AiKeyStatus = { configured: false, durability: 'missing' };
+const MISSING_AI_KEY_STATUS: AiKeyStatus = { configured: false };
 
 function isEnumValue<T extends string>(raw: unknown, values: readonly T[]): raw is T {
   return typeof raw === 'string' && values.includes(raw as T);
@@ -247,12 +246,9 @@ export const useAppStore = defineStore('app', () => {
     aiApiKeyLoaded.value = false;
     try {
       if (normalized) {
-        aiKeyStatus.value = await setAiApiKeyInKeyring(normalized);
+        aiKeyStatus.value = await storeAiApiKey(normalized);
       } else {
-        // Explicit user clear is a deletion request, not a migration: erase a
-        // stale legacy plaintext copy even if the native backend is offline.
-        removeLegacyAiApiKey();
-        await clearAiApiKeyInKeyring();
+        await clearStoredAiApiKey();
         aiKeyStatus.value = MISSING_AI_KEY_STATUS;
       }
       return true;
@@ -285,9 +281,6 @@ export const useAppStore = defineStore('app', () => {
   async function refreshAiKeyStatus(): Promise<void> {
     aiApiKeyLoaded.value = false;
     try {
-      // G24 keeps every 0.7.3 source byte read-only until the one-time reset
-      // gate has completed. In particular, startup must not migrate and delete
-      // the legacy plaintext key before the backup snapshot is taken.
       aiKeyStatus.value = await getAiKeyStatus();
     } catch {
       aiKeyStatus.value = MISSING_AI_KEY_STATUS;

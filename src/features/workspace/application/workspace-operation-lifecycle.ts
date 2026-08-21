@@ -82,7 +82,6 @@ function operationErrorCode(code: string | undefined): AppErrorCode {
     case 'WORKSPACE_READ_ONLY':
     case 'WORKSPACE_CORRUPT':
     case 'PORT_IN_USE':
-    case 'PLUGIN_PERMISSION_DENIED':
       return code;
   }
   return 'INVALID_INPUT';

@@ -8,13 +8,6 @@ a Rust backend. The most important ownership rule is simple: the frontend owns
 sessions and protocol behavior; Rust owns privileged desktop work and small,
 typed command surfaces.
 
-> **Workspace architecture:** [ADR-0001](docs/ADR-0001-WORKSPACE-RUNTIME-PLUGIN.md)
-> is implemented for the R1 workspace release. Rust is the durable workspace
-> writer, application services own resident runtimes and operations, and Pinia
-> is now a compatibility/view facade. Plugin code remains behind the independent
-> fail-closed release gate in
-> [ADR-0004](docs/ADR-0004-PLUGIN-TRUST-AND-RELEASE-GATE.md).
-
 ## Topology
 
 ```text
@@ -24,7 +17,7 @@ typed command surfaces.
 │ components/                                                        │
 │   app-shell/      main layout, settings, session creation          │
 │   session/        session view + toolbar                           │
-│   terminal/       packet list, parser, Modbus, waveform panels     │
+│   terminal/       packet list, parser, Modbus, MCUMgr, shell, waveform │
 │   send-panel/     quick commands, macros, triggers, highlights     │
 │   ai/             assistant settings and log assistant UI          │
 │                                                                    │
@@ -32,6 +25,8 @@ typed command surfaces.
 │   useSerialConnection   serial open/listen/write/reconnect         │
 │   serial/               port lease, stop evidence, error taxonomy   │
 │   useModbusMaster       Modbus read/write/replay orchestration     │
+│   useSessionMcumgr      MCUMgr lease + SMP client                  │
+│   serial-shell          interactive console engine + session ctl   │
 │   useSessionFrames      frame append/clear helpers                 │
 │   usePacket*            virtual scroll, filters, format cache      │
 │   useExport             dialog + export command routing            │
@@ -50,6 +45,8 @@ typed command surfaces.
 │                                                                    │
 │ lib/                                                               │
 │   modbus/               protocol core, batching, transport, loops  │
+│   mcumgr/               SMP/CBOR/console transport, image/FS xfer  │
+│   serial-shell/         dumb-terminal engine, encoding, newlines   │
 │   serial-rx-queue       bounded RX buffering                       │
 │   protocol-parser       delimiter/fixed/length frame parsing       │
 │   waveform*             parsing, viewport math, canvas rendering   │
@@ -64,48 +61,34 @@ typed command surfaces.
 │ Rust backend: src-tauri/src/                                       │
 │                                                                    │
 │ commands/     ai, checksum, export/log session, window commands    │
-│ plugins/      runtime_wiring composition root + command adapter    │
 │ export/       TXT/CSV/JSONL/BIN formatters                         │
 │ models/       IPC structs, AppError, single IpcError mapper        │
 │ utils/        checksum, HEX, timestamp helpers                      │
-│ benches/      checksum/export/workspace/IPC hot-path benchmarks    │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Runtime Ownership
 
 - **Frontend session store:** source of truth for ports, frames, parser state,
-  Modbus config, macros, triggers, highlights, AI chat state, and persisted
-  snapshots.
-- **Frontend protocol engines:** parser, waveform, Modbus, triggers, and simple
-  send/delay macros are implemented in framework-free TypeScript where possible
-  so they can be unit-tested headlessly.
+  Modbus config, MCUMgr config, serial-shell config, macros, triggers,
+  highlights, AI chat state, and persisted snapshots.
+- **Frontend protocol engines:** parser, waveform, Modbus, MCUMgr, serial shell,
+  triggers, and simple send/delay macros are implemented in framework-free
+  TypeScript where possible so they can be unit-tested headlessly.
 - **Shared layout rules:** reusable geometry (such as sidebar bounds and
   keyboard resize steps) lives in dependency-free `lib/` modules. Stores and
   UI consume the same values, so persisted state, pointer resizing, and
   accessibility controls cannot drift.
-- **Rust command layer:** opaque file grants, streaming export/logging,
-  checksum calculation, bounded AI network calls, OS credential storage, and
+- **Rust command layer:** file dialogs, streaming export/logging, checksum
+  calculation, bounded AI network calls, plain application settings, and
   window management.
 - **AI provider boundary:** role-separated messages are built locally, while a
   request-scoped `ZaiClient` owns the API secret, validated provider endpoints,
   and HTTP transport. `ChatCompletion` values contain request data only and
   never carry credentials or arbitrary endpoint strings.
 - **Tauri plugins:** serialplugin provides binary serial channels. Native save
-  dialogs and credential access remain behind allowlisted Rust commands; no
-  updater plugin is shipped.
-- **Native plugin runtime:** `plugins/runtime_wiring.rs` is the single
-  composition root. Application setup installs the fail-closed unavailable
-  service first and swaps in the real protocol-v2 graph only when installer,
-  authorization, sidecar, sandbox, typed capability gateway, private/project
-  state, opaque file grants, surface/task projection, detached windows, and
-  the main-window serial lease bridge all resolve. Every guest resource binds
-  workspace, plugin, instance, and generation. Non-v2 packages are rejected at
-  manifest validation and never enter inventory or runtime. Configured unsigned HTTPS sources
-  and package SHA-256 provide integrity, not publisher identity; TUF/signature
-  verification remains a future stable-marketplace gate. Workspace switches
-  and native shutdown revoke leases, grants, surfaces, and runtime state before
-  closing the retained lifecycle handle.
+  dialogs and application settings remain behind Rust commands; no updater
+  plugin is shipped.
 - **Bulk IPC payloads are base64-first.** Export batches, workspace frame
   hydration, and checksum inputs use dual-channel DTOs (`data` number array or
   `dataB64` string, validators enforce exactly one). The frontend converts at
@@ -118,7 +101,7 @@ typed command surfaces.
 
 1. `tauri-plugin-serialplugin` delivers raw binary channel data to the resident
    session runtime.
-2. Raw-byte observers receive the exact plugin chunk first. Modbus uses this
+2. Raw-byte observers receive the exact plugin chunk first. Modbus and MCUMgr use this
    path to validate CRCs and match responses before display coalescing happens.
 3. The chunk enters `SerialRxQueue`, capped at 2 MiB/512 chunks, which records
    cumulative drops.
@@ -169,6 +152,10 @@ These are the rules most likely to protect users from subtle serial bugs:
   `writeChain`; concurrent serial writes can interleave at the driver.
 - **Modbus is half-duplex.** Keep one outstanding transaction at a time through
   `ModbusTransactionRunner` and `ModbusLoopCoordinator`.
+- **MCUMgr is a first-class serial client beside Modbus.** Protocol codecs live
+  in `src/lib/mcumgr`. Every operation acquires `SerialTransactionLease` as
+  `mcumgr-client`, writes through `lease.write`, and reads `rawBytes`. Writes
+  that have already left the host never retry.
 - **RX bytes reach protocol observers before display batching.** Protocol
   engines need exact chunks; UI frames may be coalesced.
 - **Frame arrays stay shallow and bounded.** Use per-session frame versions and
@@ -178,7 +165,7 @@ These are the rules most likely to protect users from subtle serial bugs:
 - **Persistence remains migration-safe.** Shape changes require an explicit
   migration and test; future schemas are never re-stamped by older builds.
 - **Hot paths stay framework-free when practical.** Queueing, formatting,
-  parsing, Modbus batching, waveform math, and export filters should remain
+  parsing, Modbus/MCUMgr codecs, waveform math, and export filters should remain
   testable without a Tauri webview.
 
 ## Upstream Constraints

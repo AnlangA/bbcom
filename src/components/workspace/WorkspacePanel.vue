@@ -20,15 +20,18 @@
       <n-button size="tiny" :disabled="busy" @click="showCreate = true">
         {{ t('workspace.new') }}
       </n-button>
-      <n-button size="tiny" :disabled="busy" @click="beginImport">
+      <n-button size="tiny" :disabled="busy" @click="importProject">
         {{ t('workspace.import') }}
       </n-button>
       <n-button
         size="tiny"
         :disabled="busy || !applicationSnapshot.currentWorkspace"
-        @click="showExport = true"
+        @click="exportProject"
       >
         {{ t('workspace.export') }}
+      </n-button>
+      <n-button v-if="exporting" size="tiny" type="warning" @click="cancelProjectExport">
+        {{ t('common.cancel') }}
       </n-button>
     </div>
 
@@ -88,84 +91,6 @@
         </div>
       </template>
     </n-modal>
-
-    <n-modal
-      v-model:show="showImport"
-      preset="card"
-      class="workspace-dialog"
-      :title="t('workspace.import')"
-      :mask-closable="!busy"
-      :closable="!busy"
-      @after-leave="clearPassphrases"
-    >
-      <label class="workspace-field">
-        <span>{{ t('workspace.encryption.age') }}</span>
-        <n-input
-          v-model:value="passphrase"
-          type="password"
-          show-password-on="click"
-          :placeholder="t('workspace.passphrase')"
-          :maxlength="1024"
-        />
-      </label>
-      <template #footer>
-        <div class="workspace-dialog-actions">
-          <n-button @click="cancelImport">{{ t('common.cancel') }}</n-button>
-          <n-button :disabled="busy" @click="importPlaintext">
-            {{ t('workspace.encryption.plaintext') }}
-          </n-button>
-          <n-button type="primary" :disabled="passphrase.length < 12" @click="importEncrypted">
-            {{ t('workspace.import') }}
-          </n-button>
-        </div>
-      </template>
-    </n-modal>
-
-    <n-modal
-      v-model:show="showExport"
-      preset="card"
-      class="workspace-dialog"
-      :title="t('workspace.export')"
-      :mask-closable="!busy"
-      :closable="!busy"
-      @after-leave="clearPassphrases"
-    >
-      <label class="workspace-field">
-        <span>{{ t('workspace.encryption.age') }}</span>
-        <n-input
-          v-model:value="passphrase"
-          type="password"
-          show-password-on="click"
-          :placeholder="t('workspace.passphrase')"
-          :maxlength="1024"
-        />
-      </label>
-      <label class="workspace-field">
-        <span>{{ t('workspace.passphraseConfirm') }}</span>
-        <n-input
-          v-model:value="passphraseConfirmation"
-          type="password"
-          show-password-on="click"
-          :placeholder="t('workspace.passphraseConfirm')"
-          :maxlength="1024"
-        />
-      </label>
-      <p class="workspace-warning">{{ t('workspace.passphraseNoRecovery') }}</p>
-      <p v-if="passphraseMismatch" class="workspace-error" role="alert">
-        {{ t('workspace.passphraseMismatch') }}
-      </p>
-      <template #footer>
-        <div class="workspace-dialog-actions">
-          <n-button @click="cancelProjectExport">{{ t('common.cancel') }}</n-button>
-          <n-button :disabled="busy" @click="exportPlaintext">
-            {{ t('workspace.encryption.plaintext') }}
-          </n-button>
-          <n-button type="primary" :disabled="busy || !canExportEncrypted" @click="exportEncrypted">
-            {{ t('workspace.encryption.age') }}
-          </n-button>
-        </div>
-      </template>
-    </n-modal>
   </section>
 </template>
 
@@ -191,11 +116,7 @@ const librarySnapshot = ref<WorkspaceCoordinatorSnapshot>(
   workspace?.coordinator.snapshot() ?? emptyCoordinatorSnapshot(),
 );
 const showCreate = ref(false);
-const showImport = ref(false);
-const showExport = ref(false);
 const projectName = ref('');
-const passphrase = ref('');
-const passphraseConfirmation = ref('');
 let stopApplication: (() => void) | null = null;
 let stopCoordinator: (() => void) | null = null;
 const armedDeleteId = ref<string | null>(null);
@@ -211,12 +132,8 @@ const messageKey = computed(
   () => applicationSnapshot.value.messageKey ?? librarySnapshot.value.library.messageKey,
 );
 const saveHealthLabel = computed(() => saveHealthText(applicationSnapshot.value.saveHealth));
-const passphraseMismatch = computed(
-  () =>
-    passphraseConfirmation.value.length > 0 && passphrase.value !== passphraseConfirmation.value,
-);
-const canExportEncrypted = computed(
-  () => passphrase.value.length >= 12 && passphrase.value === passphraseConfirmation.value,
+const exporting = computed(
+  () => applicationSnapshot.value.exporting || librarySnapshot.value.exporting,
 );
 
 onMounted(() => {
@@ -263,72 +180,23 @@ function requestDelete(workspaceId: string): void {
   void deleteProject(workspaceId);
 }
 
-function beginImport(): void {
-  // Encryption mode is an explicit user choice before opening the native file
-  // picker. A failed plaintext attempt must never consume one grant and then
-  // surprise the user with a second picker for the same file.
-  showImport.value = true;
-}
-
-function cancelImport(): void {
+async function importProject(): Promise<void> {
   if (!workspace) return;
-  if (librarySnapshot.value.navigationAction === 'import') {
-    workspace.application.cancelActivation();
-  }
-  showImport.value = false;
+  reportFailure(await workspace.application.importWorkspace());
 }
 
-async function importPlaintext(): Promise<void> {
-  if (!workspace) return;
-  const outcome = await workspace.application.importWorkspace({ mode: 'plaintext' });
-  if (outcome.outcome === 'completed') showImport.value = false;
-  reportFailure(outcome);
-}
-
-async function importEncrypted(): Promise<void> {
-  if (!workspace || passphrase.value.length < 12) return;
-  const outcome = await workspace.application.importWorkspace({
-    mode: 'age-passphrase',
-    passphrase: passphrase.value,
-  });
-  if (outcome.outcome === 'completed') showImport.value = false;
-  reportFailure(outcome);
-}
-
-async function exportPlaintext(): Promise<void> {
+async function exportProject(): Promise<void> {
   if (!workspace) return;
   const current = applicationSnapshot.value.currentWorkspace;
   if (!current) return;
-  const outcome = await workspace.application.exportWorkspace(`${current.name}.bbcom`, {
-    mode: 'plaintext',
-  });
-  if (outcome.outcome === 'completed') showExport.value = false;
-  reportFailure(outcome);
-}
-
-async function exportEncrypted(): Promise<void> {
-  if (!workspace || !canExportEncrypted.value) return;
-  const current = applicationSnapshot.value.currentWorkspace;
-  if (!current) return;
-  const outcome = await workspace.application.exportWorkspace(`${current.name}.bbcom`, {
-    mode: 'age-passphrase',
-    passphrase: passphrase.value,
-  });
-  if (outcome.outcome === 'completed') showExport.value = false;
-  reportFailure(outcome);
+  reportFailure(await workspace.application.exportWorkspace(`${current.name}.bbcom`));
 }
 
 async function cancelProjectExport(): Promise<void> {
   if (!workspace) return;
   const outcome = await workspace.application.cancelExport();
-  if (!outcome) {
-    showExport.value = false;
-    return;
-  }
-  if (outcome.outcome === 'completed') {
-    message.info(t('workspace.export.cancel_too_late'));
-  }
-  if (outcome.outcome !== 'failed') showExport.value = false;
+  if (!outcome) return;
+  if (outcome.outcome === 'completed') message.info(t('workspace.export.cancel_too_late'));
   reportFailure(outcome);
 }
 
@@ -338,11 +206,6 @@ async function reportOutcome(outcome: Promise<WorkspaceApplicationOutcome>): Pro
 
 function reportFailure(outcome: { outcome: string; messageKey?: string }): void {
   if (outcome.outcome === 'failed' && outcome.messageKey) message.error(t(outcome.messageKey));
-}
-
-function clearPassphrases(): void {
-  passphrase.value = '';
-  passphraseConfirmation.value = '';
 }
 
 function saveHealthText(health: WorkspaceSaveHealth): string {

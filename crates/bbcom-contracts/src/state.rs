@@ -7,7 +7,6 @@ use ts_rs::TS;
 pub enum StateOrigin {
     Main,
     AiAssistant,
-    PluginHost,
 }
 
 /// Revisioned state/event envelope shared by the main and auxiliary windows.

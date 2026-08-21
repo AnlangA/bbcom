@@ -53,7 +53,7 @@ pub enum SerialSendOutcome {
     Cancelled,
 }
 
-/// Result returned by every logical send, including macros and plugins.
+/// Result returned by every logical send, including macros.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(optional_fields)]

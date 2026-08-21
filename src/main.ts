@@ -1,4 +1,4 @@
-import { createApp, watch } from 'vue';
+import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import { settingsService } from './features/settings';
 import './styles/variables.css';
@@ -11,25 +11,21 @@ settingsService.hydrate();
 
 const params = new URLSearchParams(window.location.search);
 const isAiWindow = params.get('window') === 'ai';
-const isPluginWindow = params.get('window') === 'plugin';
 
 const RootComponent = isAiWindow
   ? (await import('./AiWindow.vue')).default
-  : isPluginWindow
-    ? (await import('./PluginWindow.vue')).default
-    : (await import('./App.vue')).default;
+  : (await import('./App.vue')).default;
 
 const app = createApp(RootComponent);
 const pinia = createPinia();
 app.use(pinia);
 
-if (!isAiWindow && !isPluginWindow) {
+if (!isAiWindow) {
   const [
     application,
     serialApplication,
     shutdown,
     workspace,
-    migration,
     appStoreModule,
     serialStoreModule,
     sessions,
@@ -38,12 +34,10 @@ if (!isAiWindow && !isPluginWindow) {
     import('./features/serial'),
     import('./features/shutdown'),
     import('./features/workspace'),
-    import('./features/migration'),
     import('./stores/app'),
     import('./stores/serial'),
     import('./features/sessions'),
   ]);
-  const pluginsModule = await import('./features/plugins');
   const portLeaseRegistry = new serialApplication.PortLeaseRegistry();
   const notifications = new application.ApplicationNotificationRouter();
   const runtimeStatusRegistry = new sessions.SessionRuntimeStatusRegistry();
@@ -62,15 +56,6 @@ if (!isAiWindow && !isPluginWindow) {
     runtimeStatusRegistry,
   });
   app.provide(sessions.SESSION_APPLICATION_SERVICES_KEY, applicationServices);
-  // The plugin center renders in Settings once the native runtime is wired;
-  // the port itself fail-closes to "unavailable" outside Tauri.
-  const pluginCenterService = new pluginsModule.PluginCenterService(
-    new pluginsModule.TauriPluginCenterPort(),
-  );
-  app.provide(pluginsModule.PLUGIN_CENTER_KEY, pluginCenterService);
-  let pluginSerialCapabilityGateway: ReturnType<
-    typeof pluginsModule.createPluginSerialCapabilityGateway
-  > | null = null;
   sessions.enterWorkspaceSessionPersistenceMode();
   const sessionStore = sessions.useWorkspaceSessionPort();
   const sessionMutationPolicy = sessions.useSessionMutationPolicy();
@@ -103,26 +88,7 @@ if (!isAiWindow && !isPluginWindow) {
     preflightRuntimeCapture: (sessionId, frame) =>
       runtimeContext.application?.preflightCapturedFrame(sessionId, frame).accepted === true,
   });
-  const pluginParticipant = new workspace.PluginRuntimeWorkspaceParticipant({
-    async quiesce() {
-      pluginCenterService.cancelAction();
-      await pluginSerialCapabilityGateway?.revokeAll();
-    },
-    async dispose() {
-      await pluginSerialCapabilityGateway?.revokeAll();
-    },
-    restore() {
-      return pluginCenterService.refresh();
-    },
-    activateStopped() {
-      return pluginCenterService.refresh();
-    },
-    commit() {},
-  });
-  const transitions = new workspace.WorkspaceTransitionCoordinator([
-    sessionParticipant,
-    pluginParticipant,
-  ]);
+  const transitions = new workspace.WorkspaceTransitionCoordinator([sessionParticipant]);
   const workspaceApplication = new workspace.WorkspaceApplicationService(
     workspaceCoordinator,
     workspacePort,
@@ -139,79 +105,6 @@ if (!isAiWindow && !isPluginWindow) {
     },
   );
   runtimeContext.application = workspaceApplication;
-  pluginSerialCapabilityGateway = pluginsModule.createPluginSerialCapabilityGateway({
-    pluginCenter: pluginCenterService,
-    workspace: workspaceApplication,
-    workspaceFrames: workspacePort,
-    sessions: sessionStore,
-    runtimes: applicationServices.runtimeRegistry,
-    ports: serialStore,
-  });
-  const pluginSerialCapabilityTransport = new pluginsModule.TauriPluginSerialCapabilityTransport();
-  const pluginHostContextTransport = new pluginsModule.TauriPluginHostContextTransport();
-  const updatePluginHostContext = () =>
-    pluginHostContextTransport.update({
-      locale: appStore.locale,
-      theme: appStore.theme,
-      sessions: sessionStore.sessions.map((session, index) => {
-        const connection = applicationServices.runtimeRegistry
-          .get(session.id)
-          ?.serialTransactions.connectionSnapshot() ?? { connected: false, generation: 0 };
-        const preferredName = session.displayName?.trim() ?? '';
-        return {
-          sessionId: session.id,
-          name: pluginsModule.safeDisplayText(preferredName, 1_024)
-            ? preferredName
-            : `Session ${index + 1}`,
-          connected: connection.connected,
-          rxBytes: session.rxBytes,
-          txBytes: session.txBytes,
-          generation: connection.generation,
-        };
-      }),
-    });
-  await updatePluginHostContext().catch(() => undefined);
-  watch(
-    () => ({
-      locale: appStore.locale,
-      theme: appStore.theme,
-      sessions: sessionStore.sessions.map((session) => ({
-        id: session.id,
-        displayName: session.displayName,
-        connected: session.isConnected,
-        rxBytes: session.rxBytes,
-        txBytes: session.txBytes,
-      })),
-    }),
-    () => void updatePluginHostContext().catch(() => undefined),
-    { deep: true, flush: 'post' },
-  );
-  watch(
-    () => [...serialStore.availablePorts],
-    () => {
-      if (pluginSerialCapabilityGateway?.refreshPortCatalog() !== true) return;
-      void pluginSerialCapabilityTransport.notifyPortCatalogChanged().catch(() => undefined);
-    },
-    { flush: 'sync' },
-  );
-  watch(
-    () =>
-      JSON.stringify(
-        sessionStore.sessions.map((session) => [
-          session.id,
-          session.displayName,
-          session.isConnected,
-        ]),
-      ),
-    () => void pluginSerialCapabilityTransport.notifyPortCatalogChanged().catch(() => undefined),
-    { flush: 'post' },
-  );
-  const pluginSerialCapabilityBridge = new pluginsModule.PluginSerialCapabilityBridge(
-    pluginSerialCapabilityGateway,
-    pluginSerialCapabilityTransport,
-  );
-  await pluginSerialCapabilityBridge.start().catch(() => false);
-  void pluginCenterService.start();
   const workspaceAdapter = new workspace.SessionStoreWorkspaceAdapter(
     sessionStore,
     workspaceApplication,
@@ -227,6 +120,19 @@ if (!isAiWindow && !isPluginWindow) {
   });
   runtimeContext.adapter = workspaceAdapter;
   workspaceAdapter.start();
+
+  // The native catalog remembers the active workspace across launches, but a
+  // catalog refresh does not hydrate its sessions into the renderer.
+  const initialCatalog = await workspaceCoordinator.refreshCatalog();
+  if (initialCatalog.outcome === 'completed') {
+    const initialWorkspaceId =
+      initialCatalog.value.library.activeWorkspaceId ??
+      initialCatalog.value.library.projects[0]?.workspaceId;
+    if (initialWorkspaceId) {
+      await workspaceApplication.openWorkspace(initialWorkspaceId);
+    }
+  }
+
   workspaceUi.subscribe((layout) => {
     if (!workspaceApplication.snapshot().acceptsSaves) return;
     const outcome = workspaceApplication.queueConfigMutation({
@@ -247,27 +153,15 @@ if (!isAiWindow && !isPluginWindow) {
         workspaceApplication.preflightSessionRegistration(sessionId, frameCount, captureBytes)
           .accepted,
     });
-    void updatePluginHostContext().catch(() => undefined);
   });
   app.provide(workspace.WORKSPACE_APPLICATION_KEY, {
     coordinator: workspaceCoordinator,
     application: workspaceApplication,
   });
-  const legacyReset = migration.createLegacyResetBootstrap({
-    source: new migration.LegacyRendererReadOnlySource({
-      storage: globalThis.localStorage,
-      sessions: new migration.BrowserLegacySessionSnapshotReader(globalThis.localStorage),
-    }),
-    backupPort: new migration.TauriLegacyBackupPort(),
-    target: new migration.WorkspaceApplicationResetTarget(workspaceApplication),
-    markerStorage: globalThis.localStorage,
-  });
-  app.provide(migration.LEGACY_RESET_CONTEXT_KEY, legacyReset);
   const tauriShutdown = new shutdown.TauriShutdownPort();
   const applicationShutdown = await shutdown.bootstrapApplicationShutdown({
     application: {
       async prepareShutdown() {
-        await pluginSerialCapabilityGateway?.revokeAll();
         await applicationServices.prepareShutdown();
       },
     },

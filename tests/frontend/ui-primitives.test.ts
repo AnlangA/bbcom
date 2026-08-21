@@ -6,7 +6,6 @@ import assert from 'node:assert/strict';
 import { mount } from '@vue/test-utils';
 import AppModal from '../../src/components/ui/AppModal.vue';
 import IconActionButton from '../../src/components/ui/IconActionButton.vue';
-import EmptyState from '../../src/components/ui/EmptyState.vue';
 import SettingsSection from '../../src/components/ui/SettingsSection.vue';
 import ActionListItem from '../../src/components/ui/ActionListItem.vue';
 import InlineEditorActions from '../../src/components/ui/InlineEditorActions.vue';
@@ -55,16 +54,6 @@ test('IconActionButton exposes a mandatory accessible name and pressed state', (
   assert.equal(button.attributes('aria-label'), 'Delete macro');
   assert.equal(button.attributes('aria-pressed'), 'true');
   assert.ok(button.text() !== undefined);
-});
-
-test('EmptyState renders title, description, and action slot', () => {
-  const wrapper = mount(EmptyState, {
-    props: { title: 'No plugins', description: 'Install one to get started' },
-    slots: { action: '<button>Install</button>' },
-  });
-  assert.equal(wrapper.find('.empty-state__title').text(), 'No plugins');
-  assert.equal(wrapper.find('.empty-state__description').text(), 'Install one to get started');
-  assert.equal(wrapper.find('.empty-state__action button').text(), 'Install');
 });
 
 test('SettingsSection links its body to a stable heading id', () => {

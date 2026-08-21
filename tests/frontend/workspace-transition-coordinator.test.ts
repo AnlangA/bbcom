@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  PluginRuntimeWorkspaceParticipant,
   SessionRuntimeWorkspaceParticipant,
   WorkspaceTransitionCoordinator,
   type WorkspaceTransitionParticipant,
@@ -164,29 +163,5 @@ describe('workspace transition participants', () => {
       }),
     ).rejects.toThrow('prepare failed');
     expect(endPersistenceDrain).toHaveBeenCalledOnce();
-  });
-
-  it('forwards every plugin phase with only opaque workspace identities', async () => {
-    const port = {
-      quiesce: vi.fn(),
-      dispose: vi.fn(),
-      restore: vi.fn(),
-      activateStopped: vi.fn(),
-      commit: vi.fn(),
-    };
-    const participant = new PluginRuntimeWorkspaceParticipant(port);
-    await participant.quiesce({ transitionId: 't', previousWorkspaceId: 'old' } as never);
-    await participant.dispose({ transitionId: 't' } as never);
-    await participant.restore({ transitionId: 't', previousWorkspaceId: 'old' } as never);
-    await participant.activateStopped({
-      transitionId: 't',
-      workspace: { workspaceId: 'new' },
-    } as never);
-    participant.commit({ transitionId: 't', workspaceId: 'new' });
-    expect(port.quiesce).toHaveBeenCalledWith('t');
-    expect(port.dispose).toHaveBeenCalledWith('t');
-    expect(port.restore).toHaveBeenCalledWith('t', 'old');
-    expect(port.activateStopped).toHaveBeenCalledWith('t', 'new');
-    expect(port.commit).toHaveBeenCalledWith('t', 'new');
   });
 });

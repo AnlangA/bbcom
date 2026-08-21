@@ -3,7 +3,7 @@
 use crate::models::ipc_error::IpcError;
 
 /// Label of the one webview window trusted with native authority (file
-/// grants, workspaces, settings, plugin center, shutdown).
+/// grants, workspaces, settings, shutdown).
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 
 /// Reject any caller that is not the main window before it reaches a

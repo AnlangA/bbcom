@@ -230,53 +230,30 @@ test('waitForIdle cancellation detaches only that waiter and never cancels the w
 });
 
 test('admission gate rejects missing or forged provenance and revalidates every physical chunk', async () => {
-  let leaseToken = 'lease-1';
+  let ownerId = 'session-1';
   const chunks: number[][] = [];
   const scheduler = new SerialWriteScheduler(
     async (chunk) => {
       chunks.push(Array.from(chunk));
-      leaseToken = 'revoked';
+      ownerId = 'revoked';
       return chunk.length;
     },
     { chunkBytes: 2 },
     {
       authorize(admission) {
-        return (
-          admission.source === 'plugin' &&
-          admission.ownerId === 'plugin.mcumgr' &&
-          admission.generation === 7 &&
-          admission.leaseToken === leaseToken
-        );
+        return admission.source === 'host' && admission.ownerId === ownerId;
       },
     },
   );
 
   await expectDenied(scheduler.enqueue(Uint8Array.of(1)));
   await expectDenied(
-    scheduler.enqueue(
-      Uint8Array.of(1),
-      {},
-      {
-        source: 'plugin',
-        ownerId: 'plugin.mcumgr',
-        generation: 7,
-        leaseToken: 'forged',
-      },
-    ),
+    scheduler.enqueue(Uint8Array.of(1), {}, { source: 'host', ownerId: 'other-session' }),
   );
 
-  leaseToken = 'lease-1';
+  ownerId = 'session-1';
   assert.deepEqual(
-    await scheduler.enqueue(
-      Uint8Array.of(1, 2, 3),
-      {},
-      {
-        source: 'plugin',
-        ownerId: 'plugin.mcumgr',
-        generation: 7,
-        leaseToken: 'lease-1',
-      },
-    ),
+    await scheduler.enqueue(Uint8Array.of(1, 2, 3), {}, { source: 'host', ownerId: 'session-1' }),
     {
       outcome: 'partial',
       requestedBytes: 3,

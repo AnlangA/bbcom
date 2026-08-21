@@ -6,7 +6,7 @@ use rusqlite::{Connection, OpenFlags};
 use crate::{Result, WorkspaceError};
 
 pub const WORKSPACE_APPLICATION_ID: i32 = 0x4242_434d;
-pub const WORKSPACE_SCHEMA_VERSION: i32 = 3;
+pub const WORKSPACE_SCHEMA_VERSION: i32 = 4;
 pub const WORKSPACE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) const READ_WRITE_FLAGS: OpenFlags = OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -106,7 +106,7 @@ pub(crate) fn migrate_schema(connection: &Connection, writable: bool) -> Result<
     if user_version == WORKSPACE_SCHEMA_VERSION {
         return Ok(());
     }
-    if !writable || !matches!(user_version, 1 | 2) {
+    if !writable || !matches!(user_version, 1..=3) {
         return Err(WorkspaceError::Corrupt {
             reason: "user_version",
         });
@@ -152,6 +152,21 @@ pub(crate) fn migrate_schema(connection: &Connection, writable: bool) -> Result<
         )
     };
     if let Err(error) = migration {
+        let _ = connection.execute_batch("ROLLBACK;");
+        return Err(error.into());
+    }
+
+    let mcumgr_migration = connection.execute_batch(
+        "BEGIN IMMEDIATE;
+         CREATE TABLE IF NOT EXISTS mcumgr_config (
+           session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+           config_json TEXT NOT NULL DEFAULT '{}'
+         ) STRICT;
+         INSERT OR IGNORE INTO mcumgr_config(session_id) SELECT id FROM sessions;
+         PRAGMA user_version = 4;
+         COMMIT;",
+    );
+    if let Err(error) = mcumgr_migration {
         let _ = connection.execute_batch("ROLLBACK;");
         return Err(error.into());
     }
@@ -295,6 +310,11 @@ CREATE TABLE highlights (
 ) STRICT;
 
 CREATE TABLE modbus_config (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  config_json TEXT NOT NULL DEFAULT '{}'
+) STRICT;
+
+CREATE TABLE mcumgr_config (
   session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
   config_json TEXT NOT NULL DEFAULT '{}'
 ) STRICT;

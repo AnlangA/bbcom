@@ -19,6 +19,19 @@ import {
   normalizePortConfig,
 } from '../../../lib/session-persistence';
 import { cloneModbusConfig, normalizeModbusConfig } from '../../../lib/modbus';
+import {
+  DEFAULT_SERIAL_SHELL_CONFIG,
+  cloneSerialShellConfig,
+  normalizeSerialShellConfig,
+} from '../../../lib/serial-shell';
+import {
+  DEFAULT_MCUMGR_CONFIG,
+  MCUMGR_CONFIG_KEYS,
+  cloneMcumgrConfig,
+  normalizeMcumgrConfig,
+  persistableMcumgrConfig,
+  validateMcumgrConfig,
+} from '../../../lib/mcumgr';
 import type { SerialSession, SessionWaveformFrameCursor } from '../../../types';
 import {
   WorkspaceAdapterLimitError,
@@ -40,7 +53,7 @@ import {
 } from './workspace-collections-projection';
 import {
   WORKSPACE_SESSION_PROJECTION_VERSION,
-  assertEmptyRecord,
+  SERIAL_SHELL_CONFIG_KEYS,
   assertExactKeys,
   assertLimit,
   assertMutationSize,
@@ -55,6 +68,7 @@ import {
   validUint32,
   validateModbusConfig,
   validateParserConfig,
+  validateSerialShellConfig,
 } from './workspace-validation';
 import {
   chunkWaveformSamples,
@@ -180,6 +194,8 @@ export function projectWorkspaceSessionMutations(
     featureMutation(sequence++, sessionId, 'parser', parser),
     featureMutation(sequence++, sessionId, 'modbus', modbus),
     featureMutation(sequence++, sessionId, 'waveform', waveform),
+    featureMutation(sequence++, sessionId, 'shell', projectShell(session)),
+    featureMutation(sequence++, sessionId, 'mcumgr', projectMcumgr(session)),
     {
       kind: 'replace-session-collections',
       sequence: sequence++,
@@ -265,6 +281,7 @@ export function hydrateWorkspaceSession(
       'parserState',
       'featureState',
       'modbusConfig',
+      'mcumgrConfig',
     ],
     'snapshot',
   );
@@ -280,10 +297,11 @@ export function hydrateWorkspaceSession(
   const lastPortHint = snapshot.lastPortHint ? projectPortHint(snapshot.lastPortHint) : null;
   const portConfig = hydratePortConfig(snapshot.portConfig);
   const document = hydrateDocument(snapshot.document);
-  assertEmptyRecord(snapshot.sendPreferences, 'snapshot.sendPreferences');
+  const shellConfig = hydrateShell(snapshot.sendPreferences);
   const preferences = hydratePreferences(snapshot.featureState);
   const parserState = hydrateParser(snapshot.parserState);
   const modbusConfig = hydrateModbusConfig(snapshot.modbusConfig);
+  const mcumgrConfig = hydrateMcumgrConfig(snapshot.mcumgrConfig);
   const waveformPreferences = hydrateWaveformPreferences(snapshot.displayPreferences);
   const collections = hydrateCollections(parts.collections);
   const logAiMessages = hydrateAiMessages(parts.aiMessages);
@@ -318,6 +336,8 @@ export function hydrateWorkspaceSession(
     parserState,
     modbusRegisters: collections.modbusRegisters,
     modbusConfig,
+    shellConfig,
+    mcumgrConfig,
     waveformSourceMode: waveformPreferences.sourceMode,
     autoLogEnabled: false,
     logPath: null,
@@ -362,7 +382,7 @@ export function hydrateWorkspaceSession(
 function featureMutation(
   sequence: number,
   entityId: string,
-  feature: 'preferences' | 'parser' | 'modbus' | 'waveform',
+  feature: 'preferences' | 'parser' | 'modbus' | 'waveform' | 'shell' | 'mcumgr',
   state: Record<string, unknown>,
 ): WorkspaceMutation {
   return { kind: 'upsert-feature-state', sequence, entityId, payload: { feature, state } };
@@ -418,6 +438,22 @@ function projectModbus(session: SerialSession): Record<string, unknown> {
   validateModbusConfig(session.modbusConfig, 'session.modbusConfig');
   const config = cloneModbusConfig(session.modbusConfig);
   assertSafeWorkspaceValue(config, 'session.modbusConfig');
+  return { schemaVersion: WORKSPACE_SESSION_PROJECTION_VERSION, ...config };
+}
+
+function projectShell(session: SerialSession): Record<string, unknown> {
+  assertExactKeys(session.shellConfig, SERIAL_SHELL_CONFIG_KEYS, 'session.shellConfig');
+  validateSerialShellConfig(session.shellConfig, 'session.shellConfig');
+  const config = cloneSerialShellConfig(session.shellConfig);
+  assertSafeWorkspaceValue(config, 'session.shellConfig');
+  return { schemaVersion: WORKSPACE_SESSION_PROJECTION_VERSION, shell: config };
+}
+
+function projectMcumgr(session: SerialSession): Record<string, unknown> {
+  assertExactKeys(session.mcumgrConfig, [...MCUMGR_CONFIG_KEYS], 'session.mcumgrConfig');
+  validateMcumgrConfig(session.mcumgrConfig, 'session.mcumgrConfig');
+  const config = persistableMcumgrConfig(session.mcumgrConfig);
+  assertSafeWorkspaceValue(config, 'session.mcumgrConfig');
   return { schemaVersion: WORKSPACE_SESSION_PROJECTION_VERSION, ...config };
 }
 
@@ -558,6 +594,27 @@ function hydrateModbusConfig(value: Record<string, unknown>): SerialSession['mod
   return normalizeModbusConfig(value);
 }
 
+function hydrateMcumgrConfig(value: Record<string, unknown>): SerialSession['mcumgrConfig'] {
+  if (!isRecord(value)) throw new WorkspaceAdapterValidationError('mcumgrConfig');
+  if (Object.keys(value).length === 0) {
+    return cloneMcumgrConfig(DEFAULT_MCUMGR_CONFIG);
+  }
+  if ('schemaVersion' in value) expectVersion(value.schemaVersion, 'mcumgrConfig.schemaVersion');
+  return cloneMcumgrConfig(normalizeMcumgrConfig(value));
+}
+
+function hydrateShell(value: Record<string, unknown>): SerialSession['shellConfig'] {
+  if (Object.keys(value).length === 0) {
+    return cloneSerialShellConfig(DEFAULT_SERIAL_SHELL_CONFIG);
+  }
+  assertExactKeys(value, ['schemaVersion', 'shell'], 'sendPreferences');
+  expectVersion(value.schemaVersion, 'sendPreferences.schemaVersion');
+  if (!isRecord(value.shell)) throw new WorkspaceAdapterValidationError('sendPreferences.shell');
+  assertExactKeys(value.shell, SERIAL_SHELL_CONFIG_KEYS, 'sendPreferences.shell');
+  validateSerialShellConfig(value.shell, 'sendPreferences.shell');
+  return normalizeSerialShellConfig(value.shell);
+}
+
 function hydratePortConfig(value: Record<string, unknown>): SerialSession['portConfig'] {
   assertExactKeys(
     value,
@@ -619,6 +676,8 @@ const SERIAL_SESSION_KEYS: ReadonlySet<string> = new Set([
   'parserState',
   'modbusRegisters',
   'modbusConfig',
+  'shellConfig',
+  'mcumgrConfig',
   'waveformSourceMode',
   'autoLogEnabled',
   'logPath',

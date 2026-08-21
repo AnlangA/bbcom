@@ -2,9 +2,7 @@
   <n-config-provider :theme-overrides="themeOverrides">
     <n-message-provider>
       <n-dialog-provider>
-        <LegacyResetGate>
-          <AppShell />
-        </LegacyResetGate>
+        <AppShell />
         <ShutdownDialog />
       </n-dialog-provider>
     </n-message-provider>
@@ -15,7 +13,6 @@
 import { onErrorCaptured, watch } from 'vue';
 import { NConfigProvider, NDialogProvider, NMessageProvider } from 'naive-ui';
 import AppShell from './components/app-shell/AppShell.vue';
-import LegacyResetGate from './components/migration/LegacyResetGate.vue';
 import ShutdownDialog from './components/app-shell/ShutdownDialog.vue';
 import { useAiSessionBridge } from './composables/useAiSessionBridge';
 import { useAppStore } from './stores/app';

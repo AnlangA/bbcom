@@ -30,5 +30,4 @@ export {
   type WorkspaceOperationLifecyclePort,
   type WorkspaceProjectViewModel,
   type WorkspaceLayoutV1,
-  type ProjectEncryptionOptions,
 } from './types';

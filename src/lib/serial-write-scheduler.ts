@@ -30,14 +30,7 @@ export interface SerialWriteShutdownResult {
   timedOut: boolean;
 }
 
-export type SerialWriteAdmission =
-  | Readonly<{ source: 'host'; ownerId: string }>
-  | Readonly<{
-      source: 'plugin';
-      ownerId: string;
-      generation: number;
-      leaseToken: string;
-    }>;
+export type SerialWriteAdmission = Readonly<{ source: 'host'; ownerId: string }>;
 
 export interface SerialWriteAdmissionGate {
   authorize(admission: SerialWriteAdmission): boolean;

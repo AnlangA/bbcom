@@ -12,7 +12,6 @@ export interface CreateOperationInput {
   kind: OperationKind;
   workspaceId: string;
   sessionId?: string;
-  pluginId?: string;
   messageKey?: string;
   progress?: {
     completedUnits?: number;
@@ -108,9 +107,6 @@ export class OperationRegistry {
       workspaceId: validIdentity('workspaceId', input.workspaceId),
       ...(input.sessionId !== undefined
         ? { sessionId: validIdentity('sessionId', input.sessionId) }
-        : {}),
-      ...(input.pluginId !== undefined
-        ? { pluginId: validIdentity('pluginId', input.pluginId) }
         : {}),
       ...(input.messageKey !== undefined ? { messageKey: validMessageKey(input.messageKey) } : {}),
       ...(progress ?? {}),
@@ -421,7 +417,6 @@ function cloneRecord(record: StoredOperation): OperationRecord {
     status: record.status,
     workspaceId: record.workspaceId,
     ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
-    ...(record.pluginId !== undefined ? { pluginId: record.pluginId } : {}),
     ...(record.completedUnits !== undefined ? { completedUnits: record.completedUnits } : {}),
     ...(record.totalUnits !== undefined ? { totalUnits: record.totalUnits } : {}),
     ...(record.messageKey !== undefined ? { messageKey: record.messageKey } : {}),

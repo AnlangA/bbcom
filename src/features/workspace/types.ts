@@ -15,7 +15,6 @@ import type {
   ImportProjectResponse,
   OpenWorkspaceRequest,
   OpenWorkspaceResponse,
-  ProjectEncryptionOptions,
   ProjectSourceGrantResponse,
   ProjectTargetGrantResponse,
   RequestProjectSourceGrantRequest,
@@ -193,5 +192,3 @@ export interface WorkspaceOperationLifecyclePort {
   fail(operationId: string, failure: WorkspaceActionFailure): void;
   cancel(operationId: string): Promise<void>;
 }
-
-export type { ProjectEncryptionOptions };

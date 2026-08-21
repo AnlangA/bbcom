@@ -12,10 +12,8 @@ export {
   workspaceOperationLifecycleFor,
 } from './workspace-operation-lifecycle';
 export {
-  PluginRuntimeWorkspaceParticipant,
   SessionRuntimeWorkspaceParticipant,
   WorkspaceTransitionCoordinator,
-  type PluginRuntimeWorkspacePort,
   type SessionRuntimeWorkspaceParticipantOptions,
   type SessionRuntimeStatusTransitionPort,
   type WorkspaceTransitionParticipant,

@@ -206,37 +206,3 @@ export class SessionRuntimeWorkspaceParticipant<
     this.snapshots.delete(context.transitionId);
   }
 }
-
-export interface PluginRuntimeWorkspacePort {
-  quiesce(transitionId: string): void | Promise<void>;
-  dispose(transitionId: string): void | Promise<void>;
-  restore(transitionId: string, workspaceId: string | null): void | Promise<void>;
-  activateStopped(transitionId: string, workspaceId: string): void | Promise<void>;
-  commit(transitionId: string, workspaceId: string): void;
-}
-
-export class PluginRuntimeWorkspaceParticipant implements WorkspaceTransitionParticipant {
-  readonly id = 'plugin-runtime';
-
-  constructor(private readonly port: PluginRuntimeWorkspacePort) {}
-
-  quiesce(context: WorkspaceRuntimeQuiesceContext): void | Promise<void> {
-    return this.port.quiesce(context.transitionId);
-  }
-
-  dispose(context: WorkspaceRuntimeDisposeContext): void | Promise<void> {
-    return this.port.dispose(context.transitionId);
-  }
-
-  restore(context: WorkspaceRuntimeRestoreContext): void | Promise<void> {
-    return this.port.restore(context.transitionId, context.previousWorkspaceId);
-  }
-
-  activateStopped(context: WorkspaceStoppedRuntimeActivationContext): void | Promise<void> {
-    return this.port.activateStopped(context.transitionId, context.workspace.workspaceId);
-  }
-
-  commit(context: WorkspaceRuntimeCommitContext): void {
-    this.port.commit(context.transitionId, context.workspaceId);
-  }
-}

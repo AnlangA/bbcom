@@ -1,7 +1,6 @@
 import type {
   CreateWorkspaceCommandResponse,
   OpenWorkspaceResponse,
-  ProjectEncryptionOptions,
   WorkspaceSaveHealth,
 } from '../../generated/ipc-contracts';
 import { createProjectLibraryViewModel } from './project-library-view-model';
@@ -292,15 +291,7 @@ export class WorkspaceCoordinator {
   }
 
   /** Select, stage, import, and then open a `.bbcom` project through opaque grants only. */
-  importWorkspace(
-    encryption: ProjectEncryptionOptions = { mode: 'plaintext' },
-  ): Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>> {
-    let safeEncryption: ProjectEncryptionOptions;
-    try {
-      safeEncryption = validateEncryption(encryption);
-    } catch {
-      return Promise.resolve(failed('workspace.encryption.invalid'));
-    }
+  importWorkspace(): Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>> {
     return this.activate('import', async (call) => {
       const grant = await this.port.requestProjectSourceGrant(
         { requestId: call.requestId },
@@ -326,7 +317,6 @@ export class WorkspaceCoordinator {
             requestId: importRequestId,
             operationId,
             sourceGrantId,
-            encryption: safeEncryption,
           },
           contextFor(call),
         );
@@ -385,15 +375,12 @@ export class WorkspaceCoordinator {
 
   async exportWorkspace(
     suggestedName: string,
-    encryption: ProjectEncryptionOptions = { mode: 'plaintext' },
   ): Promise<WorkspaceActionOutcome<{ operationId: string; displayName: string }>> {
     const active = this.active;
     if (!active) return failed('workspace.no_active_project');
     let safeSuggestedName: string;
-    let safeEncryption: ProjectEncryptionOptions;
     try {
       safeSuggestedName = validateSuggestedProjectFileName(suggestedName);
-      safeEncryption = validateEncryption(encryption);
     } catch {
       return failed('workspace.export.invalid');
     }
@@ -406,7 +393,6 @@ export class WorkspaceCoordinator {
         {
           requestId: call.requestId,
           suggestedName: safeSuggestedName,
-          encryptionMode: safeEncryption.mode,
         },
         contextFor(call),
       );
@@ -427,7 +413,6 @@ export class WorkspaceCoordinator {
             operationId,
             workspaceId: active.workspaceId,
             targetGrantId,
-            encryption: safeEncryption,
           },
           contextFor(call),
         );
@@ -728,23 +713,6 @@ function sanitizeActivationResponse(envelope: ActivationEnvelope): SanitizedActi
     active: Object.freeze({ ...header, saveHealth: summary.saveHealth }),
     project: summary,
   });
-}
-
-function validateEncryption(encryption: ProjectEncryptionOptions): ProjectEncryptionOptions {
-  if (encryption.mode === 'plaintext') {
-    if (encryption.passphrase !== undefined) {
-      throw new Error('plaintext project encryption must not include a passphrase');
-    }
-    return Object.freeze({ mode: 'plaintext' });
-  }
-  if (
-    encryption.mode !== 'age-passphrase' ||
-    typeof encryption.passphrase !== 'string' ||
-    encryption.passphrase.length === 0
-  ) {
-    throw new Error('age-passphrase encryption requires a non-empty passphrase');
-  }
-  return Object.freeze({ mode: 'age-passphrase', passphrase: encryption.passphrase });
 }
 
 function contextFor(call: PendingCall): WorkspacePortCallContext {

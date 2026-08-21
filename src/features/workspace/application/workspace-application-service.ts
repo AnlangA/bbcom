@@ -14,7 +14,6 @@ import {
 } from '../adapters';
 import type {
   ActiveWorkspaceViewModel,
-  ProjectEncryptionOptions,
   WorkspaceActionFailure,
   WorkspaceActionOutcome,
   WorkspaceMutationCommand,
@@ -274,10 +273,8 @@ export class WorkspaceApplicationService {
     return this.activate(() => this.coordinator.createWorkspace(name));
   }
 
-  importWorkspace(
-    encryption: ProjectEncryptionOptions = { mode: 'plaintext' },
-  ): Promise<WorkspaceApplicationOutcome> {
-    return this.activate(() => this.coordinator.importWorkspace(encryption));
+  importWorkspace(): Promise<WorkspaceApplicationOutcome> {
+    return this.activate(() => this.coordinator.importWorkspace());
   }
 
   /**
@@ -285,10 +282,7 @@ export class WorkspaceApplicationService {
    * `saveTail` synchronously, so mutations accepted after this call remain
    * queued behind the native backup instead of racing into its SQLite image.
    */
-  exportWorkspace(
-    suggestedName: string,
-    encryption: ProjectEncryptionOptions = { mode: 'plaintext' },
-  ): Promise<WorkspaceProjectExportOutcome> {
+  exportWorkspace(suggestedName: string): Promise<WorkspaceProjectExportOutcome> {
     if (this.exportAttempt) return Promise.resolve(failed('workspace.export.in_progress'));
     const context = this.acceptingSaveContext();
     if (!context) return Promise.resolve(failed(this.queueRejectionMessage()));
@@ -313,7 +307,7 @@ export class WorkspaceApplicationService {
       if (attempt.cancelled) return Object.freeze({ outcome: 'cancelled' });
       this.syncCurrentFromCoordinator();
       if (!this.isCurrentSaveContext(context)) return failed('workspace.activation.incomplete');
-      const nativeExport = this.coordinator.exportWorkspace(suggestedName, encryption);
+      const nativeExport = this.coordinator.exportWorkspace(suggestedName);
       attempt.nativeStarted = true;
       if (attempt.cancelled) void this.coordinator.cancelExport();
       return nativeExport;

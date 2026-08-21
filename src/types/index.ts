@@ -21,6 +21,8 @@ export * from './errors';
 export * from './serial';
 export * from './macros';
 export * from './modbus';
+export * from './serial-shell';
+export * from './mcumgr';
 export * from './waveform';
 export * from './ai';
 export * from './session';
