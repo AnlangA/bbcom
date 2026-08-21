@@ -113,7 +113,7 @@ test('acquisition drains existing writes, pauses in order, gates writes, and res
   coordinator.registerAutomation(automation('inactive', events, false));
   coordinator.registerAutomation(automation('modbus', events));
 
-  const acquisition = coordinator.acquire('plugin.mcumgr');
+  const acquisition = coordinator.acquire('mcumgr-client');
   assert.equal(coordinator.snapshot().phase, 'acquiring');
   await assert.rejects(coordinator.acquire('plugin.other'), hasCode('busy'));
   await assert.rejects(
@@ -140,7 +140,7 @@ test('acquisition drains existing writes, pauses in order, gates writes, and res
   assert.deepEqual(await coordinator.write(grant.token, source), { accepted: 3 });
   source.fill(0xff);
   assert.deepEqual(Array.from(payloads[0] ?? []), [1, 2, 3]);
-  assert.equal(contexts[0]?.ownerId, 'plugin.mcumgr');
+  assert.equal(contexts[0]?.ownerId, 'mcumgr-client');
   assert.equal(contexts[0]?.generation, 7);
   assert.equal(contexts[0]?.leaseToken, grant.token);
 
@@ -184,7 +184,7 @@ test('lease-bound buffer clearing and pending byte counts include the mirrored R
     },
     tokenFactory: () => 'buffer-lease',
   });
-  const grant = await coordinator.acquire('plugin.mcumgr');
+  const grant = await coordinator.acquire('mcumgr-client');
   assert.deepEqual(coordinator.offerRx(9, Uint8Array.of(1, 2, 3)), {
     status: 'mirrored',
     bufferedBytes: 3,
@@ -205,7 +205,7 @@ test('buffer operations fail closed when the runtime adapter does not prove supp
     },
     tokenFactory: () => 'unsupported-buffer-lease',
   });
-  const grant = await coordinator.acquire('plugin.mcumgr');
+  const grant = await coordinator.acquire('mcumgr-client');
   await assert.rejects(coordinator.clearBuffers(grant.token), hasCode('unavailable'));
   await assert.rejects(coordinator.pendingBytes(grant.token), hasCode('unavailable'));
   await assert.rejects(

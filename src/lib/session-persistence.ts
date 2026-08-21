@@ -8,8 +8,10 @@ import type {
   HighlightRule,
   LogAiContextMode,
   Macro,
+  McumgrClientConfig,
   ModbusMasterConfig,
   ModbusRegister,
+  SerialShellConfig,
   PortConfig,
   SendHistoryEntry,
   SessionParserState,
@@ -29,9 +31,20 @@ import {
   normalizeModbusRegisters,
   persistableModbusRegisters,
 } from './modbus';
+import {
+  DEFAULT_SERIAL_SHELL_CONFIG,
+  cloneSerialShellConfig,
+  normalizeSerialShellConfig,
+} from './serial-shell';
+import {
+  DEFAULT_MCUMGR_CONFIG,
+  cloneMcumgrConfig,
+  normalizeMcumgrConfig,
+  persistableMcumgrConfig,
+} from './mcumgr';
 
 export const SESSION_STORAGE_KEY = 'bbcom-session-snapshots';
-export const SESSION_STORAGE_VERSION = 2;
+export const SESSION_STORAGE_VERSION = 3;
 /** Number of most-recently-used sessions whose capture tails are retained. */
 export const MAX_PERSISTED_SESSIONS = 8;
 export const MAX_PERSISTED_FRAMES_PER_SESSION = 2_000;
@@ -80,6 +93,8 @@ export interface PersistedSession {
   parserState: SessionParserState;
   modbusRegisters: ModbusRegister[];
   modbusConfig: ModbusMasterConfig;
+  shellConfig?: SerialShellConfig;
+  mcumgrConfig?: McumgrClientConfig;
   waveformSourceMode: WaveformSourceMode;
   terminalAiModel: AiModel;
   logAiModel: AiModel;
@@ -121,6 +136,14 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
       raw.activeSessionId,
       raw.mruSessionIds,
     ),
+  }),
+  (raw) => ({
+    ...raw,
+    version: 3,
+    sessions: raw.sessions.map((session) => ({
+      ...session,
+      mcumgrConfig: normalizeMcumgrConfig(session.mcumgrConfig),
+    })),
   }),
 ];
 
@@ -312,6 +335,8 @@ export function createSessionRecord(
     parserState: cloneParserState(DEFAULT_PARSER_STATE),
     modbusRegisters: [],
     modbusConfig: { ...DEFAULT_MODBUS_CONFIG },
+    shellConfig: cloneSerialShellConfig(DEFAULT_SERIAL_SHELL_CONFIG),
+    mcumgrConfig: cloneMcumgrConfig(DEFAULT_MCUMGR_CONFIG),
     waveformSourceMode: 'text',
     autoLogEnabled: false,
     logPath: null,
@@ -626,6 +651,8 @@ export function hydrateSession(
       parserState: normalizeParserState(saved.parserState),
       modbusRegisters: normalizeModbusRegisters(saved.modbusRegisters),
       modbusConfig: normalizeModbusConfig(saved.modbusConfig),
+      shellConfig: normalizeSerialShellConfig(saved.shellConfig),
+      mcumgrConfig: normalizeMcumgrConfig(saved.mcumgrConfig),
       waveformSourceMode: normalizeWaveformSourceMode(saved.waveformSourceMode),
       terminalAiModel: normalizeAiModel(saved.terminalAiModel),
       logAiModel: normalizeAiModel(saved.logAiModel),
@@ -671,6 +698,8 @@ export function serializeSessionSnapshots(
         parserState: cloneParserState(session.parserState),
         modbusRegisters: persistableModbusRegisters(session.modbusRegisters),
         modbusConfig: cloneModbusConfig(session.modbusConfig),
+        shellConfig: cloneSerialShellConfig(session.shellConfig),
+        mcumgrConfig: persistableMcumgrConfig(session.mcumgrConfig),
         waveformSourceMode: session.waveformSourceMode,
         terminalAiModel: session.terminalAiModel,
         logAiModel: session.logAiModel,

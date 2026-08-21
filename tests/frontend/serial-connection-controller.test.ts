@@ -295,7 +295,7 @@ describe('SerialConnectionController (framework-free)', () => {
     const fake = new FakePort();
     const { controller } = harness(fake);
     await controller.start();
-    const grant = await controller.serialTransactions.acquire('plugin.mcumgr');
+    const grant = await controller.serialTransactions.acquire('mcumgr-client');
 
     fake.handlers?.onData(Uint8Array.of(1, 2));
     await expect(controller.serialTransactions.pendingBytes(grant.token)).resolves.toEqual({
@@ -348,7 +348,7 @@ describe('SerialConnectionController (framework-free)', () => {
     });
     const { controller } = harness(fake);
     await controller.start();
-    const grant = await controller.serialTransactions.acquire('plugin.mcumgr');
+    const grant = await controller.serialTransactions.acquire('mcumgr-client');
 
     await expect(controller.serialTransactions.clearBuffers(grant.token)).rejects.toMatchObject({
       code: 'unavailable',
@@ -378,7 +378,7 @@ describe('SerialConnectionController (framework-free)', () => {
       },
     });
     await controller.start();
-    const grant = await controller.serialTransactions.acquire('plugin.mcumgr');
+    const grant = await controller.serialTransactions.acquire('mcumgr-client');
     await controller.serialTransactions.setOutputLines(grant.token, {
       dtr: true,
       rts: true,
@@ -434,7 +434,7 @@ describe('SerialConnectionController (framework-free)', () => {
     });
 
     expect(await controller.start()).toBe(true);
-    await controller.serialTransactions.acquire('plugin.mcumgr');
+    await controller.serialTransactions.acquire('mcumgr-client');
     expect(await controller.start()).toBe(true);
     expect(automationEvents).toEqual(['pause']);
     expect(replacement.handlers).not.toBeNull();

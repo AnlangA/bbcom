@@ -117,6 +117,8 @@ pub struct WorkspaceSessionSnapshot {
     pub feature_state: serde_json::Value,
     #[ts(type = "Record<string, unknown>")]
     pub modbus_config: serde_json::Value,
+    #[ts(type = "Record<string, unknown>")]
+    pub mcumgr_config: serde_json::Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -367,6 +369,8 @@ pub enum WorkspaceFeatureKind {
     Parser,
     Modbus,
     Waveform,
+    Shell,
+    Mcumgr,
     Plugin,
 }
 

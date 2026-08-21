@@ -2,6 +2,8 @@ import type { ParserConfig } from '../lib/protocol-parser';
 import type { DataFrame, PortConfig, SendHistoryEntry, QuickCommand } from './serial';
 import type { Macro, Trigger, HighlightRule } from './macros';
 import type { ModbusRegister, ModbusMasterConfig } from './modbus';
+import type { SerialShellConfig } from './serial-shell';
+import type { McumgrClientConfig } from './mcumgr';
 import type { WaveformSourceMode } from './waveform';
 import type { AiModel, LogAiContextMode, AiChatMessage } from './ai';
 
@@ -42,6 +44,10 @@ export interface SerialSession {
   /** Modbus register table + master config. */
   modbusRegisters: ModbusRegister[];
   modbusConfig: ModbusMasterConfig;
+  /** Interactive serial-console settings. Persisted in workspace send_json. */
+  shellConfig: SerialShellConfig;
+  /** First-class MCUMgr / SMP client settings. Persisted in mcumgr_config. */
+  mcumgrConfig: McumgrClientConfig;
   /** Waveform sample source: free-text RX parsing ('text') or registers ('register'). */
   waveformSourceMode: WaveformSourceMode;
   autoLogEnabled: boolean;

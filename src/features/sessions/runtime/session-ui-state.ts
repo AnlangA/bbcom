@@ -17,6 +17,8 @@ export interface SessionRuntimeUiState {
   readonly toolsTab: Ref<ToolsTabId>;
   /** Modbus per-register pending value drafts, keyed by register id. */
   readonly modbusValueDrafts: Ref<Record<string, string>>;
+  /** Serial-shell scrollback search text (empty = no filter). */
+  readonly shellSearch: Ref<string>;
 }
 
 /** Provided by SessionView from its runtime; panels inject optionally. */

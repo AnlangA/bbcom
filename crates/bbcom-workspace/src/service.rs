@@ -265,10 +265,11 @@ impl WorkspaceService {
         let mut statement = self.connection.prepare(
             "SELECT s.id, s.sort_order, s.kind, s.name, s.last_port_hint_json,
                     s.port_config_json, s.document_json, p.display_json, p.send_json,
-                    p.parser_json, p.feature_state_json, m.config_json
+                    p.parser_json, p.feature_state_json, m.config_json, g.config_json
              FROM sessions s
              JOIN session_preferences p ON p.session_id = s.id
              JOIN modbus_config m ON m.session_id = s.id
+             JOIN mcumgr_config g ON g.session_id = s.id
              WHERE s.undo_pending = 0
              ORDER BY s.sort_order, s.id
              LIMIT ?1 OFFSET ?2",
@@ -293,6 +294,7 @@ impl WorkspaceService {
                     row.get::<_, String>(9)?,
                     row.get::<_, String>(10)?,
                     row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
                 ))
             },
         )?;
@@ -316,6 +318,7 @@ impl WorkspaceService {
                 parser,
                 feature,
                 modbus,
+                mcumgr,
             ) = row?;
             sessions.push(WorkspaceSessionSnapshot {
                 id,
@@ -336,6 +339,7 @@ impl WorkspaceService {
                 parser_state: parse_document_json(&parser)?,
                 feature_state: parse_document_json(&feature)?,
                 modbus_config: parse_document_json(&modbus)?,
+                mcumgr_config: parse_document_json(&mcumgr)?,
             });
         }
         Ok(WorkspaceSessionPage {

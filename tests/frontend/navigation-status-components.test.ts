@@ -607,6 +607,7 @@ test('SessionToolbar reflects connection state and emits every terminal control 
   await disconnectButton!.trigger('click');
   await pauseButton!.trigger('click');
   await breakButton!.trigger('click');
+  await wrapper.get(`[aria-label="${t('toolbar.shell')}"]`).trigger('click');
   await wrapper.get(`[aria-label="${t('toolbar.waveform')}"]`).trigger('click');
   await wrapper.get(`[aria-label="${t('toolbar.autoScroll')}"]`).trigger('click');
   await wrapper.get(`[aria-label="${t('toolbar.timestamp')}"]`).trigger('click');
@@ -615,7 +616,7 @@ test('SessionToolbar reflects connection state and emits every terminal control 
   expect(wrapper.emitted('disconnect')).toEqual([[]]);
   expect(wrapper.emitted('toggle-pause')).toEqual([[]]);
   expect(wrapper.emitted('send-break')).toEqual([[]]);
-  expect(wrapper.emitted('update:viewMode')).toEqual([['waveform']]);
+  expect(wrapper.emitted('update:viewMode')).toEqual([['shell'], ['waveform']]);
   expect(wrapper.emitted('toggle-auto-scroll')).toEqual([[]]);
   expect(wrapper.emitted('toggle-timestamp')).toEqual([[]]);
   expect(wrapper.emitted('toggle-auto-log')).toEqual([[]]);

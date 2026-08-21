@@ -152,6 +152,8 @@ export type SessionDocumentPort = Readonly<{
     | 'clearLogAiMessages'
     | 'setParserState'
     | 'setModbusConfig'
+    | 'setShellConfig'
+    | 'setMcumgrConfig'
     | 'setWaveformSourceMode'
     | 'setAutoLogTarget'
     | 'setTerminalAiModel'
@@ -248,6 +250,8 @@ export function useSessionDocument(sessionId: string): SessionDocumentPort {
     clearLogAiMessages: core.clearLogAiMessages,
     setParserState: core.setParserState,
     setModbusConfig: core.setModbusConfig,
+    setShellConfig: core.setShellConfig,
+    setMcumgrConfig: core.setMcumgrConfig,
     setWaveformSourceMode: core.setWaveformSourceMode,
     setAutoLogTarget: core.setAutoLogTarget,
     setTerminalAiModel: core.setTerminalAiModel,

@@ -48,6 +48,20 @@ vi.mock('../../src/composables/useSessionModbus.ts', () => ({
     return mocked.modbus;
   },
 }));
+vi.mock('../../src/composables/useSessionMcumgr.ts', () => ({
+  useSessionMcumgr: () => ({
+    status: { value: { kind: 'idle' } },
+    lastResult: { value: '' },
+    busy: { value: false },
+    run: vi.fn(),
+    cancel: vi.fn(),
+    patchConfig: vi.fn(),
+    rememberShell: vi.fn(),
+    reportProgress: vi.fn(),
+    setResult: vi.fn(),
+    client: {},
+  }),
+}));
 vi.mock('../../src/composables/useTriggers.ts', () => ({
   useTriggers: (options: unknown) => {
     mocked.triggerOptions = options;
@@ -660,16 +674,24 @@ test('runtime registers every automatic writer with the serial transaction gate'
   );
   assert.deepEqual(
     ports.map((port) => port.id),
-    ['cyclic-send', 'macro-runner', 'modbus-master', 'trigger-responses'],
+    ['serial-shell', 'cyclic-send', 'macro-runner', 'modbus-master', 'trigger-responses'],
   );
+  const byId = Object.fromEntries(ports.map((port) => [port.id, port]));
   const context = {
     ownerId: 'plugin.test',
     generation: 1,
     signal: new AbortController().signal,
   };
-  assert.equal(await ports[0].pause(context), null);
-  assert.equal(await ports[1].pause(context), null);
-  const modbusSuspension = await ports[2].pause(context);
+  const shellSuspension = await byId['serial-shell'].pause(context);
+  assert.ok(shellSuspension);
+  await shellSuspension.restore({
+    ownerId: context.ownerId,
+    generation: context.generation,
+    reason: 'released',
+  });
+  assert.equal(await byId['cyclic-send'].pause(context), null);
+  assert.equal(await byId['macro-runner'].pause(context), null);
+  const modbusSuspension = await byId['modbus-master'].pause(context);
   assert.equal(mocked.modbus.master.pauseForSerialTransaction.mock.calls.length, 1);
   await modbusSuspension?.restore({
     ownerId: context.ownerId,
@@ -677,7 +699,7 @@ test('runtime registers every automatic writer with the serial transaction gate'
     reason: 'released',
   });
   assert.equal(mocked.modbus.master.resumeAfterSerialTransaction.mock.calls.length, 1);
-  const triggerSuspension = await ports[3].pause(context);
+  const triggerSuspension = await byId['trigger-responses'].pause(context);
   assert.equal(mocked.triggerPause.mock.calls.length, 1);
   await triggerSuspension?.restore({
     ownerId: context.ownerId,
@@ -697,6 +719,7 @@ test('automation suspensions preserve cyclic and macro work but never restart af
   const ports = serial.serialTransactions.registerAutomation.mock.calls.map(
     ([port]) => port as SerialAutomationPausePort,
   );
+  const byId = Object.fromEntries(ports.map((port) => [port.id, port]));
   const context = {
     ownerId: 'plugin.test',
     generation: 1,
@@ -707,7 +730,7 @@ test('automation suspensions preserve cyclic and macro work but never restart af
   serial.send.mockReturnValueOnce(firstLoopSend.promise);
   assert.equal(runtime.startSendLoop('AT', false), true);
   await Promise.resolve();
-  const firstCyclicSuspension = await ports[0].pause(context);
+  const firstCyclicSuspension = await byId['cyclic-send'].pause(context);
   assert.ok(firstCyclicSuspension);
   await firstCyclicSuspension.restore({
     ownerId: context.ownerId,
@@ -717,7 +740,7 @@ test('automation suspensions preserve cyclic and macro work but never restart af
   firstLoopSend.resolve(complete(2));
   await Promise.resolve();
   await Promise.resolve();
-  const finalCyclicSuspension = await ports[0].pause(context);
+  const finalCyclicSuspension = await byId['cyclic-send'].pause(context);
   assert.ok(finalCyclicSuspension);
 
   const macroSend = deferred<SerialSendResult>();
@@ -728,7 +751,7 @@ test('automation suspensions preserve cyclic and macro work but never restart af
     steps: [{ data: 'M', isHex: false, delayMs: 0 }],
   });
   await Promise.resolve();
-  const macroPause = ports[1].pause(context);
+  const macroPause = byId['macro-runner'].pause(context);
   macroSend.resolve(complete(1));
   const macroSuspension = await macroPause;
   assert.ok(macroSuspension);

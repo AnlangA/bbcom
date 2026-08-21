@@ -160,7 +160,7 @@ export type DeleteWorkspaceResponse = { requestId: string, workspaceId: string, 
 
 export type HydrateWorkspaceSessionsRequest = { requestId: string, workspaceId: string, offset: number, limit: number, };
 
-export type WorkspaceSessionSnapshot = { id: string, sortOrder: number, kind: WorkspaceSessionKind, name: string, needsRebind: boolean, lastPortHint?: WorkspacePortHint | null, portConfig: Record<string, unknown>, document: Record<string, unknown>, displayPreferences: Record<string, unknown>, sendPreferences: Record<string, unknown>, parserState: Record<string, unknown>, featureState: Record<string, unknown>, modbusConfig: Record<string, unknown>, };
+export type WorkspaceSessionSnapshot = { id: string, sortOrder: number, kind: WorkspaceSessionKind, name: string, needsRebind: boolean, lastPortHint?: WorkspacePortHint | null, portConfig: Record<string, unknown>, document: Record<string, unknown>, displayPreferences: Record<string, unknown>, sendPreferences: Record<string, unknown>, parserState: Record<string, unknown>, featureState: Record<string, unknown>, modbusConfig: Record<string, unknown>, mcumgrConfig: Record<string, unknown>, };
 
 export type HydrateWorkspaceSessionsResponse = { requestId: string, workspaceId: string, revision: number, sessions: Array<WorkspaceSessionSnapshot>, nextOffset?: number, };
 
@@ -199,7 +199,7 @@ export type WorkspaceTrimCapturePayload = {
  */
 frameCount: number, };
 
-export type WorkspaceFeatureKind = "preferences" | "parser" | "modbus" | "waveform" | "plugin";
+export type WorkspaceFeatureKind = "preferences" | "parser" | "modbus" | "waveform" | "shell" | "mcumgr" | "plugin";
 
 export type WorkspaceFeatureStatePayload = { feature: WorkspaceFeatureKind, state: Record<string, unknown>, };
 

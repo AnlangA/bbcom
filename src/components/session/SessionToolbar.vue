@@ -162,6 +162,34 @@
               <Cpu class="icon-sm" />
             </template>
           </n-button>
+          <n-button
+            class="toggle-btn"
+            size="small"
+            quaternary
+            :type="viewMode === 'shell' ? 'primary' : 'default'"
+            :title="t('toolbar.shell.title')"
+            :aria-label="t('toolbar.shell')"
+            :aria-pressed="viewMode === 'shell'"
+            @click="$emit('update:viewMode', 'shell')"
+          >
+            <template #icon>
+              <Keyboard class="icon-sm" />
+            </template>
+          </n-button>
+          <n-button
+            class="toggle-btn"
+            size="small"
+            quaternary
+            :type="viewMode === 'mcumgr' ? 'primary' : 'default'"
+            :title="t('toolbar.mcumgr.title')"
+            :aria-label="t('toolbar.mcumgr')"
+            :aria-pressed="viewMode === 'mcumgr'"
+            @click="$emit('update:viewMode', 'mcumgr')"
+          >
+            <template #icon>
+              <MemoryStick class="icon-sm" />
+            </template>
+          </n-button>
         </div>
         <div
           class="toggle-group settings-toggle-group"
@@ -272,7 +300,9 @@ import {
   Cpu,
   Download,
   FileText,
+  Keyboard,
   LineChart,
+  MemoryStick,
   Palette,
   Pause,
   Play,
@@ -288,7 +318,7 @@ import { t } from '../../lib/i18n';
 import type { DisplayMode, SerialSession } from '../../types';
 import type { PortLeaseConflict } from '../../generated/ipc-contracts';
 
-export type SessionViewMode = 'terminal' | 'waveform' | 'parser' | 'modbus';
+export type SessionViewMode = 'terminal' | 'waveform' | 'parser' | 'modbus' | 'shell' | 'mcumgr';
 
 defineProps<{
   session: SerialSession;

@@ -613,7 +613,7 @@ function runtimeController() {
     connectionFailure: ref(null),
     totalDroppedBytes: ref(0),
     sendingBreak: ref(false),
-    viewMode: ref<'terminal' | 'waveform' | 'parser' | 'modbus'>('terminal'),
+    viewMode: ref<'terminal' | 'waveform' | 'parser' | 'modbus' | 'shell' | 'mcumgr'>('terminal'),
     looping: ref(false),
     parser: {
       frames: ref([]),
@@ -622,11 +622,34 @@ function runtimeController() {
       throughputBps: ref(0),
       resetVersion: ref(0),
     },
+    shell: {
+      snapshot: ref({
+        lines: [],
+        current: { id: 0, text: '', timestamp: 0 },
+        droppedLines: 0,
+        droppedBytes: 0,
+        resetVersion: 0,
+      }),
+      submitLine: vi.fn(async () => ({ outcome: 'complete', requestedBytes: 0, sentBytes: 0 })),
+      submitKey: vi.fn(async () => null),
+    },
     macro: {
       running: ref(false),
       status: computed(() => 'idle' as const),
       run: method(),
       abort: method(),
+    },
+    mcumgr: {
+      status: ref({ kind: 'idle' as const }),
+      lastResult: ref(''),
+      busy: computed(() => false),
+      run: method(),
+      cancel: method(),
+      patchConfig: method(),
+      rememberShell: method(),
+      reportProgress: method(),
+      setResult: method(),
+      client: {},
     },
     modbus,
     connect: method(),
@@ -642,7 +665,7 @@ function runtimeController() {
 }
 
 interface SessionViewSetup {
-  viewMode: 'terminal' | 'waveform' | 'parser' | 'modbus';
+  viewMode: 'terminal' | 'waveform' | 'parser' | 'modbus' | 'shell' | 'mcumgr';
   exportDialogVisible: boolean;
   rebindDialogVisible: boolean;
   connect: () => Promise<void>;

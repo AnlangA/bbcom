@@ -17,7 +17,7 @@ typed command surfaces.
 │ components/                                                        │
 │   app-shell/      main layout, settings, session creation          │
 │   session/        session view + toolbar                           │
-│   terminal/       packet list, parser, Modbus, waveform panels     │
+│   terminal/       packet list, parser, Modbus, MCUMgr, shell, waveform │
 │   send-panel/     quick commands, macros, triggers, highlights     │
 │   ai/             assistant settings and log assistant UI          │
 │                                                                    │
@@ -25,6 +25,8 @@ typed command surfaces.
 │   useSerialConnection   serial open/listen/write/reconnect         │
 │   serial/               port lease, stop evidence, error taxonomy   │
 │   useModbusMaster       Modbus read/write/replay orchestration     │
+│   useSessionMcumgr      MCUMgr lease + SMP client                  │
+│   serial-shell          interactive console engine + session ctl   │
 │   useSessionFrames      frame append/clear helpers                 │
 │   usePacket*            virtual scroll, filters, format cache      │
 │   useExport             dialog + export command routing            │
@@ -43,6 +45,8 @@ typed command surfaces.
 │                                                                    │
 │ lib/                                                               │
 │   modbus/               protocol core, batching, transport, loops  │
+│   mcumgr/               SMP/CBOR/console transport, image/FS xfer  │
+│   serial-shell/         dumb-terminal engine, encoding, newlines   │
 │   serial-rx-queue       bounded RX buffering                       │
 │   protocol-parser       delimiter/fixed/length frame parsing       │
 │   waveform*             parsing, viewport math, canvas rendering   │
@@ -66,11 +70,11 @@ typed command surfaces.
 ## Runtime Ownership
 
 - **Frontend session store:** source of truth for ports, frames, parser state,
-  Modbus config, macros, triggers, highlights, AI chat state, and persisted
-  snapshots.
-- **Frontend protocol engines:** parser, waveform, Modbus, triggers, and simple
-  send/delay macros are implemented in framework-free TypeScript where possible
-  so they can be unit-tested headlessly.
+  Modbus config, MCUMgr config, serial-shell config, macros, triggers,
+  highlights, AI chat state, and persisted snapshots.
+- **Frontend protocol engines:** parser, waveform, Modbus, MCUMgr, serial shell,
+  triggers, and simple send/delay macros are implemented in framework-free
+  TypeScript where possible so they can be unit-tested headlessly.
 - **Shared layout rules:** reusable geometry (such as sidebar bounds and
   keyboard resize steps) lives in dependency-free `lib/` modules. Stores and
   UI consume the same values, so persisted state, pointer resizing, and
@@ -97,7 +101,7 @@ typed command surfaces.
 
 1. `tauri-plugin-serialplugin` delivers raw binary channel data to the resident
    session runtime.
-2. Raw-byte observers receive the exact plugin chunk first. Modbus uses this
+2. Raw-byte observers receive the exact plugin chunk first. Modbus and MCUMgr use this
    path to validate CRCs and match responses before display coalescing happens.
 3. The chunk enters `SerialRxQueue`, capped at 2 MiB/512 chunks, which records
    cumulative drops.
@@ -148,6 +152,10 @@ These are the rules most likely to protect users from subtle serial bugs:
   `writeChain`; concurrent serial writes can interleave at the driver.
 - **Modbus is half-duplex.** Keep one outstanding transaction at a time through
   `ModbusTransactionRunner` and `ModbusLoopCoordinator`.
+- **MCUMgr is a first-class serial client beside Modbus.** Protocol codecs live
+  in `src/lib/mcumgr`. Every operation acquires `SerialTransactionLease` as
+  `mcumgr-client`, writes through `lease.write`, and reads `rawBytes`. Writes
+  that have already left the host never retry.
 - **RX bytes reach protocol observers before display batching.** Protocol
   engines need exact chunks; UI frames may be coalesced.
 - **Frame arrays stay shallow and bounded.** Use per-session frame versions and
@@ -157,7 +165,7 @@ These are the rules most likely to protect users from subtle serial bugs:
 - **Persistence remains migration-safe.** Shape changes require an explicit
   migration and test; future schemas are never re-stamped by older builds.
 - **Hot paths stay framework-free when practical.** Queueing, formatting,
-  parsing, Modbus batching, waveform math, and export filters should remain
+  parsing, Modbus/MCUMgr codecs, waveform math, and export filters should remain
   testable without a Tauri webview.
 
 ## Upstream Constraints

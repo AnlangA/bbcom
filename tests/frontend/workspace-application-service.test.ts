@@ -127,6 +127,7 @@ function sessionSnapshot(id: string, sortOrder = 0): WorkspaceSessionSnapshot {
       writeIntervalMs: 1000,
       timeoutMs: 500,
     },
+    mcumgrConfig: {},
   };
 }
 

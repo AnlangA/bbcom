@@ -25,7 +25,9 @@ function sessionSnapshot() {
       mutation.kind === 'upsert-session',
   );
   assert.ok(upsert);
-  const featureState = (feature: 'preferences' | 'parser' | 'modbus' | 'waveform') => {
+  const featureState = (
+    feature: 'preferences' | 'parser' | 'modbus' | 'waveform' | 'shell' | 'mcumgr',
+  ) => {
     const found = mutations.find(
       (mutation): mutation is Extract<typeof mutation, { kind: 'upsert-feature-state' }> =>
         mutation.kind === 'upsert-feature-state' && mutation.payload.feature === feature,
@@ -50,10 +52,11 @@ function sessionSnapshot() {
       portConfig: upsert.payload.portConfig,
       document: upsert.payload.document,
       displayPreferences: featureState('waveform'),
-      sendPreferences: {},
+      sendPreferences: featureState('shell'),
       parserState: featureState('parser'),
       featureState: featureState('preferences'),
       modbusConfig: featureState('modbus'),
+      mcumgrConfig: featureState('mcumgr'),
     },
   };
 }

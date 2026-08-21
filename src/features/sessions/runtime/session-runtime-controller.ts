@@ -7,6 +7,7 @@ import {
   useSerialConnection,
 } from '../../../composables/useSerialConnection';
 import { useSessionModbus } from '../../../composables/useSessionModbus';
+import { useSessionMcumgr } from '../../../composables/useSessionMcumgr';
 import { useTriggers } from '../../../composables/useTriggers';
 import { useAutoLog } from '../../../composables/useAutoLog';
 import { useMacroRunner } from '../../../composables/useMacroRunner';
@@ -31,6 +32,8 @@ import type { SerialConnectionFailure } from '../../../composables/useSerialConn
 import { SessionProtocolRuntime } from './session-protocol-runtime';
 import { SessionRuntimeStatusRegistry } from './session-runtime-status';
 import type { SessionRuntimeUiState } from './session-ui-state';
+import { createSessionShellController, type SessionShellController } from '../../serial-shell';
+import type { SerialShellSnapshot } from '../../../types/serial-shell';
 
 let nextRuntimeInstanceId = 0;
 
@@ -77,10 +80,17 @@ export interface SessionRuntimeProtocolView {
 }
 
 export type SessionRuntimeModbusController = ReturnType<typeof useSessionModbus>;
+export type SessionRuntimeMcumgrController = ReturnType<typeof useSessionMcumgr>;
+export interface SessionRuntimeShellController {
+  readonly snapshot: Readonly<Ref<SerialShellSnapshot>>;
+  submitLine: SessionShellController['submitLine'];
+  submitKey: SessionShellController['submitKey'];
+}
 export type SessionRuntimeMacroController = ReturnType<typeof useMacroRunner> & {
   readonly status: Readonly<Ref<'idle' | 'running'>>;
 };
-export type SessionRuntimeViewMode = 'terminal' | 'waveform' | 'parser' | 'modbus';
+export type SessionRuntimeViewMode =
+  'terminal' | 'waveform' | 'parser' | 'modbus' | 'shell' | 'mcumgr';
 export interface SessionRuntimeControllerDependencies {
   readonly notifications: ApplicationNotificationPort;
   readonly portLeaseClient: PortLeaseClient;
@@ -109,6 +119,8 @@ export interface SessionRuntimeController {
   readonly uiState: SessionRuntimeUiState;
   readonly parser: SessionRuntimeProtocolView;
   readonly modbus: SessionRuntimeModbusController;
+  readonly mcumgr: SessionRuntimeMcumgrController;
+  readonly shell: SessionRuntimeShellController;
   readonly macro: SessionRuntimeMacroController;
   readonly serialTransactions: SerialTransactionLeaseCoordinator<SerialSendResult>;
   connect: () => Promise<boolean>;
@@ -293,7 +305,44 @@ export function useSessionRuntimeController(
     packetDirection: ref<'ALL' | 'TX' | 'RX'>('ALL'),
     toolsTab: ref<'quick' | 'macros' | 'triggers' | 'highlights' | 'history' | 'checksum'>('quick'),
     modbusValueDrafts: ref<Record<string, string>>({}),
+    shellSearch: ref(''),
   };
+  const shellSnapshot = shallowRef<SerialShellSnapshot>({
+    lines: [],
+    current: { id: 0, text: '', timestamp: 0 },
+    droppedLines: 0,
+    droppedBytes: 0,
+    resetVersion: 0,
+  });
+  const shellController = createSessionShellController(
+    () => session.value.shellConfig,
+    (history) => sessionDocument.setShellConfig(session.value.id, { history }),
+    {
+      sendBytes: (payload, writeOptions) => serial.sendBytes(payload, writeOptions),
+      rawBytes: (callback) => serial.rawBytes(callback),
+      registerAutomation: (port) => serial.serialTransactions.registerAutomation(port),
+      onCleared: (listener) => capture.onCleared(listener),
+    },
+    (snapshot) => {
+      shellSnapshot.value = snapshot;
+    },
+  );
+  const stopShellConfigWatch = watch(
+    () => session.value.shellConfig,
+    (config) => shellController.configure(config),
+  );
+  const shell: SessionRuntimeShellController = {
+    snapshot: readonly(shellSnapshot),
+    submitLine: (text) => shellController.submitLine(text),
+    submitKey: (key) => shellController.submitKey(key),
+  };
+  const mcumgr = useSessionMcumgr({
+    session: computed(() => session.value),
+    serialTransactions: serial.serialTransactions,
+    rawBytes: (callback) => serial.rawBytes(callback),
+    isConnected: serial.isConnected,
+    setConfig: (patch) => sessionDocument.setMcumgrConfig(session.value.id, patch),
+  });
   const modbus = useSessionModbus({
     session: computed(() => session.value),
     sendBytes: (payload, writeOptions) => serial.sendBytes(payload, writeOptions),
@@ -452,12 +501,22 @@ export function useSessionRuntimeController(
     if (preparePromise) return preparePromise;
     preparePromise = (async () => {
       const failures: unknown[] = [];
-      for (const stop of [() => stopSendLoop(), () => macro.abort(), () => modbus.master.stop()]) {
+      for (const stop of [
+        () => stopSendLoop(),
+        () => macro.abort(),
+        () => modbus.master.stop(),
+        () => mcumgr.cancel(),
+      ]) {
         try {
           stop();
         } catch (error) {
           failures.push(error);
         }
+      }
+      try {
+        await shellController.flush();
+      } catch (error) {
+        failures.push(error);
       }
 
       // Stop the native stream before closing auto-log. This lets the serial
@@ -491,6 +550,8 @@ export function useSessionRuntimeController(
       } finally {
         await serial.serialTransactions.dispose();
         viewBinding.value = null;
+        shellController.dispose();
+        stopShellConfigWatch();
         removeParserRawObserver();
         removeParserFrameClearObserver();
         stopParserConfigWatch();
@@ -537,6 +598,8 @@ export function useSessionRuntimeController(
     uiState,
     parser,
     modbus,
+    mcumgr,
+    shell,
     macro,
     serialTransactions: serial.serialTransactions,
     connect,

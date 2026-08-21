@@ -2,9 +2,13 @@ import type { ParserConfig } from '../../../lib/protocol-parser';
 import { cloneParserConfig } from '../../../lib/session-persistence';
 import { normalizeLogAiFrameLimit } from '../../../lib/session-store-helpers';
 import { cloneModbusConfig } from '../../../lib/modbus';
+import { cloneSerialShellConfig } from '../../../lib/serial-shell';
+import { cloneMcumgrConfig } from '../../../lib/mcumgr';
 import type { AiModel, LogAiContextMode } from '../../../types/ai';
 import type { ModbusMasterConfig } from '../../../types/modbus';
+import type { McumgrClientConfig } from '../../../types/mcumgr';
 import type { SerialSession } from '../../../types/session';
+import type { SerialShellConfig } from '../../../types/serial-shell';
 import type { WaveformSourceMode } from '../../../types/waveform';
 
 export interface SessionSettingsMutationDependencies {
@@ -42,6 +46,24 @@ export function createSessionSettingsMutations({
     const session = findSession(sessionId);
     if (!session) return;
     session.modbusConfig = cloneModbusConfig({ ...session.modbusConfig, ...patch });
+    schedulePersist(sessionId);
+    onSessionChanged(sessionId);
+  }
+
+  function setShellConfig(sessionId: string, patch: Partial<SerialShellConfig>) {
+    if (!canMutateUserState()) return;
+    const session = findSession(sessionId);
+    if (!session) return;
+    session.shellConfig = cloneSerialShellConfig({ ...session.shellConfig, ...patch });
+    schedulePersist(sessionId);
+    onSessionChanged(sessionId);
+  }
+
+  function setMcumgrConfig(sessionId: string, patch: Partial<McumgrClientConfig>) {
+    if (!canMutateUserState()) return;
+    const session = findSession(sessionId);
+    if (!session) return;
+    session.mcumgrConfig = cloneMcumgrConfig({ ...session.mcumgrConfig, ...patch });
     schedulePersist(sessionId);
     onSessionChanged(sessionId);
   }
@@ -106,6 +128,8 @@ export function createSessionSettingsMutations({
   return {
     setParserState,
     setModbusConfig,
+    setShellConfig,
+    setMcumgrConfig,
     setWaveformSourceMode,
     setAutoLogTarget,
     setTerminalAiModel,

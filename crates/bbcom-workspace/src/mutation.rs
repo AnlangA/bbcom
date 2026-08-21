@@ -258,6 +258,11 @@ fn upsert_session(
          ON CONFLICT(session_id) DO NOTHING",
         [session_id],
     )?;
+    connection.execute(
+        "INSERT INTO mcumgr_config(session_id) VALUES (?1)
+         ON CONFLICT(session_id) DO NOTHING",
+        [session_id],
+    )?;
     Ok(())
 }
 
@@ -393,7 +398,9 @@ fn upsert_feature_state(
         WorkspaceFeatureKind::Preferences
         | WorkspaceFeatureKind::Parser
         | WorkspaceFeatureKind::Modbus
-        | WorkspaceFeatureKind::Waveform => {
+        | WorkspaceFeatureKind::Waveform
+        | WorkspaceFeatureKind::Shell
+        | WorkspaceFeatureKind::Mcumgr => {
             ensure_session_exists(connection, entity_id)?;
             let state = serde_json::to_string(&payload.state)?;
             match payload.feature {
@@ -411,6 +418,14 @@ fn upsert_feature_state(
                 )?,
                 WorkspaceFeatureKind::Waveform => connection.execute(
                     "UPDATE session_preferences SET display_json = ?2 WHERE session_id = ?1",
+                    params![entity_id, state],
+                )?,
+                WorkspaceFeatureKind::Shell => connection.execute(
+                    "UPDATE session_preferences SET send_json = ?2 WHERE session_id = ?1",
+                    params![entity_id, state],
+                )?,
+                WorkspaceFeatureKind::Mcumgr => connection.execute(
+                    "UPDATE mcumgr_config SET config_json = ?2 WHERE session_id = ?1",
                     params![entity_id, state],
                 )?,
                 _ => unreachable!(),

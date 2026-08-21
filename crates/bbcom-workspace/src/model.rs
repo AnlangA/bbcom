@@ -82,6 +82,7 @@ pub struct WorkspaceSessionSnapshot {
     pub parser_state: serde_json::Value,
     pub feature_state: serde_json::Value,
     pub modbus_config: serde_json::Value,
+    pub mcumgr_config: serde_json::Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
