@@ -222,11 +222,7 @@ export function isAiActivitySnapshotPayload(value: unknown): value is AiActivity
 }
 
 function isAiKeyStatus(value: unknown): value is AiKeyStatus {
-  return (
-    isRecord(value) &&
-    typeof value.configured === 'boolean' &&
-    (value.durability === 'os' || value.durability === 'session' || value.durability === 'missing')
-  );
+  return isRecord(value) && typeof value.configured === 'boolean';
 }
 
 function isIpcError(value: unknown): value is IpcError {

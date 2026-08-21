@@ -19,19 +19,15 @@ The repository currently contains two reference workspaces:
 - `plugins/mcumgr-client` for streaming file grants and full MCUmgr transports
   and workflows.
 
-Both use the shared bounded guest runtime, Component import audit, and
-digest-pinned directory packager under `plugins/`.
+Both use the shared guest runtime and directory packager under `plugins/`.
 
 ## Build an installable development directory
 
-Build the Component before running the import audit. The audit intentionally
-fails if it cannot inspect the final release artifact.
+Build the Component, then generate its development directory.
 
 ```sh
 cargo build --manifest-path plugins/counter-v2/Cargo.toml \
   -p bbcom-counter-v2 --release --target wasm32-wasip2 --locked
-cargo test --manifest-path plugins/counter-v2/Cargo.toml \
-  -p bbcom-counter-v2 --test import_audit --locked
 cargo run --manifest-path plugins/counter-v2/Cargo.toml \
   -p bbcom-counter-v2-packager --locked -- \
   plugins/counter-v2/target/wasm32-wasip2/release/bbcom_counter_v2.wasm \
@@ -47,32 +43,29 @@ counter-v2/
     └── plugin.wasm
 ```
 
-Do not select a source `package/` directory containing
-`plugin.toml.template`. The template has no real component digest and is not
-installable.
+Do not select a source `package/` directory containing only
+`plugin.toml.template`; select the generated directory containing the built
+Component.
 
 ## Enable development-directory watching
 
 1. Open the Plugin Center.
 2. Choose **Development directory** and select the generated directory under
    `target/package/`.
-3. Review the development-source warning and requested capabilities, then
-   enable the plugin.
+3. Enable the plugin.
 4. Leave watching enabled for that development source.
 5. After changing guest code, repeat the build and packager commands using the
    same output directory.
 
-The native watcher samples the final `plugin.toml` and declared Component
-every 250 ms. A fingerprint must be valid and unchanged for two observations,
-giving a 500 ms debounce before reinstall. Digest mismatches, symlinks,
-oversized artifacts, and malformed manifests fail closed. A successful change
-runs through the normal installation and runtime-restart path even when the
-plugin version did not change.
+The native watcher samples the final `plugin.toml` and declared Component every
+250 ms and waits for two unchanged observations before reinstalling. A
+successful change restarts the runtime even when the plugin version did not
+change.
 
 Hot reload preserves host-owned plugin storage. Runtime resource handles,
-serial leases, file grants, window tokens, and instance generations are not
-reused across the restart. A capability increase requires a new confirmation;
-rebuilding with the already confirmed set does not grant additional authority.
+serial leases, file handles, window tokens, and instance generations are not
+reused across the restart. Every reload receives the complete host capability
+set without confirmation.
 
 ### Initialization declarations and state
 
@@ -168,8 +161,6 @@ Use the equivalent explicit workspace commands:
 ```sh
 cargo build --manifest-path plugins/mcumgr-client/Cargo.toml \
   -p bbcom-mcumgr-guest --release --target wasm32-wasip2 --locked
-cargo test --manifest-path plugins/mcumgr-client/Cargo.toml \
-  -p bbcom-mcumgr-guest --test import_audit --locked
 cargo run --manifest-path plugins/mcumgr-client/Cargo.toml \
   -p bbcom-mcumgr-packager --locked -- \
   plugins/mcumgr-client/target/wasm32-wasip2/release/bbcom_mcumgr_guest.wasm \
@@ -179,24 +170,7 @@ cargo run --manifest-path plugins/mcumgr-client/Cargo.toml \
 Select `plugins/mcumgr-client/target/package/mcumgr-client` as the development
 directory.
 
-## Required pre-commit checks
+## Functional check
 
-Run native tests and Clippy in the plugin's own workspace, then lint the real
-Wasm target:
-
-```sh
-cargo test --manifest-path plugins/counter-v2/Cargo.toml \
-  --workspace --all-features --locked
-cargo clippy --manifest-path plugins/counter-v2/Cargo.toml \
-  --workspace --all-targets --all-features --locked -- -D warnings
-cargo clippy --manifest-path plugins/counter-v2/Cargo.toml \
-  -p bbcom-counter-v2 --target wasm32-wasip2 \
-  --release --locked -- -D warnings
-```
-
-The blocking CI job repeats this sequence for both reference plugins, audits
-their final Component imports and exports, and generates both installable
-directories. It then sends those exact directories through the production
-local-package installer (digest check, Component validation, v2 capability
-parse, prepare, commit, and restart enumeration). Adding a plugin to the root
-workspace instead is not an accepted substitute.
+After completing a change, build the Component once, install its generated
+directory in BBCOM, enable it, and verify that its surface and one command work.

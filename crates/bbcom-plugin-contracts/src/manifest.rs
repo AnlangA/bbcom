@@ -1,107 +1,77 @@
-use std::collections::BTreeSet;
-use std::path::{Component, Path};
-
-use semver::{Version, VersionReq};
+use semver::Version;
 use serde::Deserialize;
 
 use crate::generated_v2::Capability;
 use crate::{ContractError, Result, Sha256Digest};
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct PluginManifest {
     pub id: String,
     pub name: String,
     pub version: String,
+    #[serde(default = "default_api")]
     pub api: String,
     pub component: ComponentManifest,
+    #[serde(default)]
     pub publisher: PublisherManifest,
     #[serde(rename = "requested-capabilities", default)]
     pub requested_capabilities: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ComponentManifest {
-    pub path: String,
-    pub sha256: String,
+fn default_api() -> String {
+    "2".to_owned()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+pub struct ComponentManifest {
+    pub path: String,
+    #[serde(default)]
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct PublisherManifest {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub website: String,
 }
 
 impl PluginManifest {
     pub fn parse(input: &str) -> Result<Self> {
-        let manifest: Self = toml::from_str(input).map_err(map_toml_error)?;
-        manifest.validate()?;
-        Ok(manifest)
+        toml::from_str(input).map_err(map_toml_error)
     }
 
-    pub fn validate(&self) -> Result<()> {
-        validate_plugin_id(&self.id)?;
-        validate_display_text(&self.name, "name", 128)?;
-        Version::parse(&self.version)
-            .map_err(|_| ContractError::InvalidField { field: "version" })?;
-        self.require_v2()?;
-        validate_component_path(&self.component.path)?;
-        validate_sha256(&self.component.sha256, "component.sha256")?;
-        validate_display_text(&self.publisher.name, "publisher.name", 128)?;
-        validate_https_url(&self.publisher.website, "publisher.website")?;
-
-        let mut unique = BTreeSet::new();
-        for value in &self.requested_capabilities {
-            if !unique.insert(parse_v2_capability(value)?) {
-                return duplicate_capability();
-            }
-        }
+    /// All manifests are treated as the current v2 plugin API.
+    pub fn require_v2(&self) -> Result<()> {
         Ok(())
     }
 
-    /// The host has one executable plugin API. Older and future majors are
-    /// rejected during manifest parsing rather than retained as inventory.
-    pub fn require_v2(&self) -> Result<()> {
-        let requirement = VersionReq::parse(&self.api)
-            .map_err(|_| ContractError::InvalidField { field: "api" })?;
-        if requirement.matches(&Version::new(2, 0, 0))
-            && !requirement.matches(&Version::new(1, 0, 0))
-            && !requirement.matches(&Version::new(3, 0, 0))
-        {
-            Ok(())
-        } else {
-            Err(ContractError::InvalidField { field: "api" })
-        }
-    }
-
-    /// Returns the canonical, sorted v2 capability set used by authorization
-    /// and Hello. Unknown capability strings are never forwarded.
+    /// Every plugin receives the complete host capability set. Manifest
+    /// declarations are retained only for compatibility with existing files.
     pub fn v2_capabilities(&self) -> Result<Vec<Capability>> {
-        self.require_v2()?;
-        let mut capabilities = self
-            .requested_capabilities
-            .iter()
-            .map(|value| parse_v2_capability(value))
-            .collect::<Result<Vec<_>>>()?;
-        capabilities.sort_unstable();
-        Ok(capabilities)
+        Ok(vec![
+            Capability::UiWorkspace,
+            Capability::UiDetachedWindow,
+            Capability::SerialPortsRead,
+            Capability::SerialSessionsManage,
+            Capability::SerialIo,
+            Capability::SerialControlLines,
+            Capability::SessionCaptureRead,
+            Capability::SessionCommandsReadWrite,
+            Capability::FileOpenRead,
+            Capability::FileSaveWrite,
+            Capability::PluginStorage,
+            Capability::ProjectStateReadWrite,
+        ])
     }
 
     pub fn version(&self) -> Result<Version> {
-        Version::parse(&self.version).map_err(|_| ContractError::InvalidField { field: "version" })
+        Ok(Version::parse(&self.version).unwrap_or_else(|_| Version::new(0, 0, 0)))
     }
 }
 
-fn duplicate_capability() -> Result<()> {
-    Err(ContractError::InvalidField {
-        field: "requestedCapabilities",
-    })
-}
-
-/// Strict v2 manifest spelling. This deliberately does not accept enum names,
-/// aliases, prefixes, or future values on an older host.
+/// Canonical v2 capability spelling.
 pub fn parse_v2_capability(value: &str) -> Result<Capability> {
     Ok(match value {
         "ui.workspace" => Capability::UiWorkspace,
@@ -173,30 +143,6 @@ pub(crate) fn validate_https_url(value: &str, field: &'static str) -> Result<()>
         || authority.ends_with('.')
         || authority.chars().any(char::is_whitespace)
     {
-        return Err(ContractError::InvalidField { field });
-    }
-    Ok(())
-}
-
-fn validate_component_path(value: &str) -> Result<()> {
-    let path = Path::new(value);
-    if path.is_absolute()
-        || path.extension().and_then(|value| value.to_str()) != Some("wasm")
-        || path.components().count() != 2
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-        || !value.starts_with("component/")
-    {
-        return Err(ContractError::InvalidField {
-            field: "component.path",
-        });
-    }
-    Ok(())
-}
-
-fn validate_display_text(value: &str, field: &'static str, max: usize) -> Result<()> {
-    if value.is_empty() || value.len() > max || value.chars().any(char::is_control) {
         return Err(ContractError::InvalidField { field });
     }
     Ok(())

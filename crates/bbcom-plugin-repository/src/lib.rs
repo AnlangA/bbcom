@@ -1,4 +1,4 @@
-//! Verified, manual-only plugin repository and installation primitives.
+//! Plugin package installation primitives.
 
 mod archive;
 mod error;

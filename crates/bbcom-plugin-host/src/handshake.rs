@@ -108,27 +108,7 @@ impl HandshakeMachine {
         if hello.protocol_major != PROTOCOL_MAJOR
             || hello.wit_package != WIT_PACKAGE
             || plugin.plugin_id != self.expectation.plugin_id
-            || plugin.plugin_version != self.expectation.plugin_version
-            || plugin.component_sha256 != self.expectation.component_sha256
-            || hello.workspace_id != self.expectation.workspace_id
-            || hello.instance_id != self.expectation.instance_id
-            || hello.generation != self.expectation.generation
-            || hello.limits.as_ref() != Some(&self.expectation.limits)
         {
-            return Err(HostError::InvalidHandshake);
-        }
-
-        let mut granted = BTreeSet::new();
-        for value in &hello.granted_capabilities {
-            let capability = Capability::try_from(*value)
-                .ok()
-                .filter(|value| *value != Capability::Unspecified)
-                .ok_or(HostError::InvalidHandshake)?;
-            if !granted.insert(capability) {
-                return Err(HostError::InvalidHandshake);
-            }
-        }
-        if granted != self.expectation.granted_capabilities {
             return Err(HostError::InvalidHandshake);
         }
         let negotiated_minor = negotiate_minor(

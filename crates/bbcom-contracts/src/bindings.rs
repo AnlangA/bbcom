@@ -51,10 +51,8 @@ pub fn render_typescript() -> String {
     declaration!(CancelAiRequest);
     declaration!(AiWindowState);
     declaration!(ResizeAiWindowRequest);
-    declaration!(AiKeyDurability);
     declaration!(AiKeyStatus);
     declaration!(SetAiApiKeyRequest);
-    declaration!(MigrateAiApiKeyRequest);
     declaration!(StateOrigin);
     declaration!(StateEnvelope<()>);
     declaration!(OperationStatus);
@@ -106,10 +104,7 @@ pub fn render_typescript() -> String {
     declaration!(PluginSurfaceEventV2);
     declaration!(PluginTaskStatusV2);
     declaration!(PluginTaskViewV2);
-    declaration!(PluginAuthorizationRequestV2);
     declaration!(PluginCommandContributionV2);
-    declaration!(PluginAuthorizationDecisionV2);
-    declaration!(ResolvePluginAuthorizationRequestV2);
     declaration!(EmitPluginSurfaceEventRequestV2);
     declaration!(CancelPluginTaskRequestV2);
     declaration!(RunPluginCommandRequestV2);
@@ -214,8 +209,6 @@ pub fn render_typescript() -> String {
     declaration!(ApplyWorkspaceBatchResponse);
     declaration!(FlushWorkspaceRequest);
     declaration!(FlushWorkspaceResponse);
-    declaration!(ProjectEncryptionMode);
-    declaration!(ProjectEncryptionOptions);
     declaration!(RequestProjectSourceGrantRequest);
     declaration!(ProjectSourceGrantResponse);
     declaration!(RequestProjectTargetGrantRequest);
@@ -226,23 +219,6 @@ pub fn render_typescript() -> String {
     declaration!(ExportProjectResponse);
     declaration!(CancelWorkspaceOperationRequest);
     declaration!(CancelWorkspaceOperationResponse);
-    declaration!(LegacyBackupFormat);
-    declaration!(LegacyBackupSourceVersion);
-    declaration!(LegacyBackupContent);
-    declaration!(BeginLegacyBackupRequest);
-    declaration!(BeginLegacyBackupResponse);
-    declaration!(VerifyLegacyBackupRequest);
-    declaration!(VerifyLegacyBackupResponse);
-    declaration!(LegacyResetJournalPhase);
-    declaration!(LegacyResetJournal);
-    declaration!(GetLegacyResetJournalRequest);
-    declaration!(GetLegacyResetJournalResponse);
-    declaration!(BeginLegacyDiscardRequest);
-    declaration!(BeginLegacyDiscardResponse);
-    declaration!(PrepareLegacyResetRequest);
-    declaration!(PrepareLegacyResetResponse);
-    declaration!(CompleteLegacyResetRequest);
-    declaration!(CompleteLegacyResetResponse);
 
     output.push_str("/** Stable alias used by existing frontend error handling. */\n");
     output.push_str("export type AppError = IpcError;\n\n");

@@ -1,8 +1,8 @@
+pub mod ai_settings;
 pub mod commands;
 pub mod export;
 pub mod models;
 pub mod plugins;
-pub mod secure_settings;
 pub mod utils;
 
 use bbcom_contracts::ShutdownCloseRequest;
@@ -12,14 +12,6 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let market_readiness_probe = match plugins::PluginMarketReadinessProbe::from_environment() {
-        None => None,
-        Some(Ok(probe)) => Some(probe),
-        Some(Err(error)) => {
-            eprintln!("plugin market-readiness probe failed: {error}");
-            std::process::exit(2);
-        }
-    };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -31,27 +23,12 @@ pub fn run() {
         .manage(commands::file_grants::FileGrantManager::default())
         .manage(export::session::ExportSessionManager::default())
         .manage(commands::log::AutoLogSessionManager::default())
-        .manage(secure_settings::SecureSettingsState::default())
         .manage(commands::ai::request_manager::AiRequestManager::default())
         .manage(commands::shutdown::ShutdownGate::default())
         .manage(commands::plugin::PluginLocalGrantState::default())
-        .manage(commands::legacy_backup::LegacyBackupManager::default())
         .setup(move |app| {
-            let app_data_root = match &market_readiness_probe {
-                Some(probe) => {
-                    probe.prepare_data_root().map_err(|error| {
-                        std::io::Error::other(format!(
-                            "plugin market-readiness probe failed: {error}"
-                        ))
-                    })?;
-                    probe.data_root().to_path_buf()
-                }
-                None => app.path().app_data_dir()?,
-            };
+            let app_data_root = app.path().app_data_dir()?;
             let workspace_root = app_data_root.join("projects-v1");
-            if market_readiness_probe.is_some() {
-                app.manage(plugins::PluginRuntimeDataRoot(app_data_root.clone()));
-            }
             app.manage(commands::workspace::WorkspaceManager::open(workspace_root)?);
             let plugin_sources = Arc::new(
                 plugins::NativePluginSourceRegistry::open(
@@ -60,16 +37,6 @@ pub fn run() {
                 .map_err(|_| std::io::Error::other("plugin source registry unavailable"))?,
             );
             app.manage(Arc::clone(&plugin_sources));
-            let plugin_authorizations = Arc::new(
-                plugins::NativePluginAuthorizationStore::open(
-                    app_data_root.join("plugin-authorizations-v2.json"),
-                )
-                .map_err(|_| std::io::Error::other("plugin authorization store unavailable"))?,
-            );
-            app.manage(Arc::clone(&plugin_authorizations));
-            app.manage(Arc::new(
-                plugins::PluginAuthorizationCoordinatorV2::default(),
-            ));
             app.manage(Arc::new(plugins::PluginDetachedWindowServiceV2::default()));
             app.manage(Arc::new(plugins::PluginFileGrantService::default()));
             app.manage(Arc::new(
@@ -90,34 +57,8 @@ pub fn run() {
             // Normal production composition is deferred until the main
             // window supplies its hydrated locale/theme/session projection.
             // This prevents enabled guests from ever initializing against
-            // setup-time placeholder HostContext values. The headless release
-            // probe has no renderer and keeps its dedicated composition path.
-            if market_readiness_probe.is_some() {
-                let workspace_id = app
-                    .state::<commands::workspace::WorkspaceManager>()
-                    .plugin_workspace_snapshot()
-                    .map(|snapshot| snapshot.workspace_id);
-                app.state::<Arc<plugins::PluginHostContextStoreV2>>()
-                    .update(bbcom_contracts::PluginHostContextUpdateRequestV2 {
-                        workspace_id,
-                        locale: bbcom_contracts::PluginHostLocaleV2::Zh,
-                        theme: bbcom_contracts::PluginHostThemeV2::Dark,
-                        sessions: Vec::new(),
-                    })
-                    .map_err(|_| std::io::Error::other("plugin probe host context unavailable"))?;
-                plugins::ensure_plugin_runtime(app.handle());
-            }
-            if let Some(probe) = &market_readiness_probe {
-                probe.write_evidence(app.handle()).map_err(|error| {
-                    std::io::Error::other(format!("plugin market-readiness probe failed: {error}"))
-                })?;
-                app.handle().exit(0);
-                return Ok(());
-            }
+            // setup-time placeholder HostContext values.
             plugins::spawn_dev_directory_watchers(app.handle().clone());
-            app.manage(commands::legacy_reset::LegacyResetManager::open(
-                app_data_root.join("reset-v1"),
-            )?);
             #[cfg(feature = "devtools")]
             {
                 if let Some(window) = app.get_webview_window("main") {
@@ -210,19 +151,12 @@ pub fn run() {
             commands::log::begin_auto_log,
             commands::log::finish_auto_log,
             commands::serial_drain::drain_serial_input,
-            commands::legacy_backup::begin_legacy_backup,
-            commands::legacy_backup::verify_legacy_backup,
-            commands::legacy_reset::get_legacy_reset_journal,
-            commands::legacy_reset::begin_legacy_discard,
-            commands::legacy_reset::prepare_legacy_reset,
-            commands::legacy_reset::complete_legacy_reset,
             commands::shutdown::submit_shutdown_report,
             commands::shutdown::confirm_exit,
             commands::shutdown::cancel_exit,
-            secure_settings::clear_ai_api_key,
-            secure_settings::get_ai_key_status,
-            secure_settings::migrate_ai_api_key,
-            secure_settings::set_ai_api_key,
+            ai_settings::clear_ai_api_key,
+            ai_settings::get_ai_key_status,
+            ai_settings::set_ai_api_key,
             commands::window::get_ai_window_state,
             commands::window::hide_ai_window,
             commands::window::resize_ai_window,
@@ -254,7 +188,6 @@ pub fn run() {
             commands::plugin::plugin_source_refresh,
             commands::plugin::plugin_set_watch_enabled,
             commands::plugin::plugin_emit_surface_event_v2,
-            commands::plugin::plugin_resolve_authorization_v2,
             commands::plugin::plugin_cancel_task_v2,
             commands::plugin::plugin_run_command_v2,
             commands::plugin::plugin_set_surface_placement_v2,

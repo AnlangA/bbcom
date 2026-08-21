@@ -1,8 +1,7 @@
-//! Deny-by-default protocol-v2 mediation between plugins and bbcom.
+//! Protocol-v2 routing between plugins and bbcom.
 //!
-//! This crate deliberately has no serial, filesystem, network, keyring, Tauri,
-//! or WebView dependency. Concrete capabilities remain application-owned and
-//! are reached only through the typed gateway.
+//! Concrete host operations remain application-owned and are reached through
+//! the typed gateway.
 
 mod error;
 mod gateway;

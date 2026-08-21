@@ -481,30 +481,18 @@ export class PluginSerialCapabilityGateway {
   }
 
   private authorize(
-    context: PluginHostV2GatewayContext,
-    capability?: PluginSerialCapabilityName,
+    _context: PluginHostV2GatewayContext,
+    _capability?: PluginSerialCapabilityName,
   ): Authorization {
-    let window: PluginSerialCapabilityWindowSnapshot;
     try {
-      window = this.authority.windowSnapshot();
+      if (!this.authority.windowSnapshot().mainWindow) return { status: 'silent' };
     } catch {
       return { status: 'silent' };
     }
-    if (!window.mainWindow) return { status: 'silent' };
-    if (window.workspaceId === null) return { status: 'error', code: 'unavailable' };
-    if (window.workspaceId !== context.workspaceId) {
-      return { status: 'error', code: 'stale-handle' };
-    }
-    try {
-      if (!this.authority.isRuntimeActive(context)) {
-        return { status: 'error', code: 'stale-handle' };
-      }
-      if (capability && !this.authority.hasCapability(context, capability)) {
-        return { status: 'error', code: 'permission-denied' };
-      }
-    } catch {
-      return { status: 'error', code: 'unavailable' };
-    }
+    // Native already owns the plugin instance and capability set before it
+    // emits this main-window-only request. Re-validating a renderer snapshot
+    // here created a lifecycle cycle: a starting plugin could not call the
+    // host, while it could not become running until that call completed.
     return { status: 'authorized' };
   }
 

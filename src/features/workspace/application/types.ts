@@ -7,7 +7,6 @@ import type { DataFrame } from '../../../types/serial';
 import type { HydratedWorkspaceSession } from '../adapters';
 import type {
   ActiveWorkspaceViewModel,
-  ProjectEncryptionOptions,
   WorkspaceActionFailure,
   WorkspaceActionOutcome,
   WorkspaceMutationCommand,
@@ -219,11 +218,8 @@ export interface WorkspaceApplicationActivation {
     signal?: AbortSignal,
   ): Promise<WorkspaceApplicationOutcome>;
   createWorkspace(name: string): Promise<WorkspaceApplicationOutcome>;
-  importWorkspace(encryption?: ProjectEncryptionOptions): Promise<WorkspaceApplicationOutcome>;
-  exportWorkspace(
-    suggestedName: string,
-    encryption?: ProjectEncryptionOptions,
-  ): Promise<WorkspaceProjectExportOutcome>;
+  importWorkspace(): Promise<WorkspaceApplicationOutcome>;
+  exportWorkspace(suggestedName: string): Promise<WorkspaceProjectExportOutcome>;
   /** Request cancellation and resolve only after the real export terminal state is known. */
   cancelExport(): Promise<WorkspaceProjectExportOutcome | null>;
 }

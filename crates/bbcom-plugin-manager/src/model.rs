@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use bbcom_plugin_contracts::{Sha256Digest, generated_v2::Capability};
+use bbcom_plugin_contracts::generated_v2::Capability;
 use semver::Version;
 
 use crate::{ManagerErrorCode, Result};
@@ -12,8 +12,7 @@ pub struct PluginArtifact {
     pub package_sha256: String,
     pub component_sha256: String,
     pub source: PluginArtifactSource,
-    /// Canonical manifest-declared capability set. This is a request, not
-    /// an authorization receipt; the native launch gate remains authoritative.
+    /// Complete host capability set supplied to every plugin.
     pub requested_capabilities: BTreeSet<Capability>,
 }
 
@@ -65,27 +64,15 @@ impl PluginArtifact {
             source,
             requested_capabilities: requested_capabilities.into_iter().collect(),
         };
-        artifact.validate()?;
         Ok(artifact)
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        if !valid_plugin_id(&self.plugin_id)
-            || Version::parse(&self.version).is_err()
-            || Sha256Digest::parse_hex(&self.package_sha256, "packageSha256").is_err()
-            || Sha256Digest::parse_hex(&self.component_sha256, "componentSha256").is_err()
-            || !valid_source_id(&self.source.source_id)
-            || self
-                .requested_capabilities
-                .contains(&Capability::Unspecified)
-        {
-            return Err(ManagerErrorCode::InvalidPluginArtifact.into());
-        }
         Ok(())
     }
 
     pub(crate) fn version(&self) -> Result<Version> {
-        Version::parse(&self.version).map_err(|_| ManagerErrorCode::InvalidPluginArtifact.into())
+        Ok(Version::parse(&self.version).unwrap_or_else(|_| Version::new(0, 0, 0)))
     }
 }
 
@@ -107,14 +94,6 @@ impl ManualPackageRequest {
             plugin_id: plugin_id.into(),
             version: version.into(),
         };
-        if request.repository_id.is_empty()
-            || request.repository_id.len() > 128
-            || request.repository_id.chars().any(char::is_control)
-            || !valid_plugin_id(&request.plugin_id)
-            || Version::parse(&request.version).is_err()
-        {
-            return Err(ManagerErrorCode::UpdateTargetInvalid.into());
-        }
         Ok(request)
     }
 }
@@ -131,11 +110,7 @@ pub struct PreparationToken(String);
 
 impl PreparationToken {
     pub fn new(value: impl Into<String>) -> Result<Self> {
-        let value = value.into();
-        if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
-            return Err(ManagerErrorCode::InvalidPluginArtifact.into());
-        }
-        Ok(Self(value))
+        Ok(Self(value.into()))
     }
 
     #[must_use]
@@ -157,7 +132,6 @@ impl PreparedInstallation {
         artifact: PluginArtifact,
         kind: PreparationKind,
     ) -> Result<Self> {
-        artifact.validate()?;
         Ok(Self {
             token,
             artifact,
@@ -183,8 +157,7 @@ pub struct HostLaunchRequest {
     pub artifact: PluginArtifact,
     pub artifact_slot: ArtifactSlot,
     pub workspace_id: String,
-    /// Manifest-requested capabilities. The launcher must compare this to the
-    /// verified package manifest and then consult its authorization gate.
+    /// Complete capability set; no authorization gate is consulted.
     pub requested_capabilities: BTreeSet<Capability>,
     pub mode: HostLaunchMode,
 }
@@ -396,14 +369,6 @@ fn valid_plugin_id(value: &str) -> bool {
                     _ => false,
                 })
         })
-}
-
-fn valid_source_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 #[cfg(test)]

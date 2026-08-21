@@ -6,16 +6,14 @@
 use std::collections::HashSet;
 
 use bbcom_contracts::{
-    PluginAuthorizationRequestV2, PluginCenterData, PluginCommandContributionV2,
-    PluginDetachedSurfaceEventRequestV2, PluginDetachedSurfaceViewV2, PluginFailureV2,
-    PluginSurfaceEventKind, PluginSurfacePlacement, PluginSurfaceSnapshot, PluginTaskStatusV2,
-    PluginTaskViewV2, PluginUiNode, RuntimeInstanceKey,
+    PluginCenterData, PluginCommandContributionV2, PluginDetachedSurfaceEventRequestV2,
+    PluginDetachedSurfaceViewV2, PluginFailureV2, PluginSurfaceEventKind, PluginSurfacePlacement,
+    PluginSurfaceSnapshot, PluginTaskStatusV2, PluginTaskViewV2, PluginUiNode, RuntimeInstanceKey,
 };
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_SURFACES: usize = 32;
 const MAX_TASKS: usize = 128;
-const MAX_AUTHORIZATION_REQUESTS: usize = 32;
 const MAX_COMMAND_CONTRIBUTIONS: usize = 256;
 const MAX_SURFACE_BYTES: usize = 512 * 1024;
 const MAX_SURFACE_NODES: usize = 1024;
@@ -49,20 +47,6 @@ pub fn validate_plugin_center_extensions_v2(data: &PluginCenterData) -> Result<(
         validate_task(task)?;
         if !task_keys.insert((runtime_key(&task.runtime), task.task_id.as_str())) {
             return Err("data.tasks.taskId");
-        }
-    }
-
-    let requests = data.authorization_requests.as_deref().unwrap_or_default();
-    require_limit(
-        requests.len(),
-        MAX_AUTHORIZATION_REQUESTS,
-        "data.authorizationRequests",
-    )?;
-    let mut authorization_plugins = HashSet::new();
-    for request in requests {
-        validate_authorization_request(request)?;
-        if !authorization_plugins.insert(request.plugin_id.as_str()) {
-            return Err("data.authorizationRequests.pluginId");
         }
     }
 
@@ -520,25 +504,6 @@ fn validate_failure(failure: &PluginFailureV2) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn validate_authorization_request(
-    request: &PluginAuthorizationRequestV2,
-) -> Result<(), &'static str> {
-    if !valid_identity(&request.plugin_id)
-        || !safe_text(&request.display_name, 256, false, false)
-        || !valid_version(&request.version)
-        || !valid_sha256(&request.digest_sha256)
-        || !canonical_capabilities(&request.requested_capabilities)
-        || !canonical_capabilities(&request.added_capabilities)
-        || !request
-            .added_capabilities
-            .iter()
-            .all(|capability| request.requested_capabilities.contains(capability))
-    {
-        return Err("data.authorizationRequests");
-    }
-    Ok(())
-}
-
 fn validate_command(command: &PluginCommandContributionV2) -> Result<(), &'static str> {
     validate_runtime(&command.runtime)?;
     if !valid_identity(&command.command_id)
@@ -626,42 +591,6 @@ fn valid_message_key(value: &str) -> bool {
         && bytes.all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
-}
-
-fn valid_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn valid_version(value: &str) -> bool {
-    if value.is_empty() || value.len() > 128 || !safe_text(value, 128, false, false) {
-        return false;
-    }
-    let core_end = value.find(['-', '+']).unwrap_or(value.len());
-    let mut parts = value[..core_end].split('.');
-    let core_valid = (0..3).all(|_| {
-        parts.next().is_some_and(|part| {
-            !part.is_empty()
-                && part.bytes().all(|byte| byte.is_ascii_digit())
-                && (part == "0" || !part.starts_with('0'))
-        })
-    }) && parts.next().is_none();
-    let suffix = &value[core_end.min(value.len())..];
-    core_valid
-        && (suffix.is_empty()
-            || (suffix.len() > 1
-                && suffix[1..]
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))))
-}
-
-fn canonical_capabilities(capabilities: &[bbcom_contracts::PluginCapabilityV2]) -> bool {
-    capabilities.len() <= bbcom_contracts::PluginCapabilityV2::ALL.len()
-        && capabilities
-            .windows(2)
-            .all(|pair| pair[0].as_str() < pair[1].as_str())
 }
 
 fn finite_number(value: &str) -> Result<f64, &'static str> {
@@ -909,29 +838,5 @@ mod tests {
             validate_surface(&dangerous),
             Err("data.surfaces.root.button.confirmation")
         );
-    }
-
-    #[test]
-    fn authorization_capabilities_must_be_canonical_and_added_is_a_subset() {
-        let mut requested = vec![
-            bbcom_contracts::PluginCapabilityV2::UiWorkspace,
-            bbcom_contracts::PluginCapabilityV2::SerialIo,
-        ];
-        let mut request = PluginAuthorizationRequestV2 {
-            plugin_id: "dev.bbcom.mcumgr".to_owned(),
-            display_name: "MCUmgr".to_owned(),
-            version: "1.0.0".to_owned(),
-            digest_sha256: "a".repeat(64),
-            development_source: false,
-            requested_capabilities: requested.clone(),
-            added_capabilities: vec![bbcom_contracts::PluginCapabilityV2::SerialIo],
-        };
-        assert!(validate_authorization_request(&request).is_err());
-
-        requested.sort_unstable_by_key(|capability| capability.as_str());
-        request.requested_capabilities = requested;
-        assert!(validate_authorization_request(&request).is_ok());
-        request.added_capabilities = vec![bbcom_contracts::PluginCapabilityV2::FileOpenRead];
-        assert!(validate_authorization_request(&request).is_err());
     }
 }

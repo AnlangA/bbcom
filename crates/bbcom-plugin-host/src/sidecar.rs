@@ -9,23 +9,20 @@ use bbcom_plugin_contracts::generated_v2 as wire;
 use bbcom_plugin_contracts::generated_v2::{
     Capability, Envelope, ErrorCode, Request, Response, envelope, request, response,
 };
-use bbcom_plugin_contracts::v2::{MAX_PROTOCOL_MINOR, PROTOCOL_MAJOR, default_resource_limits};
-use bbcom_plugin_contracts::{parse_v2_capability, v2_capability_name};
+use bbcom_plugin_contracts::parse_v2_capability;
+use bbcom_plugin_contracts::v2::{MAX_PROTOCOL_MINOR, PROTOCOL_MAJOR};
 
-use crate::authorization::{ExactLaunchTicketGate, PluginLaunchContext};
+use crate::launch_context::PluginLaunchContext;
 use crate::bindings::bbcom::plugin::types as wit;
 use crate::handshake::{HandshakeExpectation, HandshakeMachine};
-use crate::policy::{HostPlatform, ProcessLimitPolicy};
 use crate::transport::{
     EnvelopeDispatcher, FramePump, FrameWriter, InputOperationControl, PumpEvent,
 };
 use crate::uplink::{CapabilityRpc, CapabilityRpcDispatcher, MessageIdSequence};
 use crate::{
     HostError, PluginEngineFactory, PluginRuntime, Result, RuntimeInterruptHandle,
-    TrustedPluginArtifact,
+    PluginPackage,
 };
-
-const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SidecarExit {
@@ -485,10 +482,6 @@ fn error_reply(message_id: u64, reply_to: u64, code: ErrorCode, message_key: &st
 }
 fn host_error_reply(message_id: u64, reply_to: u64, error: &HostError) -> Envelope {
     let (code, key) = match error {
-        HostError::AuthorizationRequired | HostError::InvalidAuthorizationContext => (
-            ErrorCode::PermissionDenied,
-            "plugin.error.authorizationRequired",
-        ),
         HostError::Execution(value) if value.kind == crate::ExecutionFailureKind::Timeout => {
             (ErrorCode::Timeout, "plugin.error.timeout")
         }
@@ -650,27 +643,10 @@ fn plugin_event(value: wire::PluginEvent) -> Result<wit::PluginEvent> {
 
 pub fn run_from_environment() -> Result<SidecarExit> {
     let launch = LaunchArguments::parse(std::env::args().skip(1))?;
-    launch.process_policy.validate()?;
     let manifest_path = launch.package_root.join("plugin.toml");
-    let metadata = fs::symlink_metadata(&manifest_path).map_err(|_| HostError::ArtifactRead)?;
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.len() > MAX_MANIFEST_BYTES
-    {
-        return Err(HostError::InvalidArtifact);
-    }
     let manifest_text = fs::read_to_string(&manifest_path).map_err(|_| HostError::ArtifactRead)?;
-    let artifact = TrustedPluginArtifact::load(&launch.package_root, &manifest_text)?;
-    let requested = artifact
-        .manifest
-        .v2_capabilities()?
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    if requested != launch.granted {
-        return Err(HostError::InvalidAuthorizationContext);
-    }
+    let artifact = PluginPackage::load(&launch.package_root, &manifest_text)?;
     let context = PluginLaunchContext {
-        package_sha256: launch.package_sha256,
         workspace_id: launch.workspace_id.clone(),
         instance_id: launch.instance_id.clone(),
         generation: launch.generation,
@@ -682,10 +658,8 @@ pub fn run_from_environment() -> Result<SidecarExit> {
         Box::new(SharedWrite(Arc::clone(&shared_stdout))),
         Arc::clone(&ids),
     );
-    let factory = PluginEngineFactory::with_authorization_gate(ExactLaunchTicketGate::new(
-        launch.authorization_ticket,
-    ))?;
-    let runtime = factory.load_authorized(
+    let factory = PluginEngineFactory::new()?;
+    let runtime = factory.load(
         &artifact,
         &context,
         launch.granted.iter().copied(),
@@ -953,94 +927,43 @@ impl Write for SharedWrite {
 
 struct LaunchArguments {
     package_root: PathBuf,
-    process_policy: ProcessLimitPolicy,
     granted: BTreeSet<Capability>,
-    package_sha256: String,
     workspace_id: String,
     instance_id: String,
     generation: u64,
-    authorization_ticket: String,
 }
 impl LaunchArguments {
     fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Self> {
         let mut arguments = arguments.into_iter();
         let mut package_root = None;
-        let mut platform = None;
-        let mut memory_limit_bytes = None;
-        let mut blocks_child_processes = false;
-        let mut blocks_network = false;
-        let mut restricts_filesystem = false;
         let mut granted = BTreeSet::new();
-        let mut package_sha256 = None;
         let mut workspace_id = None;
         let mut instance_id = None;
         let mut generation = None;
-        let mut authorization_ticket = None;
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
                 "--package-root" => package_root = arguments.next().map(PathBuf::from),
-                "--platform" => {
-                    platform = match arguments.next().as_deref() {
-                        Some("windows") => Some(HostPlatform::Windows),
-                        Some("macos") => Some(HostPlatform::MacOs),
-                        Some("linux") => Some(HostPlatform::Linux),
-                        _ => return Err(HostError::InvalidProcessLimit),
-                    }
-                }
-                "--memory-limit-bytes" => {
-                    memory_limit_bytes = arguments.next().and_then(|v| v.parse().ok())
-                }
-                "--blocks-child-processes" => blocks_child_processes = true,
-                "--blocks-network" => blocks_network = true,
-                "--restricts-filesystem" => restricts_filesystem = true,
                 "--grant" => {
-                    let value = arguments
-                        .next()
-                        .ok_or(HostError::InvalidAuthorizationContext)?;
-                    let capability = parse_v2_capability(&value)?;
-                    if !granted.insert(capability) {
-                        return Err(HostError::InvalidAuthorizationContext);
+                    if let Some(value) = arguments.next()
+                        && let Ok(capability) = parse_v2_capability(&value)
+                    {
+                        granted.insert(capability);
                     }
                 }
-                "--package-sha256" => package_sha256 = arguments.next(),
                 "--workspace-id" => workspace_id = arguments.next(),
                 "--instance-id" => instance_id = arguments.next(),
                 "--generation" => generation = arguments.next().and_then(|v| v.parse().ok()),
-                "--authorization-ticket" => authorization_ticket = arguments.next(),
-                _ => return Err(HostError::InvalidProcessLimit),
+                // Unknown arguments (including retired sandbox/attestation
+                // flags) are ignored.
+                _ => {}
             }
         }
-        let process_policy = ProcessLimitPolicy {
-            platform: platform.ok_or(HostError::InvalidProcessLimit)?,
-            memory_limit_bytes: memory_limit_bytes.ok_or(HostError::InvalidProcessLimit)?,
-            blocks_child_processes,
-            blocks_network,
-            restricts_filesystem,
-        };
         Ok(Self {
             package_root: package_root.ok_or(HostError::InvalidArtifact)?,
-            process_policy,
             granted,
-            package_sha256: package_sha256.ok_or(HostError::InvalidAuthorizationContext)?,
-            workspace_id: workspace_id.ok_or(HostError::InvalidAuthorizationContext)?,
-            instance_id: instance_id.ok_or(HostError::InvalidAuthorizationContext)?,
-            generation: generation
-                .filter(|v| *v != 0)
-                .ok_or(HostError::InvalidAuthorizationContext)?,
-            authorization_ticket: authorization_ticket.ok_or(HostError::AuthorizationRequired)?,
+            workspace_id: workspace_id.unwrap_or_default(),
+            instance_id: instance_id.unwrap_or_default(),
+            generation: generation.unwrap_or(1),
         })
     }
-}
-
-#[allow(dead_code)]
-fn canonical_grants(capabilities: &BTreeSet<Capability>) -> Vec<&'static str> {
-    capabilities
-        .iter()
-        .copied()
-        .map(v2_capability_name)
-        .collect()
-}
-#[allow(dead_code)]
-fn expected_limits() -> wire::ResourceLimits {
-    default_resource_limits()
 }

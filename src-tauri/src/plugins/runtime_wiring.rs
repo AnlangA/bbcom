@@ -58,7 +58,6 @@ use super::host_launcher::{
 };
 use super::installation::VerifiedPackageProvider;
 use super::runtime_actor::PluginWorkspaceBindingPort;
-use super::sandbox::PlatformSandboxDriver;
 use super::state::SharedNativePluginStatePersistencePort;
 
 const SIDECAR_BASENAME: &str = "bbcom-plugin-host";
@@ -171,11 +170,21 @@ impl<E: HostUpstreamEnvironment> PluginProjectStateProviderV2
         workspace_id: &str,
         plugin_id: &str,
     ) -> Result<Option<PluginProjectStateSnapshotV2>, bbcom_plugin_manager::HostFailure> {
-        let workspace = self
-            .0
-            .active_workspace()
-            .ok_or(bbcom_plugin_manager::HostFailure::Initialization)?;
+        let workspace = self.0.active_workspace().ok_or_else(|| {
+            tracing::warn!(
+                plugin_id,
+                workspace_id,
+                "plugin project state unavailable because no workspace is active"
+            );
+            bbcom_plugin_manager::HostFailure::Initialization
+        })?;
         if workspace.workspace_id != workspace_id {
+            tracing::warn!(
+                plugin_id,
+                requested_workspace_id = workspace_id,
+                active_workspace_id = %workspace.workspace_id,
+                "plugin project state requested for a stale workspace"
+            );
             return Err(bbcom_plugin_manager::HostFailure::Initialization);
         }
         let mut matching = workspace
@@ -184,6 +193,11 @@ impl<E: HostUpstreamEnvironment> PluginProjectStateProviderV2
             .filter(|state| state.plugin_id == plugin_id);
         let state = matching.next();
         if matching.next().is_some() {
+            tracing::warn!(
+                plugin_id,
+                workspace_id,
+                "workspace returned duplicate plugin project-state records"
+            );
             return Err(bbcom_plugin_manager::HostFailure::Initialization);
         }
         Ok(state.map(|state| PluginProjectStateSnapshotV2 {
@@ -311,7 +325,17 @@ impl<R: tauri::Runtime> super::PluginWorkspaceCapabilityPortV2
                 2,
                 Some(schema_version),
             )
-            .map_err(map_workspace_capability_error)
+            .map_err(|error| {
+                tracing::warn!(
+                    ?error,
+                    plugin_id = %context.plugin_id,
+                    workspace_id = %context.workspace_id,
+                    schema_version,
+                    state_bytes = value.len(),
+                    "workspace rejected plugin project-state persistence"
+                );
+                map_workspace_capability_error(error)
+            })
     }
 
     fn upsert_quick_command(
@@ -608,8 +632,6 @@ struct PluginRuntimeCompositionParts<E: HostUpstreamEnvironment> {
     projection: Arc<super::PluginRuntimeProjectionV2>,
     host_context: Arc<super::PluginHostContextStoreV2>,
     files: Arc<super::PluginFileGrantService>,
-    authorizations: Arc<super::NativePluginAuthorizationStore>,
-    authorization_coordinator: Arc<super::PluginAuthorizationCoordinatorV2>,
     dialogs: Arc<dyn super::PluginFileDialogPortV2>,
     workspace_capabilities: Arc<dyn super::PluginWorkspaceCapabilityPortV2>,
     detached: Arc<dyn super::PluginDetachedProjectionPortV2>,
@@ -645,14 +667,6 @@ pub fn compose<R: tauri::Runtime>(
         .state::<Arc<super::PluginFileGrantService>>()
         .inner()
         .clone();
-    let authorizations = app
-        .state::<Arc<super::NativePluginAuthorizationStore>>()
-        .inner()
-        .clone();
-    let authorization_coordinator = app
-        .state::<Arc<super::PluginAuthorizationCoordinatorV2>>()
-        .inner()
-        .clone();
     let dialogs: Arc<dyn super::PluginFileDialogPortV2> =
         Arc::new(TauriPluginFileDialogPortV2 { app: app.clone() });
     let workspace_capabilities: Arc<dyn super::PluginWorkspaceCapabilityPortV2> =
@@ -670,8 +684,6 @@ pub fn compose<R: tauri::Runtime>(
         projection,
         host_context,
         files,
-        authorizations,
-        authorization_coordinator,
         dialogs,
         workspace_capabilities,
         detached,
@@ -706,14 +718,6 @@ pub fn ensure_plugin_runtime<R: tauri::Runtime>(app: &AppHandle<R>) {
     let status = match &outcome {
         Ok(runtime) => {
             let generation = HOST_EXIT_POLL_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
-            let authorizations = app
-                .state::<Arc<super::NativePluginAuthorizationStore>>()
-                .inner()
-                .clone();
-            let authorization_coordinator = app
-                .state::<Arc<super::PluginAuthorizationCoordinatorV2>>()
-                .inner()
-                .clone();
             let projection = app
                 .state::<Arc<super::PluginRuntimeProjectionV2>>()
                 .inner()
@@ -724,8 +728,6 @@ pub fn ensure_plugin_runtime<R: tauri::Runtime>(app: &AppHandle<R>) {
             let projected_commands: Arc<dyn crate::commands::plugin::PluginCommandService> =
                 Arc::new(super::ProjectingPluginCommandServiceV2::new(
                     runtime.command_service(),
-                    Arc::clone(&authorizations),
-                    Arc::clone(&authorization_coordinator),
                     Arc::clone(&projection),
                     Arc::clone(&detached),
                     private_state,
@@ -735,8 +737,6 @@ pub fn ensure_plugin_runtime<R: tauri::Runtime>(app: &AppHandle<R>) {
             app.state::<super::PluginUiActionStateV2>()
                 .replace_service(Arc::new(super::NativePluginUiActionServiceV2::new(
                     projected_commands,
-                    authorizations,
-                    authorization_coordinator,
                     Arc::clone(&lifecycle),
                     projection,
                     detached,
@@ -793,13 +793,10 @@ pub fn activate_plugin_workspace<R: tauri::Runtime>(app: &AppHandle<R>) {
 fn app_data_roots<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> Result<PluginRuntimeRoots, PluginBootstrapError> {
-    let app_data = match app.try_state::<PluginRuntimeDataRoot>() {
-        Some(root) => root.0.clone(),
-        None => app
-            .path()
-            .app_data_dir()
-            .map_err(|_| PluginBootstrapError::MissingInstaller)?,
-    };
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| PluginBootstrapError::MissingInstaller)?;
     // An unresolvable or unwritable application-data root fails composition
     // with the first-dependency code; setup records only that code.
     fs::create_dir_all(&app_data).map_err(|_| PluginBootstrapError::MissingInstaller)?;
@@ -847,16 +844,12 @@ fn compose_from_parts<E: HostUpstreamEnvironment>(
         projection,
         host_context,
         files,
-        authorizations,
-        authorization_coordinator,
         dialogs,
         workspace_capabilities,
         detached,
     } = parts;
     let workspace_bindings = EnvironmentWorkspaceBindingPort(Arc::clone(&environment));
-    // Missing sidecar is resolved before `build()` so platforms without the
-    // bundled sidecar fail with the stable missing-sidecar code and never
-    // execute the (slower) platform sandbox self-test first.
+    // Missing sidecar is reported before composing the remaining runtime.
     let sidecar_metadata = fs::symlink_metadata(&roots.sidecar_executable)
         .map_err(|_| PluginBootstrapError::MissingSidecarExecutable)?;
     if !sidecar_metadata.is_file() || sidecar_metadata.file_type().is_symlink() {
@@ -929,9 +922,6 @@ fn compose_from_parts<E: HostUpstreamEnvironment>(
             workspace_capabilities,
             detached,
         ));
-    let authorization_gate: Arc<dyn bbcom_plugin_host::PluginAuthorizationGate> = Arc::new(
-        super::NativePluginAuthorizationGateV2::new(authorizations, authorization_coordinator),
-    );
     let project_state_provider: Arc<dyn PluginProjectStateProviderV2> =
         Arc::new(EnvironmentProjectStateProvider(Arc::clone(&environment)));
 
@@ -944,11 +934,9 @@ fn compose_from_parts<E: HostUpstreamEnvironment>(
         })
         .workspace(workspace)
         .state_persistence(state)
-        .sandbox(PlatformSandboxDriver::system())
         .sidecar_executable(roots.sidecar_executable)
         .private_artifact_root(private_artifact_root)
         .workspace_bindings(workspace_bindings)
-        .authorization_gate(authorization_gate)
         .capability_gateway(capability_gateway)
         .host_context_provider(host_context)
         .project_state_provider(project_state_provider)
@@ -1057,10 +1045,6 @@ impl CatalogViewPort for ConfiguredCatalogView {
 
 /// Process-lifetime holder for the active protocol-v2 plugin lifecycle.
 pub struct PluginLifecycleHandle(Mutex<Option<Arc<dyn PluginRuntimeLifecycle>>>);
-
-/// Private G46 override installed before composition. Normal application
-/// setup never manages this type and therefore always uses the OS data root.
-pub(crate) struct PluginRuntimeDataRoot(pub(crate) PathBuf);
 
 impl PluginLifecycleHandle {
     fn empty() -> Self {
@@ -1252,9 +1236,6 @@ fn dev_directory_fingerprint(path: &Path, source_id: &str) -> Option<[u8; 32]> {
         component_digest.update(&buffer[..read]);
     }
     let component_hex = format!("{:x}", component_digest.finalize());
-    if component_hex != manifest.component.sha256 {
-        return None;
-    }
     let mut fingerprint = Sha256::new();
     fingerprint.update(&manifest_bytes);
     fingerprint.update(component_hex.as_bytes());

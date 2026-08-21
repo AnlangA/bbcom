@@ -145,11 +145,7 @@ export class ValidatedWorkspaceGateway implements WorkspaceCoordinatorPort {
     const safe = {
       requestId: validateRequestId(request.requestId),
       suggestedName: validateSuggestedProjectFileName(request.suggestedName),
-      encryptionMode: request.encryptionMode,
     };
-    if (safe.encryptionMode !== 'plaintext' && safe.encryptionMode !== 'age-passphrase') {
-      throw new TypeError('invalid project encryption mode');
-    }
     const response = await this.call(
       () => this.transport.requestProjectTargetGrant(safe, context),
       context,

@@ -5,8 +5,8 @@ host wire contracts. It contains no Wasmtime runtime, downloader, installer, or
 plugin host implementation.
 
 `build.rs` compiles the v2 schema with pinned `prost-build` and vendored
-`protoc`. Manifests that do not select plugin API generation 2 are rejected at
-the package boundary and never enter inventory or runtime state.
+`protoc`. A manifest supplies component location and display metadata; legacy
+API, digest, publisher, and capability fields do not gate loading.
 
 ## Compatibility rules
 
@@ -25,17 +25,14 @@ the package boundary and never enter inventory or runtime state.
   tested together. Adding a capability or operation requires updating all four
   boundaries and their shape tests.
 
-## Authority and trust boundary
+## Runtime capabilities
 
-The closed v2 capability set covers trusted host-rendered surfaces, serial
+The v2 capability set covers host-rendered surfaces, serial
 ports/sessions/I/O/control lines, capture pages, native quick-command and macro
 contributions, opaque file grants, plugin-private storage, and portable project
 state. A capability grant never gives a guest a path, native serial object,
 Tauri API, WebView, socket, process, or environment access.
 
-HTTPS and SHA-256 establish transport and artifact integrity only; they do not
-authenticate a publisher. Publisher fields are informational. TUF and publisher
-signature verification remain future stable-marketplace gates in ADR-0004.
-
-Plugin packages contain one Wasm Component plus declarative metadata. Native
-libraries, executables, install scripts, and symlinks are rejected.
+Every plugin receives the complete current capability set automatically. The
+host performs no digest, signature, publisher, requested-capability,
+authorization-ticket, or marketplace-trust validation.

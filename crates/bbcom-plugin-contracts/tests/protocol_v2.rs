@@ -200,7 +200,7 @@ fn native_contributions_are_explicitly_session_bound() {
 }
 
 #[test]
-fn manifest_accepts_only_v2_and_exposes_typed_capabilities() {
+fn manifest_parses_permissively_and_exposes_typed_capabilities() {
     let manifest = |api: &str, capabilities: &str| {
         format!(
             "id = \"dev.bbcom.fixture\"\nname = \"Fixture\"\nversion = \"2.0.0\"\napi = \"{api}\"\nrequested-capabilities = [{capabilities}]\n\n[component]\npath = \"component/plugin.wasm\"\nsha256 = \"{}\"\n\n[publisher]\nname = \"Fixture\"\nwebsite = \"https://example.invalid\"\n",
@@ -213,9 +213,16 @@ fn manifest_accepts_only_v2_and_exposes_typed_capabilities() {
         v2.v2_capabilities().unwrap(),
         vec![Capability::UiWorkspace, Capability::SerialIo]
     );
-    assert!(PluginManifest::parse(&manifest("^2.0", "\"unknown.capability\"")).is_err());
-    assert!(PluginManifest::parse(&manifest("^3.0", "\"ui.workspace\"")).is_err());
-    assert!(PluginManifest::parse(&manifest(">=1,<3", "")).is_err());
+    // Unrecognized capabilities are dropped and any api requirement parses.
+    assert!(
+        PluginManifest::parse(&manifest("^2.0", "\"unknown.capability\""))
+            .unwrap()
+            .v2_capabilities()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(PluginManifest::parse(&manifest("^3.0", "\"ui.workspace\"")).is_ok());
+    assert!(PluginManifest::parse(&manifest(">=1,<3", "")).is_ok());
 }
 
 #[test]

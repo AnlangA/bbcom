@@ -49,20 +49,19 @@ use bbcom_contracts::{
     CreateWorkspaceCommandRequest, CreateWorkspaceCommandResponse, DeleteWorkspaceRequest,
     DeleteWorkspaceResponse, ExportProjectRequest, ExportProjectResponse, FlushWorkspaceRequest,
     FlushWorkspaceResponse, ImportProjectRequest, ImportProjectResponse, IpcError,
-    OpenWorkspaceRequest, OpenWorkspaceResponse, ProjectEncryptionMode, ProjectEncryptionOptions,
-    WorkspaceCatalogRequest, WorkspaceCatalogResponse, WorkspaceMacro, WorkspaceQuickCommand,
+    OpenWorkspaceRequest, OpenWorkspaceResponse, WorkspaceCatalogRequest, WorkspaceCatalogResponse,
+    WorkspaceMacro, WorkspaceQuickCommand,
 };
 use bbcom_workspace::WorkspaceService;
 use bbcom_workspace::container::{
-    AgeScryptPassphraseStreams, NativeProjectDestination, NativeProjectSource,
-    ProjectContainerError, ProjectLibrary, WorkspaceUuid,
+    NativeProjectDestination, NativeProjectSource, ProjectContainerError, ProjectLibrary,
+    WorkspaceUuid,
 };
 use grants::{ProjectGrant, ProjectGrantKind};
 use operations::WorkspaceOperationControl;
 use tauri::{Manager, State, WebviewWindow};
 use tokio::sync::Mutex as AsyncMutex;
 
-const MAX_PASSPHRASE_CHARS: usize = 1_024;
 const ACTIVE_WORKSPACE_FILE: &str = ".active-workspace-v1";
 const MAX_ACTIVE_WORKSPACE_FILE_BYTES: u64 = 256;
 const PLUGIN_CONTRIBUTION_INTENT_FILE: &str = ".plugin-contribution-uninstall-v2.json";
@@ -205,7 +204,14 @@ impl WorkspaceManager {
             .as_mut()
             .ok_or(())?
             .set_plugin_expected_enabled(plugin_id, expected_enabled)
-            .map_err(|_| ())
+            .map_err(|error| {
+                tracing::warn!(
+                    ?error,
+                    plugin_id,
+                    expected_enabled,
+                    "workspace rejected plugin enabled-state persistence"
+                );
+            })
     }
 
     pub(crate) fn set_plugin_project_state(
@@ -488,95 +494,6 @@ impl WorkspaceManager {
         }
         remove_plugin_contribution_intent(&self.plugin_contribution_intent).map_err(|_| ())
     }
-
-    /// Native reset-only primitive. The durable reset journal supplies the
-    /// fixed UUID; renderer commands can never select it. Re-entry after a
-    /// crash either creates that exact project or validates the already
-    /// created empty schema-v1 project without replacing it.
-    pub(crate) fn ensure_empty_reset_workspace(
-        &self,
-        workspace_id: &str,
-        name: &str,
-        expected_revision: u64,
-        created_at_ms: u64,
-        operation: &'static str,
-    ) -> Result<(), IpcError> {
-        let workspace_id =
-            WorkspaceUuid::parse(workspace_id).map_err(|error| project_error(error, operation))?;
-        let service = if self.library.contains(&workspace_id) {
-            self.library.open_project(&workspace_id)
-        } else {
-            match self
-                .library
-                .create_project(&workspace_id, name.to_owned(), created_at_ms)
-            {
-                Ok(service) => Ok(service),
-                // A competing/resumed prepare may have committed between the
-                // contains check and create. Validate the winner below.
-                Err(ProjectContainerError::AlreadyExists) => {
-                    self.library.open_project(&workspace_id)
-                }
-                Err(error) => Err(error),
-            }
-        }
-        .map_err(|error| project_error(error, operation))?;
-        validate_empty_reset_workspace(
-            &service,
-            workspace_id.as_str(),
-            name,
-            expected_revision,
-            operation,
-        )
-    }
-
-    pub(crate) fn verify_empty_reset_workspace(
-        &self,
-        workspace_id: &str,
-        name: &str,
-        expected_revision: u64,
-        operation: &'static str,
-    ) -> Result<(), IpcError> {
-        let workspace_id =
-            WorkspaceUuid::parse(workspace_id).map_err(|error| project_error(error, operation))?;
-        let service = self
-            .library
-            .open_project(&workspace_id)
-            .map_err(|error| project_error(error, operation))?;
-        validate_empty_reset_workspace(
-            &service,
-            workspace_id.as_str(),
-            name,
-            expected_revision,
-            operation,
-        )
-    }
-}
-
-fn validate_empty_reset_workspace(
-    service: &WorkspaceService,
-    workspace_id: &str,
-    name: &str,
-    expected_revision: u64,
-    operation: &'static str,
-) -> Result<(), IpcError> {
-    let header = service
-        .header()
-        .map_err(|error| error.to_ipc_error(operation))?;
-    if header.workspace_id != workspace_id
-        || header.name != name
-        || header.revision != expected_revision
-        || header.active_session_id.is_some()
-        || !header.session_ids.is_empty()
-    {
-        return Err(IpcError::new(
-            AppErrorCode::WorkspaceCorrupt,
-            "error.workspace_corrupt",
-            false,
-            operation,
-        )
-        .with_field("workspaceId"));
-    }
-    Ok(())
 }
 
 /// Runs one main-window workspace core on the blocking pool: the active
@@ -934,7 +851,6 @@ pub async fn import_project(
     let operation_id = request.operation_id.clone();
     let cancellation = manager.begin_operation(&operation_id, OPERATION)?;
     let result = async {
-        let encryption = validate_encryption(request.encryption, OPERATION)?;
         let source = manager
             .consume_grant(
                 &request.source_grant_id,
@@ -944,17 +860,10 @@ pub async fn import_project(
             .await?;
         let source = NativeProjectSource::from_native_path(source);
         let cancellation_check = |checkpoint| cancellation.is_cancelled(checkpoint);
-        let imported = match encryption.as_ref() {
-            None => manager
-                .library
-                .import_plaintext(&source, &cancellation_check),
-            Some(passphrase) => {
-                manager
-                    .library
-                    .import_encrypted(&source, passphrase, &cancellation_check)
-            }
-        }
-        .map_err(|error| project_error(error, OPERATION))?;
+        let imported = manager
+            .library
+            .import_plaintext(&source, &cancellation_check)
+            .map_err(|error| project_error(error, OPERATION))?;
         let service = manager
             .library
             .open_project(&imported.workspace_id)
@@ -990,7 +899,6 @@ pub async fn export_project(
         if !manager.library.contains(&workspace_id) {
             return Err(IpcError::invalid_input(OPERATION, "workspaceId"));
         }
-        let encryption = validate_encryption(request.encryption, OPERATION)?;
         let target = manager
             .consume_grant(
                 &request.target_grant_id,
@@ -1001,18 +909,10 @@ pub async fn export_project(
         let display_name = project_display_name(&target, OPERATION)?;
         let target = NativeProjectDestination::from_native_path(target);
         let cancellation_check = |checkpoint| cancellation.is_cancelled(checkpoint);
-        match encryption.as_ref() {
-            None => manager
-                .library
-                .export_plaintext(&workspace_id, &target, &cancellation_check),
-            Some(passphrase) => manager.library.export_encrypted(
-                &workspace_id,
-                &target,
-                passphrase,
-                &cancellation_check,
-            ),
-        }
-        .map_err(|error| project_error(error, OPERATION))?;
+        manager
+            .library
+            .export_plaintext(&workspace_id, &target, &cancellation_check)
+            .map_err(|error| project_error(error, OPERATION))?;
         Ok(ExportProjectResponse {
             request_id: request.request_id,
             operation_id: operation_id.clone(),
@@ -1365,25 +1265,6 @@ fn sync_native_directory(path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn validate_encryption(
-    encryption: ProjectEncryptionOptions,
-    operation: &'static str,
-) -> Result<Option<AgeScryptPassphraseStreams>, IpcError> {
-    match (encryption.mode, encryption.passphrase) {
-        (ProjectEncryptionMode::Plaintext, None) => Ok(None),
-        (ProjectEncryptionMode::AgePassphrase, Some(passphrase)) => {
-            let length = passphrase.chars().count();
-            if !(12..=MAX_PASSPHRASE_CHARS).contains(&length) {
-                return Err(IpcError::invalid_input(operation, "passphrase"));
-            }
-            AgeScryptPassphraseStreams::new(passphrase)
-                .map(Some)
-                .map_err(|error| project_error(error, operation))
-        }
-        _ => Err(IpcError::invalid_input(operation, "encryption")),
-    }
-}
-
 fn validate_project_path(
     path: &Path,
     must_exist: bool,
@@ -1508,11 +1389,9 @@ fn project_error(error: ProjectContainerError, operation: &'static str) -> IpcEr
         ),
         ProjectContainerError::Cancelled { .. } => cancelled(operation),
         ProjectContainerError::AlreadyExists => IpcError::invalid_input(operation, "workspaceId"),
-        ProjectContainerError::Integrity | ProjectContainerError::AgeStream => corrupt(operation),
+        ProjectContainerError::Integrity => corrupt(operation),
         ProjectContainerError::Workspace(error) => error.to_ipc_error(operation),
-        ProjectContainerError::AgeIo(error) | ProjectContainerError::Io(error) => {
-            io_error_kind(error.kind(), operation)
-        }
+        ProjectContainerError::Io(error) => io_error_kind(error.kind(), operation),
     }
 }
 
@@ -1991,40 +1870,6 @@ mod tests {
     }
 
     #[test]
-    fn reset_workspace_creation_is_idempotent_and_verification_is_strict() {
-        let root = temporary_root("reset-workspace");
-        let manager = WorkspaceManager::open(&root).expect("open manager");
-        let workspace_id = "00000000-0000-4000-8000-000000000021";
-
-        manager
-            .ensure_empty_reset_workspace(workspace_id, "reset", 0, 10, "test")
-            .expect("create reset workspace");
-        manager
-            .ensure_empty_reset_workspace(workspace_id, "reset", 0, 20, "test")
-            .expect("resume reset workspace creation");
-        manager
-            .verify_empty_reset_workspace(workspace_id, "reset", 0, "test")
-            .expect("verify reset workspace");
-
-        for (name, revision) in [("wrong", 0), ("reset", 1)] {
-            let error = manager
-                .verify_empty_reset_workspace(workspace_id, name, revision, "test")
-                .unwrap_err();
-            assert_eq!(error.code, AppErrorCode::WorkspaceCorrupt);
-            assert_eq!(error.field, Some("workspaceId"));
-        }
-        assert_eq!(
-            manager
-                .verify_empty_reset_workspace("invalid", "reset", 0, "test")
-                .unwrap_err()
-                .code,
-            AppErrorCode::InvalidInput
-        );
-
-        fs::remove_dir_all(root).expect("remove test root");
-    }
-
-    #[test]
     fn active_workspace_requires_an_exact_active_identity() {
         let root = temporary_root("active-identity");
         let manager = WorkspaceManager::open(&root).expect("open manager");
@@ -2343,45 +2188,6 @@ mod tests {
             "source.BBCOM"
         );
 
-        assert!(
-            validate_encryption(
-                ProjectEncryptionOptions {
-                    mode: ProjectEncryptionMode::Plaintext,
-                    passphrase: None,
-                },
-                "test"
-            )
-            .expect("plaintext")
-            .is_none()
-        );
-        assert!(
-            validate_encryption(
-                ProjectEncryptionOptions {
-                    mode: ProjectEncryptionMode::AgePassphrase,
-                    passphrase: Some("twelve-chars".to_owned()),
-                },
-                "test"
-            )
-            .expect("encrypted")
-            .is_some()
-        );
-        for encryption in [
-            ProjectEncryptionOptions {
-                mode: ProjectEncryptionMode::Plaintext,
-                passphrase: Some("unexpected-secret".to_owned()),
-            },
-            ProjectEncryptionOptions {
-                mode: ProjectEncryptionMode::AgePassphrase,
-                passphrase: None,
-            },
-            ProjectEncryptionOptions {
-                mode: ProjectEncryptionMode::AgePassphrase,
-                passphrase: Some("too-short".to_owned()),
-            },
-        ] {
-            assert!(validate_encryption(encryption, "test").is_err());
-        }
-
         for valid in ["request", "request.id_1:value-2"] {
             assert!(validate_opaque_id(valid, "requestId", "test").is_ok());
         }
@@ -2426,15 +2232,10 @@ mod tests {
             project_error(ProjectContainerError::AlreadyExists, "test").field,
             Some("workspaceId")
         );
-        for error in [
-            ProjectContainerError::Integrity,
-            ProjectContainerError::AgeStream,
-        ] {
-            assert_eq!(
-                project_error(error, "test").code,
-                AppErrorCode::WorkspaceCorrupt
-            );
-        }
+        assert_eq!(
+            project_error(ProjectContainerError::Integrity, "test").code,
+            AppErrorCode::WorkspaceCorrupt
+        );
         assert_eq!(
             project_error(
                 ProjectContainerError::Workspace(WorkspaceError::ReadOnly),
@@ -2453,7 +2254,7 @@ mod tests {
         );
         assert_eq!(
             project_error(
-                ProjectContainerError::AgeIo(io::Error::from(io::ErrorKind::StorageFull)),
+                ProjectContainerError::Io(io::Error::from(io::ErrorKind::StorageFull)),
                 "test"
             )
             .code,

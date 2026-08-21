@@ -10,9 +10,6 @@ pub enum ContainerCheckpoint {
     ImportBeforeCommit,
     ExportBeforeBackup,
     ExportBeforeCommit,
-    LegacyBackupBeforeCommit,
-    EncryptStream,
-    DecryptStream,
 }
 
 /// Cancellation is polled only at the documented checkpoints. Once the

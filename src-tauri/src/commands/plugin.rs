@@ -21,10 +21,9 @@ use bbcom_contracts::{
     PluginHostContextUpdateRequestV2, PluginLocalSourceGrantResponse, PluginLocalSourceKind,
     PluginSerialCapabilityReplyRequestV2, PluginSnapshotRequest, PluginSourceKind,
     PluginSourceView, RefreshPluginSourceRequest, RemovePluginSourceRequest,
-    RequestPluginLocalSourceGrantRequest, ResolvePluginAuthorizationRequestV2,
-    RunPluginCommandRequestV2, RuntimeInstanceKey, SetPluginEnabledRequest,
-    SetPluginSurfacePlacementRequestV2, SetPluginWatchEnabledRequest, UninstallPluginRequest,
-    UpdatePluginSourceRequest,
+    RequestPluginLocalSourceGrantRequest, RunPluginCommandRequestV2, RuntimeInstanceKey,
+    SetPluginEnabledRequest, SetPluginSurfacePlacementRequestV2, SetPluginWatchEnabledRequest,
+    UninstallPluginRequest, UpdatePluginSourceRequest,
 };
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -473,21 +472,6 @@ pub async fn plugin_emit_surface_event_v2(
 }
 
 #[tauri::command]
-pub async fn plugin_resolve_authorization_v2(
-    app: AppHandle,
-    window: WebviewWindow,
-    request: ResolvePluginAuthorizationRequestV2,
-) -> Result<PluginCommandResponse, IpcError> {
-    dispatch_v2_ui_action(
-        app,
-        window,
-        "plugin_resolve_authorization_v2",
-        crate::plugins::PluginUiActionV2::ResolveAuthorization(request),
-    )
-    .await
-}
-
-#[tauri::command]
 pub async fn plugin_cancel_task_v2(
     app: AppHandle,
     window: WebviewWindow,
@@ -788,24 +772,6 @@ fn validate_v2_ui_action(
     validate_identity(operation_id, "operationId", operation)?;
     validate_revision(revision, "revision", operation)?;
     match action {
-        crate::plugins::PluginUiActionV2::ResolveAuthorization(request) => {
-            validate_identity(&request.plugin_id, "pluginId", operation)?;
-            validate_version(&request.version, "version", operation)?;
-            if request.digest_sha256.len() != 64
-                || !request
-                    .digest_sha256
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-                || request.requested_capabilities.len() > 12
-                || !request
-                    .requested_capabilities
-                    .windows(2)
-                    .all(|pair| pair[0] < pair[1])
-            {
-                return Err(IpcError::invalid_input(operation, "authorization"));
-            }
-            Ok(())
-        }
         crate::plugins::PluginUiActionV2::EmitSurfaceEvent(request) => {
             validate_runtime_instance_key(&request.event.runtime, operation)?;
             validate_identity(&request.event.surface_id, "surfaceId", operation)?;
@@ -1485,42 +1451,6 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.field, Some("response.requestId"));
-    }
-
-    #[test]
-    fn v2_authorization_requires_lowercase_digest_and_canonical_capabilities() {
-        let base = ResolvePluginAuthorizationRequestV2 {
-            request_id: "request-1".to_owned(),
-            revision: 3,
-            operation_id: "operation-1".to_owned(),
-            plugin_id: "dev.bbcom.mcumgr".to_owned(),
-            version: "1.0.0".to_owned(),
-            digest_sha256: "a".repeat(64),
-            requested_capabilities: vec![
-                bbcom_contracts::PluginCapabilityV2::FileOpenRead,
-                bbcom_contracts::PluginCapabilityV2::SerialIo,
-            ],
-            decision: bbcom_contracts::PluginAuthorizationDecisionV2::Approve,
-        };
-        let unsorted = crate::plugins::PluginUiActionV2::ResolveAuthorization(base.clone());
-        assert!(validate_v2_ui_action(&unsorted, "authorization").is_err());
-
-        let mut valid = base;
-        valid.requested_capabilities.sort();
-        let valid = crate::plugins::PluginUiActionV2::ResolveAuthorization(valid.clone());
-        assert!(validate_v2_ui_action(&valid, "authorization").is_ok());
-
-        let crate::plugins::PluginUiActionV2::ResolveAuthorization(mut uppercase) = valid else {
-            unreachable!();
-        };
-        uppercase.digest_sha256 = "A".repeat(64);
-        assert!(
-            validate_v2_ui_action(
-                &crate::plugins::PluginUiActionV2::ResolveAuthorization(uppercase),
-                "authorization"
-            )
-            .is_err()
-        );
     }
 
     #[test]

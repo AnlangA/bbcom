@@ -43,18 +43,14 @@ pub trait InstallationPort {
         prepared: &PreparedInstallation,
     ) -> std::result::Result<(), InstallationFailure>;
 
-    /// Development-mode local install: stages a package from a user-selected
-    /// local directory. The native implementation enforces the manifest's
-    /// component digest but no repository or publisher-signature boundary.
+    /// Stages a package from a user-selected local directory.
     fn prepare_local(
         &mut self,
         package_root: &std::path::Path,
         current: Option<&PluginArtifact>,
     ) -> std::result::Result<PreparedInstallation, InstallationFailure>;
 
-    /// Removes one plugin's durable installation (packages, history, and
-    /// staged private data). Stopping hosts and clearing grants or persisted
-    /// state stays the caller's responsibility.
+    /// Removes one plugin's durable installation and staged private data.
     fn remove_installed(
         &mut self,
         artifact: &PluginArtifact,
@@ -68,17 +64,11 @@ pub enum HostFailure {
     Initialization,
     Shutdown,
     Transport,
-    SandboxUnavailable,
 }
 
 /// Native host boundary.
 ///
-/// Every successful `launch` must create one new native host process dedicated
-/// to the requested plugin and one new Wasmtime Component Store owned only by
-/// that process. The implementation must apply the fixed G41 sandbox, memory,
-/// fuel, epoch, and timeout policy. It must never multiplex plugins. For
-/// `ArtifactSlot::Prepared`, plugin storage must resolve only to the staged
-/// private data copy; successful initialization must not mutate active data.
+/// Every successful `launch` creates a native host process for the plugin.
 pub trait HostLauncher {
     fn launch(
         &mut self,

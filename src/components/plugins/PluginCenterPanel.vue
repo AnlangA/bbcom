@@ -254,12 +254,6 @@
     <button v-if="busy" type="button" class="plugin-center__cancel" @click="service.cancelAction()">
       {{ t(snapshot.action?.status === 'cancelling' ? 'common.cancelling' : 'common.cancel') }}
     </button>
-
-    <PluginAuthorizationDialog
-      :request="snapshot.authorizationRequests?.[0] ?? null"
-      :busy="busy"
-      @resolve="resolveAuthorization"
-    />
   </section>
 </template>
 
@@ -277,7 +271,6 @@ import {
   useOptionalPluginCenter,
   type InstalledPluginView,
   type PluginCenterSnapshot,
-  type PluginAuthorizationRequestV2,
   type PluginCommandContributionV2,
   type PluginContributionDisposition,
   type PluginLifecycleStatus,
@@ -286,7 +279,6 @@ import {
   type PluginSourceView,
 } from '../../features/plugins';
 import PluginSurfaceRenderer from './PluginSurfaceRenderer.vue';
-import PluginAuthorizationDialog from './PluginAuthorizationDialog.vue';
 import PluginCommandList from './PluginCommandList.vue';
 import PluginTaskCenter from './PluginTaskCenter.vue';
 
@@ -347,13 +339,6 @@ function refresh(): void {
 
 function emitSurfaceEvent(event: PluginSurfaceEventV2): void {
   void service?.emitSurfaceEvent(event);
-}
-
-function resolveAuthorization(
-  request: PluginAuthorizationRequestV2,
-  decision: 'approve' | 'reject',
-): void {
-  void service?.resolveAuthorization(request, decision);
 }
 
 function cancelPluginTask(task: PluginTaskViewV2): void {
@@ -552,7 +537,6 @@ function emptySnapshot(): PluginCenterSnapshot {
     sources: Object.freeze([]),
     surfaces: Object.freeze([]),
     tasks: Object.freeze([]),
-    authorizationRequests: Object.freeze([]),
     commandContributions: Object.freeze([]),
     started: false,
     action: null,

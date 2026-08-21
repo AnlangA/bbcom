@@ -13,9 +13,8 @@ use super::atomic::{
 use super::cancellation::check_cancelled;
 use super::path::validate_bbcom_extension;
 use super::{
-    AgeScryptPassphraseStreams, CancellationCheck, ContainerCheckpoint, ManagedProjectFileName,
-    NativeProjectDestination, NativeProjectSource, ProjectContainerError, ProjectContainerResult,
-    WorkspaceUuid,
+    CancellationCheck, ContainerCheckpoint, ManagedProjectFileName, NativeProjectDestination,
+    NativeProjectSource, ProjectContainerError, ProjectContainerResult, WorkspaceUuid,
 };
 use crate::mutation::validate_workspace_limits;
 use crate::schema::{READ_ONLY_FLAGS, configure_connection};
@@ -177,49 +176,6 @@ impl ProjectLibrary {
         })
     }
 
-    /// Decrypt a standard age scrypt file to private managed staging, validate
-    /// the complete SQLite document, then atomically commit it.
-    pub fn import_encrypted(
-        &self,
-        source: &NativeProjectSource,
-        passphrase: &AgeScryptPassphraseStreams,
-        cancellation: &(impl CancellationCheck + ?Sized),
-    ) -> ProjectContainerResult<ImportedProject> {
-        let source_path = source.as_path();
-        self.require_external_existing(source_path, "source")?;
-        check_cancelled(cancellation, ContainerCheckpoint::ImportBeforeOpen)?;
-        validate_file_size(source_path, "encryptedFileBytes")?;
-
-        let staging_path = private_temp_path(&self.root, "decrypt");
-        let mut staging = PendingFile::new(staging_path);
-        let mut source_file = File::open(source_path)?;
-        let mut staging_file = create_private_file(staging.path())?;
-        passphrase.decrypt(&mut source_file, &mut staging_file, cancellation)?;
-        staging_file.sync_all()?;
-        drop(staging_file);
-        sync_directory(&self.root)?;
-
-        check_cancelled(cancellation, ContainerCheckpoint::ImportBeforeValidation)?;
-        let (workspace_id, header) = validate_staged_project(staging.path())?;
-        let file_name = ManagedProjectFileName::for_workspace(&workspace_id);
-        let destination = self.managed_path(&workspace_id);
-
-        let _commit = self.lock_commits()?;
-        check_cancelled(cancellation, ContainerCheckpoint::ImportBeforeCommit)?;
-        if destination.exists() {
-            return Err(ProjectContainerError::AlreadyExists);
-        }
-        fs::rename(staging.path(), &destination)?;
-        staging.disarm();
-        let _ = sync_directory(&self.root);
-
-        Ok(ImportedProject {
-            workspace_id,
-            file_name,
-            header,
-        })
-    }
-
     /// Generate a consistent SQLite snapshot in a private `.part` beside the
     /// native-selected target, sync it, then atomically replace the target.
     pub fn export_plaintext(
@@ -244,60 +200,6 @@ impl ProjectLibrary {
         source.backup_to(part.path())?;
         let bytes = validate_file_size(part.path(), "databaseBytes")?;
         let (verified_workspace_id, _) = validate_staged_project(part.path())?;
-        if &verified_workspace_id != workspace_id {
-            return Err(ProjectContainerError::InvalidInput {
-                field: "workspaceId",
-            });
-        }
-        sync_directory(parent)?;
-
-        let _commit = self.lock_commits()?;
-        check_cancelled(cancellation, ContainerCheckpoint::ExportBeforeCommit)?;
-        atomic_replace(part.path(), destination)?;
-        part.disarm();
-        let _ = sync_directory(parent);
-
-        Ok(ExportedProject {
-            workspace_id: workspace_id.clone(),
-            bytes,
-        })
-    }
-
-    /// Back up SQLite to private managed staging first, then stream the
-    /// snapshot through age scrypt into a private target-side `.part` and
-    /// atomically replace the target only after both streams are complete.
-    pub fn export_encrypted(
-        &self,
-        workspace_id: &WorkspaceUuid,
-        destination: &NativeProjectDestination,
-        passphrase: &AgeScryptPassphraseStreams,
-        cancellation: &(impl CancellationCheck + ?Sized),
-    ) -> ProjectContainerResult<ExportedProject> {
-        let destination = destination.as_path();
-        let parent = destination
-            .parent()
-            .ok_or(ProjectContainerError::InvalidInput {
-                field: "destination",
-            })?;
-        self.require_external_destination(destination, parent)?;
-        check_cancelled(cancellation, ContainerCheckpoint::ExportBeforeBackup)?;
-
-        let source = WorkspaceService::open_read_only(self.managed_path(workspace_id))?;
-        let backup_path = private_temp_path(&self.root, "encrypt-source");
-        let backup = PendingFile::new(backup_path);
-        source.backup_to(backup.path())?;
-        validate_file_size(backup.path(), "databaseBytes")?;
-
-        let part_path = private_temp_path(parent, "encrypted-export");
-        let mut part = PendingFile::new(part_path);
-        let mut plaintext = File::open(backup.path())?;
-        let mut ciphertext = create_private_file(part.path())?;
-        passphrase.encrypt(&mut plaintext, &mut ciphertext, cancellation)?;
-        ciphertext.sync_all()?;
-        drop(ciphertext);
-        let bytes = validate_file_size(part.path(), "encryptedFileBytes")?;
-        let verified_workspace_id =
-            self.verify_encrypted_staging(part.path(), passphrase, cancellation)?;
         if &verified_workspace_id != workspace_id {
             return Err(ProjectContainerError::InvalidInput {
                 field: "workspaceId",
@@ -359,27 +261,6 @@ impl ProjectLibrary {
             }
         }
         Ok(())
-    }
-
-    /// Authenticate, decrypt and fully validate the just-written ciphertext
-    /// before it can replace the user's existing destination. The readback
-    /// plaintext lives only in the private managed directory and is removed by
-    /// `PendingFile` on every path.
-    fn verify_encrypted_staging(
-        &self,
-        encrypted_path: &Path,
-        passphrase: &AgeScryptPassphraseStreams,
-        cancellation: &(impl CancellationCheck + ?Sized),
-    ) -> ProjectContainerResult<WorkspaceUuid> {
-        let verification_path = private_temp_path(&self.root, "encrypted-readback");
-        let verification = PendingFile::new(verification_path);
-        let mut ciphertext = File::open(encrypted_path)?;
-        let mut plaintext = create_private_file(verification.path())?;
-        passphrase.decrypt(&mut ciphertext, &mut plaintext, cancellation)?;
-        plaintext.sync_all()?;
-        drop(plaintext);
-        let (workspace_id, _) = validate_staged_project(verification.path())?;
-        Ok(workspace_id)
     }
 
     fn lock_commits(&self) -> ProjectContainerResult<std::sync::MutexGuard<'_, ()>> {

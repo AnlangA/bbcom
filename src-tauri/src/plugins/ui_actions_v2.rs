@@ -1,17 +1,16 @@
 //! Main-window actions for protocol-v2 plugin surfaces and tasks.
 //!
 //! This is an injection boundary only: renderer commands cannot reach a
-//! sidecar, authorization store, window, or task directly. Production
+//! sidecar, window, or task directly. Production
 //! composition installs one application service after every dependency has
 //! passed its release gate; until then every action fails closed.
 
 use std::sync::{Arc, Mutex};
 
 use bbcom_contracts::{
-    CancelPluginTaskRequestV2, EmitPluginSurfaceEventRequestV2, IpcError,
-    PluginAuthorizationDecisionV2, PluginCommandResponse, PluginSnapshotRequest,
-    PluginSurfacePlacement, ResolvePluginAuthorizationRequestV2, RunPluginCommandRequestV2,
-    SetPluginEnabledRequest, SetPluginSurfacePlacementRequestV2,
+    CancelPluginTaskRequestV2, EmitPluginSurfaceEventRequestV2, IpcError, PluginCommandResponse,
+    PluginSnapshotRequest, PluginSurfacePlacement, RunPluginCommandRequestV2,
+    SetPluginSurfacePlacementRequestV2,
 };
 use bbcom_plugin_contracts::generated_v2 as wire;
 use bbcom_plugin_contracts::generated_v2::{envelope, plugin_event, request};
@@ -20,14 +19,12 @@ use bbcom_plugin_manager::HostFailure;
 use crate::commands::plugin::{PluginCommand, PluginCommandService as IpcPluginCommandService};
 
 use super::{
-    NativePluginAuthorizationStore, PluginAuthorizationCoordinatorV2, PluginAuthorizationError,
-    PluginAuthorizationResolutionV2, PluginDetachedProjectionPortV2, PluginRuntimeLifecycle,
-    PluginRuntimeProjectionV2, SharedNativePluginStatePersistencePort,
+    PluginDetachedProjectionPortV2, PluginRuntimeLifecycle, PluginRuntimeProjectionV2,
+    SharedNativePluginStatePersistencePort,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PluginUiActionV2 {
-    ResolveAuthorization(ResolvePluginAuthorizationRequestV2),
     EmitSurfaceEvent(EmitPluginSurfaceEventRequestV2),
     CancelTask(CancelPluginTaskRequestV2),
     RunCommand(RunPluginCommandRequestV2),
@@ -38,9 +35,6 @@ impl PluginUiActionV2 {
     #[must_use]
     pub fn correlation(&self) -> (&str, u64, &str) {
         match self {
-            Self::ResolveAuthorization(request) => {
-                (&request.request_id, request.revision, &request.operation_id)
-            }
             Self::EmitSurfaceEvent(request) => {
                 (&request.request_id, request.revision, &request.operation_id)
             }
@@ -69,32 +63,6 @@ impl PluginUiActionServiceV2 for UnavailablePluginUiActionServiceV2 {
     }
 }
 
-trait PluginAuthorizationUninstallPortV2: Send + Sync + 'static {
-    fn revoke_for_uninstall(&self, plugin_id: &str) -> Result<(), PluginAuthorizationError>;
-    fn restore_after_failed_uninstall(
-        &self,
-        plugin_id: &str,
-    ) -> Result<(), PluginAuthorizationError>;
-    fn finish_uninstall(&self, plugin_id: &str) -> Result<(), PluginAuthorizationError>;
-}
-
-impl PluginAuthorizationUninstallPortV2 for NativePluginAuthorizationStore {
-    fn revoke_for_uninstall(&self, plugin_id: &str) -> Result<(), PluginAuthorizationError> {
-        Self::revoke_for_uninstall(self, plugin_id)
-    }
-
-    fn restore_after_failed_uninstall(
-        &self,
-        plugin_id: &str,
-    ) -> Result<(), PluginAuthorizationError> {
-        Self::restore_after_failed_uninstall(self, plugin_id)
-    }
-
-    fn finish_uninstall(&self, plugin_id: &str) -> Result<(), PluginAuthorizationError> {
-        Self::finish_uninstall(self, plugin_id)
-    }
-}
-
 trait PluginPrivateStateUninstallPortV2: Send + Sync + 'static {
     fn stage_plugin_removal(&self, plugin_id: &str) -> Result<(), HostFailure>;
     fn cancel_plugin_removal(&self, plugin_id: &str) -> Result<(), HostFailure>;
@@ -119,8 +87,6 @@ impl PluginPrivateStateUninstallPortV2 for SharedNativePluginStatePersistencePor
 /// the serialized lifecycle actor as the sole owner of install/enable state.
 pub struct ProjectingPluginCommandServiceV2 {
     inner: Arc<dyn IpcPluginCommandService>,
-    authorizations: Arc<dyn PluginAuthorizationUninstallPortV2>,
-    authorization_coordinator: Arc<PluginAuthorizationCoordinatorV2>,
     projection: Arc<PluginRuntimeProjectionV2>,
     detached: Arc<dyn PluginDetachedProjectionPortV2>,
     private_state: Arc<dyn PluginPrivateStateUninstallPortV2>,
@@ -130,34 +96,21 @@ impl ProjectingPluginCommandServiceV2 {
     #[must_use]
     pub fn new(
         inner: Arc<dyn IpcPluginCommandService>,
-        authorizations: Arc<NativePluginAuthorizationStore>,
-        authorization_coordinator: Arc<PluginAuthorizationCoordinatorV2>,
         projection: Arc<PluginRuntimeProjectionV2>,
         detached: Arc<dyn PluginDetachedProjectionPortV2>,
         private_state: Arc<SharedNativePluginStatePersistencePort>,
     ) -> Self {
-        Self::new_with_authorization_port(
-            inner,
-            authorizations,
-            authorization_coordinator,
-            projection,
-            detached,
-            private_state,
-        )
+        Self::new_with_private_state_port(inner, projection, detached, private_state)
     }
 
-    fn new_with_authorization_port(
+    fn new_with_private_state_port(
         inner: Arc<dyn IpcPluginCommandService>,
-        authorizations: Arc<dyn PluginAuthorizationUninstallPortV2>,
-        authorization_coordinator: Arc<PluginAuthorizationCoordinatorV2>,
         projection: Arc<PluginRuntimeProjectionV2>,
         detached: Arc<dyn PluginDetachedProjectionPortV2>,
         private_state: Arc<dyn PluginPrivateStateUninstallPortV2>,
     ) -> Self {
         Self {
             inner,
-            authorizations,
-            authorization_coordinator,
             projection,
             detached,
             private_state,
@@ -165,7 +118,6 @@ impl ProjectingPluginCommandServiceV2 {
     }
 
     fn project(&self, response: &mut PluginCommandResponse) -> Result<(), IpcError> {
-        let requests = self.authorization_coordinator.requests();
         let projection = self.projection.snapshot();
         match response {
             PluginCommandResponse::Completed { data, .. }
@@ -176,7 +128,6 @@ impl ProjectingPluginCommandServiceV2 {
                 data: Some(data), ..
             } => {
                 let center_revision = data.revision;
-                data.authorization_requests = Some(requests);
                 data.surfaces = Some(projection.surfaces.clone());
                 data.tasks = Some(projection.tasks.clone());
                 data.command_contributions = Some(projection.command_contributions.clone());
@@ -192,31 +143,10 @@ impl ProjectingPluginCommandServiceV2 {
 
     fn compensate_reversible_uninstall(&self, plugin_id: &str) -> Result<(), IpcError> {
         if self.private_state.cancel_plugin_removal(plugin_id).is_ok() {
-            self.authorizations
-                .restore_after_failed_uninstall(plugin_id)
-                .map_err(|_| authorization_uninstall_error())
+            Ok(())
         } else {
-            // The package still exists, but durable state intent could not be
-            // cleared. Keep consent revoked and the plugin disabled: restoring
-            // authorization while private state is tombstoned would create a
-            // launch loop and blur an unknown cleanup outcome.
-            self.authorizations
-                .finish_uninstall(plugin_id)
-                .map_err(|_| authorization_uninstall_error())?;
-            self.authorization_coordinator
-                .remove_plugin(plugin_id)
-                .map_err(|_| authorization_uninstall_error())?;
             Err(private_state_uninstall_error())
         }
-    }
-
-    fn finish_irreversible_uninstall(&self, plugin_id: &str) -> Result<(), IpcError> {
-        self.authorizations
-            .finish_uninstall(plugin_id)
-            .map_err(|_| authorization_uninstall_error())?;
-        self.authorization_coordinator
-            .remove_plugin(plugin_id)
-            .map_err(|_| authorization_uninstall_error())
     }
 }
 
@@ -232,13 +162,6 @@ impl IpcPluginCommandService for ProjectingPluginCommandServiceV2 {
             return Ok(response);
         };
 
-        // Consent is durably revoked before the inner service can cross the
-        // irreversible artifact-removal boundary. A persistence failure stops
-        // the uninstall entirely; a later lifecycle/cleanup failure restores
-        // the exact receipt captured by the authorization store.
-        self.authorizations
-            .revoke_for_uninstall(&plugin_id)
-            .map_err(|_| authorization_uninstall_error())?;
         if self.private_state.stage_plugin_removal(&plugin_id).is_err() {
             self.compensate_reversible_uninstall(&plugin_id)?;
             return Err(private_state_uninstall_error());
@@ -249,9 +172,9 @@ impl IpcPluginCommandService for ProjectingPluginCommandServiceV2 {
                 // The package is now irreversibly absent. The tombstone was
                 // committed before dispatch, so a cleanup failure or crash
                 // cannot expose old bytes to a same-ID reinstall.
-                let cleanup = self.private_state.remove_plugin(&plugin_id);
-                self.finish_irreversible_uninstall(&plugin_id)?;
-                cleanup.map_err(|_| private_state_uninstall_error())?;
+                self.private_state
+                    .remove_plugin(&plugin_id)
+                    .map_err(|_| private_state_uninstall_error())?;
                 self.project(&mut response)?;
                 Ok(response)
             }
@@ -260,25 +183,12 @@ impl IpcPluginCommandService for ProjectingPluginCommandServiceV2 {
                 self.project(&mut response)?;
                 Ok(response)
             }
-            Err(error) => {
-                // The adapter can fail while rendering the terminal snapshot
-                // after the core has already removed the artifact. Without a
-                // typed terminal response the physical outcome is unknown, so
-                // never cancel the tombstone or restore consent here.
-                self.finish_irreversible_uninstall(&plugin_id)?;
-                Err(error)
-            }
+            // The adapter can fail while rendering the terminal snapshot
+            // after the core has already removed the artifact. The physical
+            // outcome is unknown, so never cancel the tombstone here.
+            Err(error) => Err(error),
         }
     }
-}
-
-fn authorization_uninstall_error() -> IpcError {
-    IpcError::new(
-        bbcom_contracts::AppErrorCode::Busy,
-        "error.busy",
-        true,
-        "plugin_uninstall",
-    )
 }
 
 fn private_state_uninstall_error() -> IpcError {
@@ -290,13 +200,10 @@ fn private_state_uninstall_error() -> IpcError {
     )
 }
 
-/// Main-window v2 action service. Authorization is implemented now; the same
-/// service is extended by the runtime presentation/task router during native
-/// capability-gateway composition.
+/// Main-window v2 action service, extended by the runtime presentation/task
+/// router during native capability-gateway composition.
 pub struct NativePluginUiActionServiceV2 {
     commands: Arc<dyn IpcPluginCommandService>,
-    authorizations: Arc<NativePluginAuthorizationStore>,
-    authorization_coordinator: Arc<PluginAuthorizationCoordinatorV2>,
     lifecycle: Arc<dyn PluginRuntimeLifecycle>,
     projection: Arc<PluginRuntimeProjectionV2>,
     detached: Arc<dyn PluginDetachedProjectionPortV2>,
@@ -306,56 +213,16 @@ impl NativePluginUiActionServiceV2 {
     #[must_use]
     pub fn new(
         commands: Arc<dyn IpcPluginCommandService>,
-        authorizations: Arc<NativePluginAuthorizationStore>,
-        authorization_coordinator: Arc<PluginAuthorizationCoordinatorV2>,
         lifecycle: Arc<dyn PluginRuntimeLifecycle>,
         projection: Arc<PluginRuntimeProjectionV2>,
         detached: Arc<dyn PluginDetachedProjectionPortV2>,
     ) -> Self {
         Self {
             commands,
-            authorizations,
-            authorization_coordinator,
             lifecycle,
             projection,
             detached,
         }
-    }
-
-    fn resolve_authorization(
-        &self,
-        request: ResolvePluginAuthorizationRequestV2,
-    ) -> Result<PluginCommandResponse, IpcError> {
-        let current = self
-            .authorization_coordinator
-            .request(&request.plugin_id)
-            .ok_or_else(|| {
-                IpcError::invalid_input("plugin_resolve_authorization_v2", "pluginId")
-            })?;
-        if current.version != request.version
-            || current.digest_sha256 != request.digest_sha256
-            || current.requested_capabilities != request.requested_capabilities
-        {
-            return Err(IpcError::invalid_input(
-                "plugin_resolve_authorization_v2",
-                "authorization",
-            ));
-        }
-        let resolution = match request.decision {
-            PluginAuthorizationDecisionV2::Approve => PluginAuthorizationResolutionV2::Approve,
-            PluginAuthorizationDecisionV2::Reject => PluginAuthorizationResolutionV2::Reject,
-        };
-        self.authorization_coordinator
-            .resolve(&self.authorizations, &current, resolution)
-            .map_err(map_authorization_error)?;
-        self.commands
-            .execute(PluginCommand::SetEnabled(SetPluginEnabledRequest {
-                request_id: request.request_id,
-                revision: request.revision,
-                operation_id: request.operation_id,
-                plugin_id: request.plugin_id,
-                enabled: resolution == PluginAuthorizationResolutionV2::Approve,
-            }))
     }
 
     fn snapshot(
@@ -563,26 +430,11 @@ impl NativePluginUiActionServiceV2 {
 impl PluginUiActionServiceV2 for NativePluginUiActionServiceV2 {
     fn execute(&self, action: PluginUiActionV2) -> Result<PluginCommandResponse, IpcError> {
         match action {
-            PluginUiActionV2::ResolveAuthorization(request) => self.resolve_authorization(request),
             PluginUiActionV2::EmitSurfaceEvent(request) => self.emit_surface_event(request),
             PluginUiActionV2::CancelTask(request) => self.cancel_task(request),
             PluginUiActionV2::RunCommand(request) => self.run_command(request),
             PluginUiActionV2::SetSurfacePlacement(request) => self.set_surface_placement(request),
         }
-    }
-}
-
-fn map_authorization_error(error: PluginAuthorizationError) -> IpcError {
-    match error {
-        PluginAuthorizationError::Invalid | PluginAuthorizationError::Missing => {
-            IpcError::invalid_input("plugin_resolve_authorization_v2", "authorization")
-        }
-        PluginAuthorizationError::Io => IpcError::new(
-            bbcom_contracts::AppErrorCode::Busy,
-            "error.busy",
-            true,
-            "plugin_resolve_authorization_v2",
-        ),
     }
 }
 
@@ -688,45 +540,6 @@ mod tests {
         fn revoke_runtime(&self, _: &bbcom_contracts::RuntimeInstanceKey) {}
     }
 
-    struct RecordingUninstallAuthorizations {
-        revoke_fails: bool,
-        calls: Mutex<Vec<&'static str>>,
-    }
-
-    impl RecordingUninstallAuthorizations {
-        fn new(revoke_fails: bool) -> Self {
-            Self {
-                revoke_fails,
-                calls: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn calls(&self) -> Vec<&'static str> {
-            self.calls.lock().unwrap().clone()
-        }
-    }
-
-    impl PluginAuthorizationUninstallPortV2 for RecordingUninstallAuthorizations {
-        fn revoke_for_uninstall(&self, _: &str) -> Result<(), PluginAuthorizationError> {
-            self.calls.lock().unwrap().push("revoke");
-            if self.revoke_fails {
-                Err(PluginAuthorizationError::Io)
-            } else {
-                Ok(())
-            }
-        }
-
-        fn restore_after_failed_uninstall(&self, _: &str) -> Result<(), PluginAuthorizationError> {
-            self.calls.lock().unwrap().push("restore");
-            Ok(())
-        }
-
-        fn finish_uninstall(&self, _: &str) -> Result<(), PluginAuthorizationError> {
-            self.calls.lock().unwrap().push("finish");
-            Ok(())
-        }
-    }
-
     struct RecordingPrivateStateUninstall {
         stage_fails: bool,
         cancel_fails: bool,
@@ -827,7 +640,6 @@ mod tests {
             sources: Vec::new(),
             surfaces: None,
             tasks: None,
-            authorization_requests: None,
             command_contributions: None,
         }
     }
@@ -842,26 +654,12 @@ mod tests {
         })
     }
 
-    fn projecting_uninstall_service(
-        inner: Arc<RecordingUninstallService>,
-        authorizations: Arc<RecordingUninstallAuthorizations>,
-    ) -> ProjectingPluginCommandServiceV2 {
-        projecting_uninstall_service_with_state(
-            inner,
-            authorizations,
-            Arc::new(RecordingPrivateStateUninstall::successful()),
-        )
-    }
-
     fn projecting_uninstall_service_with_state(
         inner: Arc<RecordingUninstallService>,
-        authorizations: Arc<RecordingUninstallAuthorizations>,
         private_state: Arc<RecordingPrivateStateUninstall>,
     ) -> ProjectingPluginCommandServiceV2 {
-        ProjectingPluginCommandServiceV2::new_with_authorization_port(
+        ProjectingPluginCommandServiceV2::new_with_private_state_port(
             inner,
-            authorizations,
-            Arc::new(PluginAuthorizationCoordinatorV2::default()),
             Arc::new(PluginRuntimeProjectionV2::default()),
             Arc::new(NoopDetached),
             private_state,
@@ -880,7 +678,6 @@ mod tests {
     fn reject_delivery_service() -> (
         NativePluginUiActionServiceV2,
         Arc<PluginRuntimeProjectionV2>,
-        tempfile::TempDir,
     ) {
         let projection = Arc::new(PluginRuntimeProjectionV2::default());
         let gateway = super::super::NativePluginCapabilityGatewayV2::new(
@@ -910,20 +707,13 @@ mod tests {
                 }),
             )
             .unwrap();
-        let directory = tempfile::tempdir().unwrap();
-        let authorization = Arc::new(
-            NativePluginAuthorizationStore::open(directory.path().join("authorizations.json"))
-                .unwrap(),
-        );
         let service = NativePluginUiActionServiceV2::new(
             Arc::new(crate::commands::plugin::UnavailablePluginCommandService),
-            authorization,
-            Arc::new(PluginAuthorizationCoordinatorV2::default()),
             Arc::new(RejectLifecycle),
             Arc::clone(&projection),
             Arc::new(NoopDetached),
         );
-        (service, projection, directory)
+        (service, projection)
     }
 
     #[test]
@@ -947,7 +737,7 @@ mod tests {
 
     #[test]
     fn command_and_cancel_delivery_failures_leave_typed_terminal_tasks() {
-        let (service, projection, _directory) = reject_delivery_service();
+        let (service, projection) = reject_delivery_service();
         let runtime = runtime();
         let run = RunPluginCommandRequestV2 {
             request_id: "request-1".to_owned(),
@@ -997,106 +787,72 @@ mod tests {
     }
 
     #[test]
-    fn authorization_delete_failure_blocks_artifact_uninstall() {
-        let inner = Arc::new(RecordingUninstallService {
-            calls: AtomicUsize::new(0),
-            outcome: UninstallOutcome::Completed,
-        });
-        let authorizations = Arc::new(RecordingUninstallAuthorizations::new(true));
-        let service = projecting_uninstall_service(Arc::clone(&inner), Arc::clone(&authorizations));
-
-        assert!(service.execute(uninstall_command()).is_err());
-        assert_eq!(inner.calls.load(Ordering::SeqCst), 0);
-        assert_eq!(authorizations.calls(), ["revoke"]);
-    }
-
-    #[test]
-    fn artifact_uninstall_failure_restores_authorization_receipt() {
+    fn artifact_uninstall_failure_cancels_the_private_state_tombstone() {
         let inner = Arc::new(RecordingUninstallService {
             calls: AtomicUsize::new(0),
             outcome: UninstallOutcome::Failed,
         });
-        let authorizations = Arc::new(RecordingUninstallAuthorizations::new(false));
         let private_state = Arc::new(RecordingPrivateStateUninstall::successful());
-        let service = projecting_uninstall_service_with_state(
-            Arc::clone(&inner),
-            Arc::clone(&authorizations),
-            Arc::clone(&private_state),
-        );
+        let service =
+            projecting_uninstall_service_with_state(Arc::clone(&inner), Arc::clone(&private_state));
 
         assert!(matches!(
             service.execute(uninstall_command()).unwrap(),
             PluginCommandResponse::Failed { .. }
         ));
         assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(authorizations.calls(), ["revoke", "restore"]);
         assert_eq!(private_state.calls(), ["stage-state", "cancel-state"]);
     }
 
     #[test]
-    fn successful_uninstall_finishes_revocation_without_restoring_receipt() {
+    fn successful_uninstall_removes_private_state() {
         let inner = Arc::new(RecordingUninstallService {
             calls: AtomicUsize::new(0),
             outcome: UninstallOutcome::Completed,
         });
-        let authorizations = Arc::new(RecordingUninstallAuthorizations::new(false));
         let private_state = Arc::new(RecordingPrivateStateUninstall::successful());
-        let service = projecting_uninstall_service_with_state(
-            Arc::clone(&inner),
-            Arc::clone(&authorizations),
-            Arc::clone(&private_state),
-        );
+        let service =
+            projecting_uninstall_service_with_state(Arc::clone(&inner), Arc::clone(&private_state));
 
         assert!(matches!(
             service.execute(uninstall_command()).unwrap(),
             PluginCommandResponse::Completed { .. }
         ));
         assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(authorizations.calls(), ["revoke", "finish"]);
         assert_eq!(private_state.calls(), ["stage-state", "remove-state"]);
     }
 
     #[test]
-    fn private_cleanup_failure_after_artifact_removal_stays_revoked_and_fails_closed() {
+    fn private_cleanup_failure_after_artifact_removal_fails_closed() {
         let inner = Arc::new(RecordingUninstallService {
             calls: AtomicUsize::new(0),
             outcome: UninstallOutcome::Completed,
         });
-        let authorizations = Arc::new(RecordingUninstallAuthorizations::new(false));
         let private_state = Arc::new(RecordingPrivateStateUninstall {
             stage_fails: false,
             cancel_fails: false,
             remove_fails: true,
             calls: Mutex::new(Vec::new()),
         });
-        let service = projecting_uninstall_service_with_state(
-            Arc::clone(&inner),
-            Arc::clone(&authorizations),
-            Arc::clone(&private_state),
-        );
+        let service =
+            projecting_uninstall_service_with_state(Arc::clone(&inner), Arc::clone(&private_state));
 
         assert!(service.execute(uninstall_command()).is_err());
         assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(authorizations.calls(), ["revoke", "finish"]);
         assert_eq!(private_state.calls(), ["stage-state", "remove-state"]);
     }
 
     #[test]
-    fn unknown_artifact_outcome_keeps_the_durable_tombstone_and_consent_revoked() {
+    fn unknown_artifact_outcome_keeps_the_durable_tombstone() {
         let inner = Arc::new(RecordingUninstallService {
             calls: AtomicUsize::new(0),
             outcome: UninstallOutcome::Unknown,
         });
-        let authorizations = Arc::new(RecordingUninstallAuthorizations::new(false));
         let private_state = Arc::new(RecordingPrivateStateUninstall::successful());
-        let service = projecting_uninstall_service_with_state(
-            Arc::clone(&inner),
-            Arc::clone(&authorizations),
-            Arc::clone(&private_state),
-        );
+        let service =
+            projecting_uninstall_service_with_state(Arc::clone(&inner), Arc::clone(&private_state));
 
         assert!(service.execute(uninstall_command()).is_err());
-        assert_eq!(authorizations.calls(), ["revoke", "finish"]);
         assert_eq!(private_state.calls(), ["stage-state"]);
     }
 }

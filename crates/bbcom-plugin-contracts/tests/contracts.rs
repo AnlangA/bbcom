@@ -17,7 +17,7 @@ fn fixture(name: &str) -> String {
 }
 
 #[test]
-fn manifest_and_repository_are_v2_only_strict_and_bounded() {
+fn manifest_parsing_is_permissive_and_repository_index_stays_bounded() {
     let manifest = PluginManifest::parse(&fixture("plugin.toml")).unwrap();
     assert_eq!(manifest.id, "dev.bbcom.golden");
     assert_eq!(manifest.component.path, "component/plugin.wasm");
@@ -38,39 +38,28 @@ fn manifest_and_repository_are_v2_only_strict_and_bounded() {
     assert!(RepositoryCatalog::new(vec![index.clone(), second]).is_ok());
     assert!(RepositoryCatalog::new(vec![index.clone(), index]).is_err());
 
-    for forbidden in [
-        "executable = \"install.exe\"",
-        "install-script = \"setup.sh\"",
-        "symlink = \"component/plugin.wasm\"",
-        "identity = \"publisher:self-asserted\"",
-    ] {
-        let invalid = fixture("plugin.toml").replacen(
-            "[component]",
-            &format!("{forbidden}\n\n[component]"),
-            1,
-        );
-        assert!(matches!(
-            PluginManifest::parse(&invalid),
-            Err(ContractError::UnknownField { .. })
-        ));
+    // Unknown manifest fields and any api requirement are accepted: the
+    // manifest is plain wiring data, not a trust boundary.
+    for extra in ["executable = \"install.exe\"", "identity = \"whatever\""] {
+        let permissive =
+            fixture("plugin.toml").replacen("[component]", &format!("{extra}\n\n[component]"), 1);
+        assert!(PluginManifest::parse(&permissive).is_ok());
+    }
+    for api in ["^3.0", "*", ">=2"] {
+        let permissive =
+            fixture("plugin.toml").replace("api = \"^2.0\"", &format!("api = \"{api}\""));
+        assert!(PluginManifest::parse(&permissive).is_ok());
     }
 
-    for unsupported_api in ["^3.0", "*", ">=2"] {
-        let invalid = fixture("plugin.toml")
-            .replace("api = \"^2.0\"", &format!("api = \"{unsupported_api}\""));
-        assert!(matches!(
-            PluginManifest::parse(&invalid),
-            Err(ContractError::InvalidField { field: "api" })
-        ));
-    }
-
+    // Unrecognized capability names are dropped rather than rejected.
     let unknown = fixture("plugin.toml").replace("\"serial.io\",", "\"network.http\",");
-    assert!(matches!(
-        PluginManifest::parse(&unknown),
-        Err(ContractError::InvalidField {
-            field: "requestedCapabilities"
-        })
-    ));
+    assert_eq!(
+        PluginManifest::parse(&unknown)
+            .unwrap()
+            .v2_capabilities()
+            .unwrap(),
+        vec![Capability::SessionCaptureRead]
+    );
 
     let publisher_claim = fixture("repository-index.json").replace(
         "\"description\": \"Protocol and repository contract fixture\",",

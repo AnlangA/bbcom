@@ -1,6 +1,4 @@
 import type {
-  PluginAuthorizationRequestV2,
-  PluginCapabilityV2,
   PluginCommandContributionV2,
   PluginFailureV2,
   PluginTaskViewV2,
@@ -9,24 +7,7 @@ import type {
 
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const MESSAGE_KEY = /^[a-z0-9][a-z0-9._-]{0,255}$/u;
-const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/u;
-const SHA256 = /^[0-9a-f]{64}$/u;
 const TEXT_ENCODER = new TextEncoder();
-
-const CAPABILITIES = new Set<PluginCapabilityV2>([
-  'ui.workspace',
-  'ui.detached-window',
-  'serial.ports.read',
-  'serial.sessions.manage',
-  'serial.io',
-  'serial.control-lines',
-  'session.capture.read',
-  'session.commands.read-write',
-  'file.open-read',
-  'file.save-write',
-  'plugin.storage',
-  'project.state.read-write',
-]);
 
 const TASK_STATUSES = new Set<PluginTaskViewV2['status']>([
   'running',
@@ -90,39 +71,6 @@ export function normalizePluginTasks(
   return Object.freeze(result);
 }
 
-export function normalizePluginAuthorizationRequests(
-  input: readonly PluginAuthorizationRequestV2[],
-): readonly PluginAuthorizationRequestV2[] | null {
-  if (input.length > 32) return null;
-  const pluginIds = new Set<string>();
-  const result: PluginAuthorizationRequestV2[] = [];
-  for (const request of input) {
-    if (
-      !validIdentity(request.pluginId) ||
-      !safeText(request.displayName, 256, false) ||
-      !VERSION.test(request.version) ||
-      !SHA256.test(request.digestSha256) ||
-      !canonicalCapabilities(request.requestedCapabilities) ||
-      !canonicalCapabilities(request.addedCapabilities) ||
-      !request.addedCapabilities.every((capability) =>
-        request.requestedCapabilities.includes(capability),
-      ) ||
-      pluginIds.has(request.pluginId)
-    ) {
-      return null;
-    }
-    pluginIds.add(request.pluginId);
-    result.push(
-      Object.freeze({
-        ...request,
-        requestedCapabilities: Object.freeze([...request.requestedCapabilities]),
-        addedCapabilities: Object.freeze([...request.addedCapabilities]),
-      }) as unknown as PluginAuthorizationRequestV2,
-    );
-  }
-  return Object.freeze(result);
-}
-
 export function normalizePluginCommandContributions(
   input: readonly PluginCommandContributionV2[],
 ): readonly PluginCommandContributionV2[] | null {
@@ -172,18 +120,6 @@ function runtimeIdentity(runtime: RuntimeInstanceKey): string {
 
 function validIdentity(value: string): boolean {
   return typeof value === 'string' && IDENTITY.test(value);
-}
-
-function canonicalCapabilities(capabilities: readonly PluginCapabilityV2[]): boolean {
-  if (
-    capabilities.length > CAPABILITIES.size ||
-    capabilities.some((value) => !CAPABILITIES.has(value))
-  ) {
-    return false;
-  }
-  return capabilities.every(
-    (value, index) => index === 0 || capabilities[index - 1]!.localeCompare(value) < 0,
-  );
 }
 
 function validFailure(failure: PluginFailureV2 | undefined): boolean {

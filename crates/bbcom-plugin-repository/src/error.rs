@@ -27,26 +27,12 @@ pub enum RepositoryError {
     ResponseTooLarge { limit: u64 },
     #[error("repository package was not found")]
     PackageNotFound,
-    #[error("repository package {field} mismatch: expected {expected}, got {actual}")]
-    PackageMetadataMismatch {
-        field: &'static str,
-        expected: u64,
-        actual: u64,
-    },
-    #[error("repository package SHA-256 mismatch")]
-    PackageDigestMismatch,
     #[error("plugin archive is invalid: {0}")]
     InvalidArchive(&'static str),
-    #[error("plugin archive contains a forbidden link entry")]
-    LinkEntryForbidden,
-    #[error("plugin archive contains a native executable or script")]
-    NativeExecutableForbidden,
     #[error("plugin manifest is missing or exceeds its fixed limit")]
     ManifestUnavailable,
     #[error("plugin manifest does not match repository field {0}")]
     ManifestMismatch(&'static str),
-    #[error("plugin component digest does not match its manifest")]
-    ComponentDigestMismatch,
     #[error("plugin component is not a valid WebAssembly Component")]
     InvalidComponent,
     #[error("plugin installation state is corrupt")]

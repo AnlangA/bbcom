@@ -32,9 +32,7 @@ thiserror = "=2.0.18"
 crc = "=3.4.0"
 chrono = "=0.4.45"
 getrandom = "=0.4.3"
-keyring = "=4.1.4"
 reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls"] }
-zeroize = "=1.9.0"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
@@ -57,15 +55,7 @@ windows-sys = { version = "=0.61.2", features = [
 [dev-dependencies]
 tauri = { version = "=2.11.5", features = ["test"] }
 base64 = "=0.22.1"
-criterion = { version = "=0.8.2", default-features = false, features = ["plotters", "cargo_bench_support"] }
 tempfile = "=3.27.0"
-
-# perf: separate bench target so `cargo bench` only compiles the criterion
-# harness, not the full Tauri app (faster iteration, no codegen regression on
-# the main build).
-[[bench]]
-name = "hot_paths"
-harness = false
 
 # The desktop launcher delegates directly to the library's `run` entry point.
 # It has no standalone unit-test surface; disabling Cargo's synthetic zero-test

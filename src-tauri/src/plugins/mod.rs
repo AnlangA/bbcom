@@ -3,32 +3,23 @@
 //! This module intentionally exposes no Tauri command. Renderer code cannot
 //! obtain plugin paths, spawn a host, or call the lifecycle manager directly.
 
-mod authorization_v2;
 mod bootstrap;
 mod capability_gateway_v2;
 mod command_adapter;
 mod command_service;
 mod detached_window_v2;
 mod file_grants_v2;
-mod g45_probe;
 mod host_launcher;
 mod installation;
-mod market_readiness_probe;
 mod presentation_v2;
 mod repository;
 mod runtime_actor;
 mod runtime_wiring;
-mod sandbox;
 mod service;
 mod source_registry;
 mod state;
 mod ui_actions_v2;
 
-pub use authorization_v2::{
-    NativePluginAuthorizationGateV2, NativePluginAuthorizationStore,
-    PluginAuthorizationCoordinatorV2, PluginAuthorizationDecision, PluginAuthorizationError,
-    PluginAuthorizationResolutionV2,
-};
 pub use capability_gateway_v2::{
     NativePluginCapabilityGatewayV2, PLUGIN_SERIAL_CAPABILITY_EVENT_V2,
     PLUGIN_SNAPSHOT_CHANGED_EVENT_V2, PluginCapabilityEventSinkV2, PluginCapabilitySinkErrorV2,
@@ -49,8 +40,7 @@ pub use host_launcher::{
     HostMonitorError, PluginHostContextProviderV2, PluginHostServicesV2,
     PluginInitializationContextV2, PluginPersistedState, PluginProjectStateProviderV2,
     PluginProjectStateSnapshotV2, PluginStatePersistenceKey, PluginStatePersistencePort,
-    PrivateArtifactRoot, ResolvedPluginArtifact, SandboxDriver, SandboxError, SandboxLaunch,
-    SandboxSelfTest, SidecarHostLauncher,
+    PrivateArtifactRoot, ResolvedPluginArtifact, SidecarHostLauncher,
 };
 pub use installation::{
     NativeRepositoryError, NativeRepositoryStagingBackend, PreparedRepositoryArtifact,
@@ -58,7 +48,6 @@ pub use installation::{
     VerifiedPackageProvider,
 };
 pub use repository::{NativeRepositoryFetchError, NativeRepositoryFetchPort};
-pub use sandbox::PlatformSandboxDriver;
 pub use service::{PluginService, PluginServiceError};
 pub use source_registry::{
     NativePluginSourceRegistry, SourceRegistryError, spawn_automatic_source_checks,
@@ -79,21 +68,16 @@ pub use command_adapter::{
     PluginCommandCorePort, PluginDisplayRecord,
 };
 
-#[cfg(test)]
-mod tests;
 pub use command_service::{
     PluginCommandError, PluginCommandErrorCode, PluginCommandService, PluginCommandSnapshot,
     PluginLifecyclePort, PluginOperationFailure, PluginOperationKind, PluginOperationSnapshot,
     PluginOperationStatus,
 };
-pub use g45_probe::{PluginG45ProbeError, run_plugin_g45_probe_from_environment};
-pub(crate) use market_readiness_probe::PluginMarketReadinessProbe;
 pub use presentation_v2::{
     validate_detached_surface_interaction_v2, validate_detached_surface_view_v2,
     validate_plugin_center_extensions_v2,
 };
 pub use runtime_actor::PluginRuntimeActorHandle;
-pub(crate) use runtime_wiring::PluginRuntimeDataRoot;
 pub use runtime_wiring::{
     PluginLifecycleHandle, activate_plugin_workspace, close_plugin_project, compose,
     ensure_plugin_runtime, install_managed_defaults, spawn_dev_directory_watchers,

@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt;
@@ -25,20 +24,22 @@ use bbcom_plugin_contracts::v2::{
     PROTOCOL_MAJOR, WIT_PACKAGE, default_resource_limits,
 };
 use bbcom_plugin_contracts::{
-    HANDSHAKE_TIMEOUT_MS, HOST_PROCESS_MEMORY_LIMIT_BYTES, MAX_PLUGIN_PERSISTED_STATE_BYTES,
+    HANDSHAKE_TIMEOUT_MS, MAX_PLUGIN_PERSISTED_STATE_BYTES,
     MAX_WORKSPACE_PLUGIN_PERSISTED_STATE_BYTES,
 };
+use bbcom_plugin_host::PluginPackage;
 use bbcom_plugin_host::transport::{FrameReader, FrameWriter};
-use bbcom_plugin_host::{
-    AuthorizationRequest, PluginAuthorizationGate, PluginLaunchContext, TrustedPluginArtifact,
-    authorization_request, authorization_ticket,
-};
 use bbcom_plugin_manager::{
     ArtifactSlot, CrashKind, HostFailure, HostHandle, HostLaunchMode, HostLaunchRequest,
     HostLauncher, HostReport,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+// Initialization performs the guest's complete surface/command declaration
+// and may issue several host capability calls before returning its model.
+// Reusing the short interactive-request timeout killed healthy plugins during
+// cold Wasm startup on development and lower-power machines.
+const INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(15);
 const PROCESS_EXIT_POLL: Duration = Duration::from_millis(10);
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -89,11 +90,8 @@ pub trait PluginProjectStateProviderV2: Send + Sync + 'static {
     ) -> Result<Option<PluginProjectStateSnapshotV2>, HostFailure>;
 }
 
-/// Explicit production authorities injected into one sidecar launcher.
-/// Grouping these services keeps the constructor readable without introducing
-/// any permissive default: callers must still supply every authority.
+/// Application services injected into one sidecar launcher.
 pub struct PluginHostServicesV2 {
-    authorization: Arc<dyn PluginAuthorizationGate>,
     gateway: Arc<dyn PluginCapabilityGateway>,
     host_context: Arc<dyn PluginHostContextProviderV2>,
     project_state: Arc<dyn PluginProjectStateProviderV2>,
@@ -102,13 +100,11 @@ pub struct PluginHostServicesV2 {
 impl PluginHostServicesV2 {
     #[must_use]
     pub fn new(
-        authorization: Arc<dyn PluginAuthorizationGate>,
         gateway: Arc<dyn PluginCapabilityGateway>,
         host_context: Arc<dyn PluginHostContextProviderV2>,
         project_state: Arc<dyn PluginProjectStateProviderV2>,
     ) -> Self {
         Self {
-            authorization,
             gateway,
             host_context,
             project_state,
@@ -178,170 +174,49 @@ fn private_state_load_key(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SandboxSelfTest {
-    pub blocks_network: bool,
-    pub blocks_child_processes: bool,
-    pub restricts_filesystem: bool,
-    pub enforces_memory_limit: bool,
-    pub observes_crashed_process: bool,
-    pub terminates_hung_process: bool,
-}
-
-impl SandboxSelfTest {
-    fn is_complete(self) -> bool {
-        self.blocks_network
-            && self.blocks_child_processes
-            && self.restricts_filesystem
-            && self.enforces_memory_limit
-            && self.observes_crashed_process
-            && self.terminates_hung_process
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SandboxError {
-    detail: Cow<'static, str>,
-}
-
-impl SandboxError {
-    #[must_use]
-    pub const fn new(detail: &'static str) -> Self {
-        Self {
-            detail: Cow::Borrowed(detail),
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    #[must_use]
-    pub(crate) fn from_win32(context: &'static str, code: u32) -> Self {
-        Self {
-            // Keep diagnostics actionable without surfacing paths, account
-            // names, environment variables, or other native error text.
-            detail: Cow::Owned(format!("{context} (Win32 error {code})")),
-        }
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    #[must_use]
-    pub(crate) fn from_process_exit(context: &'static str, code: u32) -> Self {
-        Self {
-            // Numeric exit status identifies the failed probe without exposing
-            // captured output, paths, account names, or environment values.
-            detail: Cow::Owned(format!("{context} (process exit code {code})")),
-        }
-    }
-}
-
-impl fmt::Display for SandboxError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.detail)
-    }
-}
-
-impl std::error::Error for SandboxError {}
-
-pub struct SandboxLaunch<'a> {
-    pub sidecar_executable: &'a Path,
-    pub package_root: &'a Path,
-    pub memory_limit_bytes: usize,
-    pub arguments: &'a [OsString],
-}
-
-/// Operating-system isolation authority.
-///
-/// `spawn` is the isolation boundary: a platform may override it when process
-/// creation and constraint attachment must be one atomic operation. The
-/// default adapter preserves Linux/macOS command-based drivers. Setting the
-/// sidecar's attestation flags alone is never sufficient.
-pub trait SandboxDriver: Send + Sync + 'static {
-    fn self_test(&self, sidecar_executable: &Path) -> Result<SandboxSelfTest, SandboxError>;
-    fn command(&self, launch: &SandboxLaunch<'_>) -> Result<Command, SandboxError>;
-    fn spawn(&self, launch: &SandboxLaunch<'_>) -> Result<SandboxedChild, SandboxError> {
-        let mut command = self.command(launch)?;
-        configure_command(&mut command, launch);
-        let child = command
-            .spawn()
-            .map_err(|_| SandboxError::new("sandboxed plugin host could not be spawned"))?;
-        Ok(SandboxedChild::standard(child))
-    }
-    fn platform_argument(&self) -> &'static str;
-}
-
-fn configure_command(command: &mut Command, launch: &SandboxLaunch<'_>) {
-    command
-        .env_clear()
-        .current_dir(launch.package_root)
-        .args(launch.arguments)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-}
-
-pub trait SandboxedProcess: Send {
-    fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>>;
-    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>>;
-    fn try_wait(&mut self) -> std::io::Result<bool>;
-    fn terminate_and_wait(&mut self);
-}
-
-pub struct SandboxedChild {
-    process: Box<dyn SandboxedProcess>,
-}
-
-impl SandboxedChild {
-    fn standard(child: Child) -> Self {
-        Self {
-            process: Box::new(StandardSandboxedProcess { child }),
-        }
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    pub(crate) fn platform(process: Box<dyn SandboxedProcess>) -> Self {
-        Self { process }
-    }
-
-    pub(crate) fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
-        self.process.take_stdin()
-    }
-
-    pub(crate) fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
-        self.process.take_stdout()
-    }
-
-    pub(crate) fn try_wait(&mut self) -> std::io::Result<bool> {
-        self.process.try_wait()
-    }
-
-    pub(crate) fn terminate_and_wait(&mut self) {
-        self.process.terminate_and_wait();
-    }
-}
-
-struct StandardSandboxedProcess {
+/// Plain (unsandboxed) sidecar child process.
+pub struct PluginChild {
     child: Child,
 }
 
-impl SandboxedProcess for StandardSandboxedProcess {
-    fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
+impl PluginChild {
+    fn spawn(
+        sidecar_executable: &Path,
+        package_root: &Path,
+        arguments: &[OsString],
+    ) -> std::io::Result<Self> {
+        let child = Command::new(sidecar_executable)
+            .current_dir(package_root)
+            .args(arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            // Sidecar diagnostics are part of the application log. Discarding
+            // stderr made guest traps and protocol startup failures look like
+            // an undifferentiated `HostFailure::Initialization`.
+            .stderr(Stdio::inherit())
+            .spawn()?;
+        Ok(Self { child })
+    }
+
+    pub(crate) fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
         self.child
             .stdin
             .take()
             .map(|stdin| Box::new(stdin) as Box<dyn Write + Send>)
     }
 
-    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+    pub(crate) fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
         self.child
             .stdout
             .take()
             .map(|stdout| Box::new(stdout) as Box<dyn Read + Send>)
     }
 
-    fn try_wait(&mut self) -> std::io::Result<bool> {
+    pub(crate) fn try_wait(&mut self) -> std::io::Result<bool> {
         self.child.try_wait().map(|status| status.is_some())
     }
 
-    fn terminate_and_wait(&mut self) {
+    pub(crate) fn terminate_and_wait(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -375,37 +250,18 @@ pub trait ArtifactPathResolver: Send + Sync + 'static {
 }
 
 #[derive(Clone, Debug)]
-pub struct PrivateArtifactRoot {
-    canonical: PathBuf,
-}
+pub struct PrivateArtifactRoot;
 
 impl PrivateArtifactRoot {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, HostLauncherBuildError> {
-        let root = root.as_ref();
-        let metadata =
-            fs::symlink_metadata(root).map_err(|_| HostLauncherBuildError::PrivateRoot)?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        if !root.as_ref().is_dir() {
             return Err(HostLauncherBuildError::PrivateRoot);
         }
-        let canonical = fs::canonicalize(root).map_err(|_| HostLauncherBuildError::PrivateRoot)?;
-        Ok(Self { canonical })
+        Ok(Self)
     }
 
-    fn validate_package(&self, package_root: &Path) -> Result<PathBuf, HostFailure> {
-        let metadata = fs::symlink_metadata(package_root).map_err(|_| HostFailure::Launch)?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(HostFailure::Launch);
-        }
-        let canonical = fs::canonicalize(package_root).map_err(|_| HostFailure::Launch)?;
-        if canonical == self.canonical || !canonical.starts_with(&self.canonical) {
-            return Err(HostFailure::Launch);
-        }
-        let manifest = canonical.join("plugin.toml");
-        let manifest_metadata = fs::symlink_metadata(manifest).map_err(|_| HostFailure::Launch)?;
-        if !manifest_metadata.is_file() || manifest_metadata.file_type().is_symlink() {
-            return Err(HostFailure::Launch);
-        }
-        Ok(canonical)
+    fn resolve_package(&self, package_root: &Path) -> Result<PathBuf, HostFailure> {
+        fs::canonicalize(package_root).map_err(|_| HostFailure::Launch)
     }
 }
 
@@ -413,7 +269,6 @@ impl PrivateArtifactRoot {
 pub enum HostLauncherBuildError {
     SidecarExecutable,
     PrivateRoot,
-    SandboxUnavailable(SandboxError),
 }
 
 impl fmt::Display for HostLauncherBuildError {
@@ -421,9 +276,6 @@ impl fmt::Display for HostLauncherBuildError {
         match self {
             Self::SidecarExecutable => formatter.write_str("plugin sidecar is not a regular file"),
             Self::PrivateRoot => formatter.write_str("plugin private root is unsafe"),
-            Self::SandboxUnavailable(error) => {
-                write!(formatter, "plugin sandbox unavailable: {error}")
-            }
         }
     }
 }
@@ -452,7 +304,7 @@ pub struct HostCrashEvent {
 struct HostProcess {
     plugin_id: String,
     version: String,
-    child: SandboxedChild,
+    child: PluginChild,
     stdin: SharedHostStdin,
     responses: HostResponseRouter,
     gateway: Arc<GatewaySession<dyn PluginCapabilityGateway>>,
@@ -480,11 +332,6 @@ impl CapabilityWorkerRegistry {
             })
             .ok()
             .map(|_| CapabilityWorkerPermit(Arc::clone(&self.0)))
-    }
-
-    #[cfg(test)]
-    fn active(&self) -> usize {
-        self.0.load(Ordering::Acquire)
     }
 }
 
@@ -607,25 +454,16 @@ impl HostExitMonitor {
     }
 }
 
-pub struct SidecarHostLauncher<R, S, P> {
+pub struct SidecarHostLauncher<R, P> {
     sidecar_executable: PathBuf,
     private_root: PrivateArtifactRoot,
     resolver: R,
-    sandbox: S,
     persistence: P,
     processes: Arc<Mutex<HostProcesses>>,
     next_instance_id: AtomicU64,
-    authorization: Arc<dyn PluginAuthorizationGate>,
     gateway: Arc<dyn PluginCapabilityGateway>,
     host_context: Arc<dyn PluginHostContextProviderV2>,
     project_state: Arc<dyn PluginProjectStateProviderV2>,
-}
-
-struct RejectAuthorization;
-impl PluginAuthorizationGate for RejectAuthorization {
-    fn authorize(&self, _request: &AuthorizationRequest) -> bool {
-        false
-    }
 }
 
 struct RejectCapabilityGateway;
@@ -668,7 +506,7 @@ impl PluginProjectStateProviderV2 for RejectProjectState {
     }
 }
 
-impl<R, S, P> Drop for SidecarHostLauncher<R, S, P> {
+impl<R, P> Drop for SidecarHostLauncher<R, P> {
     fn drop(&mut self) {
         let Ok(mut processes) = self.processes.lock() else {
             return;
@@ -681,27 +519,23 @@ impl<R, S, P> Drop for SidecarHostLauncher<R, S, P> {
     }
 }
 
-impl<R, S, P> SidecarHostLauncher<R, S, P>
+impl<R, P> SidecarHostLauncher<R, P>
 where
     R: ArtifactPathResolver,
-    S: SandboxDriver,
     P: PluginStatePersistencePort,
 {
     pub fn new(
         sidecar_executable: impl AsRef<Path>,
         private_root: PrivateArtifactRoot,
         resolver: R,
-        sandbox: S,
         persistence: P,
     ) -> Result<(Self, HostExitMonitor), HostLauncherBuildError> {
         Self::new_with_v2_services(
             sidecar_executable,
             private_root,
             resolver,
-            sandbox,
             persistence,
             PluginHostServicesV2::new(
-                Arc::new(RejectAuthorization),
                 Arc::new(RejectCapabilityGateway),
                 Arc::new(RejectHostContext),
                 Arc::new(RejectProjectState),
@@ -709,35 +543,17 @@ where
         )
     }
 
-    /// Production v2 constructor. A launcher built with `new` is deliberately
-    /// deny-only and cannot instantiate plugins until native injects both the
-    /// durable grant gate and the application capability gateway.
+    /// Production v2 constructor with application services injected.
     pub fn new_with_v2_services(
         sidecar_executable: impl AsRef<Path>,
         private_root: PrivateArtifactRoot,
         resolver: R,
-        sandbox: S,
         persistence: P,
         services: PluginHostServicesV2,
     ) -> Result<(Self, HostExitMonitor), HostLauncherBuildError> {
         let sidecar_executable = sidecar_executable.as_ref();
-        let metadata = fs::symlink_metadata(sidecar_executable)
-            .map_err(|_| HostLauncherBuildError::SidecarExecutable)?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
+        if !sidecar_executable.is_file() {
             return Err(HostLauncherBuildError::SidecarExecutable);
-        }
-        let self_test = sandbox
-            .self_test(sidecar_executable)
-            .map_err(HostLauncherBuildError::SandboxUnavailable)?;
-        if !self_test.is_complete() {
-            return Err(HostLauncherBuildError::SandboxUnavailable(
-                SandboxError::new("sandbox self-test did not prove every required control"),
-            ));
-        }
-        if !matches!(sandbox.platform_argument(), "windows" | "macos" | "linux") {
-            return Err(HostLauncherBuildError::SandboxUnavailable(
-                SandboxError::new("sandbox selected an unsupported host platform"),
-            ));
         }
         let processes = Arc::new(Mutex::new(HostProcesses::default()));
         let monitor = HostExitMonitor {
@@ -748,11 +564,9 @@ where
                 sidecar_executable: sidecar_executable.to_path_buf(),
                 private_root,
                 resolver,
-                sandbox,
                 persistence,
                 processes,
                 next_instance_id: AtomicU64::new(1),
-                authorization: services.authorization,
                 gateway: services.gateway,
                 host_context: services.host_context,
                 project_state: services.project_state,
@@ -770,11 +584,32 @@ where
         operation: request::Operation,
         timeout: Duration,
     ) -> Result<Envelope, HostFailure> {
+        let operation_name = operation_name(&operation);
         let request_id = process
             .gateway
             .next_outbound_message_id()
-            .map_err(|_| HostFailure::Transport)?;
-        let response = process.responses.register(request_id)?;
+            .map_err(|error| {
+                tracing::warn!(
+                    ?error,
+                    plugin_id = %process.plugin_id,
+                    operation = %operation_name,
+                    "plugin host request id allocation failed"
+                );
+                HostFailure::Transport
+            })?;
+        let response = process
+            .responses
+            .register(request_id)
+            .inspect_err(|error| {
+                tracing::warn!(
+                    ?error,
+                    plugin_id = %process.plugin_id,
+                    instance_id = %process.gateway.context().instance_id,
+                    request_id,
+                    operation = %operation_name,
+                    "plugin host response registration failed"
+                );
+            })?;
         let envelope = Envelope {
             protocol_major: PROTOCOL_MAJOR,
             protocol_minor: MAX_PROTOCOL_MINOR,
@@ -785,11 +620,37 @@ where
             })),
         };
         if let Err(error) = write_host_envelope(&process.stdin, &envelope) {
+            tracing::warn!(
+                ?error,
+                plugin_id = %process.plugin_id,
+                instance_id = %process.gateway.context().instance_id,
+                request_id,
+                operation = %operation_name,
+                "plugin host request write failed"
+            );
             process.responses.discard(request_id);
             return Err(error);
         }
-        let response = receive_response(&response, timeout)?;
+        let response = receive_response(&response, timeout).inspect_err(|error| {
+            tracing::warn!(
+                ?error,
+                plugin_id = %process.plugin_id,
+                instance_id = %process.gateway.context().instance_id,
+                request_id,
+                operation = %operation_name,
+                timeout_ms = timeout.as_millis(),
+                "plugin host response wait failed"
+            );
+        })?;
         if response.reply_to != Some(request_id) {
+            tracing::warn!(
+                plugin_id = %process.plugin_id,
+                instance_id = %process.gateway.context().instance_id,
+                request_id,
+                reply_to = ?response.reply_to,
+                operation = %operation_name,
+                "plugin host response correlation was invalid"
+            );
             return Err(HostFailure::Transport);
         }
         Ok(response)
@@ -941,8 +802,23 @@ fn dispatch_sidecar_gateway_envelope(
     workers: &CapabilityWorkerRegistry,
     envelope: Envelope,
 ) -> Result<(), HostFailure> {
+    let debug_operation = match &envelope.payload {
+        Some(envelope::Payload::Request(Request {
+            operation: Some(operation),
+        })) => operation_name(operation),
+        other => format!("{other:?}").chars().take(160).collect::<String>(),
+    };
     match gateway
         .begin(envelope)
+        .inspect_err(|error| {
+            tracing::warn!(
+                ?error,
+                plugin_id = %gateway.context().plugin_id,
+                instance_id = %gateway.context().instance_id,
+                operation = %debug_operation,
+                "plugin capability request was rejected before execution"
+            );
+        })
         .map_err(|_| HostFailure::Transport)?
     {
         GatewayDispatch::Immediate(Some(reply)) => write_host_envelope(stdin, &reply),
@@ -966,19 +842,49 @@ fn dispatch_sidecar_gateway_envelope(
             let worker_gateway = Arc::clone(gateway);
             let worker_stdin = Arc::clone(stdin);
             let worker_router = responses.clone();
+            let worker_operation = debug_operation.clone();
+            let worker_plugin_id = gateway.context().plugin_id.clone();
             let fallback = request.clone();
             let spawn_failed = thread::Builder::new()
                 .name("plugin-capability-v2".to_owned())
                 .spawn(move || {
                     let _permit = permit;
+                    let started = Instant::now();
+                    tracing::debug!(
+                        plugin_id = %worker_plugin_id,
+                        operation = %worker_operation,
+                        "plugin capability request started"
+                    );
                     match worker_gateway.finish(request) {
                         Ok(Some(reply)) => {
+                            tracing::debug!(
+                                plugin_id = %worker_plugin_id,
+                                operation = %worker_operation,
+                                elapsed_ms = started.elapsed().as_millis(),
+                                "plugin capability request completed"
+                            );
                             if write_host_envelope(&worker_stdin, &reply).is_err() {
                                 worker_router.fail_all();
                             }
                         }
-                        Ok(None) => {}
-                        Err(_) => worker_router.fail_all(),
+                        Ok(None) => {
+                            tracing::debug!(
+                                plugin_id = %worker_plugin_id,
+                                operation = %worker_operation,
+                                elapsed_ms = started.elapsed().as_millis(),
+                                "plugin capability request completed without a reply"
+                            );
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                ?error,
+                                plugin_id = %worker_plugin_id,
+                                operation = %worker_operation,
+                                elapsed_ms = started.elapsed().as_millis(),
+                                "plugin capability request failed"
+                            );
+                            worker_router.fail_all();
+                        }
                     }
                 })
                 .is_err();
@@ -1000,10 +906,19 @@ fn dispatch_sidecar_gateway_envelope(
     }
 }
 
-impl<R, S, P> HostLauncher for SidecarHostLauncher<R, S, P>
+fn operation_name(operation: &request::Operation) -> String {
+    format!("{operation:?}")
+        .split(['(', '{'])
+        .next()
+        .unwrap_or("Unknown")
+        .chars()
+        .take(64)
+        .collect()
+}
+
+impl<R, P> HostLauncher for SidecarHostLauncher<R, P>
 where
     R: ArtifactPathResolver,
-    S: SandboxDriver,
     P: PluginStatePersistencePort,
 {
     fn launch(&mut self, request: &HostLaunchRequest) -> Result<HostHandle, HostFailure> {
@@ -1058,46 +973,25 @@ where
             })?;
         let package_root = self
             .private_root
-            .validate_package(resolved.package_root())
+            .resolve_package(resolved.package_root())
             .inspect_err(|error| {
-                tracing::warn!(?error, plugin_id = %request.artifact.plugin_id, package_root = %resolved.package_root().display(), "plugin package validation failed before host launch");
+                tracing::warn!(?error, plugin_id = %request.artifact.plugin_id, package_root = %resolved.package_root().display(), "plugin package path could not be resolved before host launch");
             })?;
         let manifest_text = fs::read_to_string(package_root.join("plugin.toml"))
             .map_err(|_| HostFailure::Launch)?;
-        let artifact = TrustedPluginArtifact::load(&package_root, &manifest_text)
-            .map_err(|_| HostFailure::Launch)?;
-        if artifact.manifest.id != request.artifact.plugin_id
-            || artifact.manifest.version != request.artifact.version
-            || artifact.manifest.component.sha256 != request.artifact.component_sha256
-        {
-            return Err(HostFailure::Launch);
-        }
+        let artifact =
+            PluginPackage::load(&package_root, &manifest_text).map_err(|_| HostFailure::Launch)?;
         let granted = artifact
             .manifest
             .v2_capabilities()
             .map_err(|_| HostFailure::Initialization)?
             .into_iter()
             .collect::<BTreeSet<_>>();
-        if granted != request.requested_capabilities {
-            return Err(HostFailure::Initialization);
-        }
         let instance_id = self.next_instance_id.fetch_add(1, Ordering::Relaxed);
         if instance_id == 0 {
             return Err(HostFailure::Launch);
         }
         let runtime_instance_id = instance_id.to_string();
-        let launch_context = PluginLaunchContext {
-            package_sha256: request.artifact.package_sha256.clone(),
-            workspace_id: request.workspace_id.clone(),
-            instance_id: runtime_instance_id.clone(),
-            generation: instance_id,
-        };
-        let authorization =
-            authorization_request(&artifact, &launch_context, granted.iter().copied());
-        if !self.authorization.authorize(&authorization) {
-            return Err(HostFailure::Initialization);
-        }
-        let launch_ticket = authorization_ticket(&authorization);
         let gateway_context = GatewayContext {
             workspace_id: request.workspace_id.clone(),
             plugin_id: request.artifact.plugin_id.clone(),
@@ -1129,23 +1023,12 @@ where
         let mut arguments = vec![
             OsString::from("--package-root"),
             package_root.as_os_str().to_owned(),
-            OsString::from("--platform"),
-            OsString::from(self.sandbox.platform_argument()),
-            OsString::from("--memory-limit-bytes"),
-            OsString::from(HOST_PROCESS_MEMORY_LIMIT_BYTES.to_string()),
-            OsString::from("--blocks-child-processes"),
-            OsString::from("--blocks-network"),
-            OsString::from("--restricts-filesystem"),
-            OsString::from("--package-sha256"),
-            OsString::from(&request.artifact.package_sha256),
             OsString::from("--workspace-id"),
             OsString::from(&request.workspace_id),
             OsString::from("--instance-id"),
             OsString::from(&runtime_instance_id),
             OsString::from("--generation"),
             OsString::from(instance_id.to_string()),
-            OsString::from("--authorization-ticket"),
-            OsString::from(launch_ticket),
         ];
         for capability in &granted {
             arguments.push(OsString::from("--grant"));
@@ -1153,19 +1036,13 @@ where
                 *capability,
             )));
         }
-        let launch = SandboxLaunch {
-            sidecar_executable: &self.sidecar_executable,
-            package_root: &package_root,
-            memory_limit_bytes: HOST_PROCESS_MEMORY_LIMIT_BYTES,
-            arguments: &arguments,
-        };
-        let mut child = self
-            .sandbox
-            .spawn(&launch)
-            .map_err(|error| {
-                tracing::warn!(%error, plugin_id = %request.artifact.plugin_id, "plugin sandbox spawn failed");
-                HostFailure::SandboxUnavailable
-            })?;
+        let mut child =
+            PluginChild::spawn(&self.sidecar_executable, &package_root, &arguments).map_err(
+                |error| {
+                    tracing::warn!(%error, plugin_id = %request.artifact.plugin_id, "plugin host spawn failed");
+                    HostFailure::Launch
+                },
+            )?;
         let Some(stdin) = child.take_stdin() else {
             terminate_child(&mut child);
             return Err(HostFailure::Launch);
@@ -1180,12 +1057,20 @@ where
         let response_router = responses.clone();
         let gateway_reader = Arc::clone(&gateway);
         let capability_workers = CapabilityWorkerRegistry::default();
+        let reader_plugin_id = request.artifact.plugin_id.clone();
         if thread::Builder::new()
             .name(format!("plugin-host-{}", request.artifact.plugin_id))
             .spawn(move || {
                 let mut reader = FrameReader::new(stdout);
                 loop {
-                    let response = reader.read_envelope().map_err(|_| HostFailure::Transport);
+                    let response = reader.read_envelope().map_err(|error| {
+                        tracing::warn!(
+                            %error,
+                            plugin_id = %reader_plugin_id,
+                            "plugin host output stream failed"
+                        );
+                        HostFailure::Transport
+                    });
                     if let Ok(Some(envelope)) = &response
                         && matches!(
                             envelope.payload,
@@ -1203,6 +1088,13 @@ where
                             &capability_workers,
                             envelope.clone(),
                         )
+                        .inspect_err(|error| {
+                            tracing::warn!(
+                                ?error,
+                                plugin_id = %reader_plugin_id,
+                                "plugin host gateway dispatch failed"
+                            );
+                        })
                         .is_err()
                         {
                             response_router.fail_all();
@@ -1215,10 +1107,22 @@ where
                             if response_router.complete(envelope) {
                                 continue;
                             }
+                            tracing::warn!(
+                                plugin_id = %reader_plugin_id,
+                                "plugin host returned an uncorrelated or unexpected envelope"
+                            );
                             response_router.fail_all();
                             return;
                         }
-                        Ok(None) | Err(_) => {
+                        Ok(None) => {
+                            tracing::warn!(
+                                plugin_id = %reader_plugin_id,
+                                "plugin host output stream closed"
+                            );
+                            response_router.fail_all();
+                            return;
+                        }
+                        Err(_) => {
                             response_router.fail_all();
                             return;
                         }
@@ -1280,7 +1184,7 @@ where
                 response.payload,
                 Some(envelope::Payload::Handshake(Handshake { hello: Some(handshake::Hello::Plugin(hello)) }))
                     if response.reply_to == Some(handshake_id)
-                        && hello.plugin.as_ref().is_some_and(|plugin| plugin.plugin_id == request.artifact.plugin_id && plugin.plugin_version == request.artifact.version && plugin.component_sha256 == request.artifact.component_sha256)
+                        && hello.plugin.as_ref().is_some_and(|plugin| plugin.plugin_id == request.artifact.plugin_id)
                         && hello.wit_package == WIT_PACKAGE
             )
         });
@@ -1327,8 +1231,22 @@ where
             let context = process.gateway.context().clone();
             let initialization = self
                 .host_context
-                .context_for_workspace(&context.workspace_id)?;
-            validate_initialization_context(&initialization)?;
+                .context_for_workspace(&context.workspace_id)
+                .inspect_err(|error| {
+                    tracing::warn!(
+                        ?error,
+                        plugin_id = %handle.plugin_id,
+                        workspace_id = %context.workspace_id,
+                        "plugin host context was unavailable"
+                    );
+                })?;
+            validate_initialization_context(&initialization).inspect_err(|error| {
+                tracing::warn!(
+                    ?error,
+                    plugin_id = %handle.plugin_id,
+                    "plugin host context was invalid"
+                );
+            })?;
             let response = Self::process_request(
                 &mut process,
                 request::Operation::Initialize(InitializeRequest {
@@ -1348,19 +1266,52 @@ where
                         sessions: initialization.sessions,
                     }),
                 }),
-                REQUEST_TIMEOUT,
+                INITIALIZATION_TIMEOUT,
             )?;
-            let Some(envelope::Payload::Response(wire::Response {
-                result: Some(response::Result::Initialize(initialized)),
-            })) = response.payload
-            else {
-                return Err(HostFailure::Initialization);
+            let initialized = match response.payload {
+                Some(envelope::Payload::Response(wire::Response {
+                    result: Some(response::Result::Initialize(initialized)),
+                })) => initialized,
+                Some(envelope::Payload::Error(error)) => {
+                    tracing::warn!(
+                        plugin_id = %handle.plugin_id,
+                        instance_id = handle.instance_id,
+                        error_code = error.code,
+                        message_key = %error.message_key,
+                        retryable = error.retryable,
+                        detail = ?error.detail,
+                        "plugin host rejected initialization"
+                    );
+                    return Err(HostFailure::Initialization);
+                }
+                payload => {
+                    tracing::warn!(
+                        plugin_id = %handle.plugin_id,
+                        instance_id = handle.instance_id,
+                        ?payload,
+                        "plugin host returned an invalid initialization response"
+                    );
+                    return Err(HostFailure::Initialization);
+                }
             };
-            let model = initialized.model.ok_or(HostFailure::Initialization)?;
+            let model = initialized.model.ok_or_else(|| {
+                tracing::warn!(
+                    plugin_id = %handle.plugin_id,
+                    "plugin host initialization response omitted its model"
+                );
+                HostFailure::Initialization
+            })?;
             process
                 .gateway
                 .finalize_initial_model(&model)
-                .map_err(|_| HostFailure::Initialization)
+                .map_err(|error| {
+                    tracing::warn!(
+                        ?error,
+                        plugin_id = %handle.plugin_id,
+                        "plugin host initial model finalization failed"
+                    );
+                    HostFailure::Initialization
+                })
         })();
         if let Err(error) = &result {
             tracing::warn!(?error, plugin_id = %handle.plugin_id, "plugin host initialization failed");
@@ -1575,449 +1526,6 @@ fn reinsert_process(processes: &Arc<Mutex<HostProcesses>>, instance_id: u64, pro
     }
 }
 
-fn terminate_child(child: &mut SandboxedChild) {
+fn terminate_child(child: &mut PluginChild) {
     child.terminate_and_wait();
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Condvar;
-
-    use super::*;
-
-    #[derive(Default)]
-    struct ReaderBlockingGateway {
-        invoked: (Mutex<bool>, Condvar),
-        release: (Mutex<bool>, Condvar),
-        discarded: AtomicUsize,
-        revoked: AtomicUsize,
-    }
-
-    impl PluginCapabilityGateway for ReaderBlockingGateway {
-        fn invoke(
-            &self,
-            _: &GatewayContext,
-            _: u64,
-            operation: request::Operation,
-        ) -> Result<response::Result, GatewayFailure> {
-            if !matches!(operation, request::Operation::ListPorts(_)) {
-                return Err(GatewayFailure::new(
-                    wire::ErrorCode::ProtocolError,
-                    "plugin.error.protocolInvalid",
-                ));
-            }
-            *self.invoked.0.lock().unwrap() = true;
-            self.invoked.1.notify_all();
-            let mut release = self.release.0.lock().unwrap();
-            while !*release {
-                release = self.release.1.wait(release).unwrap();
-            }
-            Ok(response::Result::ListPorts(wire::ListPortsResponse {
-                ports: Vec::new(),
-            }))
-        }
-
-        fn cancel(&self, _: &GatewayContext, _: u64) -> Result<(), GatewayFailure> {
-            *self.release.0.lock().unwrap() = true;
-            self.release.1.notify_all();
-            Ok(())
-        }
-
-        fn discard_cancelled_result(
-            &self,
-            _: &GatewayContext,
-            _: &request::Operation,
-            _: &response::Result,
-        ) {
-            self.discarded.fetch_add(1, Ordering::Relaxed);
-        }
-
-        fn revoke_runtime(&self, _: &GatewayContext) {
-            self.revoked.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    struct RecordingWrite(Arc<Mutex<Vec<u8>>>);
-
-    impl Write for RecordingWrite {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[derive(Clone, Default)]
-    struct MemoryPersistence;
-
-    impl PluginStatePersistencePort for MemoryPersistence {
-        fn load_plugin_storage(
-            &mut self,
-            _key: &PluginStatePersistenceKey,
-        ) -> Result<Option<Vec<u8>>, HostFailure> {
-            Ok(None)
-        }
-
-        fn workspace_total_bytes(&mut self, _workspace_id: &str) -> Result<usize, HostFailure> {
-            Ok(0)
-        }
-
-        fn persist_state(
-            &mut self,
-            _key: &PluginStatePersistenceKey,
-            state: &PluginPersistedState,
-        ) -> Result<(), HostFailure> {
-            state.validate()
-        }
-    }
-
-    #[derive(Clone)]
-    struct FixedResolver(PathBuf);
-
-    impl ArtifactPathResolver for FixedResolver {
-        fn resolve(
-            &self,
-            _plugin_id: &str,
-            _version: &str,
-            _slot: &ArtifactSlot,
-        ) -> Result<ResolvedPluginArtifact, HostFailure> {
-            Ok(ResolvedPluginArtifact::new(self.0.clone()))
-        }
-    }
-
-    #[derive(Clone)]
-    struct FixedSandbox {
-        result: Result<SandboxSelfTest, SandboxError>,
-        platform: &'static str,
-    }
-
-    impl SandboxDriver for FixedSandbox {
-        fn self_test(&self, _sidecar_executable: &Path) -> Result<SandboxSelfTest, SandboxError> {
-            self.result.clone()
-        }
-
-        fn command(&self, launch: &SandboxLaunch<'_>) -> Result<Command, SandboxError> {
-            Ok(Command::new(launch.sidecar_executable))
-        }
-
-        fn platform_argument(&self) -> &'static str {
-            self.platform
-        }
-    }
-
-    fn complete_sandbox() -> SandboxSelfTest {
-        SandboxSelfTest {
-            blocks_network: true,
-            blocks_child_processes: true,
-            restricts_filesystem: true,
-            enforces_memory_limit: true,
-            observes_crashed_process: true,
-            terminates_hung_process: true,
-        }
-    }
-
-    #[test]
-    fn v2_handshake_uses_the_exact_sorted_manifest_capability_set() {
-        let granted = BTreeSet::from([
-            wire::Capability::PluginStorage,
-            wire::Capability::SerialIo,
-            wire::Capability::UiWorkspace,
-        ]);
-        assert_eq!(
-            granted
-                .into_iter()
-                .map(bbcom_plugin_contracts::v2_capability_name)
-                .collect::<Vec<_>>(),
-            vec!["ui.workspace", "serial.io", "plugin.storage"]
-        );
-    }
-
-    #[test]
-    fn update_preflight_reads_active_private_bytes_without_a_prepared_state_key() {
-        struct ActivePrivateState;
-
-        impl PluginStatePersistencePort for ActivePrivateState {
-            fn load_plugin_storage(
-                &mut self,
-                key: &PluginStatePersistenceKey,
-            ) -> Result<Option<Vec<u8>>, HostFailure> {
-                assert_eq!(key.artifact_slot, ArtifactSlot::Active);
-                assert_eq!(key.launch_mode, HostLaunchMode::Active);
-                Ok(Some(b"active-private".to_vec()))
-            }
-
-            fn workspace_total_bytes(&mut self, _: &str) -> Result<usize, HostFailure> {
-                Ok(b"active-private".len())
-            }
-
-            fn persist_state(
-                &mut self,
-                _: &PluginStatePersistenceKey,
-                _: &PluginPersistedState,
-            ) -> Result<(), HostFailure> {
-                panic!("preflight loading must not persist private state")
-            }
-        }
-
-        let artifact = bbcom_plugin_manager::PluginArtifact::new(
-            "dev.bbcom.fixture",
-            "2.0.0",
-            "a".repeat(64),
-            "b".repeat(64),
-            bbcom_plugin_manager::PluginArtifactSource {
-                source_id: "official".to_owned(),
-                kind: bbcom_plugin_manager::PluginSourceKind::Https,
-            },
-            [],
-        )
-        .unwrap();
-        let request = HostLaunchRequest {
-            artifact,
-            artifact_slot: ArtifactSlot::Prepared(
-                bbcom_plugin_manager::PreparationToken::new("upgrade-1").unwrap(),
-            ),
-            workspace_id: "workspace-1".to_owned(),
-            requested_capabilities: BTreeSet::new(),
-            mode: HostLaunchMode::UpdatePreflight,
-        };
-        let key = private_state_load_key(&request).unwrap();
-        let loaded = ActivePrivateState
-            .load_plugin_storage(&key)
-            .unwrap()
-            .unwrap();
-        assert_eq!(loaded, b"active-private");
-    }
-
-    #[test]
-    fn reader_dispatches_cancel_while_capability_worker_blocks_and_writes_no_late_reply() {
-        let concrete = Arc::new(ReaderBlockingGateway::default());
-        let erased: Arc<dyn PluginCapabilityGateway> = concrete.clone();
-        let session: Arc<GatewaySession<dyn PluginCapabilityGateway>> =
-            Arc::new(GatewaySession::new(
-                GatewayContext {
-                    workspace_id: "workspace-1".to_owned(),
-                    plugin_id: "dev.bbcom.reader".to_owned(),
-                    instance_id: "1".to_owned(),
-                    generation: 1,
-                    granted_capabilities: BTreeSet::from([wire::Capability::SerialPortsRead]),
-                },
-                erased,
-            ));
-        let bytes = Arc::new(Mutex::new(Vec::new()));
-        let stdin: SharedHostStdin =
-            Arc::new(Mutex::new(Box::new(RecordingWrite(Arc::clone(&bytes)))));
-        let responses = HostResponseRouter::default();
-        let workers = CapabilityWorkerRegistry::default();
-        dispatch_sidecar_gateway_envelope(
-            &session,
-            &stdin,
-            &responses,
-            &workers,
-            Envelope {
-                protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: MAX_PROTOCOL_MINOR,
-                message_id: 1,
-                reply_to: None,
-                payload: Some(envelope::Payload::Request(Request {
-                    operation: Some(request::Operation::ListPorts(wire::ListPortsRequest {})),
-                })),
-            },
-        )
-        .unwrap();
-        let mut invoked = concrete.invoked.0.lock().unwrap();
-        while !*invoked {
-            invoked = concrete.invoked.1.wait(invoked).unwrap();
-        }
-        drop(invoked);
-        assert_eq!(workers.active(), 1);
-        dispatch_sidecar_gateway_envelope(
-            &session,
-            &stdin,
-            &responses,
-            &workers,
-            Envelope {
-                protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: MAX_PROTOCOL_MINOR,
-                message_id: 2,
-                reply_to: None,
-                payload: Some(envelope::Payload::Cancel(wire::Cancel {
-                    target_message_id: 1,
-                    reason: "test".to_owned(),
-                })),
-            },
-        )
-        .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while workers.active() != 0 && Instant::now() < deadline {
-            thread::yield_now();
-        }
-        assert_eq!(workers.active(), 0);
-        assert_eq!(concrete.discarded.load(Ordering::Relaxed), 1);
-        assert!(bytes.lock().unwrap().is_empty());
-
-        session.revoke();
-        assert_eq!(concrete.revoked.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn private_artifact_roots_accept_only_manifested_descendants() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path().join("private");
-        let package = root.join("dev.bbcom.coverage").join("1.0.0");
-        std::fs::create_dir_all(&package).unwrap();
-        std::fs::write(package.join("plugin.toml"), b"id='dev.bbcom.coverage'").unwrap();
-
-        let authority = PrivateArtifactRoot::open(&root).unwrap();
-        assert_eq!(
-            authority.validate_package(&package).unwrap(),
-            package.canonicalize().unwrap()
-        );
-        assert_eq!(authority.validate_package(&root), Err(HostFailure::Launch));
-        assert_eq!(
-            authority.validate_package(temporary.path()),
-            Err(HostFailure::Launch)
-        );
-        std::fs::remove_file(package.join("plugin.toml")).unwrap();
-        assert_eq!(
-            authority.validate_package(&package),
-            Err(HostFailure::Launch)
-        );
-        assert!(matches!(
-            PrivateArtifactRoot::open(temporary.path().join("missing")),
-            Err(HostLauncherBuildError::PrivateRoot)
-        ));
-
-        let resolved = ResolvedPluginArtifact::new(package.clone());
-        assert_eq!(resolved.package_root(), package);
-    }
-
-    #[test]
-    fn launcher_build_is_fail_closed_until_every_sandbox_control_is_proven() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path().join("private");
-        let package = root.join("dev.bbcom.coverage").join("1.0.0");
-        std::fs::create_dir_all(&package).unwrap();
-        std::fs::write(package.join("plugin.toml"), b"id='dev.bbcom.coverage'").unwrap();
-        let sidecar = temporary.path().join("bbcom-plugin-host");
-        std::fs::write(&sidecar, b"sidecar").unwrap();
-        let private_root = PrivateArtifactRoot::open(&root).unwrap();
-        let resolver = FixedResolver(package);
-
-        let incomplete = SandboxSelfTest {
-            blocks_network: true,
-            blocks_child_processes: true,
-            restricts_filesystem: true,
-            enforces_memory_limit: false,
-            observes_crashed_process: true,
-            terminates_hung_process: true,
-        };
-        assert!(matches!(
-            SidecarHostLauncher::new(
-                &sidecar,
-                private_root.clone(),
-                resolver.clone(),
-                FixedSandbox {
-                    result: Ok(incomplete),
-                    platform: "linux",
-                },
-                MemoryPersistence,
-            ),
-            Err(HostLauncherBuildError::SandboxUnavailable(_))
-        ));
-        assert!(matches!(
-            SidecarHostLauncher::new(
-                &sidecar,
-                private_root.clone(),
-                resolver.clone(),
-                FixedSandbox {
-                    result: Err(SandboxError::new("unavailable")),
-                    platform: "linux",
-                },
-                MemoryPersistence,
-            ),
-            Err(HostLauncherBuildError::SandboxUnavailable(_))
-        ));
-        assert!(matches!(
-            SidecarHostLauncher::new(
-                &sidecar,
-                private_root.clone(),
-                resolver.clone(),
-                FixedSandbox {
-                    result: Ok(complete_sandbox()),
-                    platform: "other",
-                },
-                MemoryPersistence,
-            ),
-            Err(HostLauncherBuildError::SandboxUnavailable(_))
-        ));
-        assert!(matches!(
-            SidecarHostLauncher::new(
-                temporary.path().join("missing"),
-                private_root.clone(),
-                resolver.clone(),
-                FixedSandbox {
-                    result: Ok(complete_sandbox()),
-                    platform: "linux",
-                },
-                MemoryPersistence,
-            ),
-            Err(HostLauncherBuildError::SidecarExecutable)
-        ));
-
-        let (launcher, monitor) = SidecarHostLauncher::new(
-            &sidecar,
-            private_root,
-            resolver,
-            FixedSandbox {
-                result: Ok(complete_sandbox()),
-                platform: "linux",
-            },
-            MemoryPersistence,
-        )
-        .unwrap();
-        assert!(launcher.lock_processes().unwrap().running.is_empty());
-        assert!(monitor.poll().unwrap().is_empty());
-        assert_eq!(monitor.crash_count("dev.bbcom.coverage"), 0);
-        drop(launcher);
-
-        for message in [
-            SandboxError::new("sandbox").to_string(),
-            HostLauncherBuildError::PrivateRoot.to_string(),
-            HostLauncherBuildError::SidecarExecutable.to_string(),
-            HostLauncherBuildError::SandboxUnavailable(SandboxError::new("sandbox")).to_string(),
-            HostMonitorError.to_string(),
-        ] {
-            assert!(!message.is_empty());
-        }
-    }
-
-    #[test]
-    fn response_transport_accepts_only_one_complete_envelope() {
-        let envelope = Envelope {
-            protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: MAX_PROTOCOL_MINOR,
-            message_id: 7,
-            reply_to: Some(6),
-            payload: None,
-        };
-        let router = HostResponseRouter::default();
-        let receiver = router.register(6).unwrap();
-        assert!(router.complete(envelope.clone()));
-        assert_eq!(
-            receive_response(&receiver, Duration::from_millis(1))
-                .unwrap()
-                .message_id,
-            7
-        );
-        assert!(!router.complete(envelope));
-
-        let (_sender, empty) = mpsc::channel::<Result<Envelope, HostFailure>>();
-        assert_eq!(
-            receive_response(&empty, Duration::from_millis(1)),
-            Err(HostFailure::Transport)
-        );
-    }
 }

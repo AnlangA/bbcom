@@ -704,22 +704,6 @@ pub struct FlushWorkspaceResponse {
     pub save_health: WorkspaceSaveHealth,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProjectEncryptionMode {
-    Plaintext,
-    AgePassphrase,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[ts(optional_fields)]
-pub struct ProjectEncryptionOptions {
-    pub mode: ProjectEncryptionMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub passphrase: Option<String>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RequestProjectSourceGrantRequest {
@@ -739,7 +723,6 @@ pub struct ProjectSourceGrantResponse {
 pub struct RequestProjectTargetGrantRequest {
     pub request_id: String,
     pub suggested_name: String,
-    pub encryption_mode: ProjectEncryptionMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -756,7 +739,6 @@ pub struct ImportProjectRequest {
     pub request_id: String,
     pub operation_id: String,
     pub source_grant_id: String,
-    pub encryption: ProjectEncryptionOptions,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -774,7 +756,6 @@ pub struct ExportProjectRequest {
     pub operation_id: String,
     pub workspace_id: String,
     pub target_grant_id: String,
-    pub encryption: ProjectEncryptionOptions,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -798,176 +779,6 @@ pub struct CancelWorkspaceOperationResponse {
     pub request_id: String,
     pub operation_id: String,
     pub cancellation_requested: bool,
-}
-
-/// Sanitized, immutable snapshot of the renderer-owned 0.7.3 state.
-///
-/// Native paths, credentials, grants, handles and runtime tokens are not part
-/// of this contract. Rust validates each JSON object again before encrypting
-/// it even though the renderer also performs a sanitization pass.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub enum LegacyBackupFormat {
-    #[serde(rename = "bbcom-legacy-readonly-backup-v1")]
-    #[ts(rename = "bbcom-legacy-readonly-backup-v1")]
-    V1,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub enum LegacyBackupSourceVersion {
-    #[serde(rename = "0.7.3")]
-    #[ts(rename = "0.7.3")]
-    V0_7_3,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LegacyBackupContent {
-    pub format: LegacyBackupFormat,
-    pub source_version: LegacyBackupSourceVersion,
-    #[ts(type = "number")]
-    pub created_at_ms: u64,
-    #[ts(type = "Record<string, unknown>")]
-    pub snapshot: serde_json::Value,
-    #[ts(type = "Record<string, unknown>")]
-    pub settings: serde_json::Value,
-    #[ts(type = "Record<string, unknown>")]
-    pub presets: serde_json::Value,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BeginLegacyBackupRequest {
-    pub request_id: String,
-    pub suggested_name: String,
-    pub passphrase: String,
-    pub passphrase_confirmation: String,
-    pub content: LegacyBackupContent,
-}
-
-/// Receipt for a native-selected target. `backup_id` is an in-process opaque
-/// file grant and never contains or encodes the native path.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BeginLegacyBackupResponse {
-    pub request_id: String,
-    pub backup_id: String,
-    pub display_name: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct VerifyLegacyBackupRequest {
-    pub request_id: String,
-    pub backup_id: String,
-    pub passphrase: String,
-    pub expected_content: LegacyBackupContent,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct VerifyLegacyBackupResponse {
-    pub request_id: String,
-    pub backup_id: String,
-    pub verified: bool,
-}
-
-/// Native-authoritative phases for the one-time 0.7.3 reset. The renderer
-/// localStorage marker is only a cache of `Completed` and is never accepted as
-/// authorization to skip the reset gate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub enum LegacyResetJournalPhase {
-    #[serde(rename = "required")]
-    #[ts(rename = "required")]
-    Required,
-    #[serde(rename = "intent")]
-    #[ts(rename = "intent")]
-    Intent,
-    #[serde(rename = "workspaceReady")]
-    #[ts(rename = "workspaceReady")]
-    WorkspaceReady,
-    #[serde(rename = "completed")]
-    #[ts(rename = "completed")]
-    Completed,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[ts(optional_fields)]
-pub struct LegacyResetJournal {
-    pub phase: LegacyResetJournalPhase,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(type = "number")]
-    pub expected_revision: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GetLegacyResetJournalRequest {
-    pub request_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GetLegacyResetJournalResponse {
-    pub request_id: String,
-    pub journal: LegacyResetJournal,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BeginLegacyDiscardRequest {
-    pub request_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BeginLegacyDiscardResponse {
-    pub request_id: String,
-    /// In-process, short-lived and single-use. It is not a renderer boolean.
-    pub discard_token: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[ts(optional_fields)]
-pub struct PrepareLegacyResetRequest {
-    pub request_id: String,
-    /// Exactly one authorization is required in `required`; neither is
-    /// accepted only while resuming a durable `intent`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verified_backup_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discard_token: Option<String>,
-    /// Renderer read-only inspection found no legacy session/settings/preset
-    /// value. This is mutually exclusive with destructive authorizations and
-    /// exists only to avoid blocking a clean first install on a migration UI.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub empty_legacy_state: Option<bool>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PrepareLegacyResetResponse {
-    pub request_id: String,
-    pub journal: LegacyResetJournal,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CompleteLegacyResetRequest {
-    pub request_id: String,
-    pub workspace_id: String,
-    #[ts(type = "number")]
-    pub expected_revision: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CompleteLegacyResetResponse {
-    pub request_id: String,
-    pub journal: LegacyResetJournal,
 }
 
 #[cfg(test)]

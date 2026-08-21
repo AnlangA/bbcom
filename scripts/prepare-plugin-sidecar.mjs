@@ -18,8 +18,7 @@ const windowsTarget = targetTriple.includes('windows');
 const extension = windowsTarget ? '.exe' : '';
 const profile = debug ? 'debug' : 'release';
 const source = resolve(
-  workspaceRoot,
-  'target',
+  cargoTargetDirectory(),
   targetTriple,
   profile,
   `bbcom-plugin-host${extension}`,
@@ -33,6 +32,23 @@ const destination = resolve(
 if (!statSync(source).isFile()) throw new Error('Cargo did not produce the plugin sidecar');
 mkdirSync(dirname(destination), { recursive: true });
 copyFileSync(source, destination);
+
+// Ask Cargo rather than assuming `<root>/target`: CARGO_TARGET_DIR and
+// `build.target-dir` both relocate the artifact, and copying a stale binary
+// from the default path would silently ship the previous build.
+function cargoTargetDirectory() {
+  const result = spawnSync('cargo', ['metadata', '--format-version', '1', '--no-deps'], {
+    cwd: workspaceRoot,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.status !== 0) throw new Error(result.stderr || 'cargo metadata failed');
+  const directory = JSON.parse(result.stdout).target_directory;
+  if (typeof directory !== 'string' || directory.length === 0) {
+    throw new Error('cargo metadata did not report a target directory');
+  }
+  return directory;
+}
 
 function rustHostTuple() {
   const result = spawnSync('rustc', ['--print', 'host-tuple'], {

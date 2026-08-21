@@ -947,7 +947,6 @@ fn center_data(
         sources: Vec::new(),
         surfaces: None,
         tasks: None,
-        authorization_requests: None,
         command_contributions: None,
     })
 }

@@ -25,10 +25,6 @@ pub enum ProjectContainerError {
     AlreadyExists,
     #[error("project container integrity validation failed")]
     Integrity,
-    #[error("age scrypt stream operation failed")]
-    AgeStream,
-    #[error("age scrypt stream I/O failed")]
-    AgeIo(#[source] io::Error),
     #[error("workspace validation failed")]
     Workspace(#[source] WorkspaceError),
     #[error("project container I/O failed")]

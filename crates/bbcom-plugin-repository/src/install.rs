@@ -195,11 +195,8 @@ impl PluginInstaller {
     }
 
     /// Development-mode local install: builds a package from a local package
-    /// directory (plugin.toml + its declared component), enforces the
-    /// manifest's component digest, and stages it through the exact same
-    /// prepared-installation pipeline as repository packages. No HTTPS, TUF,
-    /// or publisher-signature boundary is involved — the caller must only
-    /// pass user-selected local paths.
+    /// directory (plugin.toml + its declared component) and stages it through
+    /// the exact same prepared-installation pipeline as repository packages.
     pub fn prepare_local_install(&self, package_root: &Path) -> Result<PreparedPluginInstallation> {
         let download = build_local_package(package_root)?;
         self.prepare_install(&download)
@@ -1488,8 +1485,7 @@ fn validate_version_directory(
     .map_err(|_| RepositoryError::CorruptInstallState)
 }
 
-/// Builds a `DownloadedPackage` from a local package directory. The
-/// manifest's component digest is the integrity boundary in local mode.
+/// Builds a `DownloadedPackage` from a local package directory.
 fn build_local_package(package_root: &Path) -> Result<DownloadedPackage> {
     use std::io::Read as _;
 
@@ -1525,10 +1521,6 @@ fn build_local_package(package_root: &Path) -> Result<DownloadedPackage> {
         return Err(RepositoryError::ResponseTooLarge {
             limit: MAX_PACKAGE_EXPANDED_BYTES,
         });
-    }
-    let expected = Sha256Digest::parse_hex(&manifest.component.sha256, "component.sha256")?;
-    if !expected.verifies(&component) {
-        return Err(RepositoryError::PackageDigestMismatch);
     }
 
     // Deterministic archive: manifest first, then directories and component.

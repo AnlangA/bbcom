@@ -6,20 +6,12 @@
 
 mod atomic;
 mod cancellation;
-mod encryption;
 mod error;
-mod legacy_backup;
 mod library;
 mod path;
 
 pub use cancellation::{CancellationCheck, ContainerCheckpoint, NeverCancel};
-pub use encryption::{
-    AGE_CRATE_VERSION_REQUIRED, AGE_SCRYPT_ENVELOPE, AgeScryptEnvelope, AgeScryptPassphraseStreams,
-};
 pub use error::{ProjectContainerError, ProjectContainerResult};
-pub use legacy_backup::{
-    LegacyBackupFile, verify_encrypted_legacy_backup, write_encrypted_legacy_backup,
-};
 pub use library::{ExportedProject, ImportedProject, ProjectLibrary};
 pub use path::{
     BBCOM_PROJECT_EXTENSION, ManagedProjectFileName, NativeProjectDestination, NativeProjectSource,

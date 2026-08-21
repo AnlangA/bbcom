@@ -35,7 +35,6 @@ const en: Catalog = {
   'workspace.capture.limit_exceeded': 'The project capture limit was reached.',
   'workspace.capture.sequence_exhausted': 'The project frame sequence is exhausted.',
   'workspace.catalog.load_failed': 'The project library could not be loaded.',
-  'workspace.encryption.invalid': 'The project encryption options are invalid.',
   'workspace.export.failed': 'The project could not be exported safely.',
   'workspace.export.invalid': 'The project export options are invalid.',
   'workspace.export.in_progress': 'A project export is already in progress.',
@@ -62,12 +61,6 @@ const en: Catalog = {
   'workspace.save.saving': 'Saving…',
   'workspace.save.degraded': 'Save failed',
   'workspace.save.readOnly': 'Read-only',
-  'workspace.encryption.plaintext': 'Plain .bbcom file',
-  'workspace.encryption.age': 'Encrypted .bbcom file',
-  'workspace.passphrase': 'Passphrase (12 characters minimum)',
-  'workspace.passphraseConfirm': 'Confirm passphrase',
-  'workspace.passphraseNoRecovery': 'There is no passphrase recovery. Store it safely.',
-  'workspace.passphraseMismatch': 'The passphrases do not match.',
   'shutdown.title': 'bbcom could not finish closing safely',
   'shutdown.description.timedOut':
     'One or more tasks are still finishing. Wait for the same tasks, cancel closing, or force exit.',
@@ -604,45 +597,6 @@ const en: Catalog = {
   // Shortcuts
   'shortcut.newSession': 'New Session',
   'shortcut.closeSession': 'Close Session',
-  // One-time 0.7.3 workspace reset
-  'migration.reset.title': 'One-time workspace upgrade',
-  'migration.reset.description':
-    'bbcom must move the 0.7.3 renderer state into the new workspace repository before continuing.',
-  'migration.reset.legacy_preserved':
-    'Your old database and files remain untouched. The OS keyring API key is not reset.',
-  'migration.reset.integration_unavailable':
-    'The secure native backup service is unavailable. The application remains locked.',
-  'migration.reset.checking': 'Checking the legacy repository…',
-  'migration.reset.checkingHint': 'Checking local data…',
-  'migration.reset.backing_up': 'Creating the encrypted backup…',
-  'migration.reset.verifying': 'Reopening and verifying the encrypted backup…',
-  'migration.reset.activating': 'Activating an empty workspace…',
-  'migration.reset.create_encrypted_backup': 'Create encrypted backup',
-  'migration.reset.without_backup_first': 'Reset without a backup',
-  'migration.reset.without_backup_confirm': 'Confirm reset without backup',
-  'migration.reset.activate_empty_workspace': 'Continue to empty workspace',
-  'migration.reset.retry_read': 'Retry legacy read',
-  'migration.reset.retry_backup': 'Retry encrypted backup',
-  'migration.reset.retry_activation': 'Retry workspace activation',
-  'migration.reset.busy': 'A reset step is already running.',
-  'migration.reset.backup_not_available': 'No legacy backup content is available.',
-  'migration.reset.invalid_state': 'This reset action is not valid in the current state.',
-  'migration.reset.discard_not_available': 'Reset without backup is not currently available.',
-  'migration.reset.challenge_unavailable': 'Could not create the confirmation challenge.',
-  'migration.reset.discard_confirmation_required':
-    'Confirm again to continue without a recoverable backup.',
-  'migration.reset.challenge_rejected': 'The reset confirmation is no longer valid.',
-  'migration.reset.not_authorized':
-    'Create a verified backup or complete both confirmations first.',
-  'migration.reset.backup_required': 'Create and verify an encrypted backup before continuing.',
-  'migration.reset.cancelled': 'The reset step was cancelled; no completion marker was written.',
-  'migration.reset.backup_verification_failed':
-    'The encrypted backup could not be verified from disk.',
-  'migration.reset.backup_failed': 'The encrypted legacy backup failed.',
-  'migration.reset.target_failed': 'The empty workspace could not be activated.',
-  'migration.reset.legacy_read_failed': 'The legacy repository could not be read safely.',
-  'migration.reset.marker_rollback_failed':
-    'The completion marker could not be rolled back. Close bbcom and inspect the application data before retrying.',
   // Native plugin center (kept hidden until the platform release gate passes)
   'plugins.title': 'Plugins',
   'workspaceMode.sessions': 'Sessions',
@@ -716,17 +670,6 @@ const en: Catalog = {
   'plugins.commands.empty': 'No running plugin contributes a command.',
   'plugins.commands.run': 'Run',
   'plugins.commands.confirm_title': 'Run dangerous plugin command?',
-  'plugins.authorization.title': 'Review plugin capabilities',
-  'plugins.authorization.description':
-    '{name} {version} needs your approval before it can be enabled.',
-  'plugins.authorization.development_warning':
-    'This plugin comes from a development directory. Its content can change without its version changing.',
-  'plugins.authorization.digest': 'SHA-256 digest',
-  'plugins.authorization.capabilities': 'Requested capabilities',
-  'plugins.authorization.new_capability': 'New capability',
-  'plugins.authorization.no_capabilities': 'This plugin requests no host capabilities.',
-  'plugins.authorization.reject': 'Keep disabled',
-  'plugins.authorization.approve': 'Approve and enable',
   'plugins.v2_capability.ui.workspace': 'Plugin workspace UI',
   'plugins.v2_capability.ui.workspace.description':
     'Publish a host-rendered component tree in the plugin workspace.',
@@ -780,7 +723,8 @@ const en: Catalog = {
   'plugins.error.invalid-surface': 'An unsafe or invalid plugin surface was rejected.',
   'plugins.error.operation-conflict': 'Another plugin operation is already running.',
   'plugins.error.installation-failed': 'The plugin could not be installed safely.',
-  'plugins.error.host-failed': 'The isolated plugin host failed.',
+  'plugins.error.host-failed':
+    'The plugin host failed to start or initialize. Check the application log for the exact stage.',
   'plugins.error.cancel-failed': 'The plugin operation could not be cancelled safely.',
   'plugins.error.workspace-missing':
     'No workspace is open. Create or open a workspace before managing plugins.',

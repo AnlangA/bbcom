@@ -75,13 +75,9 @@ export type AiWindowState = { visible: boolean, };
 
 export type ResizeAiWindowRequest = { width: number, height: number, };
 
-export type AiKeyDurability = "os" | "session" | "missing";
-
-export type AiKeyStatus = { configured: boolean, durability: AiKeyDurability, };
+export type AiKeyStatus = { configured: boolean, };
 
 export type SetAiApiKeyRequest = { value: string, };
-
-export type MigrateAiApiKeyRequest = { value?: string, };
 
 export type StateOrigin = "main" | "ai-assistant" | "plugin-host";
 
@@ -120,7 +116,7 @@ requestedCapabilities: Array<PluginCapabilityV2>,
  */
 effectiveCapabilities: Array<PluginCapabilityV2>, runtime: RuntimeInstanceKey | null, };
 
-export type PluginCenterData = { revision: number, catalog: Array<PluginCatalogItem>, installed: Array<InstalledPluginView>, sources: Array<PluginSourceView>, surfaces?: Array<PluginSurfaceSnapshot>, tasks?: Array<PluginTaskViewV2>, authorizationRequests?: Array<PluginAuthorizationRequestV2>, commandContributions?: Array<PluginCommandContributionV2>, };
+export type PluginCenterData = { revision: number, catalog: Array<PluginCatalogItem>, installed: Array<InstalledPluginView>, sources: Array<PluginSourceView>, surfaces?: Array<PluginSurfaceSnapshot>, tasks?: Array<PluginTaskViewV2>, commandContributions?: Array<PluginCommandContributionV2>, };
 
 export type PluginFailureCode = "unavailable" | "invalid-response" | "invalid-surface" | "invalid-input" | "operation-conflict" | "installation-failed" | "host-failed" | "cancel-failed" | "workspace-missing";
 
@@ -199,13 +195,7 @@ export type PluginTaskStatusV2 = "running" | "cancelling" | "completed" | "faile
 
 export type PluginTaskViewV2 = { runtime: RuntimeInstanceKey, taskId: string, commandId: string, title: string, status: PluginTaskStatusV2, completed: number, total: number, statusText: string, cancellable: boolean, failure?: PluginFailureV2, };
 
-export type PluginAuthorizationRequestV2 = { pluginId: string, displayName: string, version: string, digestSha256: string, developmentSource: boolean, requestedCapabilities: Array<PluginCapabilityV2>, addedCapabilities: Array<PluginCapabilityV2>, };
-
 export type PluginCommandContributionV2 = { runtime: RuntimeInstanceKey, commandId: string, title: string, description: string, dangerous: boolean, confirmation?: string, };
-
-export type PluginAuthorizationDecisionV2 = "approve" | "reject";
-
-export type ResolvePluginAuthorizationRequestV2 = { requestId: string, revision: number, operationId: string, pluginId: string, version: string, digestSha256: string, requestedCapabilities: Array<PluginCapabilityV2>, decision: PluginAuthorizationDecisionV2, };
 
 export type EmitPluginSurfaceEventRequestV2 = { requestId: string, revision: number, operationId: string, event: PluginSurfaceEventV2, };
 
@@ -438,78 +428,25 @@ export type FlushWorkspaceRequest = { workspaceId: string, targetRevision: numbe
 
 export type FlushWorkspaceResponse = { committedRevision: number, saveHealth: WorkspaceSaveHealth, };
 
-export type ProjectEncryptionMode = "plaintext" | "age-passphrase";
-
-export type ProjectEncryptionOptions = { mode: ProjectEncryptionMode, passphrase?: string, };
-
 export type RequestProjectSourceGrantRequest = { requestId: string, };
 
 export type ProjectSourceGrantResponse = { requestId: string, sourceGrantId: string, displayName: string, };
 
-export type RequestProjectTargetGrantRequest = { requestId: string, suggestedName: string, encryptionMode: ProjectEncryptionMode, };
+export type RequestProjectTargetGrantRequest = { requestId: string, suggestedName: string, };
 
 export type ProjectTargetGrantResponse = { requestId: string, targetGrantId: string, displayName: string, };
 
-export type ImportProjectRequest = { requestId: string, operationId: string, sourceGrantId: string, encryption: ProjectEncryptionOptions, };
+export type ImportProjectRequest = { requestId: string, operationId: string, sourceGrantId: string, };
 
 export type ImportProjectResponse = { requestId: string, operationId: string, workspace: WorkspaceSummary, };
 
-export type ExportProjectRequest = { requestId: string, operationId: string, workspaceId: string, targetGrantId: string, encryption: ProjectEncryptionOptions, };
+export type ExportProjectRequest = { requestId: string, operationId: string, workspaceId: string, targetGrantId: string, };
 
 export type ExportProjectResponse = { requestId: string, operationId: string, displayName: string, };
 
 export type CancelWorkspaceOperationRequest = { requestId: string, operationId: string, };
 
 export type CancelWorkspaceOperationResponse = { requestId: string, operationId: string, cancellationRequested: boolean, };
-
-export type LegacyBackupFormat = "bbcom-legacy-readonly-backup-v1";
-
-export type LegacyBackupSourceVersion = "0.7.3";
-
-export type LegacyBackupContent = { format: LegacyBackupFormat, sourceVersion: LegacyBackupSourceVersion, createdAtMs: number, snapshot: Record<string, unknown>, settings: Record<string, unknown>, presets: Record<string, unknown>, };
-
-export type BeginLegacyBackupRequest = { requestId: string, suggestedName: string, passphrase: string, passphraseConfirmation: string, content: LegacyBackupContent, };
-
-export type BeginLegacyBackupResponse = { requestId: string, backupId: string, displayName: string, };
-
-export type VerifyLegacyBackupRequest = { requestId: string, backupId: string, passphrase: string, expectedContent: LegacyBackupContent, };
-
-export type VerifyLegacyBackupResponse = { requestId: string, backupId: string, verified: boolean, };
-
-export type LegacyResetJournalPhase = "required" | "intent" | "workspaceReady" | "completed";
-
-export type LegacyResetJournal = { phase: LegacyResetJournalPhase, workspaceId?: string, expectedRevision?: number, };
-
-export type GetLegacyResetJournalRequest = { requestId: string, };
-
-export type GetLegacyResetJournalResponse = { requestId: string, journal: LegacyResetJournal, };
-
-export type BeginLegacyDiscardRequest = { requestId: string, };
-
-export type BeginLegacyDiscardResponse = { requestId: string,
-/**
- * In-process, short-lived and single-use. It is not a renderer boolean.
- */
-discardToken: string, };
-
-export type PrepareLegacyResetRequest = { requestId: string,
-/**
- * Exactly one authorization is required in `required`; neither is
- * accepted only while resuming a durable `intent`.
- */
-verifiedBackupId?: string, discardToken?: string,
-/**
- * Renderer read-only inspection found no legacy session/settings/preset
- * value. This is mutually exclusive with destructive authorizations and
- * exists only to avoid blocking a clean first install on a migration UI.
- */
-emptyLegacyState?: boolean, };
-
-export type PrepareLegacyResetResponse = { requestId: string, journal: LegacyResetJournal, };
-
-export type CompleteLegacyResetRequest = { requestId: string, workspaceId: string, expectedRevision: number, };
-
-export type CompleteLegacyResetResponse = { requestId: string, journal: LegacyResetJournal, };
 
 /** Stable alias used by existing frontend error handling. */
 export type AppError = IpcError;

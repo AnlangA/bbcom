@@ -29,7 +29,6 @@ if (!isAiWindow && !isPluginWindow) {
     serialApplication,
     shutdown,
     workspace,
-    migration,
     appStoreModule,
     serialStoreModule,
     sessions,
@@ -38,7 +37,6 @@ if (!isAiWindow && !isPluginWindow) {
     import('./features/serial'),
     import('./features/shutdown'),
     import('./features/workspace'),
-    import('./features/migration'),
     import('./stores/app'),
     import('./stores/serial'),
     import('./features/sessions'),
@@ -148,6 +146,14 @@ if (!isAiWindow && !isPluginWindow) {
     ports: serialStore,
   });
   const pluginSerialCapabilityTransport = new pluginsModule.TauriPluginSerialCapabilityTransport();
+  // The native host-context update may synchronously initialize already
+  // enabled plugins. Start the reply bridge first so initialization-time host
+  // calls such as ListSessions always have a receiver.
+  const pluginSerialCapabilityBridge = new pluginsModule.PluginSerialCapabilityBridge(
+    pluginSerialCapabilityGateway,
+    pluginSerialCapabilityTransport,
+  );
+  await pluginSerialCapabilityBridge.start();
   const pluginHostContextTransport = new pluginsModule.TauriPluginHostContextTransport();
   const updatePluginHostContext = () =>
     pluginHostContextTransport.update({
@@ -206,11 +212,6 @@ if (!isAiWindow && !isPluginWindow) {
     () => void pluginSerialCapabilityTransport.notifyPortCatalogChanged().catch(() => undefined),
     { flush: 'post' },
   );
-  const pluginSerialCapabilityBridge = new pluginsModule.PluginSerialCapabilityBridge(
-    pluginSerialCapabilityGateway,
-    pluginSerialCapabilityTransport,
-  );
-  await pluginSerialCapabilityBridge.start().catch(() => false);
   void pluginCenterService.start();
   const workspaceAdapter = new workspace.SessionStoreWorkspaceAdapter(
     sessionStore,
@@ -253,16 +254,6 @@ if (!isAiWindow && !isPluginWindow) {
     coordinator: workspaceCoordinator,
     application: workspaceApplication,
   });
-  const legacyReset = migration.createLegacyResetBootstrap({
-    source: new migration.LegacyRendererReadOnlySource({
-      storage: globalThis.localStorage,
-      sessions: new migration.BrowserLegacySessionSnapshotReader(globalThis.localStorage),
-    }),
-    backupPort: new migration.TauriLegacyBackupPort(),
-    target: new migration.WorkspaceApplicationResetTarget(workspaceApplication),
-    markerStorage: globalThis.localStorage,
-  });
-  app.provide(migration.LEGACY_RESET_CONTEXT_KEY, legacyReset);
   const tauriShutdown = new shutdown.TauriShutdownPort();
   const applicationShutdown = await shutdown.bootstrapApplicationShutdown({
     application: {

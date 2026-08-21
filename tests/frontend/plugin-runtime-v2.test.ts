@@ -1,12 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import type {
-  PluginAuthorizationRequestV2,
   PluginCommandContributionV2,
   PluginTaskViewV2,
   RuntimeInstanceKey,
 } from '../../src/generated/ipc-contracts';
 import {
-  normalizePluginAuthorizationRequests,
   normalizePluginCommandContributions,
   normalizePluginTasks,
   sameRuntime,
@@ -34,21 +32,6 @@ function task(overrides: Partial<PluginTaskViewV2> = {}): PluginTaskViewV2 {
   };
 }
 
-function authorization(
-  overrides: Partial<PluginAuthorizationRequestV2> = {},
-): PluginAuthorizationRequestV2 {
-  return {
-    pluginId: 'dev.bbcom.mcumgr',
-    displayName: 'MCUmgr',
-    version: '1.0.0',
-    digestSha256: 'a'.repeat(64),
-    developmentSource: false,
-    requestedCapabilities: ['file.open-read', 'serial.io', 'ui.workspace'],
-    addedCapabilities: ['file.open-read', 'serial.io', 'ui.workspace'],
-    ...overrides,
-  };
-}
-
 function command(
   overrides: Partial<PluginCommandContributionV2> = {},
 ): PluginCommandContributionV2 {
@@ -63,14 +46,12 @@ function command(
 }
 
 describe('plugin runtime v2 renderer validation', () => {
-  test('clones and freezes valid task, authorization and command values', () => {
+  test('clones and freezes valid task and command values', () => {
     const tasks = normalizePluginTasks([task()]);
-    const requests = normalizePluginAuthorizationRequests([authorization()]);
     const commands = normalizePluginCommandContributions([command()]);
 
     expect(tasks?.[0]?.runtime).not.toBe(runtime);
     expect(Object.isFrozen(tasks?.[0])).toBe(true);
-    expect(Object.isFrozen(requests?.[0]?.requestedCapabilities)).toBe(true);
     expect(Object.isFrozen(commands?.[0]?.runtime)).toBe(true);
   });
 
@@ -78,19 +59,6 @@ describe('plugin runtime v2 renderer validation', () => {
     expect(normalizePluginTasks([task({ completed: 129 })])).toBeNull();
     expect(
       normalizePluginTasks([task({ status: 'completed', completed: 128, cancellable: true })]),
-    ).toBeNull();
-  });
-
-  test('requires canonical capabilities and an added subset', () => {
-    expect(
-      normalizePluginAuthorizationRequests([
-        authorization({ requestedCapabilities: ['ui.workspace', 'serial.io'] }),
-      ]),
-    ).toBeNull();
-    expect(
-      normalizePluginAuthorizationRequests([
-        authorization({ addedCapabilities: ['serial.control-lines'] }),
-      ]),
     ).toBeNull();
   });
 
@@ -145,32 +113,6 @@ describe('plugin runtime v2 renderer validation', () => {
     ]);
     expect(normalized).not.toBeNull();
     expect(Object.isFrozen(normalized?.[0]?.failure)).toBe(true);
-  });
-
-  test('validates authorization identity, version, digest, bounds, ordering, and uniqueness', () => {
-    expect(
-      normalizePluginAuthorizationRequests(
-        Array.from({ length: 33 }, (_, index) => authorization({ pluginId: `plugin-${index}` })),
-      ),
-    ).toBeNull();
-    for (const invalid of [
-      authorization({ pluginId: '' }),
-      authorization({ pluginId: 1 as never }),
-      authorization({ displayName: 'bad\nname' }),
-      authorization({ version: '01.0.0' }),
-      authorization({ digestSha256: 'A'.repeat(64) }),
-      authorization({ requestedCapabilities: Array.from({ length: 13 }, () => 'ui.workspace') }),
-      authorization({ requestedCapabilities: ['unsupported' as never] }),
-      authorization({ requestedCapabilities: ['ui.workspace', 'ui.workspace'] }),
-    ]) {
-      expect(normalizePluginAuthorizationRequests([invalid])).toBeNull();
-    }
-    expect(normalizePluginAuthorizationRequests([authorization(), authorization()])).toBeNull();
-    expect(
-      normalizePluginAuthorizationRequests([
-        authorization({ version: '2.1.0-beta.1', addedCapabilities: [] }),
-      ]),
-    ).not.toBeNull();
   });
 
   test('validates command limits, confirmations, runtime identity, and multiline descriptions', () => {

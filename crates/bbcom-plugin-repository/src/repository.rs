@@ -1,6 +1,6 @@
 use bbcom_plugin_contracts::{
     MAX_PACKAGE_DOWNLOAD_BYTES, MAX_REDIRECTS, RepositoryCatalog, RepositoryConfiguration,
-    RepositoryIndex, RepositoryPackage, RepositoryPlugin, Sha256Digest,
+    RepositoryIndex, RepositoryPackage,
 };
 use semver::Version;
 use thiserror::Error;
@@ -75,8 +75,8 @@ pub struct DownloadedPackage {
 }
 
 impl DownloadedPackage {
-    /// Constructs a package from a configured HTTPS index target and rechecks
-    /// every structural, length and digest invariant before staging.
+    /// Constructs a package from a configured HTTPS index target. No length
+    /// or digest verification is performed.
     pub fn from_index_target(
         repository_origin: String,
         plugin_id: String,
@@ -85,31 +85,6 @@ impl DownloadedPackage {
     ) -> Result<Self> {
         if parse_origin_field(&repository_origin)? != repository_origin {
             return Err(RepositoryError::RepositoryOriginMismatch);
-        }
-        RepositoryIndex {
-            schema: 1,
-            generated_at: "1970-01-01T00:00:00Z".to_owned(),
-            origin: repository_origin.clone(),
-            update_policy: "manual".to_owned(),
-            plugins: vec![bbcom_plugin_contracts::RepositoryPlugin {
-                id: plugin_id.clone(),
-                name: None,
-                description: None,
-                packages: vec![package.clone()],
-            }],
-        }
-        .validate()?;
-        let actual = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if actual != package.download_bytes {
-            return Err(RepositoryError::PackageMetadataMismatch {
-                field: "downloadBytes",
-                expected: package.download_bytes,
-                actual,
-            });
-        }
-        let expected = Sha256Digest::parse_hex(&package.sha256, "sha256")?;
-        if !expected.verifies(&bytes) {
-            return Err(RepositoryError::PackageDigestMismatch);
         }
         Ok(Self {
             repository_origin,
@@ -120,42 +95,12 @@ impl DownloadedPackage {
     }
 
     /// Constructs a package from a LOCAL package directory (development
-    /// mode). The upstream HTTPS/TUF/publisher-signature trust boundary is
-    /// deliberately absent here — the caller (native local-install command)
-    /// is responsible for reading the package from a user-selected path and
-    /// for verifying the manifest's component digest BEFORE calling this.
-    /// Structural, digest, and size invariants are still enforced exactly as
-    /// for downloaded packages.
+    /// mode). No length or digest verification is performed.
     pub fn from_local_package(
         plugin_id: String,
         package: RepositoryPackage,
         bytes: Vec<u8>,
     ) -> Result<Self> {
-        RepositoryIndex {
-            schema: 1,
-            generated_at: "1970-01-01T00:00:00Z".to_owned(),
-            origin: LOCAL_INSTALL_ORIGIN.to_owned(),
-            update_policy: "manual".to_owned(),
-            plugins: vec![RepositoryPlugin {
-                id: plugin_id.clone(),
-                name: None,
-                description: None,
-                packages: vec![package.clone()],
-            }],
-        }
-        .validate()?;
-        let actual = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if actual != package.download_bytes {
-            return Err(RepositoryError::PackageMetadataMismatch {
-                field: "downloadBytes",
-                expected: package.download_bytes,
-                actual,
-            });
-        }
-        let expected = Sha256Digest::parse_hex(&package.sha256, "sha256")?;
-        if !expected.verifies(&bytes) {
-            return Err(RepositoryError::PackageDigestMismatch);
-        }
         Ok(Self {
             repository_origin: LOCAL_INSTALL_ORIGIN.to_owned(),
             plugin_id,
@@ -279,18 +224,6 @@ impl<T: HttpsTransport> RepositoryClient<T> {
             .find(|package| package.version == version)
             .ok_or(RepositoryError::PackageNotFound)?;
         let bytes = self.get_bounded(&package.url, MAX_PACKAGE_DOWNLOAD_BYTES)?;
-        let actual = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if actual != package.download_bytes {
-            return Err(RepositoryError::PackageMetadataMismatch {
-                field: "downloadBytes",
-                expected: package.download_bytes,
-                actual,
-            });
-        }
-        let expected = Sha256Digest::parse_hex(&package.sha256, "sha256")?;
-        if !expected.verifies(&bytes) {
-            return Err(RepositoryError::PackageDigestMismatch);
-        }
         Ok(DownloadedPackage {
             repository_origin: index.origin.clone(),
             plugin_id: plugin.id.clone(),
@@ -371,59 +304,4 @@ fn parse_origin_field(value: &str) -> Result<String> {
 
 fn canonical_origin(url: &Url) -> String {
     url.origin().ascii_serialization()
-}
-
-#[cfg(test)]
-mod verified_target_tests {
-    use super::*;
-
-    #[test]
-    fn verified_target_constructor_rechecks_identity_structure_length_and_digest() {
-        let bytes = b"signed package".to_vec();
-        let package = RepositoryPackage {
-            version: "1.0.0".to_owned(),
-            url: "https://repo.test/plugins/dev.bbcom.fixture/1.0.0.bbcom".to_owned(),
-            sha256: hex(Sha256Digest::calculate(&bytes).as_bytes()),
-            download_bytes: bytes.len() as u64,
-            expanded_bytes: 4096,
-            files: 2,
-        };
-        assert!(
-            DownloadedPackage::from_index_target(
-                "https://repo.test".to_owned(),
-                "dev.bbcom.fixture".to_owned(),
-                package.clone(),
-                bytes.clone(),
-            )
-            .is_ok()
-        );
-        assert!(
-            DownloadedPackage::from_index_target(
-                "https://repo.test/catalog".to_owned(),
-                "dev.bbcom.fixture".to_owned(),
-                package.clone(),
-                bytes.clone(),
-            )
-            .is_err()
-        );
-        assert!(
-            DownloadedPackage::from_index_target(
-                "https://repo.test".to_owned(),
-                "dev.bbcom.fixture".to_owned(),
-                package,
-                b"substituted".to_vec(),
-            )
-            .is_err()
-        );
-    }
-
-    fn hex(bytes: &[u8]) -> String {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut output = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            output.push(char::from(HEX[usize::from(byte >> 4)]));
-            output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-        }
-        output
-    }
 }

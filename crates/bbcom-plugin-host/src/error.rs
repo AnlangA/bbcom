@@ -48,20 +48,10 @@ pub enum HostError {
     Contract(#[from] ContractError),
     #[error("plugin artifact path is not a regular component file")]
     InvalidArtifact,
-    #[error("plugin artifact is a symlink")]
-    ArtifactSymlink,
-    #[error("plugin component digest does not match the manifest")]
-    ComponentDigestMismatch,
-    #[error("plugin native executable content is forbidden")]
-    NativeExecutableForbidden,
     #[error("plugin component exceeds the package limit")]
     ComponentLimitExceeded,
     #[error("plugin artifact could not be read")]
     ArtifactRead,
-    #[error("plugin host process limit attestation is invalid")]
-    InvalidProcessLimit,
-    #[error("plugin host launcher sandbox attestation is incomplete")]
-    IncompleteSandbox,
     #[error("this process already owns a plugin store")]
     ProcessAlreadyHosting,
     #[error("plugin engine configuration failed")]
@@ -70,10 +60,6 @@ pub enum HostError {
     InvalidComponent,
     #[error("plugin component could not be instantiated")]
     ComponentInstantiation,
-    #[error("plugin launch authorization context is invalid")]
-    InvalidAuthorizationContext,
-    #[error("plugin launch was not authorized")]
-    AuthorizationRequired,
     #[error("plugin rejected the host request")]
     PluginRejected,
     #[error(transparent)]
@@ -97,19 +83,11 @@ impl HostError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Contract(_) => "PLUGIN_PROTOCOL_INVALID",
-            Self::InvalidArtifact
-            | Self::ArtifactSymlink
-            | Self::NativeExecutableForbidden
-            | Self::ArtifactRead => "PLUGIN_ARTIFACT_INVALID",
-            Self::ComponentDigestMismatch => "PLUGIN_COMPONENT_HASH_MISMATCH",
+            Self::InvalidArtifact | Self::ArtifactRead => "PLUGIN_ARTIFACT_INVALID",
             Self::ComponentLimitExceeded => "PLUGIN_PACKAGE_LIMIT",
-            Self::InvalidProcessLimit | Self::IncompleteSandbox => "PLUGIN_SANDBOX_REQUIRED",
             Self::ProcessAlreadyHosting => "PLUGIN_PROCESS_OCCUPIED",
             Self::EngineConfiguration | Self::InvalidComponent | Self::ComponentInstantiation => {
                 "PLUGIN_COMPONENT_INVALID"
-            }
-            Self::InvalidAuthorizationContext | Self::AuthorizationRequired => {
-                "PLUGIN_AUTHORIZATION_REQUIRED"
             }
             Self::PluginRejected => "PLUGIN_REQUEST_REJECTED",
             Self::Execution(failure) => failure.code(),
@@ -126,21 +104,14 @@ impl HostError {
         match self {
             Self::Execution(failure) => failure.message_key(),
             Self::HandshakeTimeout => "plugin.error.handshakeTimeout",
-            Self::ComponentDigestMismatch => "plugin.error.componentHashMismatch",
             Self::ComponentLimitExceeded => "plugin.error.packageLimit",
-            Self::InvalidProcessLimit | Self::IncompleteSandbox => "plugin.error.sandboxRequired",
             Self::ProcessAlreadyHosting => "plugin.error.processOccupied",
             Self::UnsupportedMethod => "plugin.error.methodUnsupported",
             Self::PluginRejected => "plugin.error.requestRejected",
             Self::Closed => "plugin.error.hostClosed",
             Self::TruncatedTransport | Self::Transport => "plugin.error.transport",
-            Self::InvalidAuthorizationContext | Self::AuthorizationRequired => {
-                "plugin.error.authorizationRequired"
-            }
             Self::InvalidHandshake | Self::Contract(_) => "plugin.error.protocolInvalid",
             Self::InvalidArtifact
-            | Self::ArtifactSymlink
-            | Self::NativeExecutableForbidden
             | Self::ArtifactRead
             | Self::InvalidComponent
             | Self::ComponentInstantiation
@@ -158,13 +129,8 @@ mod tests {
         let errors = [
             HostError::Contract(ContractError::UnknownPayload),
             HostError::InvalidArtifact,
-            HostError::ArtifactSymlink,
-            HostError::ComponentDigestMismatch,
-            HostError::NativeExecutableForbidden,
             HostError::ComponentLimitExceeded,
             HostError::ArtifactRead,
-            HostError::InvalidProcessLimit,
-            HostError::IncompleteSandbox,
             HostError::ProcessAlreadyHosting,
             HostError::EngineConfiguration,
             HostError::InvalidComponent,

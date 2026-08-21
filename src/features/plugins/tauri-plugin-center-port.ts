@@ -11,7 +11,6 @@ import type {
   PluginFailureCode,
   PluginSnapshotRequest,
   PluginLocalSourceGrantResponse,
-  ResolvePluginAuthorizationRequestV2,
   RequestPluginLocalSourceGrantRequest,
   RefreshPluginSourceRequest,
   RemovePluginSourceRequest,
@@ -25,7 +24,6 @@ import type {
 import type {
   PluginCenterData,
   PluginCenterPort,
-  PluginAuthorizationRequestV2,
   PluginCommandContributionV2,
   PluginContributionDisposition,
   PluginPortOutcome,
@@ -46,7 +44,6 @@ export const PLUGIN_SOURCE_REMOVE_COMMAND = 'plugin_source_remove';
 export const PLUGIN_SOURCE_REFRESH_COMMAND = 'plugin_source_refresh';
 export const PLUGIN_SET_WATCH_ENABLED_COMMAND = 'plugin_set_watch_enabled';
 export const PLUGIN_EMIT_SURFACE_EVENT_V2_COMMAND = 'plugin_emit_surface_event_v2';
-export const PLUGIN_RESOLVE_AUTHORIZATION_V2_COMMAND = 'plugin_resolve_authorization_v2';
 export const PLUGIN_CANCEL_TASK_V2_COMMAND = 'plugin_cancel_task_v2';
 export const PLUGIN_RUN_COMMAND_V2_COMMAND = 'plugin_run_command_v2';
 export const PLUGIN_SET_SURFACE_PLACEMENT_V2_COMMAND = 'plugin_set_surface_placement_v2';
@@ -207,22 +204,6 @@ export class TauriPluginCenterPort implements PluginCenterPort {
       event: { ...event, runtime: { ...event.runtime } },
     };
     return this.execute(PLUGIN_EMIT_SURFACE_EVENT_V2_COMMAND, request, signal);
-  }
-
-  resolveAuthorization(
-    authorization: PluginAuthorizationRequestV2,
-    decision: 'approve' | 'reject',
-    signal: AbortSignal,
-  ): Promise<PluginPortOutcome> {
-    const request: ResolvePluginAuthorizationRequestV2 = {
-      ...this.correlation(),
-      pluginId: authorization.pluginId,
-      version: authorization.version,
-      digestSha256: authorization.digestSha256,
-      requestedCapabilities: [...authorization.requestedCapabilities],
-      decision,
-    };
-    return this.execute(PLUGIN_RESOLVE_AUTHORIZATION_V2_COMMAND, request, signal);
   }
 
   cancelTask(task: PluginTaskViewV2, signal: AbortSignal): Promise<PluginPortOutcome> {

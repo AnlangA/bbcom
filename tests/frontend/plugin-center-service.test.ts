@@ -193,7 +193,7 @@ describe('PluginCenterService', () => {
     );
   });
 
-  test('routes only current generation-bound v2 surface, task, command and authorization actions', async () => {
+  test('routes only current generation-bound v2 surface, task and command actions', async () => {
     const runtime = {
       workspaceId: 'workspace-1',
       pluginId: 'dev.bbcom.mcumgr',
@@ -234,25 +234,14 @@ describe('PluginCenterService', () => {
       description: 'Read image state',
       dangerous: false,
     };
-    const authorization = {
-      pluginId: runtime.pluginId,
-      displayName: 'MCUmgr',
-      version: '1.0.0',
-      digestSha256: 'a'.repeat(64),
-      developmentSource: false,
-      requestedCapabilities: ['serial.io', 'ui.workspace'] as const,
-      addedCapabilities: ['serial.io', 'ui.workspace'] as const,
-    };
     const initial = data({
       surfaces: [surface],
       tasks: [task],
       commandContributions: [command],
-      authorizationRequests: [authorization],
     });
     const { port } = createPort(initial);
     const unchanged = completed({ ...initial, revision: 2 });
     port.emitSurfaceEvent = vi.fn(async () => unchanged);
-    port.resolveAuthorization = vi.fn(async () => unchanged);
     port.cancelTask = vi.fn(async () => unchanged);
     port.runCommand = vi.fn(async () => unchanged);
     port.setSurfacePlacement = vi.fn(async () => unchanged);
@@ -266,13 +255,11 @@ describe('PluginCenterService', () => {
       nodeId: 'refresh',
       event: 'activate',
     });
-    await service.resolveAuthorization(authorization, 'approve');
     await service.cancelTask(task);
     await service.runCommand(command);
     await service.setSurfacePlacement(surface, 'detached-window');
 
     expect(port.emitSurfaceEvent).toHaveBeenCalledOnce();
-    expect(port.resolveAuthorization).toHaveBeenCalledOnce();
     expect(port.cancelTask).toHaveBeenCalledOnce();
     expect(port.runCommand).toHaveBeenCalledOnce();
     expect(port.setSurfacePlacement).toHaveBeenCalledOnce();
@@ -468,21 +455,11 @@ describe('PluginCenterService', () => {
       description: '',
       dangerous: false,
     };
-    const authorization = {
-      pluginId: runtime.pluginId,
-      displayName: 'Fixture',
-      version: '1.0.0',
-      digestSha256: 'b'.repeat(64),
-      developmentSource: false,
-      requestedCapabilities: ['ui.workspace'] as const,
-      addedCapabilities: ['ui.workspace'] as const,
-    };
     const { port } = createPort(
       data({
         surfaces: [surface],
         tasks: [task],
         commandContributions: [command],
-        authorizationRequests: [authorization],
       }),
     );
     const service = new PluginCenterService(port);
@@ -496,8 +473,6 @@ describe('PluginCenterService', () => {
       event: 'activate',
     });
     expect(service.snapshot().failure?.code).toBe('unavailable');
-    await service.resolveAuthorization(authorization, 'reject');
-    expect(service.snapshot().failure?.code).toBe('unavailable');
     await service.cancelTask(task);
     expect(service.snapshot().failure?.code).toBe('unavailable');
     await service.runCommand(command);
@@ -505,7 +480,6 @@ describe('PluginCenterService', () => {
     await service.setSurfacePlacement(surface, 'detached-window');
     expect(service.snapshot().failure?.code).toBe('unavailable');
 
-    await service.resolveAuthorization(authorization, 'invalid' as never);
     await service.cancelTask({ ...task, cancellable: false });
     await service.runCommand({ ...command, commandId: 'missing' });
     await service.setSurfacePlacement(surface, 'workspace');
@@ -649,21 +623,8 @@ describe('TauriPluginCenterPort local install and uninstall transport', () => {
       },
       new AbortController().signal,
     );
-    await port.resolveAuthorization(
-      {
-        pluginId: runtime.pluginId,
-        displayName: 'MCUmgr',
-        version: '1.0.0',
-        digestSha256: 'a'.repeat(64),
-        developmentSource: false,
-        requestedCapabilities: ['serial.io', 'ui.workspace'],
-        addedCapabilities: ['serial.io', 'ui.workspace'],
-      },
-      'approve',
-      new AbortController().signal,
-    );
 
-    expect(seen).toEqual(['plugin_emit_surface_event_v2', 'plugin_resolve_authorization_v2']);
+    expect(seen).toEqual(['plugin_emit_surface_event_v2']);
     expect(tauri.invoke.mock.calls[0]?.[1]).not.toHaveProperty('path');
   });
 });

@@ -130,8 +130,10 @@ fn multiple_https_repositories_are_manual_and_redirects_are_same_origin() {
     ));
 }
 
+/// The index's declared size and sha256 are advisory metadata; a download that
+/// disagrees with either is still accepted.
 #[test]
-fn downloads_require_exact_declared_size_and_sha256() {
+fn downloads_ignore_declared_size_and_sha256() {
     let package = valid_package("1.0.0", &[]);
     let url = "https://repo.test/plugin.zip";
     let wrong_size = index_json(
@@ -148,13 +150,7 @@ fn downloads_require_exact_declared_size_and_sha256() {
         HttpsResponse::new(200, Vec::new(), package.bytes.clone()),
     );
     let client = RepositoryClient::new(transport);
-    assert!(matches!(
-        client.download_package(&index, PLUGIN_ID, "1.0.0"),
-        Err(RepositoryError::PackageMetadataMismatch {
-            field: "downloadBytes",
-            ..
-        })
-    ));
+    assert!(client.download_package(&index, PLUGIN_ID, "1.0.0").is_ok());
 
     let wrong_digest = index_json("https://repo.test", url, "1.0.0", &package, None)
         .replace(&sha256_hex(&package.bytes), &"0".repeat(64));
@@ -165,14 +161,13 @@ fn downloads_require_exact_declared_size_and_sha256() {
         HttpsResponse::new(200, Vec::new(), package.bytes.clone()),
     );
     let client = RepositoryClient::new(transport);
-    assert!(matches!(
-        client.download_package(&index, PLUGIN_ID, "1.0.0"),
-        Err(RepositoryError::PackageDigestMismatch)
-    ));
+    assert!(client.download_package(&index, PLUGIN_ID, "1.0.0").is_ok());
 }
 
+/// Path containment is the one archive rule that survives: an entry must never
+/// be written outside the staging directory. Scripts and extra files install.
 #[test]
-fn staging_rejects_traversal_links_scripts_and_oversized_manifests() {
+fn staging_rejects_traversal_but_accepts_arbitrary_package_contents() {
     let temporary = TempDir::new().unwrap();
     let installer = PluginInstaller::new(
         temporary.path().join("packages"),
@@ -191,26 +186,9 @@ fn staging_rejects_traversal_links_scripts_and_oversized_manifests() {
     ));
     assert!(!temporary.path().join("escaped.txt").exists());
 
-    let linked = package_with_symlink("1.0.0");
-    let download = download_fixture("https://repo.test/link.zip", "1.0.0", linked);
-    assert!(matches!(
-        installer.install(&download),
-        Err(RepositoryError::LinkEntryForbidden)
-    ));
-
     let script = valid_package("1.0.0", &[("setup.sh", b"#!/bin/sh\nexit 0\n")]);
     let download = download_fixture("https://repo.test/script.zip", "1.0.0", script);
-    assert!(matches!(
-        installer.install(&download),
-        Err(RepositoryError::NativeExecutableForbidden)
-    ));
-
-    let oversized = package_with_oversized_manifest("1.0.0");
-    let download = download_fixture("https://repo.test/manifest.zip", "1.0.0", oversized);
-    assert!(matches!(
-        installer.install(&download),
-        Err(RepositoryError::ManifestUnavailable)
-    ));
+    assert!(installer.install(&download).is_ok());
 }
 
 #[test]
@@ -261,23 +239,6 @@ fn upgrades_are_side_by_side_atomic_and_keep_two_rollback_candidates() {
         b"stable-data"
     );
 
-    let malicious_v3 = download_fixture(
-        "https://repo.test/v3-bad.zip",
-        "3.0.0",
-        valid_package("3.0.0", &[("install.exe", b"MZpayload")]),
-    );
-    assert!(matches!(
-        installer.install(&malicious_v3),
-        Err(RepositoryError::NativeExecutableForbidden)
-    ));
-    assert_eq!(
-        installer
-            .active_installation(PLUGIN_ID)
-            .unwrap()
-            .unwrap()
-            .version,
-        "2.0.0"
-    );
     assert_eq!(
         std::fs::read(plugin_data.join("state.bin")).unwrap(),
         b"stable-data"
@@ -486,29 +447,6 @@ fn valid_package(version: &str, extra: &[(&str, &[u8])]) -> PackageFixture {
     ];
     entries.extend(extra.iter().map(|(name, bytes)| (*name, bytes.to_vec())));
     zip_entries(entries, None)
-}
-
-fn package_with_symlink(version: &str) -> PackageFixture {
-    let component = wat::parse_str("(component)").unwrap();
-    let manifest = manifest(version, &sha256_hex(&component));
-    let entries = vec![
-        ("plugin.toml", manifest.into_bytes()),
-        ("component/plugin.wasm", component),
-    ];
-    zip_entries(entries, Some(("component/alias.wasm", "plugin.wasm")))
-}
-
-fn package_with_oversized_manifest(version: &str) -> PackageFixture {
-    let component = wat::parse_str("(component)").unwrap();
-    let mut manifest = manifest(version, &sha256_hex(&component)).into_bytes();
-    manifest.extend(std::iter::repeat_n(b' ', 65 * 1024));
-    zip_entries(
-        vec![
-            ("plugin.toml", manifest),
-            ("component/plugin.wasm", component),
-        ],
-        None,
-    )
 }
 
 fn zip_entries(entries: Vec<(&str, Vec<u8>)>, symlink: Option<(&str, &str)>) -> PackageFixture {

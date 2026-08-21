@@ -116,9 +116,6 @@ pub struct PluginCenterData {
     pub tasks: Option<Vec<crate::PluginTaskViewV2>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub authorization_requests: Option<Vec<crate::PluginAuthorizationRequestV2>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub command_contributions: Option<Vec<crate::PluginCommandContributionV2>>,
 }
 

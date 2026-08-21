@@ -33,7 +33,6 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/frontend/**/*.test.ts'],
-    exclude: ['tests/frontend/perf.bench.ts'],
     setupFiles: ['tests/frontend/vitest.setup.ts'],
     fileParallelism: true,
     pool: 'forks',

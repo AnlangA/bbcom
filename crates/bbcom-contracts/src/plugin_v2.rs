@@ -399,18 +399,6 @@ pub struct PluginTaskViewV2 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PluginAuthorizationRequestV2 {
-    pub plugin_id: String,
-    pub display_name: String,
-    pub version: String,
-    pub digest_sha256: String,
-    pub development_source: bool,
-    pub requested_capabilities: Vec<PluginCapabilityV2>,
-    pub added_capabilities: Vec<PluginCapabilityV2>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginCommandContributionV2 {
     pub runtime: RuntimeInstanceKey,
     pub command_id: String,
@@ -437,21 +425,6 @@ macro_rules! plugin_v2_request {
         }
     };
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
-pub enum PluginAuthorizationDecisionV2 {
-    Approve,
-    Reject,
-}
-
-plugin_v2_request!(ResolvePluginAuthorizationRequestV2 {
-    plugin_id: String,
-    version: String,
-    digest_sha256: String,
-    requested_capabilities: Vec<PluginCapabilityV2>,
-    decision: PluginAuthorizationDecisionV2,
-});
 
 plugin_v2_request!(EmitPluginSurfaceEventRequestV2 {
     event: PluginSurfaceEventV2,

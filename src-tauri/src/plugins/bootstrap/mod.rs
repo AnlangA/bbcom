@@ -14,7 +14,6 @@ use std::sync::{Arc, Mutex};
 
 use bbcom_contracts::PluginContributionDisposition;
 use bbcom_plugin_broker::PluginCapabilityGateway;
-use bbcom_plugin_host::PluginAuthorizationGate;
 use bbcom_plugin_manager::{
     ManualPackageRequest, OpaqueProjectPluginState, PluginArtifact, PluginManager, PluginSnapshot,
     SystemClock, WorkspacePluginBinding,
@@ -37,7 +36,6 @@ use super::installation::{
     VerifiedPackageProvider,
 };
 use super::runtime_actor::{PluginRuntimeActorHandle, PluginWorkspaceBindingPort};
-use super::sandbox::PlatformSandboxDriver;
 use super::service::{PluginService, PluginServiceError};
 use super::state::SharedNativePluginStatePersistencePort;
 
@@ -199,10 +197,8 @@ pub enum PluginBootstrapError {
     MissingCatalog,
     MissingWorkspace,
     MissingStatePersistence,
-    MissingSandbox,
     MissingSidecarExecutable,
     MissingPrivateArtifactRoot,
-    MissingAuthorizationGate,
     MissingCapabilityGateway,
     MissingHostContext,
     SidecarUnavailable,
@@ -220,10 +216,8 @@ impl PluginBootstrapError {
             Self::MissingCatalog => "PLUGIN_BOOTSTRAP_CATALOG_MISSING",
             Self::MissingWorkspace => "PLUGIN_BOOTSTRAP_WORKSPACE_MISSING",
             Self::MissingStatePersistence => "PLUGIN_BOOTSTRAP_STATE_STORE_MISSING",
-            Self::MissingSandbox => "PLUGIN_BOOTSTRAP_SANDBOX_MISSING",
             Self::MissingSidecarExecutable => "PLUGIN_BOOTSTRAP_SIDECAR_MISSING",
             Self::MissingPrivateArtifactRoot => "PLUGIN_BOOTSTRAP_PRIVATE_ROOT_MISSING",
-            Self::MissingAuthorizationGate => "PLUGIN_BOOTSTRAP_AUTHORIZATION_GATE_MISSING",
             Self::MissingCapabilityGateway => "PLUGIN_BOOTSTRAP_CAPABILITY_GATEWAY_MISSING",
             Self::MissingHostContext => "PLUGIN_BOOTSTRAP_HOST_CONTEXT_MISSING",
             Self::SidecarUnavailable => "PLUGIN_BOOTSTRAP_SIDECAR_UNAVAILABLE",
@@ -250,11 +244,9 @@ pub struct ProductionPluginRuntimeBuilder {
     catalog: Option<Box<dyn CatalogViewPort>>,
     workspace: Option<CurrentPluginWorkspace>,
     state: Option<SharedNativePluginStatePersistencePort>,
-    sandbox: Option<PlatformSandboxDriver>,
     sidecar_executable: Option<PathBuf>,
     private_artifact_root: Option<PrivateArtifactRoot>,
     workspace_bindings: Option<Arc<dyn PluginWorkspaceBindingPort>>,
-    authorization_gate: Option<Arc<dyn PluginAuthorizationGate>>,
     capability_gateway: Option<Arc<dyn PluginCapabilityGateway>>,
     host_context: Option<Arc<dyn PluginHostContextProviderV2>>,
     project_state: Option<Arc<dyn PluginProjectStateProviderV2>>,
@@ -305,12 +297,6 @@ impl ProductionPluginRuntimeBuilder {
     }
 
     #[must_use]
-    pub fn sandbox(mut self, sandbox: PlatformSandboxDriver) -> Self {
-        self.sandbox = Some(sandbox);
-        self
-    }
-
-    #[must_use]
     pub fn sidecar_executable(mut self, path: PathBuf) -> Self {
         self.sidecar_executable = Some(path);
         self
@@ -328,12 +314,6 @@ impl ProductionPluginRuntimeBuilder {
         P: PluginWorkspaceBindingPort,
     {
         self.workspace_bindings = Some(Arc::new(port));
-        self
-    }
-
-    #[must_use]
-    pub fn authorization_gate(mut self, gate: Arc<dyn PluginAuthorizationGate>) -> Self {
-        self.authorization_gate = Some(gate);
         self
     }
 
@@ -374,7 +354,6 @@ impl ProductionPluginRuntimeBuilder {
         let state = self
             .state
             .ok_or(PluginBootstrapError::MissingStatePersistence)?;
-        let sandbox = self.sandbox.ok_or(PluginBootstrapError::MissingSandbox)?;
         let sidecar_executable = self
             .sidecar_executable
             .ok_or(PluginBootstrapError::MissingSidecarExecutable)?;
@@ -384,9 +363,6 @@ impl ProductionPluginRuntimeBuilder {
         let workspace_bindings = self
             .workspace_bindings
             .ok_or(PluginBootstrapError::MissingWorkspace)?;
-        let authorization_gate = self
-            .authorization_gate
-            .ok_or(PluginBootstrapError::MissingAuthorizationGate)?;
         let capability_gateway = self
             .capability_gateway
             .ok_or(PluginBootstrapError::MissingCapabilityGateway)?;
@@ -403,14 +379,8 @@ impl ProductionPluginRuntimeBuilder {
             sidecar_executable,
             private_artifact_root,
             resolver,
-            sandbox,
             state,
-            PluginHostServicesV2::new(
-                authorization_gate,
-                capability_gateway,
-                host_context,
-                project_state,
-            ),
+            PluginHostServicesV2::new(capability_gateway, host_context, project_state),
         )
         .map_err(map_sidecar_error)?;
         let backend = NativeRepositoryStagingBackend::new(installer, repository);
@@ -467,11 +437,8 @@ fn map_sidecar_error(_error: HostLauncherBuildError) -> PluginBootstrapError {
 
 type ProductionInstallation =
     RepositoryInstallationPort<NativeRepositoryStagingBackend<DynVerifiedPackageProvider>>;
-type ProductionHost = SidecarHostLauncher<
-    RepositoryArtifactPathResolver,
-    PlatformSandboxDriver,
-    SharedNativePluginStatePersistencePort,
->;
+type ProductionHost =
+    SidecarHostLauncher<RepositoryArtifactPathResolver, SharedNativePluginStatePersistencePort>;
 type ProductionLifecycle = PluginService<ProductionInstallation, ProductionHost, SystemClock>;
 
 impl PluginRuntimeLifecycle for ProductionLifecycle {

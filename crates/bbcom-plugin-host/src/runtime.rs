@@ -8,15 +8,13 @@ use bbcom_plugin_contracts::generated_v2::Capability;
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store, Trap};
 
-use crate::authorization::{
-    DenyAuthorization, PluginAuthorizationGate, PluginLaunchContext, authorization_request,
-};
+use crate::launch_context::PluginLaunchContext;
 use crate::bindings::Plugin;
 use crate::bindings::bbcom::plugin::types as wit;
 use crate::host_state::{ActivityTracker, RuntimeBinding, StoreState, TrackingLimits};
 use crate::policy::{AmbientAuthorityPolicy, HostPolicy};
 use crate::uplink::CapabilityRpc;
-use crate::{ExecutionFailure, ExecutionFailureKind, HostError, Result, TrustedPluginArtifact};
+use crate::{ExecutionFailure, ExecutionFailureKind, HostError, PluginPackage, Result};
 
 static PROCESS_HAS_STORE: AtomicBool = AtomicBool::new(false);
 
@@ -45,17 +43,10 @@ impl RuntimeInterruptHandle {
 pub struct PluginEngineFactory {
     pub(crate) engine: Engine,
     policy: HostPolicy,
-    authorization: Arc<dyn PluginAuthorizationGate>,
 }
 
 impl PluginEngineFactory {
     pub fn new() -> Result<Self> {
-        Self::with_authorization_gate(Arc::new(DenyAuthorization))
-    }
-
-    pub fn with_authorization_gate(
-        authorization: Arc<dyn PluginAuthorizationGate>,
-    ) -> Result<Self> {
         let policy = HostPolicy::fixed();
         let mut config = Config::new();
         config.wasm_component_model(true);
@@ -66,11 +57,7 @@ impl PluginEngineFactory {
         config.memory_guard_size(0);
         config.memory_reservation_for_growth(0);
         let engine = Engine::new(&config).map_err(|_| HostError::EngineConfiguration)?;
-        Ok(Self {
-            engine,
-            policy,
-            authorization,
-        })
+        Ok(Self { engine, policy })
     }
 
     #[must_use]
@@ -82,33 +69,15 @@ impl PluginEngineFactory {
         AmbientAuthorityPolicy::NONE
     }
 
-    /// The only instantiation path. Authorization and manifest/capability
-    /// equality are checked before `Component::from_binary` sees guest bytes.
-    pub fn load_authorized(
+    /// Instantiates the component with the host capability set.
+    pub fn load(
         &self,
-        artifact: &TrustedPluginArtifact,
+        artifact: &PluginPackage,
         launch: &PluginLaunchContext,
         granted: impl IntoIterator<Item = Capability>,
         rpc: Arc<CapabilityRpc>,
     ) -> Result<PluginRuntime> {
-        launch.validate()?;
         let granted = granted.into_iter().collect::<BTreeSet<_>>();
-        if granted.contains(&Capability::Unspecified) {
-            return Err(HostError::InvalidAuthorizationContext);
-        }
-        let requested = artifact
-            .manifest
-            .v2_capabilities()?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        if requested != granted {
-            return Err(HostError::InvalidAuthorizationContext);
-        }
-        let authorization = authorization_request(artifact, launch, granted.iter().copied());
-        if !self.authorization.authorize(&authorization) {
-            return Err(HostError::AuthorizationRequired);
-        }
-
         let guard = ProcessStoreGuard::acquire()?;
         let component = Component::from_binary(&self.engine, artifact.component_bytes())
             .map_err(|_| HostError::InvalidComponent)?;
@@ -268,7 +237,8 @@ impl PluginRuntime {
             self.engine.increment_epoch();
         }
         let duration = match kind {
-            CallKind::Initialize | CallKind::Normal => self.policy.call_timeout,
+            CallKind::Initialize => self.policy.initialization_timeout,
+            CallKind::Normal => self.policy.call_timeout,
             CallKind::LongRunning => self.policy.long_task_timeout,
         };
         let deadline = DeadlineGuard::arm(self.engine.clone(), duration)?;

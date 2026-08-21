@@ -9,11 +9,9 @@ sessions and protocol behavior; Rust owns privileged desktop work and small,
 typed command surfaces.
 
 > **Workspace architecture:** [ADR-0001](docs/ADR-0001-WORKSPACE-RUNTIME-PLUGIN.md)
-> is implemented for the R1 workspace release. Rust is the durable workspace
-> writer, application services own resident runtimes and operations, and Pinia
-> is now a compatibility/view facade. Plugin code remains behind the independent
-> fail-closed release gate in
-> [ADR-0004](docs/ADR-0004-PLUGIN-TRUST-AND-RELEASE-GATE.md).
+> is implemented for the R1 workspace release. Its former encryption,
+> migration, plugin authorization, trust, and sandbox decisions are superseded
+> by [ADR-0005](docs/ADR-0005-PLUGIN-PROTOCOL-V2.md).
 
 ## Topology
 
@@ -68,7 +66,6 @@ typed command surfaces.
 │ export/       TXT/CSV/JSONL/BIN formatters                         │
 │ models/       IPC structs, AppError, single IpcError mapper        │
 │ utils/        checksum, HEX, timestamp helpers                      │
-│ benches/      checksum/export/workspace/IPC hot-path benchmarks    │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -84,28 +81,23 @@ typed command surfaces.
   keyboard resize steps) lives in dependency-free `lib/` modules. Stores and
   UI consume the same values, so persisted state, pointer resizing, and
   accessibility controls cannot drift.
-- **Rust command layer:** opaque file grants, streaming export/logging,
-  checksum calculation, bounded AI network calls, OS credential storage, and
+- **Rust command layer:** file dialogs, streaming export/logging, checksum
+  calculation, bounded AI network calls, plain application settings, and
   window management.
 - **AI provider boundary:** role-separated messages are built locally, while a
   request-scoped `ZaiClient` owns the API secret, validated provider endpoints,
   and HTTP transport. `ChatCompletion` values contain request data only and
   never carry credentials or arbitrary endpoint strings.
 - **Tauri plugins:** serialplugin provides binary serial channels. Native save
-  dialogs and credential access remain behind allowlisted Rust commands; no
-  updater plugin is shipped.
-- **Native plugin runtime:** `plugins/runtime_wiring.rs` is the single
-  composition root. Application setup installs the fail-closed unavailable
-  service first and swaps in the real protocol-v2 graph only when installer,
-  authorization, sidecar, sandbox, typed capability gateway, private/project
-  state, opaque file grants, surface/task projection, detached windows, and
-  the main-window serial lease bridge all resolve. Every guest resource binds
-  workspace, plugin, instance, and generation. Non-v2 packages are rejected at
-  manifest validation and never enter inventory or runtime. Configured unsigned HTTPS sources
-  and package SHA-256 provide integrity, not publisher identity; TUF/signature
-  verification remains a future stable-marketplace gate. Workspace switches
-  and native shutdown revoke leases, grants, surfaces, and runtime state before
-  closing the retained lifecycle handle.
+  dialogs and application settings remain behind Rust commands; no updater
+  plugin is shipped.
+- **Native plugin runtime:** `plugins/runtime_wiring.rs` connects the installer,
+  sidecar, protocol-v2 gateway, project state, file dialogs, surfaces, tasks,
+  detached windows, and serial bridge. Plugin manifests are parsed only to
+  locate the Component and display metadata. All current capabilities are
+  enabled automatically; there is no digest, signature, publisher,
+  authorization, or sandbox gate. Workspace switches and shutdown still stop
+  hosts and release runtime resources.
 - **Bulk IPC payloads are base64-first.** Export batches, workspace frame
   hydration, and checksum inputs use dual-channel DTOs (`data` number array or
   `dataB64` string, validators enforce exactly one). The frontend converts at

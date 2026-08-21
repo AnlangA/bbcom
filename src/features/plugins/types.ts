@@ -9,7 +9,6 @@ import type {
   PluginSourceKind as GeneratedPluginSourceKind,
   PluginSourceView as GeneratedPluginSourceView,
   PluginStatusReason as GeneratedPluginStatusReason,
-  PluginAuthorizationRequestV2 as GeneratedPluginAuthorizationRequestV2,
   PluginCapabilityV2 as GeneratedPluginCapabilityV2,
   PluginCommandContributionV2 as GeneratedPluginCommandContributionV2,
   PluginContributionDisposition as GeneratedPluginContributionDisposition,
@@ -33,7 +32,6 @@ export type PluginSurfaceSnapshot = Readonly<GeneratedPluginSurfaceSnapshot>;
 export type PluginSurfacePatch = Readonly<GeneratedPluginSurfacePatch>;
 export type PluginSurfaceEventV2 = Readonly<GeneratedPluginSurfaceEventV2>;
 export type PluginTaskViewV2 = Readonly<GeneratedPluginTaskViewV2>;
-export type PluginAuthorizationRequestV2 = Readonly<GeneratedPluginAuthorizationRequestV2>;
 export type PluginCommandContributionV2 = Readonly<GeneratedPluginCommandContributionV2>;
 export type PluginContributionDisposition = GeneratedPluginContributionDisposition;
 
@@ -49,20 +47,13 @@ export type InstalledPluginView = Readonly<
 export type PluginCenterData = Readonly<
   Omit<
     GeneratedPluginCenterData,
-    | 'catalog'
-    | 'installed'
-    | 'sources'
-    | 'surfaces'
-    | 'tasks'
-    | 'authorizationRequests'
-    | 'commandContributions'
+    'catalog' | 'installed' | 'sources' | 'surfaces' | 'tasks' | 'commandContributions'
   > & {
     catalog: readonly PluginCatalogItem[];
     installed: readonly InstalledPluginView[];
     sources: readonly PluginSourceView[];
     surfaces?: readonly PluginSurfaceSnapshot[];
     tasks?: readonly PluginTaskViewV2[];
-    authorizationRequests?: readonly PluginAuthorizationRequestV2[];
     commandContributions?: readonly PluginCommandContributionV2[];
   }
 >;
@@ -125,11 +116,6 @@ export interface PluginCenterPort {
     signal: AbortSignal,
   ): Promise<PluginPortOutcome>;
   emitSurfaceEvent?(event: PluginSurfaceEventV2, signal: AbortSignal): Promise<PluginPortOutcome>;
-  resolveAuthorization?(
-    request: PluginAuthorizationRequestV2,
-    decision: 'approve' | 'reject',
-    signal: AbortSignal,
-  ): Promise<PluginPortOutcome>;
   cancelTask?(task: PluginTaskViewV2, signal: AbortSignal): Promise<PluginPortOutcome>;
   runCommand?(
     command: PluginCommandContributionV2,
@@ -157,7 +143,6 @@ export type PluginCenterActionKind =
   | 'source-refresh'
   | 'source-watch'
   | 'surface-event'
-  | 'authorization'
   | 'task-cancel'
   | 'command-run'
   | 'surface-placement';

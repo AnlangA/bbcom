@@ -1,29 +1,22 @@
 //! Native isolation boundary for one bbcom Wasm Component plugin.
 
 pub mod artifact;
-pub mod authorization;
 pub mod bindings;
 pub mod error;
 pub mod handshake;
 mod host_state;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-pub mod native_sandbox_probe;
+pub mod launch_context;
 pub mod policy;
-#[cfg(target_os = "windows")]
-pub mod process_child_policy;
 pub mod runtime;
 pub mod sidecar;
 pub mod transport;
 pub mod uplink;
 
-pub use artifact::TrustedPluginArtifact;
-pub use authorization::{
-    AuthorizationRequest, ExactLaunchTicketGate, PluginAuthorizationGate, PluginLaunchContext,
-    authorization_request, authorization_ticket,
-};
+pub use artifact::PluginPackage;
 pub use error::{ExecutionFailure, ExecutionFailureKind, HostError, Result};
 pub use handshake::{HandshakeExpectation, HandshakeMachine};
-pub use policy::{AmbientAuthorityPolicy, HostPlatform, HostPolicy, ProcessLimitPolicy};
+pub use launch_context::PluginLaunchContext;
+pub use policy::{AmbientAuthorityPolicy, HostPolicy};
 pub use runtime::{CallKind, PluginEngineFactory, PluginRuntime, RuntimeInterruptHandle};
 pub use sidecar::{PluginExecutor, PluginInterrupt, Sidecar, SidecarExit};
 pub use uplink::{CapabilityRpc, MessageIdSequence, RpcFailure};

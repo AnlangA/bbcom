@@ -411,7 +411,6 @@ function rejectFilesystemData(value: unknown, seen = new WeakSet<object>()): voi
       normalized.includes('handle') ||
       normalized.includes('token') ||
       normalized.includes('grant') ||
-      normalized.includes('keyring') ||
       normalized === 'key' ||
       normalized.endsWith('apikey') ||
       normalized.includes('secret')

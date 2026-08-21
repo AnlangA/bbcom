@@ -98,7 +98,7 @@ describe('AI bridge protocol edge cases', () => {
       kind: 'authority-snapshot',
       theme: 'dark',
       locale: 'zh',
-      aiKeyStatus: { configured: true, durability: 'os' },
+      aiKeyStatus: { configured: true },
     };
     expect(isAiAuthorityPayload(authority)).toBe(true);
     expect(isAiAuthorityPayload({ ...authority, theme: 'sepia' })).toBe(false);
@@ -107,13 +107,7 @@ describe('AI bridge protocol edge cases', () => {
     expect(
       isAiAuthorityPayload({
         ...authority,
-        aiKeyStatus: { configured: 'yes', durability: 'missing' },
-      }),
-    ).toBe(false);
-    expect(
-      isAiAuthorityPayload({
-        ...authority,
-        aiKeyStatus: { configured: false, durability: 'disk' },
+        aiKeyStatus: { configured: 'yes' },
       }),
     ).toBe(false);
     expect(isPayloadKind({ kind: 'activity-cancel' }, 'activity-cancel')).toBe(true);

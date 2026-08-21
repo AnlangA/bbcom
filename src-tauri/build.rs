@@ -61,7 +61,6 @@ fn main() {
             "plugin_source_refresh",
             "plugin_set_watch_enabled",
             "plugin_emit_surface_event_v2",
-            "plugin_resolve_authorization_v2",
             "plugin_cancel_task_v2",
             "plugin_run_command_v2",
             "plugin_set_surface_placement_v2",

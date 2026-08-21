@@ -4,11 +4,10 @@
 - Date: 2026-08-12
 - Decision owners: bbcom maintainers
 - Amendment: the catalog-storage sentence below is superseded by
-  [ADR-0002](ADR-0002-DERIVED-WORKSPACE-CATALOG.md); all other decisions remain
-  in force except the repository-trust paragraph, which is superseded by
-  [ADR-0004](ADR-0004-PLUGIN-TRUST-AND-RELEASE-GATE.md), and the complete
-  plugin isolation/capability protocol section is superseded by
-  [ADR-0005](ADR-0005-PLUGIN-PROTOCOL-V2.md).
+  [ADR-0002](ADR-0002-DERIVED-WORKSPACE-CATALOG.md). Encryption, legacy reset,
+  keychain storage, plugin authorization, trust verification, and sandboxing
+  are retired; [ADR-0005](ADR-0005-PLUGIN-PROTOCOL-V2.md) describes the current
+  plugin runtime.
 
 ## Context
 

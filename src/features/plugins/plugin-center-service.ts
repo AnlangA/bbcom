@@ -5,7 +5,6 @@ import {
   validatePluginSurface,
 } from './domain/plugin-surface-v2';
 import {
-  normalizePluginAuthorizationRequests,
   normalizePluginCommandContributions,
   normalizePluginTasks,
 } from './domain/plugin-runtime-v2';
@@ -17,7 +16,6 @@ import {
   PLUGIN_CAPABILITIES_V2,
   type InstalledPluginView,
   type PluginCatalogItem,
-  type PluginAuthorizationRequestV2,
   type PluginCenterActionKind,
   type PluginCenterData,
   type PluginCenterListener,
@@ -44,7 +42,6 @@ const EMPTY_DATA: PluginCenterData = Object.freeze({
   sources: Object.freeze([]),
   surfaces: Object.freeze([]),
   tasks: Object.freeze([]),
-  authorizationRequests: Object.freeze([]),
   commandContributions: Object.freeze([]),
 });
 
@@ -254,27 +251,6 @@ export class PluginCenterService {
       'surface-event',
       (signal) =>
         this.port.emitSurfaceEvent?.(validated, signal) ??
-        Promise.resolve(failedPortOutcome('unavailable')),
-    );
-  }
-
-  resolveAuthorization(
-    request: PluginAuthorizationRequestV2,
-    decision: 'approve' | 'reject',
-  ): Promise<void> {
-    const pending = this.data.authorizationRequests?.find(
-      (candidate) =>
-        candidate.pluginId === request.pluginId &&
-        candidate.version === request.version &&
-        candidate.digestSha256 === request.digestSha256,
-    );
-    if (!pending || (decision !== 'approve' && decision !== 'reject')) {
-      return this.rejectInvalidResponse();
-    }
-    return this.run(
-      'authorization',
-      (signal) =>
-        this.port.resolveAuthorization?.(pending, decision, signal) ??
         Promise.resolve(failedPortOutcome('unavailable')),
     );
   }
@@ -489,13 +465,10 @@ function normalizeData(candidate: PluginCenterData): NormalizedData | null {
     surfaces.push(freezeSurface(surface));
   }
   const tasks = normalizePluginTasks(candidate.tasks ?? []);
-  const authorizationRequests = normalizePluginAuthorizationRequests(
-    candidate.authorizationRequests ?? [],
-  );
   const commandContributions = normalizePluginCommandContributions(
     candidate.commandContributions ?? [],
   );
-  if (!tasks || !authorizationRequests || !commandContributions) return null;
+  if (!tasks || !commandContributions) return null;
   return {
     data: Object.freeze({
       revision: candidate.revision,
@@ -504,7 +477,6 @@ function normalizeData(candidate: PluginCenterData): NormalizedData | null {
       sources: Object.freeze(sources),
       surfaces: Object.freeze(surfaces),
       tasks,
-      authorizationRequests,
       commandContributions,
     }),
     surfaceRejected,
