@@ -1,1 +1,2 @@
-export * from '@/features/serial/application/serial-shutdown-evidence';
+export * from './serial-shutdown-evidence';
+export * from './shutdown-evidence';
