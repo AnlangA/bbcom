@@ -64,7 +64,7 @@ jobs:
           pnpm exec prettier --check
           src/ tests/ scripts/
           README.md README.zh-CN.md ARCHITECTURE.md CHANGELOG.md CONTRIBUTING.md
-          RELEASING.md SECURITY.md
+          SECURITY.md
           package.json pnpm-workspace.yaml
           .markdownlint-cli2.yaml vite.config.ts vitest.config.ts
           wdio.browser-mock.config.mjs wdio.native.config.mjs eslint.config.mjs

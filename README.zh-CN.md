@@ -24,9 +24,7 @@
 串口收发、协议解析、Modbus 主站、波形绘图、数据导出和可选的 Z.ai
 命令/日志助手放在同一个应用里。
 
-项目的前端负责会话状态与协议引擎，以便在高吞吐串口数据下保持界面
-响应；Rust 侧负责特权文件/导出会话、校验、操作系统凭据存储和有界 AI
-客户端调用。
+模块归属、数据流不变量与运行时拓扑见 [ARCHITECTURE.md](./ARCHITECTURE.md)。
 
 ## 核心亮点
 
@@ -170,86 +168,14 @@ chmod +x scripts/dev.sh
 ./scripts/dev.sh build
 ```
 
-## 脚本
+## 文档
 
-| 命令                 | 说明                                  |
-| -------------------- | ------------------------------------- |
-| `pnpm dev`           | 启动 Vite 开发服务器                  |
-| `pnpm build`         | Vue 类型检查并构建前端                |
-| `pnpm preview`       | 预览前端构建产物                      |
-| `pnpm tauri:dev`     | 以 HMR 方式运行 Tauri 桌面应用        |
-| `pnpm tauri:build`   | 构建桌面应用包                        |
-| `pnpm format`        | 格式化前端与 Rust 代码                |
-| `pnpm format:check`  | 检查前端与 Rust 格式                  |
-| `pnpm lint`          | 对 `src/` 运行 ESLint                 |
-| `pnpm test:frontend` | 运行前端单元测试                      |
-| `pnpm test:rust`     | 运行 Rust 单元测试                    |
-| `pnpm test`          | 运行前端与 Rust 测试                  |
-| `pnpm cycles`        | 检查 TypeScript 导入环                |
-| `pnpm check`         | 运行 lint、格式检查、构建和单元测试   |
-| `pnpm precommit`     | 运行提交前必须通过的完整本地门禁      |
-| `pnpm version:sync`  | 以 package.json 同步 Cargo/Tauri 版本 |
-| `pnpm version:check` | 校验 package/Cargo/Tauri 版本一致     |
-
-## 项目地图
-
-```text
-bbcom/
-├── src/                         # Vue 前端
-│   ├── components/              # 应用外壳、会话视图、终端面板、AI 面板
-│   ├── composables/             # 串口连接、Modbus 编排、导出、触发器
-│   ├── lib/                     # 无框架依赖的领域逻辑与 IPC 封装
-│   │   ├── modbus/              # 请求构建、批处理、传输、循环、回放
-│   │   ├── format.ts            # HEX/文本/ANSI/HEX+ASCII 格式化
-│   │   ├── serial-rx-queue.ts   # 高速捕获使用的有界 RX 队列
-│   │   ├── protocol-parser.ts   # 分隔符/定长/长度字段帧解析
-│   │   ├── waveform*.ts         # 波形解析、视口数学与画布渲染辅助
-│   │   ├── session-persistence.ts
-│   │   └── ipc.ts
-│   ├── stores/                  # sessions、serial、app 三个 Pinia store
-│   ├── styles/                  # 主题 token 与全局样式
-│   ├── types/                   # 按领域拆分的类型桶
-│   ├── App.vue                  # 主窗口入口
-│   └── AiWindow.vue             # AI 悬浮窗口入口
-├── src-tauri/                   # Rust 后端
-│   ├── src/commands/            # Tauri 命令：ai、checksum、导出/日志会话、window
-│   ├── src/export/              # TXT/CSV/JSONL/BIN 格式化器
-│   ├── src/models/              # IPC 数据结构与应用错误类型
-│   ├── src/utils/               # HEX、时间戳、校验工具
-│   └── benches/hot_paths.rs     # Criterion 基准
-├── tests/frontend/              # Vitest 单元测试与独立 Node 基准
-├── images/                      # README 截图
-├── .github/workflows/           # 仅标签触发的 release 工作流
-├── .githooks/pre-commit         # 版本化的本地质量门禁
-├── ARCHITECTURE.md              # 维护者架构指南
-└── scripts/dev.sh               # 开发辅助脚本
-```
-
-模块归属、数据流不变量、上游约束与人工验证建议见
-[ARCHITECTURE.md](./ARCHITECTURE.md)。
-
-## 验证
-
-版本化 Git pre-commit hook 强制执行前端 lint、格式检查、构建、测试、全局与
-P0 覆盖率、browser mock E2E、架构检查、审计、Rust fmt/Clippy/test/llvm-cov，
-以及 base/head 前端基准比较。它会校验仓库固定的 Node、pnpm、Rust、
-`cargo-llvm-cov` 与 `cargo-audit` 版本。为确保校验对象正是将要提交的 index，
-hook 会拒绝未暂存或非忽略的未跟踪文件；请勿使用 `--no-verify` 绕过它。
-
-GitHub Actions 仅承担 release：精确 `vX.Y.Z` 标签触发后执行三平台打包与
-smoke 验证，不再重复运行本地 PR 检查。Windows 与 macOS 在完整签名 Secret
-已经配置时启用平台签名。
-
-`vX.Y.Z` 标签会生成草稿 release，其中包含 Windows NSIS、macOS arm64 DMG、
-Linux AppImage/deb、明确的签名状态清单、SHA-256、CycloneDX SBOM、许可证
-清单、Sigstore bundle 和 GitHub 构建来源证明。v0.5.0 不提供自动更新器。
-
-`pnpm install` 会自动安装 hook。提交 PR 前，如本次提交尚未运行门禁，请手动
-执行同一命令：
-
-```bash
-pnpm precommit
-```
+| 文档                                   | 说明                                           |
+| -------------------------------------- | ---------------------------------------------- |
+| [ARCHITECTURE.md](./ARCHITECTURE.md)   | 拓扑、运行时归属、数据流与边界                 |
+| [CONTRIBUTING.md](./CONTRIBUTING.md)   | 质量门禁、IPC 契约、发布流程与 PR 规范         |
+| [CHANGELOG.md](./CHANGELOG.md)         | 版本历史                                       |
+| [SECURITY.md](./SECURITY.md)           | 漏洞报告                                       |
 
 ## 常见问题
 
@@ -280,9 +206,8 @@ AI 助手设置面板。
 
 ## 贡献
 
-请使用 Conventional Commits，保持 TypeScript strict 与 Rust warning-free，
-并为行为变更补充聚焦测试。如果修改持久化会话结构，需要提升
-`SESSION_STORAGE_VERSION`、添加迁移步骤，并用旧数据回归测试覆盖。
+本地质量门禁、IPC 契约工作流与发布清单见
+[CONTRIBUTING.md](./CONTRIBUTING.md)。
 
 ## 许可证
 
