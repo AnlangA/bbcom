@@ -62,8 +62,10 @@ function collectFiles(directory, files = []) {
   for (const entry of readdirSync(directory)) {
     const path = join(directory, entry);
     const stats = statSync(path);
-    if (stats.isDirectory()) collectFiles(path, files);
-    else if (sourceExtensions.has(extname(entry))) files.push(normalize(path));
+    if (stats.isDirectory()) {
+      if (entry === '__tests__' || entry === 'test') continue;
+      collectFiles(path, files);
+    } else if (sourceExtensions.has(extname(entry))) files.push(normalize(path));
   }
   return files;
 }
@@ -337,6 +339,8 @@ function scanSourceTree(rootDir) {
   const orphans = files
     .filter((file) => !reachable.has(file))
     .filter((file) => !file.endsWith('.d.ts'))
+    .filter((file) => !displayPath(file).includes('/__tests__/'))
+    .filter((file) => !displayPath(file).includes('/src/test/'))
     .filter((file) => !displayPath(file).includes('/src/workers/'))
     .filter((file) => {
       const path = displayPath(file);

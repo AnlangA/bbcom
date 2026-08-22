@@ -1,4 +1,4 @@
-import type { DataFrame } from '../@/types/index.ts';
+import type { DataFrame } from '@/types';
 
 /**
  * Shared `DataFrame` factory for frontend tests.

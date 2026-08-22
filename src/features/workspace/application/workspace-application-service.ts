@@ -732,7 +732,9 @@ export class WorkspaceApplicationService {
   }
 
   private activationState(): ActivationState {
+    /* eslint-disable @typescript-eslint/no-this-alias -- proxy getters must close over the service instance */
     const svc = this;
+    /* eslint-enable @typescript-eslint/no-this-alias */
     return {
       get current() { return svc.current; }, set current(v) { svc.current = v; },
       get recoveryRequired() { return svc.recoveryRequired; }, set recoveryRequired(v) { svc.recoveryRequired = v; },
@@ -747,7 +749,9 @@ export class WorkspaceApplicationService {
     };
   }
   private activationDeps() {
+    /* eslint-disable @typescript-eslint/no-this-alias -- lazy hydration getter closes over the service instance */
     const s = this;
+    /* eslint-enable @typescript-eslint/no-this-alias */
     return {
       coordinator: this.coordinator, sessionFacade: this.sessionFacade, saves: this.saves,
       get hydration() { return s.hydrationPipeline; }, runtimeLifecycle: this.runtimeLifecycle, activations: this.activations,

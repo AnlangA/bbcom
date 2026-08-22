@@ -178,6 +178,7 @@ test('closestPointOnWaveformPath interpolates along a rendered segment', () => {
   ]);
 
   assert.ok(point);
+  if (!point) return;
   assert.equal(point.x, 40);
   assert.equal(point.y, 0);
   assert.equal(point.value, 4);

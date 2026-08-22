@@ -267,11 +267,8 @@ export function createSerialConnectionController(
   }
 
   // Wire lifecycle and reconnect with deferred references to break circular deps.
-  let connectLifecycle!: ReturnType<typeof createConnectLifecycle>;
-  let reconnectPolicy!: ReturnType<typeof createReconnectPolicy>;
-  let shutdownEvidence!: ReturnType<typeof createShutdownEvidenceController>;
-
-  connectLifecycle = createConnectLifecycle({
+  const { connectLifecycle, shutdownEvidence } = (() => {
+    const cl = createConnectLifecycle({
     ...runtimeRefs,
     sessionId,
     portName,
@@ -283,10 +280,10 @@ export function createSerialConnectionController(
     leases,
     rxPipeline,
     reconnectPolicy: {
-      startReconnect: () => reconnectPolicy.startReconnect(),
-      scheduleReconnect: () => reconnectPolicy.scheduleReconnect(),
-      stopReconnect: () => reconnectPolicy.stopReconnect(),
-      attemptReconnect: () => reconnectPolicy.attemptReconnect(),
+      startReconnect: () => rp.startReconnect(),
+      scheduleReconnect: () => rp.scheduleReconnect(),
+      stopReconnect: () => rp.stopReconnect(),
+      attemptReconnect: () => rp.attemptReconnect(),
     },
     shutdownConnection,
     revokeSerialTransaction,
@@ -304,26 +301,26 @@ export function createSerialConnectionController(
     },
   });
 
-  reconnectPolicy = createReconnectPolicy({
+    const rp = createReconnectPolicy({
     ...runtimeRefs,
     sessionId,
     sink: dependencies.sink,
     options,
     timerPort,
     leases,
-    readConnectionTarget: () => connectLifecycle.readConnectionTarget(),
+    readConnectionTarget: () => cl.readConnectionTarget(),
     resetRxDrain: (rxFrameGapMs) => rxPipeline.resetRxDrain(rxFrameGapMs),
     clearOverflowTracking: () => rxPipeline.clearOverflowTracking(),
-    openConnection: (generation, target) => connectLifecycle.openConnection(generation, target),
+    openConnection: (generation, target) => cl.openConnection(generation, target),
     shutdownConnection,
-    detachActiveConnection: () => connectLifecycle.detachActiveConnection(),
+    detachActiveConnection: () => cl.detachActiveConnection(),
     retainUnclosedConnection: (attempt, leaseGeneration) =>
-      connectLifecycle.retainUnclosedConnection(attempt, leaseGeneration),
+      cl.retainUnclosedConnection(attempt, leaseGeneration),
     failAndReleaseLease,
     revokeSerialTransaction,
   });
 
-  shutdownEvidence = createShutdownEvidenceController({
+    const se = createShutdownEvidenceController({
     ...runtimeRefs,
     sessionId,
     sink: dependencies.sink,
@@ -332,11 +329,14 @@ export function createSerialConnectionController(
     leases,
     unsafeRxLatch,
     rxPipeline,
-    reconnectPolicy,
-    connectLifecycle,
+    reconnectPolicy: rp,
+    connectLifecycle: cl,
     shutdownConnection,
     revokeSerialTransaction,
   });
+
+    return { connectLifecycle: cl, shutdownEvidence: se };
+  })();
 
   function snapshot() {
     return Object.freeze({
