@@ -7,7 +7,7 @@ import {
   toAiChatSnapshot,
   toAiSessionSummary,
   workspaceAiMessageLimitError,
-} from '../../src/composables/useAiSessionBridge.ts';
+} from '../../src/features/ai/application/use-ai-session-bridge.ts';
 import type { SerialSession } from '../../src/types.ts';
 
 /** Records every call so the dispatcher's routing can be asserted per-action. */

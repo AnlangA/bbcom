@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
 import { effectScope } from 'vue';
 import type { WatchHandlers, WatchOptions } from 'tauri-plugin-serialplugin-api';
-import { useSerialConnection } from '../../src/composables/useSerialConnection.ts';
+import { useSerialConnection } from '../../src/features/sessions/application/use-serial-connection.ts';
 import type {
   SerialPortAdapter,
   SerialWatchHandleAdapter,
 } from '../../src/features/serial/index.ts';
 import type { SerialTimerScheduler } from '../../src/lib/serial-rx-scheduler.ts';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
 import type { PortConfig } from '../../src/types/serial.ts';
 import {
   PortLeaseRegistry,

@@ -6,7 +6,7 @@ import {
   hexChunksInclude,
   textChunksInclude,
   usePacketFilter,
-} from '../../src/composables/usePacketFilter.ts';
+} from '../../src/features/terminal/application/use-packet-filter.ts';
 import { MAX_MERGED_VISIBLE_BYTES } from '../../src/lib/merged-frame-rope.ts';
 import type { DataFrame, PacketViewMode, SearchMode } from '../../src/types/index.ts';
 

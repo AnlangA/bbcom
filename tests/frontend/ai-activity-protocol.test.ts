@@ -8,7 +8,7 @@ import {
   parseAiBridgeEnvelope,
 } from '../../src/features/ai-activity/index.ts';
 import { OperationRegistry } from '../../src/features/platform/application/operation-registry.ts';
-import { useAiWindowSession } from '../../src/composables/useAiWindowSession.ts';
+import { useAiWindowSession } from '../../src/features/ai/application/use-ai-window-session.ts';
 import type { AiKeyStatus } from '../../src/generated/ipc-contracts.ts';
 import type { AiSessionSummary } from '../../src/types/index.ts';
 

@@ -3,31 +3,31 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { config as testUtilsConfig, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
-import SessionTabs from '../../src/components/session-tabs/SessionTabs.vue';
-import StatusBar from '../../src/components/status-bar/StatusBar.vue';
-import SendPanel from '../../src/components/send-panel/SendPanel.vue';
-import ToolsTabs from '../../src/components/send-panel/ToolsTabs.vue';
-import TriggerPanel from '../../src/components/send-panel/TriggerPanel.vue';
-import HighlightPanel from '../../src/components/send-panel/HighlightPanel.vue';
-import SessionToolbar from '../../src/components/session/SessionToolbar.vue';
-import ModbusHeader from '../../src/components/terminal/ModbusHeader.vue';
-import ModbusAddRegisterForm from '../../src/components/terminal/ModbusAddRegisterForm.vue';
-import ModbusRegisterRow from '../../src/components/terminal/ModbusRegisterRow.vue';
-import ParserConfigBar from '../../src/components/terminal/ParserConfigBar.vue';
-import ParserFrameDetail from '../../src/components/terminal/ParserFrameDetail.vue';
-import ChecksumPanel from '../../src/components/send-panel/ChecksumPanel.vue';
-import AppShell from '../../src/components/app-shell/AppShell.vue';
-import WaveformLegend from '../../src/components/terminal/WaveformLegend.vue';
-import WaveformPanel from '../../src/components/terminal/WaveformPanel.vue';
-import DataPacketList from '../../src/components/terminal/DataPacketList.vue';
-import ParserPanel from '../../src/components/terminal/ParserPanel.vue';
-import ModbusPanel from '../../src/components/terminal/ModbusPanel.vue';
-import CreateSessionDialog from '../../src/components/app-shell/CreateSessionDialog.vue';
-import SettingsModal from '../../src/components/app-shell/SettingsModal.vue';
+import SessionTabs from '../../src/features/sessions/ui/SessionTabs.vue';
+import StatusBar from '../../src/features/app-shell/ui/StatusBar.vue';
+import SendPanel from '../../src/features/send-panel/ui/SendPanel.vue';
+import ToolsTabs from '../../src/features/send-panel/ui/ToolsTabs.vue';
+import TriggerPanel from '../../src/features/send-panel/ui/TriggerPanel.vue';
+import HighlightPanel from '../../src/features/send-panel/ui/HighlightPanel.vue';
+import SessionToolbar from '../../src/features/sessions/ui/SessionToolbar.vue';
+import ModbusHeader from '../../src/features/terminal/ui/ModbusHeader.vue';
+import ModbusAddRegisterForm from '../../src/features/terminal/ui/ModbusAddRegisterForm.vue';
+import ModbusRegisterRow from '../../src/features/terminal/ui/ModbusRegisterRow.vue';
+import ParserConfigBar from '../../src/features/terminal/ui/ParserConfigBar.vue';
+import ParserFrameDetail from '../../src/features/terminal/ui/ParserFrameDetail.vue';
+import ChecksumPanel from '../../src/features/send-panel/ui/ChecksumPanel.vue';
+import AppShell from '../../src/features/app-shell/ui/AppShell.vue';
+import WaveformLegend from '../../src/features/terminal/ui/WaveformLegend.vue';
+import WaveformPanel from '../../src/features/terminal/ui/WaveformPanel.vue';
+import DataPacketList from '../../src/features/terminal/ui/DataPacketList.vue';
+import ParserPanel from '../../src/features/terminal/ui/ParserPanel.vue';
+import ModbusPanel from '../../src/features/terminal/ui/ModbusPanel.vue';
+import CreateSessionDialog from '../../src/features/app-shell/ui/CreateSessionDialog.vue';
+import SettingsModal from '../../src/features/app-shell/ui/SettingsModal.vue';
 import App from '../../src/App.vue';
 import AiWindow from '../../src/AiWindow.vue';
-import { useAppStore } from '../../src/stores/app.ts';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
+import { useAppStore } from '../../src/features/settings/store/app-store.ts';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
 import { ensureLocaleLoaded, setLocale, t } from '../../src/lib/i18n.ts';
 import type {
   PortConfig,
@@ -95,17 +95,17 @@ const packetVirtualMocks = vi.hoisted(() => ({
   } | null,
 }));
 
-vi.mock('../../src/composables/useSessionActions', () => ({
+vi.mock('../../src/features/sessions/application/use-session-actions', () => ({
   useSessionActions: () => sessionActions,
 }));
 
-vi.mock('../../src/composables/usePortWatcher', async () => {
+vi.mock('../../src/features/serial/application/use-port-watcher', async () => {
   const { ref } = await import('vue');
   const ports = ref(['COM-A', 'COM-B']);
   return { usePortWatcher: () => ({ ports, refresh: portWatcher.refresh }) };
 });
 
-vi.mock('../../src/composables/useAiWindowState', async () => {
+vi.mock('../../src/features/ai/application/use-ai-window-state', async () => {
   const { ref } = await import('vue');
   const visible = ref(false);
   return {
@@ -113,7 +113,7 @@ vi.mock('../../src/composables/useAiWindowState', async () => {
   };
 });
 
-vi.mock('../../src/composables/useAppShortcuts', () => ({
+vi.mock('../../src/features/app-shell/application/use-app-shortcuts', () => ({
   useAppShortcuts: (handlers: { onCreateSession: () => void; onCloseSession: () => void }) => {
     appShellMocks.shortcuts = handlers;
   },
@@ -124,7 +124,7 @@ vi.mock('../../src/features/sessions', async (importOriginal) => ({
   SessionRuntimeHost: { name: 'SessionRuntimeHost', template: '<div />' },
 }));
 
-vi.mock('../../src/composables/usePacketVirtualScroll', async () => {
+vi.mock('../../src/features/terminal/application/use-packet-virtual-scroll', async () => {
   const { ref } = await import('vue');
   return {
     usePacketVirtualScroll: (options: NonNullable<typeof packetVirtualMocks.options>) => {
@@ -169,7 +169,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: nativeMocks.tauriListen,
 }));
 
-vi.mock('../../src/composables/useAiSessionBridge', () => ({
+vi.mock('../../src/features/ai/application/use-ai-session-bridge', () => ({
   useAiSessionBridge: vi.fn(),
 }));
 
@@ -1508,7 +1508,7 @@ test('SettingsModal updates appearance, locale, buffer limits, reconnection, and
 
 test('CreateSessionDialog syncs selected port/config, creates sessions, and saves/removes named presets', async () => {
   const sessions = setupSessions();
-  const serialStore = (await import('../../src/stores/serial.ts')).useSerialStore();
+  const serialStore = (await import('../../src/features/serial/store/serial-store.ts')).useSerialStore();
   serialStore.setSelectedPort('COM-B');
   const busyId = sessions.createSession('COM-A', config);
   sessions.setConnected(busyId, true);

@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSerialStore } from '../../src/stores/serial.ts';
+import { useSerialStore } from '../../src/features/serial/store/serial-store.ts';
 
 interface LocalStorageLike {
   getItem(key: string): string | null;

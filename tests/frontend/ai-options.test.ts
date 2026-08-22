@@ -4,7 +4,7 @@ import {
   aiRiskLabel,
   aiRiskTagType,
   getLogContextModeOptions,
-} from '../../src/components/ai/ai-options.ts';
+} from '../../src/features/ai/ui/ai-options.ts';
 import { ensureLocaleLoaded, setLocale } from '../../src/lib/i18n.ts';
 
 test('AI risk labels are localized', async () => {

@@ -2,7 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { computed } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
 import { setMaxBufferFrames } from '../../src/lib/buffer-config.ts';
 import { MAX_FRAMES } from '../../src/types/index.ts';
 import {

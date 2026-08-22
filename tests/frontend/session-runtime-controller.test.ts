@@ -6,7 +6,7 @@ import { computed, effectScope, nextTick, ref, toRaw } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import type { SerialSession } from '../../src/types/session.ts';
 import type { PortConfig, SerialSendResult } from '../../src/types/serial.ts';
-import type { SerialStopResult } from '../../src/composables/useSerialConnection.ts';
+import type { SerialStopResult } from '../../src/features/sessions/application/use-serial-connection.ts';
 import { PortLeaseRegistry } from '../../src/features/serial/application/port-lease-registry.ts';
 import type { SerialAutomationPausePort } from '../../src/features/serial/application/serial-transaction-lease.ts';
 import { SessionRuntimeStatusRegistry } from '../../src/features/sessions/runtime/session-runtime-status.ts';
@@ -41,14 +41,14 @@ const mocked = vi.hoisted(() => ({
 }));
 
 vi.mock('naive-ui', () => ({ useMessage: () => mocked.message }));
-vi.mock('../../src/composables/useAutoLog.ts', () => ({ useAutoLog: () => mocked.autoLog }));
-vi.mock('../../src/composables/useSessionModbus.ts', () => ({
+vi.mock('../../src/features/sessions/application/use-auto-log.ts', () => ({ useAutoLog: () => mocked.autoLog }));
+vi.mock('../../src/features/sessions/application/use-session-modbus.ts', () => ({
   useSessionModbus: (options: unknown) => {
     mocked.modbusOptions = options;
     return mocked.modbus;
   },
 }));
-vi.mock('../../src/composables/useSessionMcumgr.ts', () => ({
+vi.mock('../../src/features/sessions/application/use-session-mcumgr.ts', () => ({
   useSessionMcumgr: () => ({
     status: { value: { kind: 'idle' } },
     lastResult: { value: '' },
@@ -63,7 +63,7 @@ vi.mock('../../src/composables/useSessionMcumgr.ts', () => ({
     client: {},
   }),
 }));
-vi.mock('../../src/composables/useTriggers.ts', () => ({
+vi.mock('../../src/features/sessions/application/use-triggers.ts', () => ({
   useTriggers: (options: unknown) => {
     mocked.triggerOptions = options;
     return {
@@ -74,7 +74,7 @@ vi.mock('../../src/composables/useTriggers.ts', () => ({
     };
   },
 }));
-vi.mock('../../src/composables/useSerialConnection.ts', () => ({
+vi.mock('../../src/features/sessions/application/use-serial-connection.ts', () => ({
   useSerialConnection: (...args: unknown[]) => {
     mocked.serialArgs = args;
     return mocked.serial;
@@ -86,7 +86,7 @@ import {
   useSessionRuntimeController,
   type SessionRuntimeController,
 } from '../../src/features/sessions/runtime/session-runtime-controller.ts';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
 
 const config: PortConfig = {
   baudRate: 115200,

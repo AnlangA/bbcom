@@ -1,8 +1,8 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
-import { useSessionFrames } from '../../src/composables/useSessionFrames.ts';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useSessionFrames } from '../../src/features/sessions/application/use-session-frames.ts';
 import type { DataFrame, PortConfig } from '../../src/types/index.ts';
 
 interface LocalStorageLike {

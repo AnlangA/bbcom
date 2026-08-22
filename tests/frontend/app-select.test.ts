@@ -2,7 +2,7 @@
 
 import { mount } from '@vue/test-utils';
 import { expect, test } from 'vitest';
-import AppSelect from '../../src/components/ui/AppSelect.vue';
+import AppSelect from '../../src/design-system/AppSelect.vue';
 
 test('AppSelect returns the original typed option value instead of a DOM string', async () => {
   const wrapper = mount(AppSelect, {

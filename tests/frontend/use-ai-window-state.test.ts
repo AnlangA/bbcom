@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { effectScope } from 'vue';
-import { useAiWindowState } from '../../src/composables/useAiWindowState.ts';
+import { useAiWindowState } from '../../src/features/ai/application/use-ai-window-state.ts';
 
 function setup(deps: {
   getState?: () => Promise<{ visible: boolean }>;

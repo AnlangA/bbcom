@@ -15,16 +15,16 @@ import {
   classifyOpenFailure,
   serialConnectionFailureMessage,
   useSerialConnection,
-} from '../../src/composables/useSerialConnection.ts';
+} from '../../src/features/sessions/application/use-serial-connection.ts';
 import type {
   SerialPortAdapter,
   SerialWatchHandleAdapter,
 } from '../../src/features/serial/index.ts';
 import { createSessionRecord } from '../../src/lib/session-persistence.ts';
 import { PortLeaseRegistry } from '../../src/features/serial/application/port-lease-registry.ts';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
-import SessionTabs from '../../src/components/session-tabs/SessionTabs.vue';
-import SessionToolbar from '../../src/components/session/SessionToolbar.vue';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import SessionTabs from '../../src/features/sessions/ui/SessionTabs.vue';
+import SessionToolbar from '../../src/features/sessions/ui/SessionToolbar.vue';
 import type { HydratedWorkspaceSession } from '../../src/features/workspace/adapters/index.ts';
 import type { PortConfig, SerialSession } from '../../src/types/index.ts';
 
@@ -40,7 +40,7 @@ const config: PortConfig = {
 };
 
 const sessionActions = vi.hoisted(() => ({ requestCloseSession: vi.fn() }));
-vi.mock('../../src/composables/useSessionActions', () => ({
+vi.mock('../../src/features/sessions/application/use-session-actions', () => ({
   useSessionActions: () => sessionActions,
 }));
 

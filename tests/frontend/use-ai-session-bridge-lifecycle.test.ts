@@ -9,7 +9,7 @@ import {
   AI_BRIDGE_EVENTS,
   createAiBridgeEnvelope,
 } from '../../src/features/ai-activity/protocol.ts';
-import { useAiSessionBridge } from '../../src/composables/useAiSessionBridge.ts';
+import { useAiSessionBridge } from '../../src/features/ai/application/use-ai-session-bridge.ts';
 
 type EventHandler = (event: { payload: unknown }) => void;
 
@@ -39,7 +39,7 @@ const bridge = vi.hoisted(() => ({
   unsubscribeWorkspace: vi.fn(),
 }));
 
-vi.mock('../../src/features/native', () => ({
+vi.mock('../../src/features/platform/native', () => ({
   emitNativeEvent: async (event: string, payload: unknown) => {
     bridge.emitted.push({ event, payload });
   },
@@ -58,7 +58,7 @@ vi.mock('../../src/lib/logger', () => ({
   logger: { debug: (...args: unknown[]) => bridge.debug(...args) },
 }));
 
-vi.mock('../../src/stores/app', () => ({
+vi.mock('../../src/features/settings/store/app-store', () => ({
   useAppStore: () => bridge.app,
 }));
 

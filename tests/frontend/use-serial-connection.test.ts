@@ -5,7 +5,7 @@ import {
   classifyOpenFailure,
   serialConnectionFailureMessage,
   type SerialConnectionFailure,
-} from '../../src/composables/useSerialConnection.ts';
+} from '../../src/features/sessions/application/use-serial-connection.ts';
 import { encodeUtf8 } from '../../src/lib/format.ts';
 
 // buildSendPayload is the pure input gate every TX passes before entering the

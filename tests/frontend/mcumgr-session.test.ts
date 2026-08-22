@@ -13,7 +13,7 @@ vi.mock('@tauri-apps/api/core', () => {
   return { invoke: mocked.invoke, Channel: MockChannel };
 });
 
-import { useSessionMcumgr } from '../../src/composables/useSessionMcumgr.ts';
+import { useSessionMcumgr } from '../../src/features/sessions/application/use-session-mcumgr.ts';
 import { DEFAULT_MCUMGR_CONFIG } from '../../src/lib/mcumgr-config.ts';
 import type { McumgrClientConfig, SerialSession } from '../../src/types.ts';
 import type { McumgrProgress } from '../../src/generated/ipc-contracts.ts';

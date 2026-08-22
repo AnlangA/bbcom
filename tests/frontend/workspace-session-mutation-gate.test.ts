@@ -5,7 +5,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import {
   useSessionCoreStore,
   type WorkspaceSessionChangeEvent,
-} from '../../src/stores/session-core.ts';
+} from '../../src/features/sessions/store/session-core.ts';
 import { createSessionCaptureController } from '../../src/features/sessions/capture/session-capture-controller.ts';
 import { createSessionRecord } from '../../src/lib/session-persistence.ts';
 import type { PortConfig } from '../../src/types/index.ts';

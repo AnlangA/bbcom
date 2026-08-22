@@ -5,7 +5,7 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 
-import { useExport } from '../../src/composables/useExport.ts';
+import { useExport } from '../../src/features/workspace/application/use-export.ts';
 import type { DataFrame } from '../../src/types.ts';
 import { createInvokeHandler, unexpectedCommand } from './helpers/invoke-mock.ts';
 

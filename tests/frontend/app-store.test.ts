@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
-import { useAppStore } from '../../src/stores/app.ts';
+import { useAppStore } from '../../src/features/settings/store/app-store.ts';
 import { useWorkspaceUiStore } from '../../src/features/workspace';
 
 interface LocalStorageLike {

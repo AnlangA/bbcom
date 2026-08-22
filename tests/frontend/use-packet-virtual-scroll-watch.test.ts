@@ -4,7 +4,7 @@ import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { defineComponent, h, nextTick, ref } from 'vue';
 import { mount } from '@vue/test-utils';
-import { usePacketVirtualScroll } from '../../src/composables/usePacketVirtualScroll.ts';
+import { usePacketVirtualScroll } from '../../src/features/terminal/application/use-packet-virtual-scroll.ts';
 
 type FrameCallback = (time: number) => void;
 

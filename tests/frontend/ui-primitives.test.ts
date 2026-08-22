@@ -4,12 +4,12 @@ import { test } from 'vitest';
 import { nextTick } from 'vue';
 import assert from 'node:assert/strict';
 import { mount } from '@vue/test-utils';
-import AppModal from '../../src/components/ui/AppModal.vue';
-import IconActionButton from '../../src/components/ui/IconActionButton.vue';
-import SettingsSection from '../../src/components/ui/SettingsSection.vue';
-import ActionListItem from '../../src/components/ui/ActionListItem.vue';
-import InlineEditorActions from '../../src/components/ui/InlineEditorActions.vue';
-import AppSelect from '../../src/components/ui/AppSelect.vue';
+import AppModal from '../../src/design-system/AppModal.vue';
+import IconActionButton from '../../src/design-system/IconActionButton.vue';
+import SettingsSection from '../../src/design-system/SettingsSection.vue';
+import ActionListItem from '../../src/design-system/ActionListItem.vue';
+import InlineEditorActions from '../../src/design-system/InlineEditorActions.vue';
+import AppSelect from '../../src/design-system/AppSelect.vue';
 
 test('AppModal renders its named dialog only while shown', async () => {
   const wrapper = mount(AppModal, {

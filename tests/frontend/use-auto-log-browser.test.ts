@@ -11,8 +11,8 @@ import {
   AUTO_LOG_FAILURE_EVENT,
   AUTO_LOG_MAX_BATCH_BYTES,
   useAutoLog,
-} from '../../src/composables/useAutoLog.ts';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
+} from '../../src/features/sessions/application/use-auto-log.ts';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
 import type { DataFrame, PortConfig } from '../../src/types.ts';
 import { createInvokeHandler, unexpectedCommand } from './helpers/invoke-mock.ts';
 

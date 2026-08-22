@@ -20,7 +20,7 @@ test('store enforces the aggregate capture-byte budget and republishes an evicte
   });
   (globalThis as { localStorage?: Storage }).localStorage = undefined;
 
-  const [{ useSessionCoreStore }] = await Promise.all([import('../../src/stores/session-core.ts')]);
+  const [{ useSessionCoreStore }] = await Promise.all([import('../../src/features/sessions/store/session-core.ts')]);
   setActivePinia(createPinia());
   const sessions = useSessionCoreStore();
   const config = {

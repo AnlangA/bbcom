@@ -17,15 +17,15 @@ const mocked = vi.hoisted(() => ({
 }));
 
 vi.mock('naive-ui', () => ({ useMessage: () => mocked.message }));
-vi.mock('../../src/composables/useModbusMaster.ts', () => ({
+vi.mock('../../src/features/sessions/application/use-modbus-master.ts', () => ({
   useModbusMaster: (options: unknown) => {
     mocked.masterOptions = options;
     return mocked.master;
   },
 }));
 
-import { useSessionModbus } from '../../src/composables/useSessionModbus.ts';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
+import { useSessionModbus } from '../../src/features/sessions/application/use-session-modbus.ts';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
 
 const config: PortConfig = {
   baudRate: 115200,

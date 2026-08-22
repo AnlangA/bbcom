@@ -19,7 +19,8 @@
     <span v-if="showTimestamp" class="col-time">{{ timestamp }}</span>
     <span v-if="useHtml" class="col-data data ansi-data" :class="dataClasses" :title="dataTitle">
       <span v-if="omittedLabel" class="data-omitted">{{ omittedLabel }}</span>
-      <span v-html="formatted"></span>
+      <span v-if="preserveLineBreaks && !plainLineBreaks" v-html="formattedHtml"></span>
+      <span v-else v-html="formatted"></span>
     </span>
     <span v-else class="col-data data" :class="dataClasses" :title="dataTitle">
       <span v-if="omittedLabel" class="data-omitted">{{ omittedLabel }}</span>
@@ -94,6 +95,11 @@ const dataTitle = computed(() => {
   return meta ? `${meta}\n${body}` : body;
 });
 const formattedLines = computed(() => splitLogDisplayLines(props.formatted));
+const formattedHtml = computed(() =>
+  props.preserveLineBreaks && !props.plainLineBreaks
+    ? formattedLines.value.join('<br>')
+    : props.formatted,
+);
 const dataClasses = computed(() => ({
   'preserve-line-breaks': props.preserveLineBreaks,
   'soft-wrap': props.softWrap,

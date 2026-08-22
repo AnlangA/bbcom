@@ -4,7 +4,7 @@ import { test, expect, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { effectScope, defineComponent, h } from 'vue';
 import { flushPromises, mount } from '@vue/test-utils';
-import { useAiWindowSession } from '../../src/composables/useAiWindowSession.ts';
+import { useAiWindowSession } from '../../src/features/ai/application/use-ai-window-session.ts';
 import type { SerialSession } from '../../src/types.ts';
 import {
   AI_BRIDGE_EVENTS,

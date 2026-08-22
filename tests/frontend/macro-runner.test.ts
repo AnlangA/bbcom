@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { clampDelayMs, useMacroRunner } from '../../src/composables/useMacroRunner.ts';
+import { clampDelayMs, useMacroRunner } from '../../src/features/sessions/application/use-macro-runner.ts';
 import type { Macro } from '../../src/types.ts';
 
 function macro(steps: Macro['steps']): Macro {

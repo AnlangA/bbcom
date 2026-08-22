@@ -1,10 +1,10 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
-import { useSerialStore } from '../../src/stores/serial.ts';
-import { useAppStore } from '../../src/stores/app.ts';
-import { useSessionActions } from '../../src/composables/useSessionActions.ts';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useSerialStore } from '../../src/features/serial/store/serial-store.ts';
+import { useAppStore } from '../../src/features/settings/store/app-store.ts';
+import { useSessionActions } from '../../src/features/sessions/application/use-session-actions.ts';
 import type { PortConfig } from '../../src/types/index.ts';
 
 interface LocalStorageLike {

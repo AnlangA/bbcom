@@ -13,7 +13,7 @@ import {
   useExport,
   type ExportSessionClient,
   type WorkspaceDbExportSource,
-} from '../../src/composables/useExport.ts';
+} from '../../src/features/workspace/application/use-export.ts';
 import type { ExportFramePayload, ExportSource } from '../../src/features/platform/native/index.ts';
 import type { DataFrame, DisplayMode } from '../../src/types.ts';
 import type { ExportFormat } from '../../src/lib/constants.ts';

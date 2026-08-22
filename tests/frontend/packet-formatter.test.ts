@@ -2,7 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { ref } from 'vue';
 import { encodeUtf8 } from '../../src/lib/format.ts';
-import { usePacketFormatter } from '../../src/composables/usePacketFormatter.ts';
+import { usePacketFormatter } from '../../src/features/terminal/application/use-packet-formatter.ts';
 import type { DataFrame } from '../../src/types/index.ts';
 
 function frame(id: string, data: Uint8Array): DataFrame {

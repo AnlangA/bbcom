@@ -4,7 +4,7 @@ import { expect, test } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { NButton, NConfigProvider } from 'naive-ui';
 import { h } from 'vue';
-import { themeOverrides } from '../../src/styles/naive-theme';
+import { themeOverrides } from '../../src/design-system/naive-theme';
 
 // Naive-ui derives secondary/tertiary/dashed button colors in JavaScript via
 // seemly's changeColor(), which throws on var() expressions. These variants

@@ -2,9 +2,9 @@ import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
 import { computed, effectScope, ref, type EffectScope } from 'vue';
-import { useModbusMaster, type ModbusMasterStatus } from '../../src/composables/useModbusMaster.ts';
+import { useModbusMaster, type ModbusMasterStatus } from '../../src/features/sessions/application/use-modbus-master.ts';
 import { frameRequest, readRequest, writeSingleRegisterRequest } from '../../src/lib/modbus';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
 import type {
   ModbusFunctionCode,
   ModbusMasterConfig,

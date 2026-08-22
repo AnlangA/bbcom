@@ -3,8 +3,8 @@
 import { nextTick, reactive, ref } from 'vue';
 import { mount } from '@vue/test-utils';
 import { beforeEach, expect, test, vi } from 'vitest';
-import AiLogAssistant from '../../src/components/ai/AiLogAssistant.vue';
-import AiTerminalAssistant from '../../src/components/send-panel/AiTerminalAssistant.vue';
+import AiLogAssistant from '../../src/features/ai/ui/AiLogAssistant.vue';
+import AiTerminalAssistant from '../../src/features/send-panel/ui/AiTerminalAssistant.vue';
 import type { AiWindowSession } from '../../src/types/ai.ts';
 
 const ui = vi.hoisted(() => ({
@@ -17,7 +17,7 @@ const ui = vi.hoisted(() => ({
   warn: vi.fn(),
 }));
 
-vi.mock('../../src/stores/app', () => ({ useAppStore: () => ui.app }));
+vi.mock('../../src/features/settings/store/app-store', () => ({ useAppStore: () => ui.app }));
 vi.mock('../../src/lib/logger', () => ({
   logger: { warn: (...args: unknown[]) => ui.warn(...args), debug: vi.fn() },
 }));

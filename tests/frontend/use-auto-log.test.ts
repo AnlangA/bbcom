@@ -2,8 +2,8 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
 import { base64ToBytes, bytesToBase64 } from '../../src/lib/base64.ts';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
-import { useAppStore } from '../../src/stores/app.ts';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useAppStore } from '../../src/features/settings/store/app-store.ts';
 import {
   AUTO_LOG_DEBOUNCE_MS,
   AUTO_LOG_IMMEDIATE_FLUSH_BYTES,
@@ -15,7 +15,7 @@ import {
   useAutoLog,
   type AutoLogSessionClient,
   type UseAutoLogDeps,
-} from '../../src/composables/useAutoLog.ts';
+} from '../../src/features/sessions/application/use-auto-log.ts';
 import type { AutoLogFormat, ExportFramePayload } from '../../src/features/platform/native/index.ts';
 import type { DataFrame, PortConfig } from '../../src/types/index.ts';
 

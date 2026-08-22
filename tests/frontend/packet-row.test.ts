@@ -3,7 +3,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { mount } from '@vue/test-utils';
-import PacketRow from '../../src/components/terminal/PacketRow.vue';
+import PacketRow from '../../src/features/terminal/ui/PacketRow.vue';
 import type { DataFrame } from '../../src/types/index.ts';
 
 function frame(omittedBytes?: number): DataFrame {

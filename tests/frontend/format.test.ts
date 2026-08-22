@@ -22,7 +22,7 @@ import {
   toContinuousHex,
   truncate,
 } from '../../src/lib/format.ts';
-import { usePacketFormatter } from '../../src/composables/usePacketFormatter.ts';
+import { usePacketFormatter } from '../../src/features/terminal/application/use-packet-formatter.ts';
 import type { DataFrame } from '../../src/types/index.ts';
 
 function frame(text: string): DataFrame {

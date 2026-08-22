@@ -4,7 +4,7 @@ import { test } from 'vitest';
 
 import { SessionStoreWorkspaceAdapter } from '../../src/features/workspace/session-store-workspace-adapter.ts';
 import type { WorkspaceApplicationService } from '../../src/features/workspace/application/index.ts';
-import { useSessionCoreStore } from '../../src/stores/session-core.ts';
+import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
 import type { PortConfig } from '../../src/types/index.ts';
 
 const config: PortConfig = {

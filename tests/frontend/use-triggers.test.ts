@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { nextTick, ref } from 'vue';
-import { useTriggers } from '../../src/composables/useTriggers.ts';
+import { useTriggers } from '../../src/features/sessions/application/use-triggers.ts';
 import type { DataFrame, Trigger } from '../../src/types.ts';
 import type { TriggerFire } from '../../src/lib/trigger-engine.ts';
 

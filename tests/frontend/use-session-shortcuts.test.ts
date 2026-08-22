@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { effectScope } from 'vue';
-import { isEditable, useSessionShortcuts } from '../../src/composables/useSessionShortcuts.ts';
+import { isEditable, useSessionShortcuts } from '../../src/features/sessions/application/use-session-shortcuts.ts';
 
 /** Minimal KeyboardEvent stub sufficient for the dispatch logic. */
 function key(

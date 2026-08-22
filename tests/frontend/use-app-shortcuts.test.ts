@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { effectScope } from 'vue';
-import { isEditable, useAppShortcuts } from '../../src/composables/useAppShortcuts.ts';
+import { isEditable, useAppShortcuts } from '../../src/features/app-shell/application/use-app-shortcuts.ts';
 
 function key(
   keyName: string,

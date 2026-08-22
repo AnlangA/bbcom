@@ -1,8 +1,8 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSerialStore } from '../../src/stores/serial.ts';
-import { usePortWatcher } from '../../src/composables/usePortWatcher.ts';
+import { useSerialStore } from '../../src/features/serial/store/serial-store.ts';
+import { usePortWatcher } from '../../src/features/serial/application/use-port-watcher.ts';
 
 interface LocalStorageLike {
   getItem(key: string): string | null;

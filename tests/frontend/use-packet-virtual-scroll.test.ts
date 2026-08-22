@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { isPinnedToBottom } from '../../src/composables/usePacketVirtualScroll.ts';
+import { isPinnedToBottom } from '../../src/features/terminal/application/use-packet-virtual-scroll.ts';
 
 // ROW_HEIGHT is 28; isPinnedToBottom uses a 2× row-height (56px) slack so a user
 // parked slightly above the bottom still keeps auto-follow.
