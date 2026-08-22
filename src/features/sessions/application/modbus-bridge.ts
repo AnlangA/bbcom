@@ -222,6 +222,3 @@ export function useSessionModbus(options: ModbusBridgeCreateOptions) {
     plotInWaveform: (reg: ModbusRegister) => bridge.plotInWaveform(reg),
   };
 }
-
-/** @deprecated Use `ModbusBridgeCreateOptions` */
-export type UseSessionModbusOptions = ModbusBridgeCreateOptions;

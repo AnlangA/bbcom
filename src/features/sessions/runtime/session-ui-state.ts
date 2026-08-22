@@ -1,6 +1,8 @@
-import type { InjectionKey, Ref } from 'vue';
-import type { ToolsTabId } from '@/lib/tools-tabs';
+import type { Ref } from 'vue';
+import type { ToolsTabId } from '@/features/send-panel/application/tools-tabs';
 import type { DirectionFilter } from '@/types';
+
+export { SESSION_UI_STATE_KEY } from '@/bootstrap/provide-keys';
 
 /**
  * View-local UI state owned by the session runtime so it survives SessionView
@@ -20,7 +22,3 @@ export interface SessionRuntimeUiState {
   /** Serial-shell scrollback search text (empty = no filter). */
   readonly shellSearch: Ref<string>;
 }
-
-/** Provided by SessionView from its runtime; panels inject optionally. */
-export const SESSION_UI_STATE_KEY: InjectionKey<SessionRuntimeUiState> =
-  Symbol('bbcom-session-ui-state');

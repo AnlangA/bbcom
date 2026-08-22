@@ -4,7 +4,7 @@ import type {
   WorkspaceActionOutcome,
 } from '@/features/workspace/types';
 import type { WorkspaceApplicationOutcome } from '../types';
-import type { ActivationAttempt, ActivationTracker } from './activation-coordinator';
+import type { ActivationAttempt, ActivationTracker } from './activation-types';
 
 /** Facade capabilities the activation rollback/recovery paths rely on. */
 export interface ActivationRecoveryHost {

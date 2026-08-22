@@ -104,23 +104,23 @@ function sessionSnapshot(id: string, sortOrder = 0): WorkspaceSessionSnapshot {
       dtr: false,
       rts: false,
     },
-    document: { schemaVersion: 1, sendDraft: '' },
-    displayPreferences: { schemaVersion: 1, sourceMode: 'text' },
+    document: { schemaVersion: 2, sendDraft: '' },
+    displayPreferences: { schemaVersion: 2, sourceMode: 'text' },
     sendPreferences: {},
     parserState: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       config: { kind: 'delimiter', delimiter: [13, 10], includeDelimiter: false },
       presetId: null,
     },
     featureState: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       terminalAiModel: 'glm-5.1',
       logAiModel: 'glm-4.7',
       logAiContextMode: 'latest-n-frames',
       logAiFrameLimit: 100,
     },
     modbusConfig: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       transport: 'rtu',
       enabled: false,
       pollIntervalMs: 1000,
@@ -986,7 +986,7 @@ test('text waveform samples and frame cursor commit in one native batch', async 
       channels: [{ channelIndex: 0, config: { color: '#123456', visible: true } }],
       samples: [{ channelIndex: 0, seq: 0, timestampMs: 100, value: 12.5 }],
       featureState: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sourceMode: 'text',
         frameCursor: { consumed: 1, lastFrameId: 'frame-1' },
       },
@@ -1004,7 +1004,7 @@ test('text waveform samples and frame cursor commit in one native batch', async 
   assert.equal(cursor?.kind, 'upsert-feature-state');
   if (cursor?.kind === 'upsert-feature-state') {
     assert.deepEqual(cursor.payload.state, {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sourceMode: 'text',
       frameCursor: { consumed: 1, lastFrameId: 'frame-1' },
     });
@@ -1301,7 +1301,7 @@ test('mutation queues reject cyclic and oversized recovery units without schedul
       mode: 'replace',
       channels: [],
       samples: oversizedSamples,
-      featureState: { schemaVersion: 1, sourceMode: 'text' },
+      featureState: { schemaVersion: 2, sourceMode: 'text' },
     }),
     { accepted: false, messageKey: 'workspace.mutation.limit_exceeded' },
   );

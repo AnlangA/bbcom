@@ -94,16 +94,7 @@
       </div>
     </Transition>
 
-    <div v-if="progressPercent !== null" class="mc-progress-bar">
-      <n-progress
-        type="line"
-        :percentage="progressPercent"
-        :show-indicator="true"
-        :height="5"
-        :border-radius="3"
-        processing
-      />
-    </div>
+    <McumgrProgressBar :percentage="progressPercent" />
 
     <div v-if="busy" class="mc-banner is-yield" role="status">
       {{ yieldBannerText }}
@@ -139,9 +130,9 @@
                   size="tiny"
                   :disabled="busy"
                   class="mc-grow"
-                  @keydown.enter="runOsEcho"
+                  @keydown.enter="mcumgr.runOsEcho(osEcho)"
                 />
-                <n-button size="tiny" type="primary" :disabled="busy" @click="runOsEcho">
+                <n-button size="tiny" type="primary" :disabled="busy" @click="mcumgr.runOsEcho(osEcho)">
                   {{ t('mcumgr.run') }}
                 </n-button>
               </div>
@@ -153,7 +144,7 @@
                   size="tiny"
                   secondary
                   :disabled="busy"
-                  @click="run('tasks', { kind: 'os-tasks' })"
+                  @click="mcumgr.execute('tasks', { kind: 'os-tasks' })"
                 >
                   {{ t('mcumgr.os.tasks') }}
                 </n-button>
@@ -161,7 +152,7 @@
                   size="tiny"
                   secondary
                   :disabled="busy"
-                  @click="run('mpstat', { kind: 'os-memory-pools' })"
+                  @click="mcumgr.execute('mpstat', { kind: 'os-memory-pools' })"
                 >
                   {{ t('mcumgr.os.mpstat') }}
                 </n-button>
@@ -169,7 +160,7 @@
                   size="tiny"
                   secondary
                   :disabled="busy"
-                  @click="run('datetime', { kind: 'os-datetime' })"
+                  @click="mcumgr.execute('datetime', { kind: 'os-datetime' })"
                 >
                   {{ t('mcumgr.os.datetime') }}
                 </n-button>
@@ -177,7 +168,7 @@
                   size="tiny"
                   secondary
                   :disabled="busy"
-                  @click="run('params', { kind: 'os-params' })"
+                  @click="mcumgr.execute('params', { kind: 'os-params' })"
                 >
                   {{ t('mcumgr.os.params') }}
                 </n-button>
@@ -185,7 +176,7 @@
                   size="tiny"
                   secondary
                   :disabled="busy"
-                  @click="run('info', { kind: 'os-info', format: null })"
+                  @click="mcumgr.execute('info', { kind: 'os-info', format: null })"
                 >
                   {{ t('mcumgr.os.info') }}
                 </n-button>
@@ -193,7 +184,7 @@
                   size="tiny"
                   secondary
                   :disabled="busy"
-                  @click="run('bootloader', { kind: 'os-bootloader-info' })"
+                  @click="mcumgr.execute('bootloader', { kind: 'os-bootloader-info' })"
                 >
                   {{ t('mcumgr.os.bootloader') }}
                 </n-button>
@@ -220,77 +211,13 @@
             </article>
           </section>
 
-          <section v-else-if="activeTab === 'image'" class="mc-section">
-            <article class="mc-card is-primary">
-              <header class="mc-card-head">{{ t('mcumgr.group.update') }}</header>
-              <p class="mc-card-copy">{{ t('mcumgr.image.updateHint') }}</p>
-              <div class="mc-row">
-                <n-button size="small" type="primary" :disabled="busy" @click="runFirmwareUpdate">
-                  <template #icon><Upload class="icon-sm" /></template>
-                  {{ t('mcumgr.image.update') }}
-                </n-button>
-                <n-button size="tiny" secondary :disabled="busy" @click="runImageUpload">
-                  {{ t('mcumgr.image.upload') }}
-                </n-button>
-                <n-checkbox v-model:checked="upgradeOnly" size="small" :disabled="busy">
-                  {{ t('mcumgr.image.upgradeOnly') }}
-                </n-checkbox>
-              </div>
-            </article>
-            <article class="mc-card">
-              <header class="mc-card-head">{{ t('mcumgr.group.inspect') }}</header>
-              <div class="mc-actions">
-                <n-button
-                  size="tiny"
-                  secondary
-                  :disabled="busy"
-                  @click="run('image-state', { kind: 'image-state' })"
-                >
-                  {{ t('mcumgr.image.state') }}
-                </n-button>
-                <n-button
-                  size="tiny"
-                  secondary
-                  :disabled="busy"
-                  @click="run('slot-info', { kind: 'image-slot-info' })"
-                >
-                  {{ t('mcumgr.image.slotInfo') }}
-                </n-button>
-                <n-button
-                  size="tiny"
-                  type="error"
-                  secondary
-                  :disabled="busy"
-                  @click="
-                    confirmRun('image-erase', t('mcumgr.confirm.erase'), {
-                      kind: 'image-erase',
-                      slot: null,
-                    })
-                  "
-                >
-                  {{ t('mcumgr.image.erase') }}
-                </n-button>
-              </div>
-            </article>
-            <article class="mc-card">
-              <header class="mc-card-head">{{ t('mcumgr.group.boot') }}</header>
-              <div class="mc-row">
-                <n-input
-                  v-model:value="imageHash"
-                  size="tiny"
-                  :placeholder="t('mcumgr.image.hash')"
-                  :disabled="busy"
-                  class="mc-grow"
-                />
-                <n-button size="tiny" secondary :disabled="busy" @click="runImageTest">
-                  {{ t('mcumgr.image.test') }}
-                </n-button>
-                <n-button size="tiny" secondary :disabled="busy" @click="runImageConfirm">
-                  {{ t('mcumgr.image.confirm') }}
-                </n-button>
-              </div>
-            </article>
-          </section>
+          <McumgrImageTab
+            v-else-if="activeTab === 'image'"
+            v-model:image-hash="imageHash"
+            v-model:upgrade-only="upgradeOnly"
+            :busy="busy"
+            :mcumgr="mcumgr"
+          />
 
           <section v-else-if="activeTab === 'shell'" class="mc-section">
             <article class="mc-card">
@@ -302,13 +229,13 @@
                   class="mc-grow"
                   :placeholder="t('mcumgr.shell.placeholder')"
                   :disabled="busy"
-                  @keydown.enter="runShell"
+                  @keydown.enter="mcumgr.runShellLine(shellLine)"
                 />
                 <n-button
                   size="tiny"
                   type="primary"
                   :disabled="busy || !shellLine.trim()"
-                  @click="runShell"
+                  @click="mcumgr.runShellLine(shellLine)"
                 >
                   {{ t('mcumgr.run') }}
                 </n-button>
@@ -328,147 +255,20 @@
             </article>
           </section>
 
-          <section v-else-if="activeTab === 'fs'" class="mc-section">
-            <article class="mc-card">
-              <header class="mc-card-head">{{ t('mcumgr.fs.path') }}</header>
-              <div class="mc-row">
-                <n-input
-                  v-model:value="fsPath"
-                  size="tiny"
-                  class="mc-grow"
-                  :placeholder="t('mcumgr.fs.path')"
-                  :disabled="busy"
-                />
-              </div>
-              <div class="mc-actions">
-                <n-button
-                  size="tiny"
-                  secondary
-                  :disabled="busy || !fsPath.trim()"
-                  @click="run('fs-status', { kind: 'fs-status', path: fsPath.trim() })"
-                >
-                  {{ t('mcumgr.fs.status') }}
-                </n-button>
-                <n-button
-                  size="tiny"
-                  secondary
-                  :disabled="busy || !fsPath.trim()"
-                  @click="run('fs-hash', { kind: 'fs-hash', path: fsPath.trim() })"
-                >
-                  {{ t('mcumgr.fs.hash') }}
-                </n-button>
-                <n-button
-                  size="tiny"
-                  secondary
-                  :disabled="busy || !fsPath.trim()"
-                  @click="runFsDownload"
-                >
-                  <template #icon><Download class="icon-sm" /></template>
-                  {{ t('mcumgr.fs.download') }}
-                </n-button>
-                <n-button
-                  size="tiny"
-                  secondary
-                  :disabled="busy || !fsPath.trim()"
-                  @click="runFsUpload"
-                >
-                  <template #icon><Upload class="icon-sm" /></template>
-                  {{ t('mcumgr.fs.upload') }}
-                </n-button>
-                <n-button
-                  size="tiny"
-                  quaternary
-                  :disabled="busy"
-                  @click="run('fs-close', { kind: 'fs-close' })"
-                >
-                  {{ t('mcumgr.fs.close') }}
-                </n-button>
-              </div>
-            </article>
-          </section>
+          <McumgrFileSystemTab
+            v-else-if="activeTab === 'fs'"
+            v-model:fs-path="fsPath"
+            :busy="busy"
+            :mcumgr="mcumgr"
+          />
 
-          <section v-else-if="activeTab === 'settings'" class="mc-section">
-            <article class="mc-card">
-              <header class="mc-card-head">{{ t('mcumgr.group.key') }}</header>
-              <div class="mc-row">
-                <n-input
-                  v-model:value="settingName"
-                  size="tiny"
-                  class="mc-grow"
-                  :placeholder="t('mcumgr.settings.name')"
-                  :disabled="busy"
-                />
-                <n-input
-                  v-model:value="settingValue"
-                  size="tiny"
-                  class="mc-grow"
-                  :placeholder="t('mcumgr.settings.value')"
-                  :disabled="busy"
-                />
-              </div>
-              <div class="mc-actions">
-                <n-button
-                  size="tiny"
-                  secondary
-                  :disabled="busy || !settingName.trim()"
-                  @click="run('settings-read', { kind: 'settings-read', name: settingName.trim() })"
-                >
-                  {{ t('mcumgr.settings.read') }}
-                </n-button>
-                <n-button
-                  size="tiny"
-                  secondary
-                  :disabled="busy || !settingName.trim()"
-                  @click="runSettingsWrite"
-                >
-                  {{ t('mcumgr.settings.write') }}
-                </n-button>
-                <n-button
-                  size="tiny"
-                  type="error"
-                  secondary
-                  :disabled="busy || !settingName.trim()"
-                  @click="
-                    confirmRun('settings-delete', t('mcumgr.confirm.delete'), {
-                      kind: 'settings-delete',
-                      name: settingName.trim(),
-                    })
-                  "
-                >
-                  {{ t('mcumgr.settings.delete') }}
-                </n-button>
-              </div>
-            </article>
-            <article class="mc-card">
-              <header class="mc-card-head">{{ t('mcumgr.group.persist') }}</header>
-              <div class="mc-actions">
-                <n-button
-                  size="tiny"
-                  secondary
-                  :disabled="busy"
-                  @click="run('settings-commit', { kind: 'settings-commit' })"
-                >
-                  {{ t('mcumgr.settings.commit') }}
-                </n-button>
-                <n-button
-                  size="tiny"
-                  secondary
-                  :disabled="busy"
-                  @click="run('settings-load', { kind: 'settings-load' })"
-                >
-                  {{ t('mcumgr.settings.load') }}
-                </n-button>
-                <n-button
-                  size="tiny"
-                  secondary
-                  :disabled="busy"
-                  @click="run('settings-save', { kind: 'settings-save' })"
-                >
-                  {{ t('mcumgr.settings.save') }}
-                </n-button>
-              </div>
-            </article>
-          </section>
+          <McumgrConfigTab
+            v-else-if="activeTab === 'settings'"
+            v-model:setting-name="settingName"
+            v-model:setting-value="settingValue"
+            :busy="busy"
+            :mcumgr="mcumgr"
+          />
 
           <section v-else-if="activeTab === 'stats'" class="mc-section">
             <article class="mc-card">
@@ -485,7 +285,7 @@
                   size="tiny"
                   secondary
                   :disabled="busy"
-                  @click="run('stats-list', { kind: 'stats-list' })"
+                  @click="mcumgr.execute('stats-list', { kind: 'stats-list' })"
                 >
                   {{ t('mcumgr.stats.list') }}
                 </n-button>
@@ -493,7 +293,9 @@
                   size="tiny"
                   type="primary"
                   :disabled="busy || !statsName.trim()"
-                  @click="run('stats-show', { kind: 'stats-show', name: statsName.trim() })"
+                  @click="
+                    mcumgr.execute('stats-show', { kind: 'stats-show', name: statsName.trim() })
+                  "
                 >
                   {{ t('mcumgr.stats.show') }}
                 </n-button>
@@ -509,7 +311,7 @@
                   size="tiny"
                   secondary
                   :disabled="busy"
-                  @click="run('enum-list', { kind: 'enum-list' })"
+                  @click="mcumgr.execute('enum-list', { kind: 'enum-list' })"
                 >
                   {{ t('mcumgr.enum.list') }}
                 </n-button>
@@ -517,7 +319,7 @@
                   size="tiny"
                   secondary
                   :disabled="busy"
-                  @click="run('enum-count', { kind: 'enum-count' })"
+                  @click="mcumgr.execute('enum-count', { kind: 'enum-count' })"
                 >
                   {{ t('mcumgr.enum.count') }}
                 </n-button>
@@ -525,7 +327,7 @@
                   size="tiny"
                   secondary
                   :disabled="busy"
-                  @click="run('enum-details', { kind: 'enum-details' })"
+                  @click="mcumgr.execute('enum-details', { kind: 'enum-details' })"
                 >
                   {{ t('mcumgr.enum.details') }}
                 </n-button>
@@ -574,7 +376,12 @@
                 :disabled="busy"
                 class="mc-raw-payload"
               />
-              <n-button size="tiny" type="primary" :disabled="busy" @click="runRaw">
+              <n-button
+                size="tiny"
+                type="primary"
+                :disabled="busy"
+                @click="mcumgr.runRawOp(rawGroup, rawCommand, rawOp === 'write', rawPayload)"
+              >
                 {{ t('mcumgr.raw.execute') }}
               </n-button>
             </article>
@@ -633,34 +440,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import { useMessage, NButton, NCheckbox, NInput, NInputNumber, NProgress } from 'naive-ui';
-import {
-  Activity,
-  BarChart3,
-  Copy,
-  Cpu,
-  Download,
-  Eraser,
-  FolderTree,
-  Layers,
-  Package,
-  Settings2,
-  SlidersHorizontal,
-  TerminalSquare,
-  Upload,
-  X,
-  Zap,
-} from '@lucide/vue';
+import { useMessage, NButton, NCheckbox, NInput, NInputNumber } from 'naive-ui';
+import { Copy, Cpu, Eraser, Settings2, X } from '@lucide/vue';
 import AppSelect from '@/design-system/AppSelect.vue';
 import IconActionButton from '@/design-system/IconActionButton.vue';
 import { t } from '@/lib/i18n';
-import { getMcumgrActionLabel } from '@/lib/mcumgr-error';
-import { bytesToBase64 } from '@/lib/base64';
-import { formatBytes } from '@/lib/format';
 import type { SessionMcumgrController } from '@/features/sessions/application/use-session-mcumgr';
 import type { McumgrOp } from '@/generated/ipc-contracts';
 import type { McumgrClientConfig } from '@/types';
+import McumgrConfigTab from './McumgrConfigTab.vue';
+import McumgrFileSystemTab from './McumgrFileSystemTab.vue';
+import McumgrImageTab from './McumgrImageTab.vue';
+import McumgrProgressBar from './McumgrProgressBar.vue';
+import { tabDefs, useMcumgrPanel } from './use-mcumgr-panel';
 
 const props = defineProps<{
   sessionId: string;
@@ -672,72 +464,32 @@ const emit = defineEmits<{ close: [] }>();
 
 const message = useMessage();
 
-const tabDefs = [
-  { id: 'os', icon: Activity },
-  { id: 'image', icon: Package },
-  { id: 'shell', icon: TerminalSquare },
-  { id: 'fs', icon: FolderTree },
-  { id: 'settings', icon: SlidersHorizontal },
-  { id: 'stats', icon: BarChart3 },
-  { id: 'groups', icon: Layers },
-  { id: 'zephyr', icon: Zap },
-] as const;
-type Tab = (typeof tabDefs)[number]['id'];
-
-const activeTab = ref<Tab>('os');
-const settingsOpen = ref(false);
-const osEcho = ref('hi');
-const imageHash = ref('');
-const upgradeOnly = ref(false);
-const shellLine = ref('');
-const fsPath = ref('/');
-const settingName = ref('');
-const settingValue = ref('');
-const statsName = ref('');
-const rawGroup = ref(0);
-const rawCommand = ref(0);
-const rawOp = ref<'read' | 'write'>('read');
-const rawPayload = ref('{}');
-
-const rawOpOptions = computed(() => [
-  { label: t('mcumgr.raw.read'), value: 'read' as const },
-  { label: t('mcumgr.raw.write'), value: 'write' as const },
-]);
-
-const busy = computed(() => props.mcumgr.busy.value);
-const yieldBannerText = computed(() => {
-  const status = props.mcumgr.status.value;
-  if (status.kind === 'progress' || status.kind === 'busy') {
-    return t('mcumgr.portYield');
-  }
-  return t('mcumgr.portResume');
-});
-const hasResult = computed(() => props.mcumgr.lastResult.value.length > 0);
-const statusText = computed(() => {
-  const status = props.mcumgr.status.value;
-  if (status.kind === 'progress') {
-    let text = t('mcumgr.status.busy', { action: getMcumgrActionLabel(status.action) });
-    text += ` — ${t(`mcumgr.phase.${status.phase}`)}`;
-    if (status.detail) text += ` ${status.detail}`;
-    if (status.offset !== undefined && status.total !== undefined && status.total > 0) {
-      const percent = Math.floor((status.offset / status.total) * 100);
-      text += ` ${formatBytes(status.offset)}/${formatBytes(status.total)} (${percent}%)`;
-    }
-    return text;
-  }
-  if (status.kind === 'busy') {
-    return t('mcumgr.status.busy', { action: getMcumgrActionLabel(status.action) });
-  }
-  if (status.kind === 'timeout') return t('mcumgr.status.timeout');
-  if (status.kind === 'error') return status.message;
-  return t('mcumgr.status.idle');
-});
-const statusClass = computed(() => `is-${props.mcumgr.status.value.kind}`);
-const progressPercent = computed(() => {
-  const status = props.mcumgr.status.value;
-  if (status.kind !== 'progress') return null;
-  if (status.offset === undefined || status.total === undefined || status.total <= 0) return null;
-  return Math.min(100, Math.max(0, Math.floor((status.offset / status.total) * 100)));
+const {
+  activeTab,
+  settingsOpen,
+  osEcho,
+  imageHash,
+  upgradeOnly,
+  shellLine,
+  fsPath,
+  settingName,
+  settingValue,
+  statsName,
+  rawGroup,
+  rawCommand,
+  rawOp,
+  rawPayload,
+  rawOpOptions,
+  busy,
+  yieldBannerText,
+  hasResult,
+  statusText,
+  statusClass,
+  progressPercent,
+} = useMcumgrPanel({
+  config: props.config,
+  isConnected: props.isConnected,
+  mcumgr: props.mcumgr,
 });
 
 function patch(next: Partial<McumgrClientConfig>): void {
@@ -749,108 +501,9 @@ function clampInt(value: number | null, min: number, max: number, fallback: numb
   return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
-async function run(action: string, op: McumgrOp): Promise<void> {
-  await props.mcumgr.execute(action, op);
-}
-
 async function confirmRun(action: string, confirmMessage: string, op: McumgrOp): Promise<void> {
   if (!window.confirm(confirmMessage)) return;
-  await run(action, op);
-}
-
-async function runOsEcho(): Promise<void> {
-  await run('echo', { kind: 'os-echo', message: osEcho.value });
-}
-
-async function runImageTest(): Promise<void> {
-  const hash = imageHash.value.trim();
-  if (!hash) return;
-  if (!window.confirm(t('mcumgr.confirm.test'))) return;
-  await run('image-test', { kind: 'image-test', hashHex: hash });
-}
-
-async function runImageConfirm(): Promise<void> {
-  if (!window.confirm(t('mcumgr.confirm.confirm'))) return;
-  const hash = imageHash.value.trim();
-  await run('image-confirm', { kind: 'image-confirm', hashHex: hash ? hash : null });
-}
-
-async function runFirmwareUpdate(): Promise<void> {
-  const pick = await props.mcumgr.pickFile('firmware');
-  if (!pick) return;
-  const confirmMessage = t('mcumgr.confirm.update', {
-    name: pick.displayName,
-    size: formatBytes(pick.sizeBytes),
-  });
-  if (!window.confirm(confirmMessage)) return;
-  await props.mcumgr.firmwareUpdate(pick.token, { upgradeOnly: upgradeOnly.value });
-}
-
-async function runImageUpload(): Promise<void> {
-  const pick = await props.mcumgr.pickFile('firmware');
-  if (!pick) return;
-  const confirmMessage = t('mcumgr.confirm.upload', {
-    name: pick.displayName,
-    size: formatBytes(pick.sizeBytes),
-  });
-  if (!window.confirm(confirmMessage)) return;
-  await props.mcumgr.imageUpload(pick.token, upgradeOnly.value);
-}
-
-async function runShell(): Promise<void> {
-  const line = shellLine.value.trim();
-  if (!line) return;
-  const result = await props.mcumgr.execute('shell', { kind: 'shell', line });
-  if (result !== null) props.mcumgr.rememberShell(line);
-}
-
-async function runFsUpload(): Promise<void> {
-  const remotePath = fsPath.value.trim();
-  if (!remotePath) return;
-  const pick = await props.mcumgr.pickFile('fs-upload');
-  if (!pick) return;
-  await props.mcumgr.fsUpload(pick.token, remotePath);
-}
-
-async function runFsDownload(): Promise<void> {
-  const remotePath = fsPath.value.trim();
-  if (!remotePath) return;
-  const suggested = remotePath.split('/').filter(Boolean).pop() ?? 'download.bin';
-  const pick = await props.mcumgr.pickSaveTarget(suggested);
-  if (!pick) return;
-  await props.mcumgr.fsDownload(remotePath, pick.token);
-}
-
-async function runSettingsWrite(): Promise<void> {
-  const name = settingName.value.trim();
-  if (!name) return;
-  await run('settings-write', {
-    kind: 'settings-write',
-    name,
-    valueB64: bytesToBase64(textOrHex(settingValue.value)),
-  });
-}
-
-async function runRaw(): Promise<void> {
-  const payload = rawPayload.value.trim();
-  const op: McumgrOp = payload.startsWith('{')
-    ? {
-        kind: 'raw',
-        group: rawGroup.value ?? 0,
-        command: rawCommand.value ?? 0,
-        write: rawOp.value === 'write',
-        payloadJson: payload,
-        payloadB64: null,
-      }
-    : {
-        kind: 'raw',
-        group: rawGroup.value ?? 0,
-        command: rawCommand.value ?? 0,
-        write: rawOp.value === 'write',
-        payloadJson: null,
-        payloadB64: payload ? bytesToBase64(parseHexBytes(payload)) : null,
-      };
-  await run('raw', op);
+  await props.mcumgr.execute(action, op);
 }
 
 async function copyResult(): Promise<void> {
@@ -861,24 +514,6 @@ async function copyResult(): Promise<void> {
     message.success(t('mcumgr.result.copied'));
   } catch {
     message.error(t('mcumgr.result.copyFailed'));
-  }
-}
-
-function parseHexBytes(value: string): Uint8Array {
-  const compact = value.replace(/\s+/g, '');
-  if (compact.length === 0 || compact.length % 2 !== 0) throw new RangeError('hash must be hex');
-  const bytes = new Uint8Array(compact.length / 2);
-  for (let i = 0; i < bytes.length; i += 1) {
-    bytes[i] = Number.parseInt(compact.slice(i * 2, i * 2 + 2), 16);
-  }
-  return bytes;
-}
-
-function textOrHex(value: string): Uint8Array {
-  try {
-    return parseHexBytes(value);
-  } catch {
-    return new TextEncoder().encode(value);
   }
 }
 </script>
@@ -1004,13 +639,6 @@ function textOrHex(value: string): Uint8Array {
   white-space: nowrap;
 }
 
-.mc-progress-bar {
-  flex-shrink: 0;
-  padding: 6px 10px 4px;
-  background: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
 .mc-banner {
   flex-shrink: 0;
   padding: 4px 12px;
@@ -1108,12 +736,6 @@ function textOrHex(value: string): Uint8Array {
   border-radius: var(--radius-md);
   background: linear-gradient(180deg, var(--surface-lift), transparent), var(--bg-secondary);
   box-shadow: var(--shadow-sm);
-}
-
-.mc-card.is-primary {
-  border-color: var(--color-primary-muted);
-  background:
-    linear-gradient(180deg, var(--color-primary-subtle), transparent 42%), var(--bg-secondary);
 }
 
 .mc-card.is-danger {

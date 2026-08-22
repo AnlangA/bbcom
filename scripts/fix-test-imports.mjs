@@ -36,7 +36,7 @@ const pathMap = {
   'features/terminal/ParserFrameDetail': 'features/terminal/ui/ParserFrameDetail',
   'features/terminal/WaveformLegend': 'features/terminal/ui/WaveformLegend',
   'features/terminal/WaveformPanel': 'features/terminal/ui/WaveformPanel',
-  'features/terminal/McumgrPanel': 'features/terminal/ui/McumgrPanel',
+  'features/terminal/McumgrPanel': 'features/terminal/ui/mcumgr/McumgrPanel',
   'features/terminal/SerialShellPanel': 'features/terminal/ui/SerialShellPanel',
   'composables/useSerialConnection': 'features/sessions/application/use-serial-connection',
   'composables/useSessionFrames': 'features/sessions/application/use-session-frames',

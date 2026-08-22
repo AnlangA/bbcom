@@ -6,6 +6,3 @@ export {
   type McumgrFirmwareUpdateOptions,
   type SessionMcumgrController,
 } from './mcumgr-bridge';
-
-/** @deprecated Use `McumgrBridgeCreateOptions` */
-export type { McumgrBridgeCreateOptions as UseSessionMcumgrOptions } from './mcumgr-bridge';

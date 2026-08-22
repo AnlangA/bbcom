@@ -24,19 +24,15 @@ import {
   markRecoveryRequired,
   type ActivationRecoveryHost,
 } from './recovery-handler';
+import {
+  type ActivationAttempt,
+  type ActivationPhase,
+  ActivationTracker,
+  WorkspaceActivationEngine,
+} from './activation-types';
 
-export interface ActivationAttempt {
-  readonly generation: number;
-  readonly controller: AbortController;
-  previousWorkspaceId: string | null;
-  nativeActivationStarted: boolean;
-  cancelledByUser: boolean;
-  activatedWorkspaceId: string | null;
-  phase:
-    'queued' | 'draining' | 'activating' | 'hydrating' | 'committing' | 'rolling-back' | 'terminal';
-}
-
-export type ActivationPhase = ActivationAttempt['phase'];
+export type { ActivationAttempt, ActivationPhase, WorkspaceActivationEngine } from './activation-types';
+export { ActivationTracker } from './activation-types';
 
 export interface RuntimeTransition {
   readonly id: string;

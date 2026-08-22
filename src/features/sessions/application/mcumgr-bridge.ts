@@ -11,6 +11,7 @@ import {
   invokeMcumgrPickFile,
   invokeMcumgrPickSaveTarget,
 } from '@/features/platform/native/tauri-ipc';
+import { bytesToBase64 } from '@/lib/base64';
 import { appendShellHistory } from '@/lib/mcumgr-config';
 import {
   formatMcumgrErrorDetail,
@@ -303,6 +304,83 @@ export class McumgrBridge {
   setResult(text: string): void {
     this.lastResult.value = text;
   }
+
+  async runOsEcho(message: string): Promise<string | null> {
+    return this.execute('echo', { kind: 'os-echo', message });
+  }
+
+  async runImageTest(hashHex: string): Promise<string | null> {
+    const hash = hashHex.trim();
+    if (!hash) return null;
+    return this.execute('image-test', { kind: 'image-test', hashHex: hash });
+  }
+
+  async runImageConfirm(hashHex: string): Promise<string | null> {
+    const hash = hashHex.trim();
+    return this.execute('image-confirm', { kind: 'image-confirm', hashHex: hash ? hash : null });
+  }
+
+  async pickAndFsUpload(remotePath: string): Promise<string | null> {
+    const path = remotePath.trim();
+    if (!path) return null;
+    const pick = await this.pickFile('fs-upload');
+    if (!pick) return null;
+    return this.fsUpload(pick.token, path);
+  }
+
+  async pickAndFsDownload(remotePath: string): Promise<string | null> {
+    const path = remotePath.trim();
+    if (!path) return null;
+    const suggested = path.split('/').filter(Boolean).pop() ?? 'download.bin';
+    const pick = await this.pickSaveTarget(suggested);
+    if (!pick) return null;
+    return this.fsDownload(path, pick.token);
+  }
+
+  async runShellLine(line: string): Promise<string | null> {
+    const trimmed = line.trim();
+    if (!trimmed) return null;
+    const result = await this.execute('shell', { kind: 'shell', line: trimmed });
+    if (result !== null) this.rememberShell(trimmed);
+    return result;
+  }
+
+  async runSettingsWrite(name: string, value: string): Promise<string | null> {
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+    return this.execute('settings-write', {
+      kind: 'settings-write',
+      name: trimmed,
+      valueB64: bytesToBase64(textOrHexBytes(value)),
+    });
+  }
+
+  async runRawOp(
+    group: number,
+    command: number,
+    write: boolean,
+    payload: string,
+  ): Promise<string | null> {
+    const trimmed = payload.trim();
+    const op: McumgrOp = trimmed.startsWith('{')
+      ? {
+          kind: 'raw',
+          group,
+          command,
+          write,
+          payloadJson: trimmed,
+          payloadB64: null,
+        }
+      : {
+          kind: 'raw',
+          group,
+          command,
+          write,
+          payloadJson: null,
+          payloadB64: trimmed ? bytesToBase64(parseHexBytes(trimmed)) : null,
+        };
+    return this.execute('raw', op);
+  }
 }
 
 export function createMcumgrBridge(options: McumgrBridgeCreateOptions): McumgrBridge {
@@ -330,6 +408,15 @@ export function useSessionMcumgr(options: McumgrBridgeCreateOptions) {
     patchConfig: (patch: Partial<McumgrClientConfig>) => bridge.patchConfig(patch),
     rememberShell: (command: string) => bridge.rememberShell(command),
     setResult: (text: string) => bridge.setResult(text),
+    runOsEcho: (message: string) => bridge.runOsEcho(message),
+    runImageTest: (hashHex: string) => bridge.runImageTest(hashHex),
+    runImageConfirm: (hashHex: string) => bridge.runImageConfirm(hashHex),
+    pickAndFsUpload: (remotePath: string) => bridge.pickAndFsUpload(remotePath),
+    pickAndFsDownload: (remotePath: string) => bridge.pickAndFsDownload(remotePath),
+    runShellLine: (line: string) => bridge.runShellLine(line),
+    runSettingsWrite: (name: string, value: string) => bridge.runSettingsWrite(name, value),
+    runRawOp: (group: number, command: number, write: boolean, payload: string) =>
+      bridge.runRawOp(group, command, write, payload),
   };
 }
 
@@ -358,4 +445,22 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function parseHexBytes(value: string): Uint8Array {
+  const compact = value.replace(/\s+/g, '');
+  if (compact.length === 0 || compact.length % 2 !== 0) throw new RangeError('hash must be hex');
+  const bytes = new Uint8Array(compact.length / 2);
+  for (let i = 0; i < bytes.length; i += 1) {
+    bytes[i] = Number.parseInt(compact.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function textOrHexBytes(value: string): Uint8Array {
+  try {
+    return parseHexBytes(value);
+  } catch {
+    return new TextEncoder().encode(value);
+  }
 }

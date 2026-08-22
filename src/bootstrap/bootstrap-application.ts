@@ -1,5 +1,10 @@
 import type { App } from 'vue';
 import type { Pinia } from 'pinia';
+import {
+  APPLICATION_SHUTDOWN_KEY,
+  SESSION_APPLICATION_SERVICES_KEY,
+  WORKSPACE_APPLICATION_KEY,
+} from '@/bootstrap/provide-keys';
 
 export async function bootstrapApplication(app: App, pinia: Pinia): Promise<void> {
   const [platform, serialApplication, workspace, appStoreModule, serialStoreModule, sessions] =
@@ -29,7 +34,7 @@ export async function bootstrapApplication(app: App, pinia: Pinia): Promise<void
     ...baseApplicationServices,
     runtimeStatusRegistry,
   });
-  app.provide(sessions.SESSION_APPLICATION_SERVICES_KEY, applicationServices);
+  app.provide(SESSION_APPLICATION_SERVICES_KEY, applicationServices);
   sessions.enterWorkspaceSessionPersistenceMode();
   const sessionStore = sessions.useWorkspaceSessionPort();
   const sessionMutationPolicy = sessions.useSessionMutationPolicy();
@@ -124,7 +129,7 @@ export async function bootstrapApplication(app: App, pinia: Pinia): Promise<void
           .accepted,
     });
   });
-  app.provide(workspace.WORKSPACE_APPLICATION_KEY, {
+  app.provide(WORKSPACE_APPLICATION_KEY, {
     coordinator: workspaceCoordinator,
     application: workspaceApplication,
   });
@@ -141,5 +146,5 @@ export async function bootstrapApplication(app: App, pinia: Pinia): Promise<void
     protocol: tauriShutdown,
     closeRequests: tauriShutdown,
   });
-  app.provide(platform.APPLICATION_SHUTDOWN_KEY, applicationShutdown);
+  app.provide(APPLICATION_SHUTDOWN_KEY, applicationShutdown);
 }

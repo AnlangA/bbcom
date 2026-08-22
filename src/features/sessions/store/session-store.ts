@@ -51,6 +51,3 @@ export const useSessionStore = defineStore('session-store', () => {
   activeHeadlessSessionStore = sessionStore;
   return exposeSessionStoreForPinia(sessionStore);
 });
-
-/** @deprecated Use {@link useSessionStore} instead. */
-export const useSessionCoreStore = useSessionStore;

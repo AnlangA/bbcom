@@ -212,7 +212,7 @@ const WaveformPanel = defineAsyncComponent(() => import('@/features/terminal/ui/
 const ParserPanel = defineAsyncComponent(() => import('@/features/terminal/ui/ParserPanel.vue'));
 const ModbusPanel = defineAsyncComponent(() => import('@/features/terminal/ui/ModbusPanel.vue'));
 const SerialShellPanel = defineAsyncComponent(() => import('@/features/terminal/ui/SerialShellPanel.vue'));
-const McumgrPanel = defineAsyncComponent(() => import('@/features/terminal/ui/McumgrPanel.vue'));
+const McumgrPanel = defineAsyncComponent(() => import('@/features/terminal/ui/mcumgr/McumgrPanel.vue'));
 const ExportDialog = defineAsyncComponent(() => import('./ExportDialog.vue'));
 
 const catalog = useSessionCatalog();
