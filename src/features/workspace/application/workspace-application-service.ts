@@ -223,22 +223,25 @@ export class WorkspaceApplicationService {
   }
 
   async deleteWorkspace(workspaceId: string): Promise<WorkspaceApplicationOutcome> {
-    const current = this.currentWorkspaceView();
-    if (current?.workspaceId !== workspaceId) {
+    // Prefer the installed facade, but a failed first hydration can leave only the
+    // native coordinator selection — that project must still be deletable.
+    const isCurrent =
+      this.current?.workspaceId === workspaceId ||
+      this.coordinator.activeWorkspaceId === workspaceId;
+    if (!isCurrent) {
       const outcome = await this.coordinator.deleteWorkspace(workspaceId);
       return outcome.outcome === 'completed' ? completed(this.snapshot()) : outcome;
     }
 
+    // Delete the active project first. Opening a replacement before delete used
+    // to abort deletion whenever hydration failed ("无法完整恢复项目"), which left
+    // broken projects stuck in the sidebar.
     const replacement = this.coordinator
       .snapshot()
       .library.projects.find((project) => project.workspaceId !== workspaceId);
-    if (replacement) {
-      const transition = await this.openWorkspace(replacement.workspaceId);
-      if (transition.outcome !== 'completed') return transition;
-      const outcome = await this.coordinator.deleteWorkspace(workspaceId);
-      return outcome.outcome === 'completed' ? completed(this.snapshot()) : outcome;
-    }
-    return this.deleteCurrentWorkspace(workspaceId);
+    const deleted = await this.deleteCurrentWorkspace(workspaceId);
+    if (deleted.outcome !== 'completed' || !replacement) return deleted;
+    return this.openWorkspace(replacement.workspaceId);
   }
 
   async restoreLastActiveWorkspace(
@@ -837,26 +840,38 @@ export class WorkspaceApplicationService {
     attempt: ActivationAttempt,
     workspaceId: string,
   ): Promise<WorkspaceApplicationOutcome> {
-    if (this.recoveryRequired || this.current?.workspaceId !== workspaceId) {
-      const failure = failed(
-        this.recoveryRequired ? 'workspace.activation.rollback_failed' : 'workspace.delete.failed',
-      );
+    const isCurrent =
+      this.current?.workspaceId === workspaceId ||
+      this.coordinator.activeWorkspaceId === workspaceId;
+    if (!isCurrent) {
+      const failure = failed('workspace.delete.failed');
       this.finishActivationFailure(attempt, failure);
       return failure;
     }
+    // recoveryRequired must not trap the last project: deletion is the escape
+    // hatch from a failed activation lockout.
     attempt.previousWorkspaceId = workspaceId;
+
+    // A stale transition from a failed open/switch (often previousWorkspaceId
+    // null) would throw inside ensureRuntimeTransition and leave the project
+    // undeletable. Clear it before starting the deletion transition.
+    if (this.runtimeTransition && this.runtimeTransition.previousWorkspaceId !== workspaceId) {
+      const cleared = await this.restoreRuntimeAfterAbortedTransition(
+        this.runtimeTransition.stoppedWorkspaceId,
+      );
+      if (!cleared || this.runtimeTransition) {
+        this.runtimeTransition = null;
+        this.internalDrainTransition = null;
+      }
+    }
+
     const transition = this.ensureRuntimeTransition(workspaceId);
     attempt.phase = 'draining';
-    const drainFailure = await this.drainBeforeActivation();
+    // Best-effort drain: a broken project should still be removable even when
+    // flush/quiesce cannot complete cleanly.
+    await this.drainBeforeActivation();
     if (!this.activations.isActive(attempt)) {
       return abortAndRecoverActivation(attempt, this.activations, this.activationRecoveryHost());
-    }
-    if (drainFailure) {
-      const restored = await this.restoreRuntimeAfterAbortedTransition(null);
-      const failure = restored ? drainFailure : failed('workspace.activation.rollback_failed');
-      if (!restored) markRecoveryRequired(attempt, this.activations, this.activationRecoveryHost());
-      this.finishActivationFailure(attempt, failure);
-      return failure;
     }
 
     attempt.phase = 'activating';
@@ -877,13 +892,9 @@ export class WorkspaceApplicationService {
       );
       await disposal;
     } catch {
-      const restored = await this.restoreRuntimeAfterAbortedTransition(null);
-      const failure = restored
-        ? failed('workspace.delete.failed')
-        : failed('workspace.activation.rollback_failed');
-      if (!restored) markRecoveryRequired(attempt, this.activations, this.activationRecoveryHost());
-      this.finishActivationFailure(attempt, failure);
-      return failure;
+      // Continue: native delete + idle clear matter more than a clean runtime
+      // teardown when the user is removing a stuck or partially hydrated project.
+      transition.disposeStarted = true;
     }
 
     const deletion = await this.coordinator.deleteWorkspace(workspaceId);
@@ -906,7 +917,12 @@ export class WorkspaceApplicationService {
     this.captureAccounting.replaceWorkspace([]);
     this.undoCaptureState = null;
     this.recoveryRequired = false;
-    this.runtimeLifecycle.commit?.({ transitionId: transition.id, workspaceId });
+    this.lastSaveFailure = null;
+    try {
+      this.runtimeLifecycle.commit?.({ transitionId: transition.id, workspaceId });
+    } catch {
+      // Commit only drops rollback snapshots; the project is already deleted.
+    }
     if (this.runtimeTransition === transition) this.runtimeTransition = null;
     if (this.internalDrainTransition === transition) this.internalDrainTransition = null;
     attempt.phase = 'terminal';

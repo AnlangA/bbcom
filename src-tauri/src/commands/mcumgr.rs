@@ -296,8 +296,11 @@ fn validate_port(port: &McumgrPortRequest) -> Result<(), McumgrError> {
     Ok(())
 }
 
-fn open_client(port: &McumgrPortRequest) -> Result<MCUmgrClient, McumgrError> {
+fn open_client(port: &McumgrPortRequest, cancel: &AtomicBool) -> Result<MCUmgrClient, McumgrError> {
     validate_port(port)?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err(cancelled_error());
+    }
     let serial = serialport::new(&port.path, port.baud_rate)
         .timeout(Duration::from_millis(u64::from(port.timeout_ms)))
         .open()
@@ -307,20 +310,40 @@ fn open_client(port: &McumgrPortRequest) -> Result<MCUmgrClient, McumgrError> {
                 format!("failed to open serial port: {error}"),
             )
         })?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err(cancelled_error());
+    }
     let client = MCUmgrClient::new_from_serial(serial);
+    let operation_timeout = Duration::from_millis(u64::from(port.timeout_ms));
     client
-        .set_timeout(Duration::from_millis(u64::from(port.timeout_ms)))
+        .set_timeout(operation_timeout)
         .map_err(|error| map_client_error(&error, false))?;
     client.set_retries(port.retries);
     if port.auto_frame_size {
-        if client.use_auto_frame_size().is_err() {
+        // Cap negotiation so a silent/non-SMP port cannot freeze the panel for
+        // the full timeout×retries budget after the OS permission dialog.
+        let negotiation_ms = u64::from(port.timeout_ms).min(2_000);
+        let _ = client.set_timeout(Duration::from_millis(negotiation_ms));
+        client.set_retries(port.retries.min(1));
+        if cancel.load(Ordering::SeqCst) || client.use_auto_frame_size().is_err() {
             // Negotiation is best-effort; fall back to the manual setting.
             client.set_frame_size(port.frame_size as usize);
         }
+        client
+            .set_timeout(operation_timeout)
+            .map_err(|error| map_client_error(&error, cancel.load(Ordering::SeqCst)))?;
+        client.set_retries(port.retries);
     } else {
         client.set_frame_size(port.frame_size as usize);
     }
+    if cancel.load(Ordering::SeqCst) {
+        return Err(cancelled_error());
+    }
     Ok(client)
+}
+
+fn cancelled_error() -> McumgrError {
+    McumgrError::new(McumgrErrorKind::Cancelled, "operation cancelled")
 }
 
 // ---------------------------------------------------------------------------
@@ -634,9 +657,10 @@ pub async fn mcumgr_execute(
     require_main_window_label(window.label(), "mcumgr_execute")
         .map_err(|_| security_denied("mcumgr_execute"))?;
     let guard = state.acquire()?;
+    let cancel = Arc::clone(&state.cancel);
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
-        let client = open_client(&request.port)?;
+        let client = open_client(&request.port, &cancel)?;
         run_quick_op(&client, &request.op)
     })
     .await
@@ -766,7 +790,7 @@ pub async fn mcumgr_firmware_update(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
         let firmware = read_transfer_file(&path)?;
-        let client = open_client(&request.port)?;
+        let client = open_client(&request.port, &cancel)?;
         let reporter = ProgressReporter::new(on_progress, cancel);
         let mut progress = firmware_step_progress(&reporter);
         let params = FirmwareUpdateParams {
@@ -808,7 +832,7 @@ pub async fn mcumgr_image_upload(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
         let image = read_transfer_file(&path)?;
-        let client = open_client(&request.port)?;
+        let client = open_client(&request.port, &cancel)?;
         let reporter = ProgressReporter::new(on_progress, cancel);
         let mut progress =
             |offset: u64, total: u64| reporter.bytes(McumgrPhase::Uploading, offset, total);
@@ -860,7 +884,7 @@ pub async fn mcumgr_fs_upload(
                 McumgrError::new(McumgrErrorKind::Io, format!("failed to stat file: {error}"))
             })?
             .len();
-        let client = open_client(&request.port)?;
+        let client = open_client(&request.port, &cancel)?;
         let reporter = ProgressReporter::new(on_progress, cancel);
         let mut progress =
             |offset: u64, total: u64| reporter.bytes(McumgrPhase::Uploading, offset, total);
@@ -910,7 +934,7 @@ pub async fn mcumgr_fs_download(
             )
         })?;
         let mut writer = std::io::BufWriter::new(file);
-        let client = open_client(&request.port)?;
+        let client = open_client(&request.port, &cancel)?;
         let reporter = ProgressReporter::new(on_progress, cancel);
         let mut progress =
             |offset: u64, total: u64| reporter.bytes(McumgrPhase::Downloading, offset, total);

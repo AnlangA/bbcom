@@ -235,6 +235,36 @@ test('resume failures after the operation surface as an error status', async () 
   assert.equal(harness.controller.status.value.kind, 'error');
 });
 
+test('cancel unblocks the UI while a hung invoke is still in flight', async () => {
+  const harness = createHarness({ connected: true });
+  mocked.invoke.mockImplementation(
+    (command) =>
+      new Promise((resolve) => {
+        if (command === 'mcumgr_cancel') {
+          resolve(undefined);
+          return;
+        }
+        // Intentionally never resolve mcumgr_execute — mirrors a stuck open after
+        // the OS serial permission dialog or a silent auto-frame negotiation.
+      }),
+  );
+
+  const pending = harness.controller.execute('echo', { kind: 'os-echo', message: 'hi' });
+  await Promise.resolve();
+  assert.equal(harness.controller.busy.value, true);
+  assert.equal(harness.suspends.length, 1);
+
+  harness.controller.cancel();
+  await pending;
+
+  assert.equal(harness.controller.busy.value, false);
+  assert.equal(harness.resumes.length, 1);
+  assert.equal(
+    mocked.invoke.mock.calls.some((call) => call[0] === 'mcumgr_cancel'),
+    true,
+  );
+});
+
 test('rememberShell appends deduplicated history through setConfig', () => {
   const harness = createHarness();
   harness.controller.rememberShell('kernel uptime');

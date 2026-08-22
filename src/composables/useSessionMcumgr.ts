@@ -57,6 +57,8 @@ export function useSessionMcumgr({
   const status = ref<McumgrClientStatus>({ kind: 'idle' });
   const lastResult = ref('');
   const busy = computed(() => status.value.kind === 'busy' || status.value.kind === 'progress');
+  let runGeneration = 0;
+  let rejectActiveRun: ((error: McumgrError) => void) | null = null;
 
   function portRequest(): McumgrPortRequest | null {
     const path = session.value.portName.trim();
@@ -96,22 +98,32 @@ export function useSessionMcumgr({
       status.value = { kind: 'error', message: t('mcumgr.error.noPort') };
       return null;
     }
+    const generation = ++runGeneration;
     status.value = { kind: 'busy', action };
     lastResult.value = '';
     const wasConnected = isConnected.value;
     let outcome: T | null = null;
+    const cancelRace = new Promise<never>((_, reject) => {
+      rejectActiveRun = reject;
+    });
     try {
-      if (wasConnected) await suspendConnection();
-      outcome = await work(port);
-      status.value = { kind: 'idle' };
+      if (wasConnected) {
+        await Promise.race([suspendConnection(), cancelRace]);
+      }
+      if (generation !== runGeneration) throw cancelledError();
+      outcome = await Promise.race([work(port), cancelRace]);
+      if (generation === runGeneration) status.value = { kind: 'idle' };
     } catch (error) {
-      applyFailure(error);
+      if (generation === runGeneration) applyFailure(error);
     } finally {
+      if (generation === runGeneration) rejectActiveRun = null;
+      // Always restore a yielded port, including after a UI-side cancel that
+      // abandoned the in-flight invoke so controls can recover immediately.
       if (wasConnected && !(await resumeWithRetry())) {
         status.value = { kind: 'error', message: t('mcumgr.error.resumeFailed') };
       }
     }
-    return outcome;
+    return generation === runGeneration ? outcome : null;
   }
 
   function applyFailure(error: unknown): void {
@@ -226,6 +238,13 @@ export function useSessionMcumgr({
 
   function cancel(): void {
     if (!busy.value) return;
+    // Unblock the UI immediately. Rust cancel is best-effort for open/auto-frame
+    // and long transfers; the in-flight invoke may still finish in the background.
+    runGeneration += 1;
+    status.value = { kind: 'idle' };
+    const reject = rejectActiveRun;
+    rejectActiveRun = null;
+    reject?.(cancelledError());
     void invokeMcumgrCancel().catch(() => {
       // Cancellation is best-effort; the operation also ends on timeout.
     });
@@ -261,6 +280,10 @@ export function useSessionMcumgr({
     rememberShell,
     setResult,
   };
+}
+
+function cancelledError(): McumgrError {
+  return { kind: 'cancelled', message: 'cancelled' };
 }
 
 function fallbackError(error: unknown): McumgrError {
