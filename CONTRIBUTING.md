@@ -8,12 +8,18 @@ That install provisions the repository-pinned Node runtime for every project
 script.
 
 `pnpm install --frozen-lockfile` installs the versioned pre-commit hook. The
-hook runs the complete local quality gate for every commit. Before opening a
-pull request, run the same command manually if needed:
+pre-commit hook runs the fast local gate (lint, format, architecture, build,
+bundle check). The pre-push hook runs the full gate including all frontend and
+Rust tests plus browser E2E.
+
+Before opening a pull request, run:
 
 ```sh
-pnpm precommit
+pnpm precommit:full
 ```
+
+CI runs static checks only (lint, build, architecture boundaries, Rust fmt and
+clippy). Full test suites are enforced locally via the pre-push hook.
 
 Stage the complete change before committing: the hook rejects unstaged or
 non-ignored untracked files so its result always applies to the staged snapshot.

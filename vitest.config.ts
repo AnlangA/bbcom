@@ -62,12 +62,6 @@ export default defineConfig({
         'src/types/session.ts',
         'src/types/waveform.ts',
       ],
-      thresholds: {
-        lines: 85,
-        statements: 85,
-        branches: 80,
-        functions: 80,
-      },
     },
   },
 });

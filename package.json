@@ -45,7 +45,9 @@
     "quality:frontend": "pnpm run lint && pnpm run lint:markdown && pnpm run lint:shell && pnpm run format:check && pnpm run architecture && pnpm run build && pnpm run bundle:check",
     "quality:rust": "cargo run -p xtask --locked -- bindings --check && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings",
     "precommit": "pnpm run toolchain:check && pnpm run lint && pnpm run lint:markdown && pnpm run lint:shell && pnpm run format:check && pnpm run architecture && pnpm run build && pnpm run bundle:check",
-    "precommit:full": "pnpm run toolchain:check && pnpm run quality:frontend && pnpm run quality:rust",
+    "precommit:full": "pnpm run precommit && pnpm run test:frontend && pnpm run test:rust && pnpm run e2e:browser:local",
+    "test:local": "pnpm run test:frontend && pnpm run test:rust",
+    "test:local:full": "pnpm run test:local && pnpm run e2e:browser:local",
     "check": "pnpm run lint && pnpm run lint:markdown && pnpm run lint:shell && pnpm run format:check && pnpm run architecture && pnpm run build && pnpm run bundle:check && pnpm run test",
     "version:sync": "node scripts/set-version.mjs",
     "version:check": "node scripts/check-version.mjs"
