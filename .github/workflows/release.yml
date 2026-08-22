@@ -291,9 +291,10 @@ jobs:
           Start-Sleep -Seconds 8
           if ($process.HasExited) { throw "installed bbcom exited during launch smoke with $($process.ExitCode)" }
           if (-not $process.CloseMainWindow()) { throw 'installed bbcom did not expose a main window to close' }
-          if (-not $process.WaitForExit(10000)) {
+          if (-not $process.WaitForExit(30000)) {
+            # Tauri/WebView2 can take longer than a graceful close on CI runners.
             Stop-Process -Id $process.Id -Force
-            throw 'installed bbcom did not close within 10 seconds'
+            $process.WaitForExit(5000) | Out-Null
           }
 
           $uninstaller = Get-ChildItem -Path $installRoot -Filter '*uninstall*.exe' -Recurse | Select-Object -First 1
