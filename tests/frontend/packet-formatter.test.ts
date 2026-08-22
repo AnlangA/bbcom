@@ -45,6 +45,19 @@ test('ANSI enabled escapes HTML and applies color spans', () => {
   const out = formatFrame(frame('1', encodeUtf8('<b>\x1b[31mred\x1b[0m')));
   assert.match(out, /&lt;b&gt;/); // html escaped
   assert.match(out, /red/);
+  assert.match(out, /ansi-red-fg/);
+});
+
+test('log line breaks colorize each RX line independently in UTF8 mode', () => {
+  const displayMode = ref('UTF8');
+  const ansi = ref(true);
+  const { formatFrame } = usePacketFormatter({ displayMode, ansiColorEnabled: ansi });
+  const out = formatFrame(frame('1', encodeUtf8('ok\n\x1b[32mgreen\x1b[0m')), {
+    preserveLineBreaks: true,
+    plainLineBreaks: false,
+  });
+  assert.match(out, /<br>/);
+  assert.match(out, /ansi-green-fg/);
 });
 
 test('ANSI disabled returns plain text with no markup', () => {

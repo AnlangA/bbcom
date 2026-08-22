@@ -312,6 +312,7 @@ export function hydrateWorkspaceFrame(frame: WorkspaceHydratedFrame): DataFrame 
     ],
     'frame',
   );
+  const captureSeq = validNonNegativeInteger(frame.seq, 'frame.seq');
   const id = validateWorkspaceIdentifier(frame.id, 'frame.id');
   if (frame.direction !== 'TX' && frame.direction !== 'RX') {
     throw new WorkspaceAdapterValidationError('frame.direction');
@@ -340,6 +341,7 @@ export function hydrateWorkspaceFrame(frame: WorkspaceHydratedFrame): DataFrame 
     direction: frame.direction,
     timestamp,
     data,
+    captureSeq,
     ...(txStatus !== undefined ? { txStatus } : {}),
     ...(requestedBytes !== undefined ? { requestedBytes } : {}),
     ...(omittedBytes !== undefined ? { omittedBytes } : {}),

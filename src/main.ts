@@ -4,6 +4,7 @@ import { settingsService } from './features/settings';
 import './styles/variables.css';
 import './styles/global.css';
 import './styles/packet-columns.css';
+import './styles/ansi-packet.css';
 
 // Hydrate theme/locale and every global default before the first component
 // mounts; the single settings service owns all later writes (A-02).

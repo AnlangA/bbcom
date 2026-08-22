@@ -62,6 +62,7 @@ pub fn render_typescript() -> String {
     declaration!(McumgrPortRequest);
     declaration!(McumgrOp);
     declaration!(McumgrExecuteRequest);
+    declaration!(McumgrTraceFrame);
     declaration!(McumgrCommandResult);
     declaration!(McumgrErrorKind);
     declaration!(McumgrError);

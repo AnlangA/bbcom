@@ -5,7 +5,8 @@ export function useSessionFrames(sessionId: string) {
   const capture = useSessionCapture(sessionId);
 
   function addFrame(
-    frame: Omit<DataFrame, 'id' | 'timestamp'>,
+    frame: Omit<DataFrame, 'id' | 'timestamp' | 'captureSeq'> &
+      Partial<Pick<DataFrame, 'timestamp' | 'captureSeq' | 'origin'>>,
     options?: { publish?: boolean },
   ): DataFrame | undefined {
     return capture.add(frame, options);

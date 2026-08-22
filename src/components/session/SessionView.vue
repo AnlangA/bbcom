@@ -14,7 +14,7 @@
     <SessionToolbar
       :session="props.session"
       :frames-version="visibleFramesVersion"
-      :is-connected="runtime.isConnected.value"
+      :is-connected="runtime.sessionLinkUp.value"
       :is-connecting="runtime.isConnecting.value"
       :reconnecting="runtime.reconnecting.value"
       :error="runtime.error.value"
@@ -86,7 +86,7 @@
           :session-id="props.session.id"
           :config="props.session.modbusConfig"
           :registers="props.session.modbusRegisters"
-          :is-connected="runtime.isConnected.value"
+          :is-connected="runtime.sessionLinkUp.value"
           :busy="modbusBusy"
           :status-text="modbusStatusText"
           :status-class="modbusStatusClass"
@@ -118,7 +118,7 @@
           v-else-if="viewMode === 'shell'"
           :session-id="props.session.id"
           :config="props.session.shellConfig"
-          :is-connected="runtime.isConnected.value"
+          :is-connected="runtime.sessionLinkUp.value"
           :shell="runtime.shell"
           @close="viewMode = 'terminal'"
         />
@@ -126,7 +126,7 @@
           v-else-if="viewMode === 'mcumgr'"
           :session-id="props.session.id"
           :config="props.session.mcumgrConfig"
-          :is-connected="runtime.isConnected.value"
+          :is-connected="runtime.sessionLinkUp.value"
           :mcumgr="runtime.mcumgr"
           @close="viewMode = 'terminal'"
         />
@@ -259,9 +259,8 @@ useSessionShortcuts({
   isActive: () => catalog.activeSessionId.value === props.session.id,
 });
 
-// Single view-mode switcher for the display area: terminal (default, dense),
-// waveform (live RX plot), parser (frame reassembly), modbus (register
-// table), serial shell, or MCUMgr. Only the selected view renders.
+// Single view-mode switcher for the display area: terminal (default), waveform,
+// parser, modbus, serial shell, or MCUMgr. Only the selected view renders.
 const viewMode = runtime.viewMode;
 
 // --- Modbus master ---------------------------------------------------------

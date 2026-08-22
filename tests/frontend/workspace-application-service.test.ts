@@ -664,6 +664,73 @@ test('deleting the final project drains and clears the active workspace without 
   ]);
 });
 
+test('deleting the active project succeeds even when the replacement cannot hydrate', async () => {
+  const active = definition('active', 1, [sessionSnapshot('active-session')]);
+  const broken: WorkspaceDefinition = {
+    ...definition('broken', 2, [sessionSnapshot('broken-session')]),
+    headerSessionIds: ['broken-session', 'missing-session'],
+  };
+  const system = createSystem([active, broken]);
+  assert.equal((await system.coordinator.refreshCatalog()).outcome, 'completed');
+  assert.equal((await system.application.openWorkspace('active')).outcome, 'completed');
+
+  const outcome = await system.application.deleteWorkspace('active');
+
+  assert.equal(
+    system.coordinator
+      .snapshot()
+      .library.projects.some((project) => project.workspaceId === 'active'),
+    false,
+  );
+  assert.equal(outcome.outcome, 'failed');
+  assert.equal(outcome.messageKey, 'workspace.hydration.failed');
+});
+
+test('deleting the final project succeeds even when runtime dispose throws', async () => {
+  const lifecycle: WorkspaceRuntimeLifecycle = {
+    quiesce() {
+      return Promise.resolve();
+    },
+    dispose() {
+      return Promise.reject(new Error('dispose exploded'));
+    },
+    restore() {
+      return Promise.resolve();
+    },
+    activateStopped() {
+      return Promise.resolve();
+    },
+    commit() {},
+  };
+  const system = createSystem([definition('only-project', 0)], lifecycle);
+  assert.equal((await system.application.openWorkspace('only-project')).outcome, 'completed');
+
+  const outcome = await system.application.deleteWorkspace('only-project');
+
+  assert.equal(outcome.outcome, 'completed');
+  assert.equal(system.application.snapshot().currentWorkspace, null);
+  assert.equal(system.application.snapshot().status, 'idle');
+  assert.deepEqual(system.coordinator.snapshot().library.projects, []);
+});
+
+test('deleting the native-selected project works after a failed first hydration', async () => {
+  const broken: WorkspaceDefinition = {
+    ...definition('broken-only', 1, [sessionSnapshot('broken-session')]),
+    headerSessionIds: ['broken-session', 'missing-session'],
+  };
+  const system = createSystem([broken]);
+  assert.equal((await system.application.openWorkspace('broken-only')).outcome, 'failed');
+  assert.equal(system.application.snapshot().currentWorkspace, null);
+  assert.equal(system.coordinator.activeWorkspaceId, 'broken-only');
+
+  const outcome = await system.application.deleteWorkspace('broken-only');
+
+  assert.equal(outcome.outcome, 'completed');
+  assert.equal(system.application.snapshot().status, 'idle');
+  assert.equal(system.coordinator.activeWorkspaceId, null);
+  assert.deepEqual(system.coordinator.snapshot().library.projects, []);
+});
+
 test('completed reset restoration stays idle after the final project was deleted', async () => {
   const system = createSystem([]);
 

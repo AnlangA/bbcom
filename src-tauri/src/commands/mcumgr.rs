@@ -10,19 +10,20 @@
 //! opaque one-shot grants issued by the native open/save dialogs here.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bbcom_contracts::{MAX_SERIAL_PORT_PATH_BYTES, decode_data_b64};
+use bbcom_contracts::{Direction, MAX_SERIAL_PORT_PATH_BYTES, decode_data_b64};
 pub use bbcom_contracts::{
     McumgrCommandResult, McumgrError, McumgrErrorKind, McumgrExecuteRequest, McumgrFilePick,
     McumgrFilePurpose, McumgrFirmwareUpdateRequest, McumgrFsDownloadRequest,
     McumgrFsDownloadResult, McumgrFsUploadRequest, McumgrImageUploadRequest, McumgrOp, McumgrPhase,
     McumgrPickFileRequest, McumgrPickSaveRequest, McumgrPortRequest, McumgrProgress,
-    McumgrSavePick,
+    McumgrSavePick, McumgrTraceFrame,
 };
 use mcumgr_toolkit::client::{
     FirmwareUpdateError, FirmwareUpdateParams, FirmwareUpdateStep, MCUmgrClientError,
@@ -30,6 +31,7 @@ use mcumgr_toolkit::client::{
 use mcumgr_toolkit::commands::McuMgrCommand;
 use mcumgr_toolkit::connection::ExecuteError;
 use mcumgr_toolkit::smp_errors::DeviceError;
+use mcumgr_toolkit::transport::serial::ConfigurableTimeout;
 use mcumgr_toolkit::transport::{ReceiveError, SendError};
 use mcumgr_toolkit::{MCUmgrClient, MCUmgrGroup};
 use serde_json::{Value as JsonValue, json};
@@ -50,6 +52,106 @@ const MAX_TIMEOUT_MS: u32 = 120_000;
 const MIN_FRAME_SIZE: u32 = 64;
 const MAX_FRAME_SIZE: u32 = 65_535;
 const MAX_RETRIES: u8 = 16;
+/// Cap wire trace returned to the WebView so a firmware upload cannot flood IPC.
+const MAX_MCUMGR_TRACE_BYTES: usize = 512 * 1024;
+const MAX_MCUMGR_TRACE_FRAMES: usize = 2048;
+
+struct SerialTraceCollector {
+    frames: StdMutex<Vec<McumgrTraceFrame>>,
+    total_bytes: StdMutex<usize>,
+}
+
+impl SerialTraceCollector {
+    fn new() -> Self {
+        Self {
+            frames: StdMutex::new(Vec::new()),
+            total_bytes: StdMutex::new(0),
+        }
+    }
+
+    fn record(&self, direction: Direction, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        let mut total_bytes = self
+            .total_bytes
+            .lock()
+            .expect("mcumgr trace bytes lock poisoned");
+        if *total_bytes >= MAX_MCUMGR_TRACE_BYTES {
+            return;
+        }
+        let mut frames = self
+            .frames
+            .lock()
+            .expect("mcumgr trace frames lock poisoned");
+        if frames.len() >= MAX_MCUMGR_TRACE_FRAMES {
+            return;
+        }
+        let allowed = data.len().min(MAX_MCUMGR_TRACE_BYTES - *total_bytes);
+        *total_bytes += allowed;
+        frames.push(McumgrTraceFrame {
+            direction,
+            timestamp_ms: trace_timestamp_ms(),
+            data: data[..allowed].to_vec(),
+        });
+    }
+
+    fn into_frames(self) -> Vec<McumgrTraceFrame> {
+        self.frames
+            .into_inner()
+            .expect("mcumgr trace frames lock poisoned")
+    }
+}
+
+struct TracingSerial {
+    inner: Box<dyn serialport::SerialPort>,
+    trace: Arc<SerialTraceCollector>,
+}
+
+impl Read for TracingSerial {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        if read > 0 {
+            self.trace.record(Direction::Rx, &buf[..read]);
+        }
+        Ok(read)
+    }
+}
+
+impl Write for TracingSerial {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        if written > 0 {
+            self.trace.record(Direction::Tx, &buf[..written]);
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl ConfigurableTimeout for TracingSerial {
+    fn set_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.inner.set_timeout(timeout)
+    }
+}
+
+struct OpenedMcumgrClient {
+    client: MCUmgrClient,
+    trace: Arc<SerialTraceCollector>,
+}
+
+fn trace_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// One MCUmgr operation runs at a time: the serial port is exclusive anyway
 /// and a single busy flag keeps cancel semantics unambiguous.
@@ -296,8 +398,16 @@ fn validate_port(port: &McumgrPortRequest) -> Result<(), McumgrError> {
     Ok(())
 }
 
-fn open_client(port: &McumgrPortRequest) -> Result<MCUmgrClient, McumgrError> {
+fn open_client(
+    port: &McumgrPortRequest,
+    cancel: &AtomicBool,
+) -> Result<OpenedMcumgrClient, McumgrError> {
     validate_port(port)?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err(cancelled_error());
+    }
+    let trace = Arc::new(SerialTraceCollector::new());
+    let trace_handle = Arc::clone(&trace);
     let serial = serialport::new(&port.path, port.baud_rate)
         .timeout(Duration::from_millis(u64::from(port.timeout_ms)))
         .open()
@@ -307,20 +417,62 @@ fn open_client(port: &McumgrPortRequest) -> Result<MCUmgrClient, McumgrError> {
                 format!("failed to open serial port: {error}"),
             )
         })?;
-    let client = MCUmgrClient::new_from_serial(serial);
+    if cancel.load(Ordering::SeqCst) {
+        return Err(cancelled_error());
+    }
+    let traced = TracingSerial {
+        inner: serial,
+        trace: Arc::clone(&trace_handle),
+    };
+    let client = MCUmgrClient::new_from_serial(traced);
+    let operation_timeout = Duration::from_millis(u64::from(port.timeout_ms));
     client
-        .set_timeout(Duration::from_millis(u64::from(port.timeout_ms)))
+        .set_timeout(operation_timeout)
         .map_err(|error| map_client_error(&error, false))?;
     client.set_retries(port.retries);
     if port.auto_frame_size {
-        if client.use_auto_frame_size().is_err() {
+        // Cap negotiation so a silent/non-SMP port cannot freeze the panel for
+        // the full timeout×retries budget after the OS permission dialog.
+        let negotiation_ms = u64::from(port.timeout_ms).min(2_000);
+        let _ = client.set_timeout(Duration::from_millis(negotiation_ms));
+        client.set_retries(port.retries.min(1));
+        if cancel.load(Ordering::SeqCst) || client.use_auto_frame_size().is_err() {
             // Negotiation is best-effort; fall back to the manual setting.
             client.set_frame_size(port.frame_size as usize);
         }
+        client
+            .set_timeout(operation_timeout)
+            .map_err(|error| map_client_error(&error, cancel.load(Ordering::SeqCst)))?;
+        client.set_retries(port.retries);
     } else {
         client.set_frame_size(port.frame_size as usize);
     }
-    Ok(client)
+    if cancel.load(Ordering::SeqCst) {
+        return Err(cancelled_error());
+    }
+    Ok(OpenedMcumgrClient {
+        client,
+        trace: trace_handle,
+    })
+}
+
+fn take_trace_frames(opened: OpenedMcumgrClient) -> Vec<McumgrTraceFrame> {
+    let OpenedMcumgrClient { client, trace } = opened;
+    drop(client);
+    Arc::try_unwrap(trace)
+        .map(SerialTraceCollector::into_frames)
+        .unwrap_or_default()
+}
+
+fn finish_command(
+    opened: OpenedMcumgrClient,
+    value: JsonValue,
+) -> Result<McumgrCommandResult, McumgrError> {
+    command_result(value, take_trace_frames(opened))
+}
+
+fn cancelled_error() -> McumgrError {
+    McumgrError::new(McumgrErrorKind::Cancelled, "operation cancelled")
 }
 
 // ---------------------------------------------------------------------------
@@ -614,9 +766,15 @@ fn validate_remote_path(path: &str) -> Result<(), McumgrError> {
     Ok(())
 }
 
-fn command_result(value: JsonValue) -> Result<McumgrCommandResult, McumgrError> {
+fn command_result(
+    value: JsonValue,
+    trace_frames: Vec<McumgrTraceFrame>,
+) -> Result<McumgrCommandResult, McumgrError> {
     serde_json::to_string(&value)
-        .map(|result_json| McumgrCommandResult { result_json })
+        .map(|result_json| McumgrCommandResult {
+            result_json,
+            trace_frames,
+        })
         .map_err(|error| {
             McumgrError::new(
                 McumgrErrorKind::Protocol,
@@ -634,10 +792,12 @@ pub async fn mcumgr_execute(
     require_main_window_label(window.label(), "mcumgr_execute")
         .map_err(|_| security_denied("mcumgr_execute"))?;
     let guard = state.acquire()?;
+    let cancel = Arc::clone(&state.cancel);
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
-        let client = open_client(&request.port)?;
-        run_quick_op(&client, &request.op)
+        let opened = open_client(&request.port, &cancel)?;
+        let result = run_quick_op(&opened.client, &request.op)?;
+        finish_command(opened, result)
     })
     .await
     .map_err(|error| {
@@ -646,7 +806,7 @@ pub async fn mcumgr_execute(
             format!("mcumgr task failed: {error}"),
         )
     })??;
-    command_result(result)
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -766,7 +926,7 @@ pub async fn mcumgr_firmware_update(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
         let firmware = read_transfer_file(&path)?;
-        let client = open_client(&request.port)?;
+        let opened = open_client(&request.port, &cancel)?;
         let reporter = ProgressReporter::new(on_progress, cancel);
         let mut progress = firmware_step_progress(&reporter);
         let params = FirmwareUpdateParams {
@@ -775,10 +935,11 @@ pub async fn mcumgr_firmware_update(
             force_confirm: request.force_confirm,
             upgrade_only: request.upgrade_only,
         };
-        client
+        opened
+            .client
             .firmware_update(&firmware, None, params, Some(&mut progress))
             .map_err(|error| map_firmware_error(&error, reporter.cancelled()))?;
-        Ok(json!({ "ok": true, "bytes": firmware.len() }))
+        finish_command(opened, json!({ "ok": true, "bytes": firmware.len() }))
     })
     .await
     .map_err(|error| {
@@ -787,7 +948,7 @@ pub async fn mcumgr_firmware_update(
             format!("mcumgr task failed: {error}"),
         )
     })??;
-    command_result(result)
+    Ok(result)
 }
 
 #[tauri::command]
@@ -808,11 +969,12 @@ pub async fn mcumgr_image_upload(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
         let image = read_transfer_file(&path)?;
-        let client = open_client(&request.port)?;
+        let opened = open_client(&request.port, &cancel)?;
         let reporter = ProgressReporter::new(on_progress, cancel);
         let mut progress =
             |offset: u64, total: u64| reporter.bytes(McumgrPhase::Uploading, offset, total);
-        client
+        opened
+            .client
             .image_upload(
                 &image,
                 request.image,
@@ -821,7 +983,7 @@ pub async fn mcumgr_image_upload(
                 Some(&mut progress),
             )
             .map_err(|error| map_client_error(&error, reporter.cancelled()))?;
-        Ok(json!({ "ok": true, "bytes": image.len() }))
+        finish_command(opened, json!({ "ok": true, "bytes": image.len() }))
     })
     .await
     .map_err(|error| {
@@ -830,7 +992,7 @@ pub async fn mcumgr_image_upload(
             format!("mcumgr task failed: {error}"),
         )
     })??;
-    command_result(result)
+    Ok(result)
 }
 
 #[tauri::command]
@@ -860,11 +1022,12 @@ pub async fn mcumgr_fs_upload(
                 McumgrError::new(McumgrErrorKind::Io, format!("failed to stat file: {error}"))
             })?
             .len();
-        let client = open_client(&request.port)?;
+        let opened = open_client(&request.port, &cancel)?;
         let reporter = ProgressReporter::new(on_progress, cancel);
         let mut progress =
             |offset: u64, total: u64| reporter.bytes(McumgrPhase::Uploading, offset, total);
-        client
+        opened
+            .client
             .fs_file_upload(
                 &request.remote_path,
                 std::io::BufReader::new(file),
@@ -872,7 +1035,7 @@ pub async fn mcumgr_fs_upload(
                 Some(&mut progress),
             )
             .map_err(|error| map_client_error(&error, reporter.cancelled()))?;
-        Ok(json!({ "ok": true, "bytes": size }))
+        finish_command(opened, json!({ "ok": true, "bytes": size }))
     })
     .await
     .map_err(|error| {
@@ -881,7 +1044,7 @@ pub async fn mcumgr_fs_upload(
             format!("mcumgr task failed: {error}"),
         )
     })??;
-    command_result(result)
+    Ok(result)
 }
 
 #[tauri::command]
@@ -910,13 +1073,15 @@ pub async fn mcumgr_fs_download(
             )
         })?;
         let mut writer = std::io::BufWriter::new(file);
-        let client = open_client(&request.port)?;
+        let opened = open_client(&request.port, &cancel)?;
         let reporter = ProgressReporter::new(on_progress, cancel);
         let mut progress =
             |offset: u64, total: u64| reporter.bytes(McumgrPhase::Downloading, offset, total);
-        let outcome = client
+        let outcome = opened
+            .client
             .fs_file_download(&request.remote_path, &mut writer, Some(&mut progress))
             .map_err(|error| map_client_error(&error, reporter.cancelled()));
+        let trace_frames = take_trace_frames(opened);
         if let Err(error) = outcome {
             drop(writer);
             let _ = std::fs::remove_file(&path);
@@ -933,6 +1098,7 @@ pub async fn mcumgr_fs_download(
         Ok(McumgrFsDownloadResult {
             bytes,
             display_name,
+            trace_frames,
         })
     })
     .await

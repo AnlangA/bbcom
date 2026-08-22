@@ -1,7 +1,11 @@
 <template>
   <div
     class="packet-row packet-item"
-    :class="[directionClass, highlightClass, { selected, striped }]"
+    :class="[
+      directionClass,
+      highlightClass,
+      { selected, striped, 'wrap-enabled': softWrap || preserveLineBreaks },
+    ]"
     :style="{ gridTemplateColumns: columns }"
     :title="highlightLabel ? `${highlightLabel}: ${formatted}` : undefined"
     @contextmenu.prevent="onContextMenu"
@@ -13,21 +17,11 @@
       </span>
     </span>
     <span v-if="showTimestamp" class="col-time">{{ timestamp }}</span>
-    <span
-      v-if="useHtml"
-      class="col-data data ansi-data"
-      :class="{ 'preserve-line-breaks': preserveLineBreaks }"
-      :title="dataTitle"
-    >
+    <span v-if="useHtml" class="col-data data ansi-data" :class="dataClasses" :title="dataTitle">
       <span v-if="omittedLabel" class="data-omitted">{{ omittedLabel }}</span>
-      <span v-html="formattedHtml"></span>
+      <span v-html="formatted"></span>
     </span>
-    <span
-      v-else
-      class="col-data data"
-      :class="{ 'preserve-line-breaks': preserveLineBreaks }"
-      :title="dataTitle"
-    >
+    <span v-else class="col-data data" :class="dataClasses" :title="dataTitle">
       <span v-if="omittedLabel" class="data-omitted">{{ omittedLabel }}</span>
       <template v-if="preserveLineBreaks">
         <template v-if="plainLineBreaks">{{ formatted }}</template>
@@ -44,7 +38,9 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { DataFrame } from '../../types';
+import { CAPTURE_ORIGIN_I18N, captureFrameIdentity } from '../../lib/capture-stream';
 import { formatBytes } from '../../lib/format';
+import { t } from '../../lib/i18n';
 import { splitLogDisplayLines } from '../../lib/log-line-breaks';
 
 const props = withDefaults(
@@ -57,16 +53,22 @@ const props = withDefaults(
     displayLabel: string;
     useHtml: boolean;
     preserveLineBreaks?: boolean;
-    /** Split on raw '\n' only, skipping the log-record prefix heuristic.
-     * HEXASCII dumps need this: their ASCII gutter can contain text like
-     * "I: " that the heuristic would otherwise re-flow onto new lines. */
     plainLineBreaks?: boolean;
+    softWrap?: boolean;
+    hexMode?: boolean;
     highlightClass?: string | null;
     highlightLabel?: string | null;
     selected?: boolean;
     striped?: boolean;
   }>(),
-  { preserveLineBreaks: false, plainLineBreaks: false, selected: false, striped: false },
+  {
+    preserveLineBreaks: false,
+    plainLineBreaks: false,
+    softWrap: false,
+    hexMode: false,
+    selected: false,
+    striped: false,
+  },
 );
 
 const emit = defineEmits<{
@@ -74,22 +76,29 @@ const emit = defineEmits<{
 }>();
 
 const directionClass = computed(() => props.frame.direction.toLowerCase());
-// TX leaves the host (up), RX arrives at the host (down). A glyph (not an SVG
-// icon) keeps the packet list inside the bundle-size gate.
 const directionArrow = computed(() => (props.frame.direction === 'TX' ? '↑' : '↓'));
 const omittedLabel = computed(() =>
   props.frame.omittedBytes ? `… ${formatBytes(props.frame.omittedBytes)} omitted · ` : '',
 );
+const captureMeta = computed(() => {
+  const identity = captureFrameIdentity(props.frame);
+  if (!identity) return undefined;
+  return `#${identity.captureSeq} · ${t(CAPTURE_ORIGIN_I18N[identity.origin])}`;
+});
 const dataTitle = computed(() => {
   const preview = props.formatted.length > 240 ? props.formatted.slice(0, 240) + '…' : undefined;
-  if (!props.frame.omittedBytes) return preview;
-  const omitted = `${props.frame.omittedBytes.toLocaleString()} bytes omitted; `;
-  return omitted + (preview ?? props.formatted);
+  const body = !props.frame.omittedBytes
+    ? preview
+    : `${props.frame.omittedBytes.toLocaleString()} bytes omitted; ` + (preview ?? props.formatted);
+  const meta = captureMeta.value;
+  return meta ? `${meta}\n${body}` : body;
 });
 const formattedLines = computed(() => splitLogDisplayLines(props.formatted));
-const formattedHtml = computed(() =>
-  props.preserveLineBreaks ? formattedLines.value.join('<br>') : props.formatted,
-);
+const dataClasses = computed(() => ({
+  'preserve-line-breaks': props.preserveLineBreaks,
+  'soft-wrap': props.softWrap,
+  'hex-wrap': props.hexMode,
+}));
 
 function onContextMenu(ev: MouseEvent) {
   emit('contextmenu', ev, props.frame);
@@ -97,13 +106,6 @@ function onContextMenu(ev: MouseEvent) {
 </script>
 
 <style scoped>
-/*
- * Instrument-grade packet row. Pure presentational + v-memo-friendly: the
- * parent pre-formats `formatted`/`timestamp` (shared LRU cache) and passes
- * stable string props, so unchanged rows skip the v-html diff entirely.
- * The .packet-row grid and .col-* column rules live in
- * styles/packet-columns.css, shared with DataPacketList.vue's header.
- */
 .packet-item {
   border-bottom: 1px solid var(--border-subtle);
   transition:
@@ -113,7 +115,10 @@ function onContextMenu(ev: MouseEvent) {
   overflow: hidden;
 }
 
-/* Zebra tint must sit below hover/selection so those states always win. */
+.packet-item.wrap-enabled {
+  align-items: start;
+}
+
 .packet-item.striped {
   background-color: var(--surface-lift);
 }
@@ -172,8 +177,6 @@ function onContextMenu(ev: MouseEvent) {
   background-image: linear-gradient(90deg, var(--accent-violet-subtle), transparent 260px);
 }
 
-/* Keyboard/context-menu selection. An inset outline (not box-shadow) keeps the
-   highlight rules' inset shadows intact when both states apply. */
 .packet-item.selected {
   background-color: var(--bg-selected);
   outline: 1px solid var(--border-color);
@@ -200,8 +203,6 @@ function onContextMenu(ev: MouseEvent) {
   line-height: 1;
 }
 
-/* Badge text stays dark in both themes: the TX/RX accent hues are
-   theme-invariant saturated colors, so a fixed dark ink keeps contrast. */
 .packet-item.tx .direction-badge {
   color: var(--text-on-bright-accent);
   background: var(--accent-green);
@@ -215,14 +216,7 @@ function onContextMenu(ev: MouseEvent) {
 }
 
 .ansi-data {
-  white-space: nowrap;
-  word-break: normal;
   font-variant-numeric: normal;
-}
-
-.col-data.preserve-line-breaks {
-  white-space: pre;
-  text-overflow: clip;
 }
 
 .data-omitted {

@@ -1,4 +1,5 @@
 import type { Direction } from './display';
+import type { CaptureOrigin, CaptureSequence } from './capture';
 
 /** Rust-owned serial send contract. Do not redefine these shapes in TS. */
 export type { SerialSendOutcome, SerialSendResult } from '../generated/ipc-contracts';
@@ -9,6 +10,10 @@ export interface DataFrame {
   direction: Direction;
   timestamp: number;
   data: Uint8Array;
+  /** Monotonic append-order index within the session capture stream. */
+  captureSeq?: CaptureSequence;
+  /** Ingress path that produced this frame. */
+  origin?: CaptureOrigin;
   /**
    * Monotonic display-content revision. Normal source frames omit it; merged
    * rope rows use it so virtualized rendering can update a stable row id.

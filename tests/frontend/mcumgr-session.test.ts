@@ -57,6 +57,7 @@ function createHarness(options: { connected?: boolean; portName?: string } = {})
       if (resumeResult.value) isConnected.value = true;
       return resumeResult.value;
     },
+    ingestTraceFrames: () => undefined,
     setConfig: (patch) => {
       patches.push(patch);
       session.value!.mcumgrConfig = { ...session.value!.mcumgrConfig, ...patch };
@@ -74,6 +75,47 @@ function createHarness(options: { connected?: boolean; portName?: string } = {})
     resumeResult,
   };
 }
+
+test('busy stays true until the yielded connection is restored', async () => {
+  const session = ref({
+    id: 's1',
+    portName: '/dev/ttyUSB0',
+    portConfig: { baudRate: 115_200 },
+    mcumgrConfig: { ...DEFAULT_MCUMGR_CONFIG, shellHistory: [] },
+  } as SerialSession);
+  const isConnected = ref(true);
+  let releaseResume: (() => void) | undefined;
+  const resumeGate = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  const controller = useSessionMcumgr({
+    session: session as never,
+    isConnected,
+    suspendConnection: async () => {
+      isConnected.value = false;
+    },
+    resumeConnection: async () => {
+      await resumeGate;
+      isConnected.value = true;
+      return true;
+    },
+    ingestTraceFrames: () => undefined,
+    setConfig: () => undefined,
+  });
+  mocked.invoke.mockResolvedValue({ resultJson: '{}' });
+
+  const pending = controller.execute('echo', { kind: 'os-echo', message: 'hi' });
+  await Promise.resolve();
+  assert.equal(controller.busy.value, true);
+  assert.equal(controller.portYielding.value, true);
+
+  releaseResume?.();
+  await pending;
+
+  assert.equal(controller.busy.value, false);
+  assert.equal(controller.portYielding.value, false);
+  assert.equal(isConnected.value, true);
+});
 
 test('execute yields the port around the invoke and restores the connection', async () => {
   const harness = createHarness({ connected: true });
@@ -124,24 +166,25 @@ test('execute reports a noPort error without invoking when the session has no po
   assert.equal(harness.controller.status.value.kind, 'error');
 });
 
-test('device errors surface rc and group and still restore the connection', async () => {
+test('device errors surface localized messages and still restore the connection', async () => {
   const harness = createHarness({ connected: true });
   mocked.invoke.mockRejectedValue({
     kind: 'device',
-    message: 'device rejected the request (group 1, rc 3)',
-    rc: 3,
-    group: 1,
+    message: 'MGMT_ERR_ENOTSUP',
+    rc: 8,
+    group: 0,
   });
 
   const result = await harness.controller.execute('image-state', { kind: 'image-state' });
 
   assert.equal(result, null);
-  assert.deepEqual(harness.controller.status.value, {
-    kind: 'error',
-    message: 'device rejected the request (group 1, rc 3)',
-    rc: 3,
-    group: 1,
-  });
+  assert.equal(harness.controller.status.value.kind, 'error');
+  if (harness.controller.status.value.kind === 'error') {
+    assert.match(harness.controller.status.value.message, /不支持|not supported/i);
+    assert.equal(harness.controller.status.value.rc, 8);
+    assert.equal(harness.controller.status.value.group, 0);
+  }
+  assert.match(harness.controller.lastResult.value, /镜像状态|Image state/);
   assert.equal(harness.resumes.length, 1);
 });
 
@@ -233,6 +276,36 @@ test('resume failures after the operation surface as an error status', async () 
   // All retry delays exhausted (immediate + 1s + 2.5s backoff attempts).
   assert.equal(harness.resumes.length, 3);
   assert.equal(harness.controller.status.value.kind, 'error');
+});
+
+test('cancel unblocks the UI while a hung invoke is still in flight', async () => {
+  const harness = createHarness({ connected: true });
+  mocked.invoke.mockImplementation(
+    (command) =>
+      new Promise((resolve) => {
+        if (command === 'mcumgr_cancel') {
+          resolve(undefined);
+          return;
+        }
+        // Intentionally never resolve mcumgr_execute — mirrors a stuck open after
+        // the OS serial permission dialog or a silent auto-frame negotiation.
+      }),
+  );
+
+  const pending = harness.controller.execute('echo', { kind: 'os-echo', message: 'hi' });
+  await Promise.resolve();
+  assert.equal(harness.controller.busy.value, true);
+  assert.equal(harness.suspends.length, 1);
+
+  harness.controller.cancel();
+  await pending;
+
+  assert.equal(harness.controller.busy.value, false);
+  assert.equal(harness.resumes.length, 1);
+  assert.equal(
+    mocked.invoke.mock.calls.some((call) => call[0] === 'mcumgr_cancel'),
+    true,
+  );
 });
 
 test('rememberShell appends deduplicated history through setConfig', () => {

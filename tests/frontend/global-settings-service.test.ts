@@ -216,6 +216,7 @@ test('the persisted document contains no secrets or sidebar state', async () => 
       'selectedPort',
       'sendAsHex',
       'showTimestamp',
+      'softWrapEnabled',
       'theme',
       'version',
     ]);

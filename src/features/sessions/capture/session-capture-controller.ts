@@ -7,6 +7,7 @@ import {
   resetSessionFrames,
   trimSessionsToGlobalByteLimit,
 } from '../../../lib/session-store-helpers';
+import { defaultCaptureOrigin } from '../../../lib/capture-stream';
 import { CaptureAccountingStore } from '../../application';
 import type { DataFrame } from '../../../types/serial';
 import type { SerialSession } from '../../../types/session';
@@ -80,11 +81,22 @@ export function createSessionCaptureController({
     frameVersions[sessionId] = getSessionFramesVersion(sessionId) + 1;
   }
 
+  function maxCaptureSeq(session: SerialSession): number {
+    let max = -1;
+    for (const frame of session.frames) {
+      if (frame.captureSeq !== undefined && frame.captureSeq > max) max = frame.captureSeq;
+    }
+    for (const frame of session.pausedFrames) {
+      if (frame.captureSeq !== undefined && frame.captureSeq > max) max = frame.captureSeq;
+    }
+    return max;
+  }
+
   function initializeSession(session: SerialSession): void {
     const retainedBytes = frameBuffersByteLength(session);
     frameVersions[session.id] = 0;
     accounting.registerSession(session.id, {
-      nextSequence: 0,
+      nextSequence: Math.max(0, maxCaptureSeq(session) + 1),
       frameCount: 0,
       captureBytes: retainedBytes,
     });
@@ -181,13 +193,22 @@ export function createSessionCaptureController({
 
   function addFrame(
     sessionId: string,
-    frame: Omit<DataFrame, 'id' | 'timestamp'>,
+    frame: Omit<DataFrame, 'id' | 'timestamp' | 'captureSeq'> &
+      Partial<Pick<DataFrame, 'timestamp' | 'captureSeq' | 'origin'>>,
     options: { publish?: boolean } = {},
   ): DataFrame | undefined {
     if (!canCaptureRuntimeEvents(sessionId, frame)) return undefined;
     const session = findSession(sessionId);
     if (!session) return undefined;
-    const fullFrame = decorateFrame({ ...frame, id: createId(), timestamp: now() });
+    const captureSeq = frame.captureSeq ?? accounting.allocateNextFrameSequence(sessionId);
+    const origin = frame.origin ?? defaultCaptureOrigin(frame.direction);
+    const fullFrame = decorateFrame({
+      ...frame,
+      captureSeq,
+      origin,
+      id: createId(),
+      timestamp: frame.timestamp ?? now(),
+    });
     const currentBytes = retainedSessionBytes(sessionId, session);
     const trim = appendFrameToSession(unwrapSession(session), fullFrame, getMaxBufferFrames(), {
       currentBytes,
@@ -242,6 +263,7 @@ export function createSessionCaptureController({
     const hadFrames = session.frames.length > 0 || session.pausedFrames.length > 0;
     if (hadFrames) setRetainedFrameBytes(sessionId, 0);
     resetSessionFrames(session);
+    accounting.resetFrameSequence(sessionId);
     if (hadFrames) notifyFramesChanged(sessionId);
     notifyFramesCleared(sessionId);
     scheduleFramesPersist();

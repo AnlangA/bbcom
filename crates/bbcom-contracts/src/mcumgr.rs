@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::Direction;
+
 /// How the Rust MCUmgr backend opens the serial port for one operation. The
 /// frontend yields the port (clean close) before invoking and reconnects after
 /// the command settles, so every operation is stateless on the Rust side.
@@ -76,12 +78,25 @@ pub struct McumgrExecuteRequest {
     pub op: McumgrOp,
 }
 
+/// One wire-level serial capture recorded while the Rust MCUmgr backend owned
+/// the port. Replayed into the session frame buffer on the frontend.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct McumgrTraceFrame {
+    pub direction: Direction,
+    #[ts(type = "number")]
+    pub timestamp_ms: u64,
+    pub data: Vec<u8>,
+}
+
 /// Result of a quick command: the device response rendered as a JSON value.
 /// The panel pretty-prints it; no per-command response mirror is maintained.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct McumgrCommandResult {
     pub result_json: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace_frames: Vec<McumgrTraceFrame>,
 }
 
 /// Stable failure classes; the UI branches on `kind`, never on prose.
@@ -241,4 +256,5 @@ pub struct McumgrFsDownloadResult {
     #[ts(type = "number")]
     pub bytes: u64,
     pub display_name: String,
+    pub trace_frames: Vec<McumgrTraceFrame>,
 }

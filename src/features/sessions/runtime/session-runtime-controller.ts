@@ -8,6 +8,7 @@ import {
 } from '../../../composables/useSerialConnection';
 import { useSessionModbus } from '../../../composables/useSessionModbus';
 import { useSessionMcumgr } from '../../../composables/useSessionMcumgr';
+import { mcumgrTraceFramesToDataFrames } from '../../../lib/mcumgr-trace';
 import { useTriggers } from '../../../composables/useTriggers';
 import { useAutoLog } from '../../../composables/useAutoLog';
 import { useMacroRunner } from '../../../composables/useMacroRunner';
@@ -109,6 +110,8 @@ export interface SessionRuntimeController {
   readonly instanceId: string;
   readonly isConnecting: Readonly<Ref<boolean>>;
   readonly isConnected: Readonly<Ref<boolean>>;
+  /** UI link state: open handle or MCUmgr port-yield in progress. */
+  readonly sessionLinkUp: Readonly<Ref<boolean>>;
   readonly reconnecting: Readonly<Ref<boolean>>;
   readonly error: Readonly<Ref<string | null>>;
   readonly connectionFailure: Readonly<Ref<SerialConnectionFailure | null>>;
@@ -335,6 +338,13 @@ export function useSessionRuntimeController(
       await serial.stop();
     },
     resumeConnection: () => serial.start(),
+    ingestTraceFrames: (frames) => {
+      const mapped = mcumgrTraceFramesToDataFrames(frames);
+      for (const frame of mapped) {
+        capture.add(frame, { publish: false });
+      }
+      if (mapped.length > 0) capture.publish();
+    },
     setConfig: (patch) => sessionDocument.setMcumgrConfig(session.value.id, patch),
   });
   const modbus = useSessionModbus({
@@ -580,11 +590,14 @@ export function useSessionRuntimeController(
     void dispose();
   });
 
+  const sessionLinkUp = computed(() => serial.isConnected.value || mcumgr.portYielding.value);
+
   return {
     sessionId: session.value.id,
     instanceId,
     isConnecting: readonly(serial.isConnecting),
     isConnected: readonly(serial.isConnected),
+    sessionLinkUp: readonly(sessionLinkUp),
     reconnecting: readonly(serial.reconnecting),
     error: readonly(connectionErrorText),
     connectionFailure: readonly(serial.connectionFailure),
