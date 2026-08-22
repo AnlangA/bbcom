@@ -110,6 +110,7 @@
             appStore.displayMode,
             appStore.ansiColorEnabled,
             appStore.preserveLogLineBreaks,
+            appStore.softWrapEnabled,
             appStore.showTimestamp,
             row.highlightClass,
             row.striped,
@@ -126,6 +127,8 @@
             :use-html="useHtml"
             :preserve-line-breaks="preserveLineBreaks"
             :plain-line-breaks="plainLineBreaks"
+            :soft-wrap="softWrapEnabled"
+            :hex-mode="hexWrapMode"
             :highlight-class="row.highlightClass"
             :highlight-label="row.highlightLabel"
             :striped="row.striped"
@@ -148,7 +151,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, ref, toRef, watch } from 'vue';
+import { computed, inject, onMounted, onUnmounted, ref, toRef, watch } from 'vue';
 import { NButtonGroup, NButton, NInput, NDropdown, useMessage } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
 import { Cable, Copy, Search } from '@lucide/vue';
@@ -282,10 +285,32 @@ const preserveLineBreaks = computed(() => {
 // prefix heuristic would re-flow, so HEXASCII rows split on raw '\n' only.
 const plainLineBreaks = computed(() => appStore.displayMode === 'HEXASCII');
 
+const softWrapEnabled = computed(() => appStore.softWrapEnabled);
+
+const hexWrapMode = computed(
+  () =>
+    softWrapEnabled.value &&
+    (appStore.displayMode === 'HEX' || appStore.displayMode === 'HEXASCII'),
+);
+
+const layoutVersion = ref(0);
+let resizeObserver: ResizeObserver | null = null;
+let resizeRafId: number | null = null;
+
+function formatFrameForDisplay(frame: DataFrame): string {
+  return formatFrame(frame, {
+    preserveLineBreaks: preserveLineBreaks.value,
+    plainLineBreaks: plainLineBreaks.value,
+  });
+}
+
 const rowSizeVersion = computed(() =>
   [
     appStore.displayMode,
     appStore.preserveLogLineBreaks,
+    appStore.softWrapEnabled,
+    appStore.showTimestamp,
+    layoutVersion.value,
     frameReplacementVersion.value,
     appStore.packetViewMode === 'MERGED' ? framesVersion.value : 0,
   ].join(':'),
@@ -302,11 +327,7 @@ const {
   frameCount: visibleFrameCount,
   autoScroll: computed(() => appStore.autoScroll),
   rowSize: (index) =>
-    packetRowHeight(
-      visibleFrames.value[index],
-      appStore.displayMode,
-      appStore.preserveLogLineBreaks,
-    ),
+    packetRowHeight(visibleFrames.value[index], appStore.displayMode, preserveLineBreaks.value),
   itemKey: (index) => visibleFrames.value[index]?.id ?? index,
   rowSizeVersion,
 });
@@ -333,12 +354,15 @@ const rows = computed<PacketRowData[]>(() => {
   // after buffer trimming.
   void framesVersion.value;
   void visibleFrameCount.value;
+  void preserveLineBreaks.value;
+  void plainLineBreaks.value;
+  void appStore.ansiColorEnabled;
 
   return buildPacketRows({
     virtualItems: virtualItems.value,
     frames: visibleFrames.value,
     highlights: props.highlights,
-    formatFrame,
+    formatFrame: formatFrameForDisplay,
     getHexSearchData,
     getTextSearchData,
   });
@@ -440,6 +464,25 @@ async function handleCopySelect(key: string) {
     message.error(t('packet.copyFailed'));
   }
 }
+
+onMounted(() => {
+  const el = scrollRef.value;
+  if (!el) return;
+  resizeObserver = new ResizeObserver(() => {
+    if (resizeRafId !== null) return;
+    resizeRafId = requestAnimationFrame(() => {
+      resizeRafId = null;
+      layoutVersion.value += 1;
+    });
+  });
+  resizeObserver.observe(el);
+});
+
+onUnmounted(() => {
+  if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+});
 </script>
 
 <style scoped>

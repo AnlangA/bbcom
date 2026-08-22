@@ -29,6 +29,7 @@ export interface GlobalSettingsV2 {
   loopIntervalMs: number;
   ansiColorEnabled: boolean;
   preserveLogLineBreaks: boolean;
+  softWrapEnabled: boolean;
   maxBufferFrames: number;
   autoReconnect: boolean;
   selectedPort: string;
@@ -120,6 +121,7 @@ export function defaultGlobalSettings(): GlobalSettingsV2 {
     loopIntervalMs: 1000,
     ansiColorEnabled: true,
     preserveLogLineBreaks: true,
+    softWrapEnabled: true,
     maxBufferFrames: 20_000,
     autoReconnect: false,
     selectedPort: '',
@@ -153,6 +155,7 @@ export function normalizeGlobalSettings(raw: unknown): GlobalSettingsV2 | null {
     loopIntervalMs: readNumber(raw.loopIntervalMs, defaults.loopIntervalMs),
     ansiColorEnabled: readBoolean(raw.ansiColorEnabled, defaults.ansiColorEnabled),
     preserveLogLineBreaks: readBoolean(raw.preserveLogLineBreaks, defaults.preserveLogLineBreaks),
+    softWrapEnabled: readBoolean(raw.softWrapEnabled, defaults.softWrapEnabled),
     maxBufferFrames: readNumber(raw.maxBufferFrames, defaults.maxBufferFrames),
     autoReconnect: readBoolean(raw.autoReconnect, defaults.autoReconnect),
     selectedPort: readString(raw.selectedPort, defaults.selectedPort),
@@ -186,6 +189,7 @@ export function migrateLegacyGlobalSettings(
   if (typeof app.ansiColorEnabled === 'boolean') settings.ansiColorEnabled = app.ansiColorEnabled;
   if (typeof app.preserveLogLineBreaks === 'boolean')
     settings.preserveLogLineBreaks = app.preserveLogLineBreaks;
+  if (typeof app.softWrapEnabled === 'boolean') settings.softWrapEnabled = app.softWrapEnabled;
   if (typeof app.maxBufferFrames === 'number' && Number.isFinite(app.maxBufferFrames))
     settings.maxBufferFrames = app.maxBufferFrames;
   if (typeof app.autoReconnect === 'boolean') settings.autoReconnect = app.autoReconnect;

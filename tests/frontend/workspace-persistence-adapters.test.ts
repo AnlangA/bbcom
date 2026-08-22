@@ -626,6 +626,7 @@ test('frame adapter round-trips bytes over the base64 IPC channel', () => {
     requestedBytes: 5,
   });
   assert.deepEqual(Array.from(hydrated.data), [0, 1, 2, 254, 255]);
+  assert.equal(hydrated.captureSeq, 0);
 
   assert.throws(
     () =>

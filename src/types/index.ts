@@ -7,6 +7,7 @@
 //
 // Domains:
 //   display   — display/view/filter primitives
+//   capture   — capture origin and sequence identity
 //   serial    — DataFrame, PortConfig, send history, quick commands
 //   macros    — macros, triggers, highlight rules
 //   modbus    — register model + master config
@@ -17,6 +18,7 @@
 //   constants — numeric budget limits
 
 export * from './display';
+export * from './capture';
 export * from './errors';
 export * from './serial';
 export * from './macros';

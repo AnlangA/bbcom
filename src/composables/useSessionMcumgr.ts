@@ -65,7 +65,11 @@ export function useSessionMcumgr({
 }: UseSessionMcumgrOptions) {
   const status = ref<McumgrClientStatus>({ kind: 'idle' });
   const lastResult = ref('');
-  const busy = computed(() => status.value.kind === 'busy' || status.value.kind === 'progress');
+  /** True while a yielded session port is suspended or being restored. */
+  const portYielding = ref(false);
+  const busy = computed(
+    () => portYielding.value || status.value.kind === 'busy' || status.value.kind === 'progress',
+  );
   let runGeneration = 0;
   let rejectActiveRun: ((error: McumgrError) => void) | null = null;
 
@@ -114,6 +118,7 @@ export function useSessionMcumgr({
     status.value = { kind: 'busy', action };
     lastResult.value = '';
     const wasConnected = isConnected.value;
+    portYielding.value = wasConnected;
     let outcome: T | null = null;
     const cancelRace = new Promise<never>((_, reject) => {
       rejectActiveRun = reject;
@@ -124,15 +129,23 @@ export function useSessionMcumgr({
       }
       if (generation !== runGeneration) throw cancelledError();
       outcome = await Promise.race([work(port), cancelRace]);
-      if (generation === runGeneration) status.value = { kind: 'idle' };
     } catch (error) {
       if (generation === runGeneration) applyFailure(error);
     } finally {
       if (generation === runGeneration) rejectActiveRun = null;
-      // Always restore a yielded port, including after a UI-side cancel that
-      // abandoned the in-flight invoke so controls can recover immediately.
-      if (wasConnected && !(await resumeWithRetry())) {
-        status.value = { kind: 'error', message: t('mcumgr.error.resumeFailed') };
+      const statusKind = status.value.kind;
+      const returnToIdle = statusKind === 'busy' || statusKind === 'progress';
+      let resumeFailed = false;
+      try {
+        if (wasConnected && !(await resumeWithRetry())) {
+          resumeFailed = true;
+          status.value = { kind: 'error', message: t('mcumgr.error.resumeFailed') };
+        }
+      } finally {
+        portYielding.value = false;
+        if (returnToIdle && !resumeFailed) {
+          status.value = { kind: 'idle' };
+        }
       }
     }
     return generation === runGeneration ? outcome : null;
@@ -294,6 +307,7 @@ export function useSessionMcumgr({
     status,
     lastResult,
     busy,
+    portYielding,
     execute,
     firmwareUpdate,
     imageUpload,

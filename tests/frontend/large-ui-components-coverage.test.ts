@@ -607,6 +607,7 @@ function runtimeController() {
   };
   const runtime = {
     isConnected: ref(true),
+    sessionLinkUp: ref(true),
     isConnecting: ref(false),
     reconnecting: ref(false),
     error: ref<string | null>(null),
@@ -639,6 +640,7 @@ function runtimeController() {
       status: ref({ kind: 'idle' as const }),
       lastResult: ref(''),
       busy: computed(() => false),
+      portYielding: ref(false),
       run: method(),
       cancel: method(),
       patchConfig: method(),

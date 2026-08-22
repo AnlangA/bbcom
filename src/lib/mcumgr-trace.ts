@@ -8,5 +8,6 @@ export function mcumgrTraceFramesToDataFrames(
     direction: frame.direction as Direction,
     timestamp: frame.timestampMs,
     data: new Uint8Array(frame.data),
+    origin: 'mcumgr-trace' as const,
   }));
 }

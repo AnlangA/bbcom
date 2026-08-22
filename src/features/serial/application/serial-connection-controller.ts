@@ -1034,7 +1034,7 @@ export function createSerialConnectionController(
     const { chunks, byteLength } = rxQueue.drain();
     const frame = sink.addFrame(
       sessionId,
-      { direction: 'RX', data: concatUint8Arrays(chunks, byteLength) },
+      { direction: 'RX', data: concatUint8Arrays(chunks, byteLength), origin: 'serial-rx' },
       { publish: false },
     );
     if (!frame) return;
@@ -1097,6 +1097,7 @@ export function createSerialConnectionController(
       const txFrame = sink.addFrame(sessionId, {
         direction: 'TX',
         data: payload.slice(0, result.sentBytes),
+        origin: 'serial-tx',
         txStatus: result.outcome === 'complete' ? 'complete' : 'partial-unknown',
         requestedBytes: result.requestedBytes,
       });

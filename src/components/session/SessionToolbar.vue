@@ -48,7 +48,7 @@
           {{ t('session.clear') }}
         </n-button>
         <n-button
-          v-if="session.isConnected"
+          v-if="isConnected"
           size="small"
           ghost
           :type="session.capturePaused ? 'warning' : 'default'"
@@ -62,7 +62,7 @@
           {{ session.capturePaused ? t('session.resume') : t('session.pause') }}
         </n-button>
         <n-button
-          v-if="session.isConnected"
+          v-if="isConnected"
           size="small"
           ghost
           :loading="sendingBreak"
@@ -250,6 +250,20 @@
             class="toggle-btn"
             size="small"
             quaternary
+            :type="appStore.softWrapEnabled ? 'primary' : 'default'"
+            :title="t('toolbar.softWrap.title')"
+            :aria-label="t('toolbar.softWrap')"
+            :aria-pressed="appStore.softWrapEnabled"
+            @click="appStore.toggleSoftWrap"
+          >
+            <template #icon>
+              <AlignJustify class="icon-sm" />
+            </template>
+          </n-button>
+          <n-button
+            class="toggle-btn"
+            size="small"
+            quaternary
             :type="appStore.showTimestamp ? 'primary' : 'default'"
             :title="t('toolbar.timestamp')"
             :aria-label="t('toolbar.timestamp')"
@@ -301,6 +315,7 @@
 import { NButton, NTag } from 'naive-ui';
 import AppSelect from '../ui/AppSelect.vue';
 import {
+  AlignJustify,
   ArrowDownUp,
   Binary,
   Cable,

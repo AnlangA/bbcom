@@ -76,6 +76,47 @@ function createHarness(options: { connected?: boolean; portName?: string } = {})
   };
 }
 
+test('busy stays true until the yielded connection is restored', async () => {
+  const session = ref({
+    id: 's1',
+    portName: '/dev/ttyUSB0',
+    portConfig: { baudRate: 115_200 },
+    mcumgrConfig: { ...DEFAULT_MCUMGR_CONFIG, shellHistory: [] },
+  } as SerialSession);
+  const isConnected = ref(true);
+  let releaseResume: (() => void) | undefined;
+  const resumeGate = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  const controller = useSessionMcumgr({
+    session: session as never,
+    isConnected,
+    suspendConnection: async () => {
+      isConnected.value = false;
+    },
+    resumeConnection: async () => {
+      await resumeGate;
+      isConnected.value = true;
+      return true;
+    },
+    ingestTraceFrames: () => undefined,
+    setConfig: () => undefined,
+  });
+  mocked.invoke.mockResolvedValue({ resultJson: '{}' });
+
+  const pending = controller.execute('echo', { kind: 'os-echo', message: 'hi' });
+  await Promise.resolve();
+  assert.equal(controller.busy.value, true);
+  assert.equal(controller.portYielding.value, true);
+
+  releaseResume?.();
+  await pending;
+
+  assert.equal(controller.busy.value, false);
+  assert.equal(controller.portYielding.value, false);
+  assert.equal(isConnected.value, true);
+});
+
 test('execute yields the port around the invoke and restores the connection', async () => {
   const harness = createHarness({ connected: true });
   mocked.invoke.mockImplementation(async (command, args) => {

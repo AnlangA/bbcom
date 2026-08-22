@@ -138,3 +138,14 @@ test('returned totals snapshots are frozen and do not alias internal rows', () =
   assert.equal(Object.isFrozen(snapshot), true);
   assert.equal(Object.isFrozen(store.workspaceTotals()), true);
 });
+
+test('allocateNextFrameSequence reserves monotonic values; resetFrameSequence clears counter', () => {
+  const store = new CaptureAccountingStore();
+  store.registerSession('s1', { nextSequence: 2, frameCount: 0, captureBytes: 0 });
+  assert.equal(store.allocateNextFrameSequence('s1'), 2);
+  assert.equal(store.allocateNextFrameSequence('s1'), 3);
+  assert.equal(store.nextFrameSequence('s1'), 4);
+  store.resetFrameSequence('s1');
+  assert.equal(store.nextFrameSequence('s1'), 0);
+  assert.equal(store.allocateNextFrameSequence('s1'), 0);
+});

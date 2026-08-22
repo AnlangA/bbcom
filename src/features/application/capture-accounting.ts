@@ -162,6 +162,22 @@ export class CaptureAccountingStore {
   }
 
   /**
+   * Reserve the next monotonic capture sequence for one session and advance
+   * the counter. Pair with {@link recordFrames} when persisting counts/bytes.
+   */
+  allocateNextFrameSequence(sessionId: string): number {
+    const row = this.sessionRow(sessionId);
+    const sequence = row.nextSequence;
+    row.nextSequence = sequence + 1;
+    return sequence;
+  }
+
+  /** Reset only the append sequence (for example after clearing capture). */
+  resetFrameSequence(sessionId: string): void {
+    this.sessionRow(sessionId).nextSequence = 0;
+  }
+
+  /**
    * Overwrite one session's append sequence after reserving a frame. Does not
    * touch counts or bytes; pair with {@link recordFrames}.
    */

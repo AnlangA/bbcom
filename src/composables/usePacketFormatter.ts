@@ -1,5 +1,4 @@
 import { watch, type Ref } from 'vue';
-import { AnsiUp } from 'ansi_up';
 import {
   formatAscii,
   formatHex,
@@ -8,6 +7,7 @@ import {
   stripAnsiEscapes,
   toContinuousHex,
 } from '../lib/format';
+import { createPacketAnsiUp, renderPacketAnsiHtml } from '../lib/packet-ansi';
 import {
   TERMINAL_CACHE_ENTRY_MAX_BYTES,
   TERMINAL_CACHE_MAX_BYTES,
@@ -18,6 +18,11 @@ import {
 interface PacketFormatterOptions {
   displayMode: Ref<DisplayMode>;
   ansiColorEnabled: Ref<boolean>;
+}
+
+export interface PacketFrameDisplayOptions {
+  preserveLineBreaks: boolean;
+  plainLineBreaks: boolean;
 }
 
 interface CacheEntry {
@@ -112,27 +117,27 @@ class SharedStringCache {
 
 export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketFormatterOptions) {
   const cache = new SharedStringCache();
-  const ansiUp = new AnsiUp();
-  ansiUp.use_classes = false;
-  ansiUp.escape_html = true;
-  ansiUp.url_allowlist = {};
+  const ansiUp = createPacketAnsiUp();
 
-  function formatRaw(frame: DataFrame): string {
+  function decodePlainText(frame: DataFrame): string {
+    return displayMode.value === 'UTF8' ? formatUtf8(frame.data) : formatAscii(frame.data);
+  }
+
+  function formatRaw(frame: DataFrame, display?: PacketFrameDisplayOptions): string {
     switch (displayMode.value) {
       case 'HEX':
         return formatHex(frame.data);
       case 'HEXASCII':
-        // Hex-editor dump: 16 bytes per line plus an ASCII gutter. Never passes
-        // through ansi_up — the multi-line plain text is rendered as-is.
         return formatHexAscii(frame.data);
       case 'ANSI':
-      case 'ASCII': {
-        const text = formatAscii(frame.data);
-        return ansiColorEnabled.value ? ansiUp.ansi_to_html(text) : text;
-      }
+      case 'ASCII':
       case 'UTF8': {
-        const text = formatUtf8(frame.data);
-        return ansiColorEnabled.value ? ansiUp.ansi_to_html(text) : text;
+        const text = decodePlainText(frame);
+        return renderPacketAnsiHtml(text, ansiUp, {
+          colorEnabled: ansiColorEnabled.value,
+          preserveLineBreaks: display?.preserveLineBreaks ?? false,
+          plainLineBreaks: display?.plainLineBreaks ?? false,
+        });
       }
       default:
         return formatAscii(frame.data);
@@ -143,18 +148,21 @@ export function usePacketFormatter({ displayMode, ansiColorEnabled }: PacketForm
     return frame.id.startsWith('merged-') || frame.contentVersion !== undefined;
   }
 
-  function formatFrame(frame: DataFrame): string {
+  function formatFrame(frame: DataFrame, display?: PacketFrameDisplayOptions): string {
     // A rope row keeps its first-frame id while its tail/content version moves.
     // Its 64 KiB tail would also exceed the per-entry cache ceiling in HEX
     // mode, so format it directly and leave the shared cache for small source
     // frames that are reused by virtual rows and filtering.
-    if (isMerged(frame)) return formatRaw(frame);
+    if (isMerged(frame)) return formatRaw(frame, display);
 
-    const key = `format:${frame.id}:${displayMode.value}:${ansiColorEnabled.value}`;
+    const displayKey = display
+      ? `${display.preserveLineBreaks ? 'lb1' : 'lb0'}:${display.plainLineBreaks ? 'pl1' : 'pl0'}`
+      : 'lb0:pl0';
+    const key = `format:${frame.id}:${displayMode.value}:${ansiColorEnabled.value}:${displayKey}`;
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
 
-    const result = formatRaw(frame);
+    const result = formatRaw(frame, display);
     cache.set(key, frame.id, result);
     return result;
   }

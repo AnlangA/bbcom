@@ -105,7 +105,9 @@
       />
     </div>
 
-    <div v-if="busy" class="mc-banner is-yield" role="status">{{ t('mcumgr.portYield') }}</div>
+    <div v-if="busy" class="mc-banner is-yield" role="status">
+      {{ yieldBannerText }}
+    </div>
     <div v-else-if="!isConnected" class="mc-banner is-offline" role="status">
       {{ t('mcumgr.offlineOk') }}
     </div>
@@ -703,6 +705,13 @@ const rawOpOptions = computed(() => [
 ]);
 
 const busy = computed(() => props.mcumgr.busy.value);
+const yieldBannerText = computed(() => {
+  const status = props.mcumgr.status.value;
+  if (status.kind === 'progress' || status.kind === 'busy') {
+    return t('mcumgr.portYield');
+  }
+  return t('mcumgr.portResume');
+});
 const hasResult = computed(() => props.mcumgr.lastResult.value.length > 0);
 const statusText = computed(() => {
   const status = props.mcumgr.status.value;

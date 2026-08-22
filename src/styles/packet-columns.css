@@ -41,6 +41,31 @@
   font-variant-numeric: tabular-nums;
 }
 
+.col-data.preserve-line-breaks {
+  white-space: pre;
+  text-overflow: clip;
+}
+
+.col-data.soft-wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  overflow: visible;
+}
+
+.col-data.soft-wrap.hex-wrap {
+  word-break: break-all;
+}
+
+.col-data.soft-wrap:not(.preserve-line-breaks) {
+  white-space: pre-wrap;
+}
+
+.packet-row.wrap-enabled {
+  align-items: start;
+}
+
 .col-mode {
   text-align: center;
   color: var(--text-dim);

@@ -35,6 +35,7 @@ export const useAppStore = defineStore('app', () => {
   const loopIntervalMs = ref(1000);
   const ansiColorEnabled = ref(true);
   const preserveLogLineBreaks = ref(true);
+  const softWrapEnabled = ref(true);
   const autoReconnect = ref(false);
   const theme = ref<'dark' | 'light'>('dark');
   const aiKeyStatus = ref<AiKeyStatus>(MISSING_AI_KEY_STATUS);
@@ -123,6 +124,13 @@ export const useAppStore = defineStore('app', () => {
       },
     },
     {
+      key: 'softWrapEnabled',
+      validate: (raw) => typeof raw === 'boolean',
+      apply: (raw) => {
+        softWrapEnabled.value = raw as boolean;
+      },
+    },
+    {
       key: 'maxBufferFrames',
       validate: (raw) => typeof raw === 'number',
       apply: (raw) => setMaxBufferFrames(raw as number),
@@ -170,6 +178,7 @@ export const useAppStore = defineStore('app', () => {
     loopIntervalMs,
     ansiColorEnabled,
     preserveLogLineBreaks,
+    softWrapEnabled,
     maxBufferFrames,
     autoReconnect,
     theme,
@@ -231,6 +240,10 @@ export const useAppStore = defineStore('app', () => {
 
   function toggleLogLineBreaks() {
     preserveLogLineBreaks.value = !preserveLogLineBreaks.value;
+  }
+
+  function toggleSoftWrap() {
+    softWrapEnabled.value = !softWrapEnabled.value;
   }
 
   function setSendAsHex(value: boolean) {
@@ -302,6 +315,7 @@ export const useAppStore = defineStore('app', () => {
     loopIntervalMs,
     ansiColorEnabled,
     preserveLogLineBreaks,
+    softWrapEnabled,
     aiKeyStatus,
     aiKeyConfigured,
     maxBufferFrames,
@@ -320,6 +334,7 @@ export const useAppStore = defineStore('app', () => {
     setLineEnding,
     toggleAnsiColor,
     toggleLogLineBreaks,
+    toggleSoftWrap,
     setSendAsHex,
     setLoopIntervalMs,
     setAiApiKey,

@@ -1,6 +1,11 @@
 import { storeToRefs } from 'pinia';
 import { computed, type ComputedRef, type DeepReadonly, type Ref } from 'vue';
 import type { DataFrame, PortConfig, SerialSession, SessionWaveformState } from '../../types';
+import {
+  findCaptureFrameBySeq,
+  sessionCaptureTimeline,
+  type SessionCaptureTimeline,
+} from '../../lib/capture-stream';
 import type { WorkspacePortHint, WorkspaceSessionKind } from '../../generated/ipc-contracts';
 import { useSessionCoreStore } from '../../stores/session-core';
 import type {
@@ -111,10 +116,13 @@ export interface SessionCatalogPort {
 export interface SessionCapturePort {
   readonly session: ComputedRef<SerialSession | null>;
   readonly framesVersion: ComputedRef<number>;
+  readonly timeline: ComputedRef<SessionCaptureTimeline | null>;
   add(
-    frame: Omit<DataFrame, 'id' | 'timestamp'> & Partial<Pick<DataFrame, 'timestamp'>>,
+    frame: Omit<DataFrame, 'id' | 'timestamp' | 'captureSeq'> &
+      Partial<Pick<DataFrame, 'timestamp' | 'captureSeq' | 'origin'>>,
     options?: { publish?: boolean },
   ): DataFrame | undefined;
+  frameAt(captureSeq: number): DataFrame | undefined;
   publish(): void;
   clear(): void;
   setPaused(paused: boolean): void;
@@ -208,10 +216,16 @@ export function useSessionCapture(sessionId: string): SessionCapturePort {
   const core = sessionCore();
   const refs = storeToRefs(core);
   const session = computed(() => refs.sessions.value.find((item) => item.id === sessionId) ?? null);
+  const timeline = computed(() => (session.value ? sessionCaptureTimeline(session.value) : null));
   return {
     session,
     framesVersion: computed(() => core.getSessionFramesVersion(sessionId)),
+    timeline,
     add: (frame, options) => core.addFrame(sessionId, frame, options),
+    frameAt: (captureSeq) => {
+      const view = timeline.value;
+      return view ? findCaptureFrameBySeq(view, captureSeq) : undefined;
+    },
     publish: () => core.publishSessionFrames(sessionId),
     clear: () => core.clearFrames(sessionId),
     setPaused: (paused) => core.setCapturePaused(sessionId, paused),

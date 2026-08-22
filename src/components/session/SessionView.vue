@@ -14,7 +14,7 @@
     <SessionToolbar
       :session="props.session"
       :frames-version="visibleFramesVersion"
-      :is-connected="runtime.isConnected.value"
+      :is-connected="runtime.sessionLinkUp.value"
       :is-connecting="runtime.isConnecting.value"
       :reconnecting="runtime.reconnecting.value"
       :error="runtime.error.value"
@@ -55,90 +55,88 @@
         @cancel="handleExportCancel"
       />
     </KeepAlive>
-    <div class="display-area" :class="{ 'display-area--split': viewMode !== 'terminal' }">
+    <div class="display-area">
       <!--
-        The packet list is always visible so TX/RX from every mode (shell,
-        modbus, MCUmgr, etc.) appears in the terminal view. Tool panels load on
-        first use below the list when a non-terminal mode is active.
+        Only one display mode renders at a time. Non-terminal panels load on
+        first use, then KeepAlive preserves their local viewport/editor state
+        while the user switches modes.
       -->
-      <DataPacketList
-        class="packet-pane"
-        :frames="props.session.frames"
-        :frames-version="visibleFramesVersion"
-        :highlights="props.session.highlights"
-      />
-      <div v-if="viewMode !== 'terminal'" class="tool-pane">
-        <KeepAlive :max="6">
-          <WaveformPanel
-            v-if="viewMode === 'waveform'"
-            ref="waveformRef"
-            :frames="props.session.frames"
-            :frames-version="visibleFramesVersion"
-            direction="RX"
-            :mode="props.session.waveformSourceMode"
-            :channel-labels="waveformChannelLabels"
-            :waveform="waveformState"
-            :can-edit="mutationPolicy.userMutationsAllowed.value"
-            :can-append="mutationPolicy.runtimeCaptureAllowed.value"
-            @toggle-mode="toggleWaveformSourceMode"
-            @append-samples="appendWaveformSamples"
-            @replace-samples="replaceWaveformSamples"
-            @set-channel-visibility="setWaveformChannelVisibility"
-            @update-frame-cursor="updateWaveformFrameCursor"
-            @commit-frame-ingest="commitWaveformFrameIngest"
-            @clear="clearWaveform"
-          />
-          <ModbusPanel
-            v-else-if="viewMode === 'modbus'"
-            :session-id="props.session.id"
-            :config="props.session.modbusConfig"
-            :registers="props.session.modbusRegisters"
-            :is-connected="runtime.isConnected.value"
-            :busy="modbusBusy"
-            :status-text="modbusStatusText"
-            :status-class="modbusStatusClass"
-            :replaying="master.replaying.value"
-            :write-source-name="writeSourceName"
-            :on-read-all="onModbusReadAll"
-            :on-read-row="onModbusReadRow"
-            :on-send-all="onModbusSendAll"
-            :on-send-row="onModbusSendRow"
-            :on-replay="onModbusReplay"
-            :on-stop-replay="onModbusStopReplay"
-            :on-load-write-source="onLoadWriteSource"
-            :on-clear-write-source="onClearWriteSource"
-            :on-pick-write-source="onPickWriteSource"
-            @plot-in-waveform="onPlotInWaveform"
-            @close="viewMode = 'terminal'"
-          />
-          <ParserPanel
-            v-else-if="viewMode === 'parser'"
-            :session-id="props.session.id"
-            :parsed-frames="runtime.parser.frames.value"
-            :dropped-frames="runtime.parser.droppedFrames.value"
-            :dropped-bytes="runtime.parser.droppedBytes.value"
-            :throughput-bps="runtime.parser.throughputBps.value"
-            :parser-reset-version="runtime.parser.resetVersion.value"
-            @close="viewMode = 'terminal'"
-          />
-          <SerialShellPanel
-            v-else-if="viewMode === 'shell'"
-            :session-id="props.session.id"
-            :config="props.session.shellConfig"
-            :is-connected="runtime.isConnected.value"
-            :shell="runtime.shell"
-            @close="viewMode = 'terminal'"
-          />
-          <McumgrPanel
-            v-else-if="viewMode === 'mcumgr'"
-            :session-id="props.session.id"
-            :config="props.session.mcumgrConfig"
-            :is-connected="runtime.isConnected.value"
-            :mcumgr="runtime.mcumgr"
-            @close="viewMode = 'terminal'"
-          />
-        </KeepAlive>
-      </div>
+      <KeepAlive :max="6">
+        <WaveformPanel
+          v-if="viewMode === 'waveform'"
+          ref="waveformRef"
+          :frames="props.session.frames"
+          :frames-version="visibleFramesVersion"
+          direction="RX"
+          :mode="props.session.waveformSourceMode"
+          :channel-labels="waveformChannelLabels"
+          :waveform="waveformState"
+          :can-edit="mutationPolicy.userMutationsAllowed.value"
+          :can-append="mutationPolicy.runtimeCaptureAllowed.value"
+          @toggle-mode="toggleWaveformSourceMode"
+          @append-samples="appendWaveformSamples"
+          @replace-samples="replaceWaveformSamples"
+          @set-channel-visibility="setWaveformChannelVisibility"
+          @update-frame-cursor="updateWaveformFrameCursor"
+          @commit-frame-ingest="commitWaveformFrameIngest"
+          @clear="clearWaveform"
+        />
+        <ModbusPanel
+          v-else-if="viewMode === 'modbus'"
+          :session-id="props.session.id"
+          :config="props.session.modbusConfig"
+          :registers="props.session.modbusRegisters"
+          :is-connected="runtime.sessionLinkUp.value"
+          :busy="modbusBusy"
+          :status-text="modbusStatusText"
+          :status-class="modbusStatusClass"
+          :replaying="master.replaying.value"
+          :write-source-name="writeSourceName"
+          :on-read-all="onModbusReadAll"
+          :on-read-row="onModbusReadRow"
+          :on-send-all="onModbusSendAll"
+          :on-send-row="onModbusSendRow"
+          :on-replay="onModbusReplay"
+          :on-stop-replay="onModbusStopReplay"
+          :on-load-write-source="onLoadWriteSource"
+          :on-clear-write-source="onClearWriteSource"
+          :on-pick-write-source="onPickWriteSource"
+          @plot-in-waveform="onPlotInWaveform"
+          @close="viewMode = 'terminal'"
+        />
+        <ParserPanel
+          v-else-if="viewMode === 'parser'"
+          :session-id="props.session.id"
+          :parsed-frames="runtime.parser.frames.value"
+          :dropped-frames="runtime.parser.droppedFrames.value"
+          :dropped-bytes="runtime.parser.droppedBytes.value"
+          :throughput-bps="runtime.parser.throughputBps.value"
+          :parser-reset-version="runtime.parser.resetVersion.value"
+          @close="viewMode = 'terminal'"
+        />
+        <SerialShellPanel
+          v-else-if="viewMode === 'shell'"
+          :session-id="props.session.id"
+          :config="props.session.shellConfig"
+          :is-connected="runtime.sessionLinkUp.value"
+          :shell="runtime.shell"
+          @close="viewMode = 'terminal'"
+        />
+        <McumgrPanel
+          v-else-if="viewMode === 'mcumgr'"
+          :session-id="props.session.id"
+          :config="props.session.mcumgrConfig"
+          :is-connected="runtime.sessionLinkUp.value"
+          :mcumgr="runtime.mcumgr"
+          @close="viewMode = 'terminal'"
+        />
+        <DataPacketList
+          v-else
+          :frames="props.session.frames"
+          :frames-version="visibleFramesVersion"
+          :highlights="props.session.highlights"
+        />
+      </KeepAlive>
     </div>
     <div v-if="viewMode !== 'shell' && viewMode !== 'mcumgr'" class="send-area">
       <SendPanel
@@ -261,8 +259,8 @@ useSessionShortcuts({
   isActive: () => catalog.activeSessionId.value === props.session.id,
 });
 
-// View-mode switcher: terminal shows only the packet list; other modes keep
-// the list visible and render their tool panel in a split below it.
+// Single view-mode switcher for the display area: terminal (default), waveform,
+// parser, modbus, serial shell, or MCUMgr. Only the selected view renders.
 const viewMode = runtime.viewMode;
 
 // --- Modbus master ---------------------------------------------------------
@@ -429,32 +427,6 @@ function handleExportCancel() {
 .display-area {
   flex: 1;
   overflow: hidden;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.packet-pane {
-  flex: 1;
-  min-height: 0;
-}
-
-.display-area--split .packet-pane {
-  flex: 0 1 42%;
-  min-height: 120px;
-}
-
-.tool-pane {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  border-top: 1px solid var(--border-subtle);
-  display: flex;
-  flex-direction: column;
-}
-
-.tool-pane :deep(> *) {
-  flex: 1;
   min-height: 0;
 }
 

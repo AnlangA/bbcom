@@ -53,6 +53,7 @@ vi.mock('../../src/composables/useSessionMcumgr.ts', () => ({
     status: { value: { kind: 'idle' } },
     lastResult: { value: '' },
     busy: { value: false },
+    portYielding: { value: false },
     run: vi.fn(),
     cancel: vi.fn(),
     patchConfig: vi.fn(),
