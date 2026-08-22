@@ -156,7 +156,7 @@ import { ChevronDown, ChevronUp, Eraser, Search, Settings2, TerminalSquare, X } 
 import AppSelect from '@/design-system/AppSelect.vue';
 import IconActionButton from '@/design-system/IconActionButton.vue';
 import { useSessionDocument } from '@/features/sessions';
-import { SESSION_UI_STATE_KEY } from '@/features/sessions/runtime/session-ui-state';
+import { SESSION_UI_STATE_KEY, type SessionRuntimeUiState } from '@/features/sessions/runtime/session-ui-state';
 import type { SessionRuntimeShellController } from '@/features/sessions/runtime/session-runtime-controller';
 import { useAppStore } from '@/features/settings/store/app-store';
 import { t } from '@/lib/i18n';
@@ -175,7 +175,7 @@ const emit = defineEmits<{
 
 const document_ = useSessionDocument(props.sessionId);
 const appStore = useAppStore();
-const retainedUiState = inject(SESSION_UI_STATE_KEY, null);
+const retainedUiState = inject(SESSION_UI_STATE_KEY, null) as SessionRuntimeUiState | null;
 const localSearch = ref('');
 const settingsOpen = ref(false);
 const search = computed({

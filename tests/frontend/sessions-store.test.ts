@@ -342,7 +342,7 @@ test('modbus register additions notify consumers holding the session object', ()
 
 test('modbus config is clamped to valid ranges on hydration', () => {
   const bad = {
-    version: 1,
+    version: 2,
     activeSessionId: 'x',
     sessions: [
       {

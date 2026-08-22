@@ -113,7 +113,7 @@ import { computed, inject, onUnmounted, ref, shallowReactive } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useMessage } from 'naive-ui';
 import { useSessionDocument } from '@/features/sessions';
-import { SESSION_UI_STATE_KEY } from '@/features/sessions/runtime/session-ui-state';
+import { SESSION_UI_STATE_KEY, type SessionRuntimeUiState } from '@/features/sessions/runtime/session-ui-state';
 import {
   encodeStream,
   parseStream,
@@ -202,7 +202,7 @@ const virtualRegisterRows = computed(() =>
 // scroll out of the virtual window just as it did when every row stayed
 // mounted. Under a session runtime the drafts live on the runtime so they
 // also survive switching session tabs and back.
-const retainedUiState = inject(SESSION_UI_STATE_KEY, null);
+const retainedUiState = inject(SESSION_UI_STATE_KEY, null) as SessionRuntimeUiState | null;
 const localValueDrafts = shallowReactive<Record<string, string>>({});
 
 function readValueDraft(regId: string): string | undefined {

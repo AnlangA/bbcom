@@ -205,7 +205,7 @@ import {
 } from '@/lib/tools-tabs';
 import type { QuickCommand, SendHistoryEntry } from '@/types';
 import type { SessionRuntimeMacroController } from '@/features/sessions/runtime/session-runtime-controller';
-import { SESSION_UI_STATE_KEY } from '@/features/sessions/runtime/session-ui-state';
+import { SESSION_UI_STATE_KEY, type SessionRuntimeUiState } from '@/features/sessions/runtime/session-ui-state';
 
 const props = defineProps<{
   sessionId: string;
@@ -239,7 +239,7 @@ const toolsDomId = `tools-${useId().replace(/:/g, '')}`;
 // on history so a returning user immediately sees something useful.
 // Retention: under a session runtime the tab ref lives on the runtime so
 // switching session tabs and back keeps the active tools page.
-const retainedUiState = inject(SESSION_UI_STATE_KEY, null);
+const retainedUiState = inject(SESSION_UI_STATE_KEY, null) as SessionRuntimeUiState | null;
 const activeTab = retainedUiState?.toolsTab ?? ref<ToolsTabId>('quick');
 
 const session = computed(() => sessionDocument.session.value ?? undefined);

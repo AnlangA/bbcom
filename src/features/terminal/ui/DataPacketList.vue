@@ -157,7 +157,7 @@ import AppSelect from '@/design-system/AppSelect.vue';
 import { Cable, Copy, Search } from '@lucide/vue';
 import { useAppStore } from '@/features/settings/store/app-store';
 import { usePacketFilter } from '@/features/terminal/application/use-packet-filter';
-import { SESSION_UI_STATE_KEY } from '@/features/sessions/runtime/session-ui-state';
+import { SESSION_UI_STATE_KEY, type SessionRuntimeUiState } from '@/features/sessions/runtime/session-ui-state';
 import { usePacketFormatter } from '@/features/terminal/application/use-packet-formatter';
 import { usePacketVirtualScroll } from '@/features/terminal/application/use-packet-virtual-scroll';
 import PacketRow from './PacketRow.vue';
@@ -248,7 +248,7 @@ watch(
 // Retention: when mounted under a session runtime (SessionView provides the
 // key), the search box and direction filter live on the runtime so switching
 // session tabs and back does not lose them.
-const retainedUiState = inject(SESSION_UI_STATE_KEY, null);
+const retainedUiState = inject(SESSION_UI_STATE_KEY, null) as SessionRuntimeUiState | null;
 
 const {
   directionFilter,

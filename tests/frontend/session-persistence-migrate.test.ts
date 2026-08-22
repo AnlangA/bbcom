@@ -8,12 +8,6 @@ import {
   type PersistedSessionsFile,
 } from '../../src/lib/session-persistence.ts';
 
-/**
- * Regression guard: the persisted-sessions file must be forward-compatible.
- * Any blob recorded at an older version must migrate up to the current shape and
- * be re-stamped, so a user upgrading the app never loses their session snapshots.
- */
-
 function minimalFile(
   version: number,
   overrides: Partial<PersistedSessionsFile> = {},
@@ -62,48 +56,19 @@ test('migratePersistedFile: future schemas are rejected without mutation', () =>
   assert.equal(future.activeSessionId, 'future');
 });
 
-test('migratePersistedFile: a legacy (version 0 / missing) blob is re-stamped to current', () => {
-  // Simulate the oldest shape: no version field, sessions array present.
-  const legacy = minimalFile(0, {
+test('migratePersistedFile: legacy blobs are discarded on startup', () => {
+  const legacy = minimalFile(1, {
     activeSessionId: 'abc',
-    sessions: [],
+    sessions: [{ id: 's1' } as PersistedSessionsFile['sessions'][number]],
   });
   const out = migratePersistedFile(legacy);
 
-  assert.equal(out.version, SESSION_STORAGE_VERSION, 'legacy blob upgraded to current version');
-  assert.equal(out.activeSessionId, 'abc', 'data preserved across migration');
+  assert.equal(out.version, SESSION_STORAGE_VERSION);
+  assert.equal(out.activeSessionId, null);
+  assert.deepEqual(out.sessions, []);
 });
 
-test('migratePersistedFile: walks every registered step in order', () => {
-  // Register two throwaway steps to prove the chain runs sequentially and
-  // re-stamps. We do this on a local copy of the steps array to avoid mutating
-  // the module-level registry.
-  const localSteps = [
-    (raw: PersistedSessionsFile): PersistedSessionsFile => ({ ...raw, marker: 'v1->v2' }),
-    (raw: PersistedSessionsFile): PersistedSessionsFile => ({ ...raw, marker: 'v2->v3' }),
-  ];
-  const target = SESSION_STORAGE_VERSION + localSteps.length;
-
-  // Re-implement the walk locally (mirrors migratePersistedFile) using the local
-  // steps, since the production registry is intentionally empty at version 1.
-  let current: PersistedSessionsFile = minimalFile(SESSION_STORAGE_VERSION - 1);
-  for (const step of localSteps) current = step(current);
-  current.version = target;
-
-  assert.equal(current.version, target, 'chain lands on the new version');
-  assert.equal(
-    (current as { marker?: string }).marker,
-    'v2->v3',
-    'last step wins, order preserved',
-  );
-});
-
-test('MIGRATION_STEPS: registry length matches (current version - 1)', () => {
-  // At version N there are N-1 steps (each step bumps by one). This invariant
-  // catches a future change that bumps the version without adding a step.
-  assert.equal(
-    MIGRATION_STEPS.length,
-    SESSION_STORAGE_VERSION - 1,
-    'one step per version increment',
-  );
+test('MIGRATION_STEPS: registry is empty for the v2-only persistence gate', () => {
+  assert.equal(MIGRATION_STEPS.length, 0);
+  assert.equal(SESSION_STORAGE_VERSION, 2);
 });

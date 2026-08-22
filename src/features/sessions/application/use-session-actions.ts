@@ -5,7 +5,7 @@ import { useAppStore } from '@/features/settings/store/app-store';
 import { logger } from '@/lib/logger';
 import { t } from '@/lib/i18n';
 import type { PortConfig } from '@/types';
-import { SESSION_APPLICATION_SERVICES_KEY } from '@/features/sessions/runtime/session-application-services';
+import { SESSION_APPLICATION_SERVICES_KEY, type SessionApplicationServices } from '@/features/sessions/runtime/session-application-services';
 import {
   SessionApplicationService,
   useSessionCapture,
@@ -21,7 +21,7 @@ export function useSessionActions() {
   const serialStore = useSerialStore();
   const appStore = useAppStore();
   const applicationServices = getCurrentInstance()
-    ? inject(SESSION_APPLICATION_SERVICES_KEY, null)
+    ? (inject(SESSION_APPLICATION_SERVICES_KEY, null) as SessionApplicationServices | null)
     : null;
   const { isConnected } = useSessionRuntimeStatuses();
   const sessions = new SessionApplicationService({

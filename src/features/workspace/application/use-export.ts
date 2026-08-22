@@ -23,8 +23,14 @@ import { resolveExportFormat, type ExportChoice, type ExportFormat } from '@/lib
 import { t } from '@/lib/i18n';
 import type { IpcError } from '@/generated/ipc-contracts';
 import type { OperationRegistry } from '@/features/platform/application/operation-registry';
-import { SESSION_APPLICATION_SERVICES_KEY } from '@/features/sessions/runtime/session-application-services';
-import { WORKSPACE_APPLICATION_KEY } from '@/features/workspace/application';
+import {
+  SESSION_APPLICATION_SERVICES_KEY,
+  type SessionApplicationServices,
+} from '@/features/sessions/runtime/session-application-services';
+import {
+  WORKSPACE_APPLICATION_KEY,
+  type WorkspaceApplicationContext,
+} from '@/features/workspace/application';
 import type { WorkspaceApplicationService } from '@/features/workspace/application';
 
 const EXT_MAP: Record<ExportChoice, string> = {
@@ -139,9 +145,11 @@ const DEFAULT_SESSION_CLIENT: ExportSessionClient = {
 
 export function useExport(deps: UseExportDeps = {}) {
   const applicationServices = getCurrentInstance()
-    ? inject(SESSION_APPLICATION_SERVICES_KEY, null)
+    ? (inject(SESSION_APPLICATION_SERVICES_KEY, null) as SessionApplicationServices | null)
     : null;
-  const workspace = getCurrentInstance() ? inject(WORKSPACE_APPLICATION_KEY, null) : null;
+  const workspace = getCurrentInstance()
+    ? (inject(WORKSPACE_APPLICATION_KEY, null) as WorkspaceApplicationContext | null)
+    : null;
   const operations = deps.operations ?? applicationServices?.operationRegistry;
   const isExporting = ref(false);
   const progress = ref<ExportProgress>(emptyProgress());

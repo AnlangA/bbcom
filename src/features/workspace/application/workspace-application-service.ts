@@ -27,7 +27,7 @@ import {
   partitionWorkspaceMutationCommands,
   type SaveContext,
   type WorkspaceBufferedMutationCommand,
-} from './save-queues/index';
+} from './save-queues';
 import { WorkspaceSaveCoordinator } from './workspace-save-coordinator';
 import {
   type WorkspaceApplicationListener,
