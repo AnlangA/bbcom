@@ -2,16 +2,22 @@ import { computed, onScopeDispose, readonly, ref, shallowRef, watch, type Ref } 
 import { useAppStore } from '@/features/settings/store/app-store';
 import { useSessionCapture, useSessionDocument } from '@/features/sessions/ports/session-ports';
 import {
+  createSerialBridge,
   serialConnectionFailureMessage,
   type SerialStopResult,
-  useSerialConnection,
-} from '@/features/sessions/application/use-serial-connection';
-import { useSessionModbus } from '@/features/sessions/application/use-session-modbus';
-import { useSessionMcumgr } from '@/features/sessions/application/use-session-mcumgr';
+} from '@/features/sessions/application/serial-bridge';
+import {
+  createModbusBridge,
+  type ModbusBridge,
+} from '@/features/sessions/application/modbus-bridge';
+import {
+  createMcumgrBridge,
+  type McumgrBridge,
+} from '@/features/sessions/application/mcumgr-bridge';
+import {
+  createAutomationBridge,
+} from '@/features/sessions/application/automation-bridge';
 import { mcumgrTraceFramesToDataFrames } from '@/lib/mcumgr-trace';
-import { useTriggers } from '@/features/sessions/application/use-triggers';
-import { useAutoLog } from '@/features/sessions/application/use-auto-log';
-import { useMacroRunner } from '@/features/sessions/application/use-macro-runner';
 import {
   AsyncSendLoop,
   type PortLeaseClient,
@@ -29,7 +35,7 @@ import type {
   SerialSession,
   SerialWriteOptions,
 } from '@/types';
-import type { SerialConnectionFailure } from '@/features/sessions/application/use-serial-connection';
+import type { SerialConnectionFailure } from '@/features/sessions/application/serial-bridge';
 import { SessionProtocolRuntime } from './session-protocol-runtime';
 import { SessionRuntimeStatusRegistry } from './session-runtime-status';
 import type { SessionRuntimeUiState } from './session-ui-state';
@@ -79,8 +85,8 @@ export interface SessionRuntimeProtocolView {
   readonly resetVersion: Readonly<Ref<number>>;
 }
 
-export type SessionRuntimeModbusController = ReturnType<typeof useSessionModbus>;
-export type SessionRuntimeMcumgrController = ReturnType<typeof useSessionMcumgr>;
+export type SessionRuntimeModbusController = ModbusBridge;
+export type SessionRuntimeMcumgrController = McumgrBridge;
 export interface SessionRuntimeShellController {
   replay: SessionShellController['replay'];
   onOutput: SessionShellController['onOutput'];
@@ -88,15 +94,37 @@ export interface SessionRuntimeShellController {
   handleTerminalData: SessionShellController['handleTerminalData'];
   clear: SessionShellController['clear'];
 }
-export type SessionRuntimeMacroController = ReturnType<typeof useMacroRunner> & {
+export type SessionRuntimeMacroController = {
+  readonly running: Readonly<Ref<boolean>>;
   readonly status: Readonly<Ref<'idle' | 'running'>>;
+  run: (
+    definition: import('@/types').Macro,
+  ) => Promise<import('@/features/sessions/application/automation-bridge').MacroRunResult>;
+  abort: () => void;
+  pause: (signal?: AbortSignal) => Promise<void>;
+  resume: () => void;
 };
 export type SessionRuntimeViewMode =
   'terminal' | 'waveform' | 'parser' | 'modbus' | 'shell' | 'mcumgr';
+export interface SessionRuntimeBridgeFactory {
+  createSerialBridge: typeof createSerialBridge;
+  createModbusBridge: typeof createModbusBridge;
+  createMcumgrBridge: typeof createMcumgrBridge;
+  createAutomationBridge: typeof createAutomationBridge;
+}
+
+const defaultBridgeFactory: SessionRuntimeBridgeFactory = {
+  createSerialBridge,
+  createModbusBridge,
+  createMcumgrBridge,
+  createAutomationBridge,
+};
+
 export interface SessionRuntimeControllerDependencies {
   readonly notifications: ApplicationNotificationPort;
   readonly portLeaseClient: PortLeaseClient;
   readonly runtimeStatusRegistry?: SessionRuntimeStatusRegistry;
+  readonly bridgeFactory?: SessionRuntimeBridgeFactory;
 }
 
 /**
@@ -151,26 +179,32 @@ export function useSessionRuntimeController(
   const sessionDocument = useSessionDocument(session.value.id);
   const appStore = useAppStore();
   const notifications = dependencies.notifications;
+  const bridgeFactory = dependencies.bridgeFactory ?? defaultBridgeFactory;
   const runtimeStatusRegistry =
     dependencies.runtimeStatusRegistry ?? new SessionRuntimeStatusRegistry();
-  const autoLog = useAutoLog();
 
-  const triggersRef = computed(() => session.value.triggers);
-  const triggers = useTriggers({
-    triggers: triggersRef,
-    send: (data, isHex) => send(data, isHex),
-    onFire: (fire) => {
-      const trigger = session.value.triggers.find((item) => item.id === fire.triggerId);
-      notifications.info(t('message.triggerFired', { name: trigger?.name ?? fire.triggerId }));
+  let sendImpl: (data: string, isHex: boolean) => Promise<boolean> = async () => false;
+
+  const automation = bridgeFactory.createAutomationBridge({
+    triggers: {
+      triggers: computed(() => session.value.triggers),
+      send: (data, isHex) => sendImpl(data, isHex),
+      onFire: (fire) => {
+        const trigger = session.value.triggers.find((item) => item.id === fire.triggerId);
+        notifications.info(t('message.triggerFired', { name: trigger?.name ?? fire.triggerId }));
+      },
+    },
+    macro: {
+      send: (data, isHex) => sendImpl(data, isHex),
     },
   });
-  const feedTriggerBytes = triggers.feedBytes;
+  const feedTriggerBytes = automation.triggers.feedBytes.bind(automation.triggers);
 
-  const serial = useSerialConnection(
-    session.value.id,
-    () => session.value.portName,
-    () => session.value.portConfig,
-    {
+  const serial = bridgeFactory.createSerialBridge({
+    sessionId: session.value.id,
+    portName: () => session.value.portName,
+    config: () => session.value.portConfig,
+    options: {
       onDisconnect: () => {
         notifications.warning(t('serial.error.disconnected'));
       },
@@ -186,11 +220,12 @@ export function useSessionRuntimeController(
         notifications.success(t('serial.error.reconnected'));
       },
     },
-    {
+    dependencies: {
       leaseClient: dependencies.portLeaseClient,
       sessionName: () => session.value.portName,
     },
-  );
+    appendAutoLogFrame: (id, frame) => automation.autoLog.appendFrame(id, frame),
+  });
   const connectionErrorText = computed(() =>
     serial.connectionFailure.value
       ? serialConnectionFailureMessage(serial.connectionFailure.value)
@@ -328,7 +363,7 @@ export function useSessionRuntimeController(
     handleTerminalData: (data) => shellController.handleTerminalData(data),
     clear: () => shellController.clear(),
   };
-  const mcumgr = useSessionMcumgr({
+  const mcumgr = bridgeFactory.createMcumgrBridge({
     session: computed(() => session.value),
     isConnected: serial.isConnected,
     // Port yield: MCUmgr operations close the frontend connection cleanly,
@@ -347,7 +382,7 @@ export function useSessionRuntimeController(
     },
     setConfig: (patch) => sessionDocument.setMcumgrConfig(session.value.id, patch),
   });
-  const modbus = useSessionModbus({
+  const modbus = bridgeFactory.createModbusBridge({
     session: computed(() => session.value),
     sendBytes: (payload, writeOptions) => serial.sendBytes(payload, writeOptions),
     rawBytes: (callback) => serial.rawBytes(callback),
@@ -359,14 +394,17 @@ export function useSessionRuntimeController(
     notifications,
   });
 
-  const macroRunner = useMacroRunner({ send: (data, isHex) => send(data, isHex) });
+  const macroRunner = automation.macro;
   const macro: SessionRuntimeMacroController = {
-    ...macroRunner,
+    running: readonly(macroRunner.running),
+    abort: () => macroRunner.abort(),
+    pause: (signal) => macroRunner.pause(signal),
+    resume: () => macroRunner.resume(),
     run: (definition) =>
       serial.serialTransactions.snapshot().manualWriteAllowed
         ? macroRunner.run(definition)
         : Promise.resolve({ completed: 0, failedAt: 0, aborted: true }),
-    status: computed(() => (macroRunner.running.value ? 'running' : 'idle')),
+    status: readonly(computed(() => (macroRunner.running.value ? 'running' : 'idle'))),
   };
 
   const sendingBreak = ref(false);
@@ -412,8 +450,8 @@ export function useSessionRuntimeController(
   serial.serialTransactions.registerAutomation({
     id: 'trigger-responses',
     async pause({ signal }) {
-      await triggers.pause(signal);
-      return { restore: async () => triggers.resume() };
+      await automation.triggers.pause(signal);
+      return { restore: async () => automation.triggers.resume() };
     },
   });
 
@@ -450,6 +488,7 @@ export function useSessionRuntimeController(
     if (completed) sessionDocument.addSendHistory(session.value.id, { data, isHex });
     return completed;
   }
+  sendImpl = send;
 
   async function sendBreak(): Promise<boolean> {
     if (sendingBreak.value || disposed) return false;
@@ -489,11 +528,11 @@ export function useSessionRuntimeController(
 
   async function toggleAutoLog(): Promise<void> {
     if (session.value.autoLogEnabled) {
-      await autoLog.disable(session.value.id);
+      await automation.autoLog.disable(session.value.id);
       notifications.info(t('message.autoLogStopped'));
       return;
     }
-    const path = await autoLog.enable(session.value.id);
+    const path = await automation.autoLog.enable(session.value.id);
     if (path) notifications.success(t('message.autoLogStarted', { path }));
   }
 
@@ -534,7 +573,7 @@ export function useSessionRuntimeController(
         failures.push(error);
       }
       try {
-        await autoLog.prepareShutdown(session.value.id);
+        await automation.autoLog.prepareShutdown(session.value.id);
       } catch (error) {
         failures.push(error);
       }
@@ -571,6 +610,7 @@ export function useSessionRuntimeController(
           document.removeEventListener('visibilitychange', onParserVisibilityChange);
         }
         removeTriggerRawObserver();
+        automation.dispose();
       }
     })();
     return disposePromise;
@@ -580,8 +620,8 @@ export function useSessionRuntimeController(
     if (!connected) {
       stopSendLoop();
       macroRunner.abort();
-      triggers.reset();
-      triggers.resume();
+      automation.triggers.reset();
+      automation.triggers.resume();
       modbus.master.resumeAfterSerialTransaction();
     }
   });
