@@ -137,7 +137,7 @@ impl ConfigurableTimeout for TracingSerial {
         &mut self,
         timeout: Duration,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.inner.set_timeout(timeout).map_err(Into::into)
+        self.inner.set_timeout(timeout)
     }
 }
 
