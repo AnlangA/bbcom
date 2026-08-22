@@ -112,7 +112,7 @@ export interface SessionCapturePort {
   readonly session: ComputedRef<SerialSession | null>;
   readonly framesVersion: ComputedRef<number>;
   add(
-    frame: Omit<DataFrame, 'id' | 'timestamp'>,
+    frame: Omit<DataFrame, 'id' | 'timestamp'> & Partial<Pick<DataFrame, 'timestamp'>>,
     options?: { publish?: boolean },
   ): DataFrame | undefined;
   publish(): void;

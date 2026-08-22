@@ -8,6 +8,7 @@ import {
 } from '../../../composables/useSerialConnection';
 import { useSessionModbus } from '../../../composables/useSessionModbus';
 import { useSessionMcumgr } from '../../../composables/useSessionMcumgr';
+import { mcumgrTraceFramesToDataFrames } from '../../../lib/mcumgr-trace';
 import { useTriggers } from '../../../composables/useTriggers';
 import { useAutoLog } from '../../../composables/useAutoLog';
 import { useMacroRunner } from '../../../composables/useMacroRunner';
@@ -335,6 +336,13 @@ export function useSessionRuntimeController(
       await serial.stop();
     },
     resumeConnection: () => serial.start(),
+    ingestTraceFrames: (frames) => {
+      const mapped = mcumgrTraceFramesToDataFrames(frames);
+      for (const frame of mapped) {
+        capture.add(frame, { publish: false });
+      }
+      if (mapped.length > 0) capture.publish();
+    },
     setConfig: (patch) => sessionDocument.setMcumgrConfig(session.value.id, patch),
   });
   const modbus = useSessionModbus({

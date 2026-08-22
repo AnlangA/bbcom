@@ -90,7 +90,7 @@ export interface SerialConnectionSink {
   updateDroppedBytes(sessionId: string, totalDroppedBytes: number): void;
   addFrame(
     sessionId: string,
-    frame: Omit<DataFrame, 'id' | 'timestamp'>,
+    frame: Omit<DataFrame, 'id' | 'timestamp'> & Partial<Pick<DataFrame, 'timestamp'>>,
     options?: { publish?: boolean },
   ): DataFrame | undefined;
   publishFrames(sessionId: string): void;

@@ -9,7 +9,8 @@ import { join, relative, resolve, sep } from 'node:path';
 // forcing feature work into byte-level micro-optimisation.
 // 2026-08: +36 KiB for the xterm.js terminal (lazy SerialShellPanel chunk,
 // startup graphs unaffected), partially offset by deleting the TS MCUmgr stack.
-const TOTAL_JS_GZIP_LIMIT = 452 * 1024;
+// 2026-08: +1 KiB for MCUmgr/SMP error i18n (en/zh keys routed via mcumgr-error).
+const TOTAL_JS_GZIP_LIMIT = 453 * 1024;
 const BOOTSTRAP_JS_GZIP_LIMIT = 85 * 1024;
 const CHUNK_JS_GZIP_LIMIT = 105 * 1024;
 // main.ts conditionally imports exactly one window root before mounting. Vite

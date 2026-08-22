@@ -57,6 +57,7 @@ function createHarness(options: { connected?: boolean; portName?: string } = {})
       if (resumeResult.value) isConnected.value = true;
       return resumeResult.value;
     },
+    ingestTraceFrames: () => undefined,
     setConfig: (patch) => {
       patches.push(patch);
       session.value!.mcumgrConfig = { ...session.value!.mcumgrConfig, ...patch };
@@ -124,24 +125,25 @@ test('execute reports a noPort error without invoking when the session has no po
   assert.equal(harness.controller.status.value.kind, 'error');
 });
 
-test('device errors surface rc and group and still restore the connection', async () => {
+test('device errors surface localized messages and still restore the connection', async () => {
   const harness = createHarness({ connected: true });
   mocked.invoke.mockRejectedValue({
     kind: 'device',
-    message: 'device rejected the request (group 1, rc 3)',
-    rc: 3,
-    group: 1,
+    message: 'MGMT_ERR_ENOTSUP',
+    rc: 8,
+    group: 0,
   });
 
   const result = await harness.controller.execute('image-state', { kind: 'image-state' });
 
   assert.equal(result, null);
-  assert.deepEqual(harness.controller.status.value, {
-    kind: 'error',
-    message: 'device rejected the request (group 1, rc 3)',
-    rc: 3,
-    group: 1,
-  });
+  assert.equal(harness.controller.status.value.kind, 'error');
+  if (harness.controller.status.value.kind === 'error') {
+    assert.match(harness.controller.status.value.message, /不支持|not supported/i);
+    assert.equal(harness.controller.status.value.rc, 8);
+    assert.equal(harness.controller.status.value.group, 0);
+  }
+  assert.match(harness.controller.lastResult.value, /镜像状态|Image state/);
   assert.equal(harness.resumes.length, 1);
 });
 

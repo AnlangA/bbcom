@@ -125,7 +125,9 @@ payloadB64: string | null, };
 
 export type McumgrExecuteRequest = { port: McumgrPortRequest, op: McumgrOp, };
 
-export type McumgrCommandResult = { resultJson: string, };
+export type McumgrTraceFrame = { direction: Direction, timestampMs: number, data: Array<number>, };
+
+export type McumgrCommandResult = { resultJson: string, traceFrames?: Array<McumgrTraceFrame>, };
 
 export type McumgrErrorKind = "busy" | "cancelled" | "timeout" | "port" | "device" | "protocol" | "invalid-input" | "io";
 
@@ -157,7 +159,7 @@ export type McumgrFsUploadRequest = { port: McumgrPortRequest, fileToken: string
 
 export type McumgrFsDownloadRequest = { port: McumgrPortRequest, remotePath: string, saveToken: string, };
 
-export type McumgrFsDownloadResult = { bytes: number, displayName: string, };
+export type McumgrFsDownloadResult = { bytes: number, displayName: string, traceFrames: Array<McumgrTraceFrame>, };
 
 export type SerialSendOutcome = "complete" | "partial" | "failed" | "cancelled";
 

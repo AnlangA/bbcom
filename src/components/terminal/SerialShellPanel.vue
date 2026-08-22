@@ -205,11 +205,11 @@ const rxNewlineOptions = [
   { label: t('shell.newline.auto'), value: 'auto' as const },
   ...newlineChoices,
 ];
-const encodingOptions = [
-  { label: 'UTF-8', value: 'utf-8' as const },
-  { label: 'GBK', value: 'gbk' as const },
-  { label: 'Latin-1', value: 'latin1' as const },
-];
+const encodingOptions = computed(() => [
+  { label: t('shell.encoding.utf8'), value: 'utf-8' as const },
+  { label: t('shell.encoding.gbk'), value: 'gbk' as const },
+  { label: t('shell.encoding.latin1'), value: 'latin1' as const },
+]);
 const backspaceOptions = [
   { label: t('shell.backspace.bs'), value: 'bs' as const },
   { label: t('shell.backspace.del'), value: 'del' as const },

@@ -12,6 +12,11 @@ import {
   invokeMcumgrPickSaveTarget,
 } from '../features/native/tauri-ipc';
 import { appendShellHistory } from '../lib/mcumgr-config';
+import {
+  formatMcumgrErrorDetail,
+  getMcumgrErrorMessage,
+  mcumgrFrontendError,
+} from '../lib/mcumgr-error';
 import { t } from '../lib/i18n';
 import type {
   McumgrError,
@@ -21,6 +26,7 @@ import type {
   McumgrPortRequest,
   McumgrProgress,
   McumgrSavePick,
+  McumgrTraceFrame,
 } from '../generated/ipc-contracts';
 import type { McumgrClientConfig, McumgrClientStatus, SerialSession } from '../types';
 
@@ -37,6 +43,8 @@ export interface UseSessionMcumgrOptions {
   suspendConnection: () => Promise<void>;
   /** Re-opens the frontend serial connection after the operation. */
   resumeConnection: () => Promise<boolean>;
+  /** Replays MCUmgr wire trace into the session capture buffer. */
+  ingestTraceFrames: (frames: readonly McumgrTraceFrame[]) => void;
   setConfig: (patch: Partial<McumgrClientConfig>) => void;
 }
 
@@ -52,6 +60,7 @@ export function useSessionMcumgr({
   isConnected,
   suspendConnection,
   resumeConnection,
+  ingestTraceFrames,
   setConfig,
 }: UseSessionMcumgrOptions) {
   const status = ref<McumgrClientStatus>({ kind: 'idle' });
@@ -95,7 +104,10 @@ export function useSessionMcumgr({
     if (busy.value) return null;
     const port = portRequest();
     if (!port) {
-      status.value = { kind: 'error', message: t('mcumgr.error.noPort') };
+      status.value = {
+        kind: 'error',
+        message: t('mcumgr.error.noPort'),
+      };
       return null;
     }
     const generation = ++runGeneration;
@@ -130,17 +142,20 @@ export function useSessionMcumgr({
     const mapped = asMcumgrError(error) ?? fallbackError(error);
     if (mapped.kind === 'timeout') {
       status.value = { kind: 'timeout' };
-    } else if (mapped.kind === 'cancelled') {
-      status.value = { kind: 'idle' };
-    } else {
-      status.value = {
-        kind: 'error',
-        message: mapped.message,
-        rc: mapped.rc,
-        group: mapped.group,
-      };
+      lastResult.value = formatMcumgrErrorDetail(mapped);
+      return;
     }
-    lastResult.value = mapped.message;
+    if (mapped.kind === 'cancelled') {
+      status.value = { kind: 'idle' };
+      return;
+    }
+    status.value = {
+      kind: 'error',
+      message: getMcumgrErrorMessage(mapped),
+      rc: mapped.rc,
+      group: mapped.group,
+    };
+    lastResult.value = formatMcumgrErrorDetail(mapped);
   }
 
   function progressChannel(action: string) {
@@ -157,9 +172,16 @@ export function useSessionMcumgr({
     });
   }
 
+  function replayTrace(result: { traceFrames?: McumgrTraceFrame[] } | null | undefined): void {
+    const frames = result?.traceFrames;
+    if (!frames?.length) return;
+    ingestTraceFrames(frames);
+  }
+
   async function execute(action: string, op: McumgrOp): Promise<string | null> {
     const result = await run(action, async (port) => invokeMcumgrExecute({ port, op }));
     if (result === null) return null;
+    replayTrace(result);
     lastResult.value = prettyJson(result.resultJson);
     return lastResult.value;
   }
@@ -182,6 +204,7 @@ export function useSessionMcumgr({
       ),
     );
     if (result === null) return null;
+    replayTrace(result);
     lastResult.value = prettyJson(result.resultJson);
     return lastResult.value;
   }
@@ -192,6 +215,7 @@ export function useSessionMcumgr({
       invokeMcumgrImageUpload({ port, fileToken, upgradeOnly }, progressChannel(action)),
     );
     if (result === null) return null;
+    replayTrace(result);
     lastResult.value = prettyJson(result.resultJson);
     return lastResult.value;
   }
@@ -202,6 +226,7 @@ export function useSessionMcumgr({
       invokeMcumgrFsUpload({ port, fileToken, remotePath }, progressChannel(action)),
     );
     if (result === null) return null;
+    replayTrace(result);
     lastResult.value = prettyJson(result.resultJson);
     return lastResult.value;
   }
@@ -212,6 +237,7 @@ export function useSessionMcumgr({
       invokeMcumgrFsDownload({ port, remotePath, saveToken }, progressChannel(action)),
     );
     if (result === null) return null;
+    replayTrace(result);
     lastResult.value = prettyJson(
       JSON.stringify({ savedAs: result.displayName, bytes: result.bytes }),
     );
@@ -283,13 +309,13 @@ export function useSessionMcumgr({
 }
 
 function cancelledError(): McumgrError {
-  return { kind: 'cancelled', message: 'cancelled' };
+  return mcumgrFrontendError('cancelled', 'mcumgr.error.kind.cancelled');
 }
 
 function fallbackError(error: unknown): McumgrError {
   return {
     kind: 'protocol',
-    message: error instanceof Error ? error.message : String(error ?? 'MCUmgr failed'),
+    message: error instanceof Error ? error.message : String(error ?? t('mcumgr.error.fallback')),
   };
 }
 

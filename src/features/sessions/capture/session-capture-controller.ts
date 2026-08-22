@@ -181,13 +181,17 @@ export function createSessionCaptureController({
 
   function addFrame(
     sessionId: string,
-    frame: Omit<DataFrame, 'id' | 'timestamp'>,
+    frame: Omit<DataFrame, 'id' | 'timestamp'> & Partial<Pick<DataFrame, 'timestamp'>>,
     options: { publish?: boolean } = {},
   ): DataFrame | undefined {
     if (!canCaptureRuntimeEvents(sessionId, frame)) return undefined;
     const session = findSession(sessionId);
     if (!session) return undefined;
-    const fullFrame = decorateFrame({ ...frame, id: createId(), timestamp: now() });
+    const fullFrame = decorateFrame({
+      ...frame,
+      id: createId(),
+      timestamp: frame.timestamp ?? now(),
+    });
     const currentBytes = retainedSessionBytes(sessionId, session);
     const trim = appendFrameToSession(unwrapSession(session), fullFrame, getMaxBufferFrames(), {
       currentBytes,

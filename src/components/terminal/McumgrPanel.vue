@@ -653,6 +653,7 @@ import {
 import AppSelect from '../ui/AppSelect.vue';
 import IconActionButton from '../ui/IconActionButton.vue';
 import { t } from '../../lib/i18n';
+import { getMcumgrActionLabel } from '../../lib/mcumgr-error';
 import { bytesToBase64 } from '../../lib/base64';
 import { formatBytes } from '../../lib/format';
 import type { SessionMcumgrController } from '../../composables/useSessionMcumgr';
@@ -696,17 +697,17 @@ const rawCommand = ref(0);
 const rawOp = ref<'read' | 'write'>('read');
 const rawPayload = ref('{}');
 
-const rawOpOptions = [
-  { label: 'read', value: 'read' as const },
-  { label: 'write', value: 'write' as const },
-];
+const rawOpOptions = computed(() => [
+  { label: t('mcumgr.raw.read'), value: 'read' as const },
+  { label: t('mcumgr.raw.write'), value: 'write' as const },
+]);
 
 const busy = computed(() => props.mcumgr.busy.value);
 const hasResult = computed(() => props.mcumgr.lastResult.value.length > 0);
 const statusText = computed(() => {
   const status = props.mcumgr.status.value;
   if (status.kind === 'progress') {
-    let text = t('mcumgr.status.busy', { action: status.action });
+    let text = t('mcumgr.status.busy', { action: getMcumgrActionLabel(status.action) });
     text += ` — ${t(`mcumgr.phase.${status.phase}`)}`;
     if (status.detail) text += ` ${status.detail}`;
     if (status.offset !== undefined && status.total !== undefined && status.total > 0) {
@@ -715,7 +716,9 @@ const statusText = computed(() => {
     }
     return text;
   }
-  if (status.kind === 'busy') return t('mcumgr.status.busy', { action: status.action });
+  if (status.kind === 'busy') {
+    return t('mcumgr.status.busy', { action: getMcumgrActionLabel(status.action) });
+  }
   if (status.kind === 'timeout') return t('mcumgr.status.timeout');
   if (status.kind === 'error') return status.message;
   return t('mcumgr.status.idle');
