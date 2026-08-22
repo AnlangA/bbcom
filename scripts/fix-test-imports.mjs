@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
 
 const root = join(import.meta.dirname, '..');
-const testDir = join(root, 'tests/frontend');
+const testDir = join(root, 'src');
 
 const pathMap = {
   // Vue components — insert ui/ segment (order: most specific first)

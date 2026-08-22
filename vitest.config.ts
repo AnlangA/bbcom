@@ -32,8 +32,8 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['tests/frontend/**/*.test.ts'],
-    setupFiles: ['tests/frontend/vitest.setup.ts'],
+    include: ['src/**/__tests__/**/*.test.ts'],
+    setupFiles: ['src/test/vitest.setup.ts'],
     fileParallelism: true,
     pool: 'forks',
     dangerouslyIgnoreUnhandledErrors: false,
