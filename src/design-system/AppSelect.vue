@@ -183,7 +183,7 @@ function updateValue(event: Event): void {
 }
 
 .app-select--small .app-select {
-  min-height: 28px;
+  min-height: var(--control-h-md);
   padding-top: 3px;
   padding-bottom: 3px;
   font-size: var(--font-size-base);

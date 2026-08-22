@@ -498,7 +498,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  min-height: 42px;
+  min-height: var(--tab-bar-height);
   padding: var(--space-sm) var(--space-md);
   background: var(--bg-primary);
   border-bottom: 1px solid var(--border-subtle);

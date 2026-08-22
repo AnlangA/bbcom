@@ -450,7 +450,7 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  height: 30px;
+  height: var(--control-h-md);
   padding: 0 var(--space-xs) 0 var(--space-sm);
   background: transparent;
   border: 0;
@@ -491,7 +491,7 @@ const displayModeOptions: { label: string; value: DisplayMode }[] = [
 }
 
 .toolbar-export-btn {
-  width: 30px;
+  width: var(--control-h-md);
   white-space: nowrap;
 }
 

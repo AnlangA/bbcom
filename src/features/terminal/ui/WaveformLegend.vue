@@ -341,7 +341,7 @@ const actions = computed<LegendAction[]>(() => [
 .legend-swatch {
   width: 10px;
   height: 10px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   flex-shrink: 0;
 }
 

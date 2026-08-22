@@ -115,9 +115,9 @@ async function toggleAlwaysOnTop() {
 }
 
 .drag-handle {
-  min-height: 42px;
+  min-height: var(--tab-bar-height);
   justify-content: flex-start;
-  padding: 2px 4px;
+  padding: var(--space-2xs) var(--space-xs);
   color: var(--text-muted);
   font-size: var(--font-size-sm);
   font-weight: 700;

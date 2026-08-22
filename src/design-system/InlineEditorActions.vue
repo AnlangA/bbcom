@@ -58,7 +58,7 @@ const resolvedCancelText = computed(() => props.cancelText ?? t('common.cancel')
 
 .inline-editor-actions__save,
 .inline-editor-actions__cancel {
-  min-height: 28px;
+  min-height: var(--control-h-md);
   padding: 3px 10px;
   border-radius: var(--radius-sm);
   border: 1px solid transparent;

@@ -215,57 +215,40 @@ const backspaceOptions = [
   { label: t('shell.backspace.del'), value: 'del' as const },
 ];
 
-const DARK_ANSI: Partial<ITheme> = {
-  black: '#1a1f26',
-  red: '#ff6b7a',
-  green: '#3ddc97',
-  yellow: '#ffbf5f',
-  blue: '#5aa9ff',
-  magenta: '#d670d6',
-  cyan: '#2dd4bf',
-  white: '#c8d0d8',
-  brightBlack: '#5f6974',
-  brightRed: '#ff8a96',
-  brightGreen: '#5ee6aa',
-  brightYellow: '#ffd28a',
-  brightBlue: '#7cb9ff',
-  brightMagenta: '#e39fe3',
-  brightCyan: '#5ee8d8',
-  brightWhite: '#eef3f7',
-};
-const LIGHT_ANSI: Partial<ITheme> = {
-  black: '#0f1620',
-  red: '#c22f3e',
-  green: '#0e8f5b',
-  yellow: '#9a6a00',
-  blue: '#0b62d6',
-  magenta: '#a33ba3',
-  cyan: '#0d8f83',
-  white: '#5c6773',
-  brightBlack: '#8a96a3',
-  brightRed: '#e04553',
-  brightGreen: '#12aa6e',
-  brightYellow: '#b57f00',
-  brightBlue: '#2f7fe0',
-  brightMagenta: '#c057c0',
-  brightCyan: '#12a99a',
-  brightWhite: '#303a45',
-};
-
 function cssVariable(name: string): string {
   if (typeof window === 'undefined') return '';
   return getComputedStyle(window.document.documentElement).getPropertyValue(name).trim();
 }
 
-function terminalTheme(): ITheme {
-  const dark = appStore.theme === 'dark';
+function xtermAnsiPalette(): Partial<ITheme> {
   return {
-    background: cssVariable('--bg-inset') || (dark ? '#0a0c0f' : '#e4e9ee'),
-    foreground: cssVariable('--text-primary') || (dark ? '#eef3f7' : '#0f1620'),
-    cursor: cssVariable('--color-primary') || '#3ddc97',
-    cursorAccent: cssVariable('--bg-inset') || (dark ? '#0a0c0f' : '#e4e9ee'),
-    selectionBackground: 'rgba(90, 169, 255, 0.35)',
-    ...(dark ? DARK_ANSI : LIGHT_ANSI),
+    black: cssVariable('--xterm-black'),
+    red: cssVariable('--xterm-red'),
+    green: cssVariable('--xterm-green'),
+    yellow: cssVariable('--xterm-yellow'),
+    blue: cssVariable('--xterm-blue'),
+    magenta: cssVariable('--xterm-magenta'),
+    cyan: cssVariable('--xterm-cyan'),
+    white: cssVariable('--xterm-white'),
+    brightBlack: cssVariable('--xterm-bright-black'),
+    brightRed: cssVariable('--xterm-bright-red'),
+    brightGreen: cssVariable('--xterm-bright-green'),
+    brightYellow: cssVariable('--xterm-bright-yellow'),
+    brightBlue: cssVariable('--xterm-bright-blue'),
+    brightMagenta: cssVariable('--xterm-bright-magenta'),
+    brightCyan: cssVariable('--xterm-bright-cyan'),
+    brightWhite: cssVariable('--xterm-bright-white'),
+  };
+}
+
+function terminalTheme(): ITheme {
+  return {
+    background: cssVariable('--bg-inset'),
+    foreground: cssVariable('--text-primary'),
+    cursor: cssVariable('--color-primary'),
+    cursorAccent: cssVariable('--bg-inset'),
+    selectionBackground: cssVariable('--terminal-selection'),
+    ...xtermAnsiPalette(),
   };
 }
 

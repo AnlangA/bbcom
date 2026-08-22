@@ -213,8 +213,8 @@ function tabTooltip(session: SerialSession): string {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  min-height: 34px;
-  padding: 4px 12px;
+  min-height: var(--control-h-lg);
+  padding: var(--space-xs) var(--space-md);
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-tertiary);
   color: var(--text-secondary);
@@ -222,7 +222,7 @@ function tabTooltip(session: SerialSession): string {
 }
 
 .undo-action {
-  padding: 3px 8px;
+  padding: var(--space-2xs) var(--space-sm);
   border: 1px solid var(--color-primary);
   border-radius: var(--radius-sm);
   background: transparent;
@@ -242,14 +242,14 @@ function tabTooltip(session: SerialSession): string {
   /* Left/right padding matches the toolbar below so the tabs' content edge and
      the toolbar's content edge share a vertical line, instead of visually
      stepping inward by 4px. */
-  padding: 6px 12px 0;
-  height: 42px;
-  min-height: 42px;
+  padding: var(--space-sm) var(--space-md) 0;
+  height: var(--tab-bar-height);
+  min-height: var(--tab-bar-height);
 }
 
 .tabs-list {
   display: flex;
-  gap: 4px;
+  gap: var(--space-xs);
   overflow-x: auto;
   flex: 1;
   align-self: stretch;
@@ -415,8 +415,8 @@ function tabTooltip(session: SerialSession): string {
   border: 1px dashed var(--border-color);
   color: var(--text-dim);
   cursor: pointer;
-  width: 28px;
-  height: 28px;
+  width: var(--control-h-md);
+  height: var(--control-h-md);
   border-radius: var(--radius-full);
   display: grid;
   place-items: center;

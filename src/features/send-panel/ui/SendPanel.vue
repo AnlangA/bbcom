@@ -299,7 +299,7 @@ function formatHexInput() {
 
 <style scoped>
 .send-panel {
-  padding: 12px;
+  padding: var(--space-md);
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);

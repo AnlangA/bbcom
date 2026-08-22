@@ -2,23 +2,23 @@
  * Shared packet-list column styles. The list header (DataPacketList.vue) and
  * the virtualized rows (PacketRow.vue) render the same grid, so the grid and
  * column rules live in this one global sheet (imported from main.ts, like
- * variables.css/global.css) to keep header and rows from drifting apart.
+ * design-system tokens/global.css) to keep header and rows from drifting apart.
  */
 
 /*
- * Row metric contract: 3px vertical padding + 22px line-height = 28px, which
- * must match PACKET_ROW_HEIGHT / PACKET_ROW_LINE_HEIGHT in
- * src/lib/packet-list.ts (virtual-scroll estimates). The 3px/10px padding is
- * therefore intentionally off the spacing scale — do not "round" it to a
+ * Row metric contract: --packet-row-padding-y + --packet-row-line-height =
+ * --packet-row-height (28px), which must match PACKET_ROW_HEIGHT /
+ * PACKET_ROW_LINE_HEIGHT in src/lib/packet-list.ts (virtual-scroll estimates).
+ * The padding is intentionally off the spacing scale — do not "round" it to a
  * token without updating the row metric as well.
  */
 .packet-row {
   display: grid;
   gap: var(--space-sm);
-  padding: 3px 10px;
+  padding: var(--packet-row-padding-y) var(--packet-row-padding-x);
   font-family: var(--font-mono);
   font-size: var(--font-size-data);
-  line-height: 22px;
+  line-height: var(--packet-row-line-height);
   align-items: center;
 }
 

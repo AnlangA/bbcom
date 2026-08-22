@@ -288,10 +288,10 @@ function confirm(): void {
 .datetime-input {
   box-sizing: border-box;
   min-width: 0;
-  min-height: 34px;
+  min-height: var(--control-h-lg);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  padding: 6px 8px;
+  padding: var(--space-sm) var(--space-sm);
   color: var(--text-primary);
   background: var(--bg-inset);
   font: inherit;

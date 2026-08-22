@@ -1,102 +1,53 @@
 /*
  * ANSI SGR classes emitted by ansi_up (use_classes=true) inside the packet list.
- * Scoped to data-theme so colors stay readable on both palettes.
+ * Colors resolve from semantic --ansi-* tokens in colors.css.
  */
 
-:root[data-theme='dark'] .packet-list .ansi-black-fg {
-  color: #6e7681;
+:root .packet-list .ansi-black-fg {
+  color: var(--ansi-black);
 }
-:root[data-theme='dark'] .packet-list .ansi-red-fg {
-  color: #ff7b72;
+:root .packet-list .ansi-red-fg {
+  color: var(--ansi-red);
 }
-:root[data-theme='dark'] .packet-list .ansi-green-fg {
-  color: #3fb950;
+:root .packet-list .ansi-green-fg {
+  color: var(--ansi-green);
 }
-:root[data-theme='dark'] .packet-list .ansi-yellow-fg {
-  color: #d29922;
+:root .packet-list .ansi-yellow-fg {
+  color: var(--ansi-yellow);
 }
-:root[data-theme='dark'] .packet-list .ansi-blue-fg {
-  color: #79c0ff;
+:root .packet-list .ansi-blue-fg {
+  color: var(--ansi-blue);
 }
-:root[data-theme='dark'] .packet-list .ansi-magenta-fg {
-  color: #d2a8ff;
+:root .packet-list .ansi-magenta-fg {
+  color: var(--ansi-magenta);
 }
-:root[data-theme='dark'] .packet-list .ansi-cyan-fg {
-  color: #56d4dd;
+:root .packet-list .ansi-cyan-fg {
+  color: var(--ansi-cyan);
 }
-:root[data-theme='dark'] .packet-list .ansi-white-fg {
-  color: #f0f6fc;
+:root .packet-list .ansi-white-fg {
+  color: var(--ansi-white);
 }
-:root[data-theme='dark'] .packet-list .ansi-bright-black-fg {
-  color: #8b949e;
+:root .packet-list .ansi-bright-black-fg {
+  color: var(--ansi-bright-black);
 }
-:root[data-theme='dark'] .packet-list .ansi-bright-red-fg {
-  color: #ffa198;
+:root .packet-list .ansi-bright-red-fg {
+  color: var(--ansi-bright-red);
 }
-:root[data-theme='dark'] .packet-list .ansi-bright-green-fg {
-  color: #56d364;
+:root .packet-list .ansi-bright-green-fg {
+  color: var(--ansi-bright-green);
 }
-:root[data-theme='dark'] .packet-list .ansi-bright-yellow-fg {
-  color: #e3b341;
+:root .packet-list .ansi-bright-yellow-fg {
+  color: var(--ansi-bright-yellow);
 }
-:root[data-theme='dark'] .packet-list .ansi-bright-blue-fg {
-  color: #a5d6ff;
+:root .packet-list .ansi-bright-blue-fg {
+  color: var(--ansi-bright-blue);
 }
-:root[data-theme='dark'] .packet-list .ansi-bright-magenta-fg {
-  color: #f2ccff;
+:root .packet-list .ansi-bright-magenta-fg {
+  color: var(--ansi-bright-magenta);
 }
-:root[data-theme='dark'] .packet-list .ansi-bright-cyan-fg {
-  color: #76e3ea;
+:root .packet-list .ansi-bright-cyan-fg {
+  color: var(--ansi-bright-cyan);
 }
-:root[data-theme='dark'] .packet-list .ansi-bright-white-fg {
-  color: #ffffff;
-}
-
-:root[data-theme='light'] .packet-list .ansi-black-fg {
-  color: #57606a;
-}
-:root[data-theme='light'] .packet-list .ansi-red-fg {
-  color: #cf222e;
-}
-:root[data-theme='light'] .packet-list .ansi-green-fg {
-  color: #116329;
-}
-:root[data-theme='light'] .packet-list .ansi-yellow-fg {
-  color: #4d2d00;
-}
-:root[data-theme='light'] .packet-list .ansi-blue-fg {
-  color: #0969da;
-}
-:root[data-theme='light'] .packet-list .ansi-magenta-fg {
-  color: #8250df;
-}
-:root[data-theme='light'] .packet-list .ansi-cyan-fg {
-  color: #1b7c83;
-}
-:root[data-theme='light'] .packet-list .ansi-white-fg {
-  color: #6e7781;
-}
-:root[data-theme='light'] .packet-list .ansi-bright-black-fg {
-  color: #424a53;
-}
-:root[data-theme='light'] .packet-list .ansi-bright-red-fg {
-  color: #a40e26;
-}
-:root[data-theme='light'] .packet-list .ansi-bright-green-fg {
-  color: #1a7f37;
-}
-:root[data-theme='light'] .packet-list .ansi-bright-yellow-fg {
-  color: #633c01;
-}
-:root[data-theme='light'] .packet-list .ansi-bright-blue-fg {
-  color: #0550ae;
-}
-:root[data-theme='light'] .packet-list .ansi-bright-magenta-fg {
-  color: #6639ba;
-}
-:root[data-theme='light'] .packet-list .ansi-bright-cyan-fg {
-  color: #0e6c75;
-}
-:root[data-theme='light'] .packet-list .ansi-bright-white-fg {
-  color: #24292f;
+:root .packet-list .ansi-bright-white-fg {
+  color: var(--ansi-bright-white);
 }

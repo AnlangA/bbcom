@@ -13,8 +13,8 @@ export const themeOverrides: GlobalThemeOverrides = {
     successColor: '#3ddc97',
     warningColor: '#ffbf5f',
     errorColor: '#ff6b7a',
-    borderRadius: 'var(--radius-md)',
-    borderRadiusSmall: 'var(--radius-sm)',
+    borderRadius: 'var(--radius-sm)',
+    borderRadiusSmall: 'var(--radius-xs)',
     fontFamily: 'var(--font-family)',
     fontFamilyMono: 'var(--font-mono)',
     fontSize: 'var(--font-size-base)',
@@ -22,9 +22,9 @@ export const themeOverrides: GlobalThemeOverrides = {
     fontSizeTiny: 'var(--font-size-sm)',
     fontSizeSmall: 'var(--font-size-data)',
     fontSizeMedium: 'var(--font-size-base)',
-    heightTiny: '28px',
-    heightSmall: '30px',
-    heightMedium: '34px',
+    heightTiny: 'var(--control-h-md)',
+    heightSmall: 'var(--control-h-md)',
+    heightMedium: 'var(--control-h-md)',
     dividerColor: 'var(--border-subtle)',
     borderColor: 'var(--border-color)',
     inputColor: 'var(--bg-inset)',
@@ -60,7 +60,7 @@ export const themeOverrides: GlobalThemeOverrides = {
     // Secondary/dashed/ghost buttons run these through changeColor() to derive
     // alpha variants, so var() strings would throw in seemly's rgba parser.
     // The primary palette is theme-invariant (light only overrides surfaces),
-    // so these literals mirror variables.css for both palettes.
+    // so these literals mirror colors.css for both palettes.
     colorPrimary: '#3ddc97',
     colorHoverPrimary: '#5ee6aa',
     colorPressedPrimary: '#26b879',
@@ -104,7 +104,7 @@ export const themeOverrides: GlobalThemeOverrides = {
         optionColorPending: 'var(--bg-hover)',
         optionColorActive: 'var(--bg-active)',
         optionTextColorActive: 'var(--text-primary)',
-        borderRadius: 'var(--radius-md)',
+        borderRadius: 'var(--radius-sm)',
       },
     },
   },

@@ -195,29 +195,29 @@ onBeforeUnmount(detach);
   z-index: var(--z-gate);
   display: grid;
   place-items: center;
-  padding: 24px;
-  background: rgb(0 0 0 / 68%);
+  padding: var(--space-xl);
+  background: var(--overlay-backdrop-strong);
 }
 
 .shutdown-dialog {
   width: min(560px, 100%);
   max-height: min(640px, calc(100vh - 48px));
   overflow: auto;
-  padding: 24px;
+  padding: var(--space-xl);
   border: 1px solid var(--border-color);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   color: var(--text-primary);
   background: var(--bg-primary);
-  box-shadow: 0 20px 60px rgb(0 0 0 / 45%);
+  box-shadow: var(--shadow-lg);
 }
 
 .shutdown-dialog h2 {
-  margin: 0 0 10px;
-  font-size: 18px;
+  margin: 0 0 var(--space-sm);
+  font-size: var(--font-size-lg);
 }
 
 .shutdown-dialog p {
-  margin: 0 0 16px;
+  margin: 0 0 var(--space-lg);
   color: var(--text-secondary);
 }
 

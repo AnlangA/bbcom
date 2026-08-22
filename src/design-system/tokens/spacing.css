@@ -1,0 +1,36 @@
+/**
+ * Spacing scale — 4px grid, radii, transitions, and z-index layers.
+ */
+
+:root {
+  /* Spacing — 4px base grid */
+  --space-2xs: 2px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+
+  /* Radius — rounder scale for a softer, contemporary feel while staying
+     dense enough for a data-heavy desktop tool. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-full: 9999px;
+
+  /* Transitions */
+  --transition-fast: 100ms ease;
+  --transition-normal: 180ms ease;
+  --transition-slow: 260ms ease;
+
+  /* Z-index */
+  --z-dropdown: 1000;
+  --z-modal: 2000;
+  --z-tooltip: 3000;
+  --z-notification: 4000;
+  /* App-level gates (shutdown dialog, legacy reset) sit above everything. */
+  --z-gate: 10000;
+}

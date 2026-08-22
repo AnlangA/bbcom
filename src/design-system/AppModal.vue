@@ -199,8 +199,8 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 28px;
-  min-height: 28px;
+  min-width: var(--control-h-md);
+  min-height: var(--control-h-md);
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
