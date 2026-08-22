@@ -1,4 +1,4 @@
-import type { QuickCommand, SendHistoryEntry, SerialSession } from '../types';
+import type { QuickCommand, SendHistoryEntry, SerialSession } from '@/types';
 import { truncate } from './format';
 
 export type ToolsTabId = 'quick' | 'macros' | 'triggers' | 'highlights' | 'history' | 'checksum';

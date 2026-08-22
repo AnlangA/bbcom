@@ -1,4 +1,4 @@
-import { isLocalStorageAvailable, loadJson } from '../../lib/storage';
+import { isLocalStorageAvailable, loadJson } from '@/lib/storage';
 import {
   GLOBAL_SETTINGS_STORAGE_KEY,
   LEGACY_APP_SETTINGS_KEY,

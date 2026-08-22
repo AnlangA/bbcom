@@ -16,7 +16,7 @@ import {
   type AutoLogSessionClient,
   type UseAutoLogDeps,
 } from '../../src/composables/useAutoLog.ts';
-import type { AutoLogFormat, ExportFramePayload } from '../../src/features/native/index.ts';
+import type { AutoLogFormat, ExportFramePayload } from '../../src/features/platform/native/index.ts';
 import type { DataFrame, PortConfig } from '../../src/types/index.ts';
 
 interface LocalStorageLike {

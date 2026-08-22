@@ -26,7 +26,7 @@ import {
   runAiRequest,
   showAiWindow,
   startAiWindowDrag,
-} from '../../src/features/native/index.ts';
+} from '../../src/features/platform/native/index.ts';
 
 test('IPC: every export, automatic-log, and AI wrapper sends the exact bounded DTO', async () => {
   invoke.mockResolvedValue({ ok: true });

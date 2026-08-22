@@ -1,4 +1,4 @@
-import type { Macro } from '../types';
+import type { Macro } from '@/types';
 import { t } from './i18n';
 import { logger } from './logger';
 import { normalizeMacroSteps } from './macro-editor';

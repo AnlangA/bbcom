@@ -23,7 +23,7 @@ import type {
   WorkspaceCatalogResponse,
   WorkspaceMutation,
   WorkspaceSaveHealth,
-} from '../../generated/ipc-contracts';
+} from '@/generated/ipc-contracts';
 
 export const WORKSPACE_PROJECT_EXTENSION = '.bbcom' as const;
 export const WORKSPACE_RECENT_PROJECT_LIMIT = 12;

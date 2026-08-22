@@ -1,10 +1,10 @@
 import { getCurrentInstance, inject, onScopeDispose, ref, type InjectionKey } from 'vue';
-import type { SerialSession } from '../../../types';
-import type { ApplicationServices } from '../../application';
+import type { SerialSession } from '@/types';
+import type { ApplicationServices } from '@/features/platform/application';
 import type { ApplicationSessionRuntime } from './session-runtime-factory';
 import type { SessionRuntimeStatusRegistry } from './session-runtime-status';
 import type { SessionRuntimeStatus } from './session-runtime-status';
-import { useSessionCoreStore } from '../../../stores/session-core';
+import { useSessionCoreStore } from '@/features/sessions/store/session-core';
 
 export type SessionApplicationServices = ApplicationServices<
   SerialSession,

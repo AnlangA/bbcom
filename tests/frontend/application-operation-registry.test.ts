@@ -6,7 +6,7 @@ import {
   InvalidOperationTransitionError,
   OperationRegistry,
   OperationRegistryShutdownError,
-} from '../../src/features/application/operation-registry.ts';
+} from '../../src/features/platform/application/operation-registry.ts';
 
 function deferred(): { promise: Promise<void>; resolve(): void } {
   let resolve!: () => void;

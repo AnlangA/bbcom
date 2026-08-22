@@ -1,5 +1,5 @@
-import type { SerialSendResult, SerialWriteOptions } from '../../../types/serial';
-import type { SerialShellConfig } from '../../../types/serial-shell';
+import type { SerialSendResult, SerialWriteOptions } from '@/types/serial';
+import type { SerialShellConfig } from '@/types/serial-shell';
 import type { SerialAutomationPausePort } from '../../serial';
 import {
   SerialShellDecoder,
@@ -9,8 +9,8 @@ import {
   echoTextForSerialShellKey,
   isImmediateSerialShellKey,
   serialShellKeysFromData,
-} from '../../../lib/serial-shell';
-import type { SerialTimerScheduler } from '../../../lib/serial-rx-scheduler';
+} from '@/lib/serial-shell';
+import type { SerialTimerScheduler } from '@/lib/serial-rx-scheduler';
 
 export const SERIAL_SHELL_COALESCE_MS = 16;
 export const SERIAL_SHELL_COALESCE_BYTES = 64;

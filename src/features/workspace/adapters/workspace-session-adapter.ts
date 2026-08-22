@@ -10,20 +10,20 @@ import type {
   WorkspaceWaveformSample,
 } from '../../../generated/ipc-contracts';
 import { IPC_LIMITS } from '../../../generated/ipc-contracts';
-import { AI_MODEL_IDS, isValidAiModel } from '../../../lib/ai-models';
+import { AI_MODEL_IDS, isValidAiModel } from '@/lib/ai-models';
 import {
   cloneParserState,
   countFrameTotals,
   createSessionRecord,
   normalizeParserState,
   normalizePortConfig,
-} from '../../../lib/session-persistence';
-import { cloneModbusConfig, normalizeModbusConfig } from '../../../lib/modbus';
+} from '@/lib/session-persistence';
+import { cloneModbusConfig, normalizeModbusConfig } from '@/lib/modbus';
 import {
   DEFAULT_SERIAL_SHELL_CONFIG,
   cloneSerialShellConfig,
   normalizeSerialShellConfig,
-} from '../../../lib/serial-shell';
+} from '@/lib/serial-shell';
 import {
   DEFAULT_MCUMGR_CONFIG,
   MCUMGR_CONFIG_KEYS,
@@ -31,8 +31,8 @@ import {
   normalizeMcumgrConfig,
   persistableMcumgrConfig,
   validateMcumgrConfig,
-} from '../../../lib/mcumgr-config';
-import type { SerialSession, SessionWaveformFrameCursor } from '../../../types';
+} from '@/lib/mcumgr-config';
+import type { SerialSession, SessionWaveformFrameCursor } from '@/types';
 import {
   WorkspaceAdapterLimitError,
   WorkspaceAdapterValidationError,

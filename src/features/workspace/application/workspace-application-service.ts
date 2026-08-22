@@ -4,7 +4,7 @@ import type {
   WorkspaceWaveformSample,
 } from '../../../generated/ipc-contracts';
 import { IPC_LIMITS } from '../../../generated/ipc-contracts';
-import type { DataFrame } from '../../../types/serial';
+import type { DataFrame } from '@/types/serial';
 import {
   projectWorkspaceFrame,
   stageWorkspaceHydration,
@@ -17,7 +17,7 @@ import type {
   WorkspaceActionFailure,
   WorkspaceActionOutcome,
   WorkspaceMutationCommand,
-} from '../types';
+} from '@/features/workspace/types';
 import { WorkspaceCoordinator } from '../workspace-coordinator';
 import {
   abortableWorkspaceHydrationPort,

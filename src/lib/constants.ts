@@ -1,5 +1,5 @@
-import type { DisplayMode } from '../types';
-import type { ExportFormat as ContractExportFormat } from '../generated/ipc-contracts';
+import type { DisplayMode } from '@/types';
+import type { ExportFormat as ContractExportFormat } from '@/generated/ipc-contracts';
 
 export const BAUD_RATES = [
   { label: '9600', value: 9600 },

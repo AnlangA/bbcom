@@ -1,8 +1,8 @@
 // Domain-typed barrel for the application's shared types.
 //
-// This file re-exports the per-domain modules so existing `from '../types'`
+// This file re-exports the per-domain modules so existing `from '@/types'`
 // (and `'.../types/index'`) imports keep resolving unchanged. New code should
-// prefer importing from the specific domain module (e.g. `from '../types/modbus'`)
+// prefer importing from the specific domain module (e.g. `from '@/types/modbus'`)
 // so dependencies stay explicit and tree-shakeable.
 //
 // Domains:

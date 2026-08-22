@@ -1,4 +1,4 @@
-import type { DataFrame, SendHistoryEntry, SerialSession } from '../types';
+import type { DataFrame, SendHistoryEntry, SerialSession } from '@/types';
 
 export const SESSION_FRAME_TRIM_THRESHOLD = 500;
 export const MAX_SESSION_FRAME_BYTES = 64 * 1024 * 1024;

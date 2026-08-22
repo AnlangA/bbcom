@@ -1,6 +1,6 @@
 import type { WorkspaceMutation } from '../../../generated/ipc-contracts';
 import { IPC_LIMITS } from '../../../generated/ipc-contracts';
-import type { ModbusMasterConfig, SerialShellConfig } from '../../../types';
+import type { ModbusMasterConfig, SerialShellConfig } from '@/types';
 import {
   WorkspaceAdapterLimitError,
   WorkspaceAdapterValidationError,

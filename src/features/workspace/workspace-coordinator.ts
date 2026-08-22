@@ -2,7 +2,7 @@ import type {
   CreateWorkspaceCommandResponse,
   OpenWorkspaceResponse,
   WorkspaceSaveHealth,
-} from '../../generated/ipc-contracts';
+} from '@/generated/ipc-contracts';
 import { createProjectLibraryViewModel } from './project-library-view-model';
 import type {
   ActiveWorkspaceViewModel,

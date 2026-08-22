@@ -1,4 +1,4 @@
-import type { RegisteredAiModel } from '../lib/ai-models';
+import type { RegisteredAiModel } from '@/lib/ai-models';
 
 /** Supported Z.ai chat models, derived from the canonical frontend registry. */
 export type AiModel = RegisteredAiModel;

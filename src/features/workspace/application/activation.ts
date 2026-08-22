@@ -2,7 +2,7 @@ import type {
   ActiveWorkspaceViewModel,
   WorkspaceActionFailure,
   WorkspaceActionOutcome,
-} from '../types';
+} from '@/features/workspace/types';
 import type { WorkspaceApplicationOutcome } from './types';
 
 export interface ActivationAttempt {

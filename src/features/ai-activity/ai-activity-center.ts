@@ -3,9 +3,9 @@ import type {
   IpcError,
   OperationRecord,
   RunAiRequest,
-} from '../../generated/ipc-contracts';
-import { cancelAiRequest, runAiRequest } from '../native';
-import { OperationRegistry } from '../application';
+} from '@/generated/ipc-contracts';
+import { cancelAiRequest, runAiRequest } from '@/features/platform/native';
+import { OperationRegistry } from '@/features/platform/application';
 
 export interface AiActivityBinding {
   readonly workspaceId: string;

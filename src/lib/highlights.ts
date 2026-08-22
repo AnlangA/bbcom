@@ -1,4 +1,4 @@
-import type { DataFrame, HighlightColor, HighlightRule } from '../types';
+import type { DataFrame, HighlightColor, HighlightRule } from '@/types';
 
 export const HIGHLIGHT_COLORS: HighlightColor[] = ['amber', 'red', 'blue', 'green', 'violet'];
 

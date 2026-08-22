@@ -6,7 +6,7 @@ export {
   type CaptureAccountingRegistration,
   type CaptureSessionTotals,
   type CaptureWorkspaceTotals,
-} from '../../application';
+} from '@/features/platform/application';
 export {
   WorkspaceOperationRegistryLifecycle,
   workspaceOperationLifecycleFor,

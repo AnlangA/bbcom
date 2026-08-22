@@ -1,6 +1,6 @@
-import { DEFAULT_RX_FRAME_GAP_MS, normalizeRxFrameGapMs } from '../../lib/serial-framing';
-import { clampSidebarWidth } from '../../lib/sidebar-layout';
-import type { DisplayMode, LineEnding, PacketViewMode, PortConfig, SearchMode } from '../../types';
+import { DEFAULT_RX_FRAME_GAP_MS, normalizeRxFrameGapMs } from '@/lib/serial-framing';
+import { clampSidebarWidth } from '@/lib/sidebar-layout';
+import type { DisplayMode, LineEnding, PacketViewMode, PortConfig, SearchMode } from '@/types';
 
 export const GLOBAL_SETTINGS_VERSION = 2;
 export const GLOBAL_SETTINGS_STORAGE_KEY = 'bbcom-v2:global-settings';

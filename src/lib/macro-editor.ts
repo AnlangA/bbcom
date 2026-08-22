@@ -1,4 +1,4 @@
-import type { Macro, MacroStep } from '../types';
+import type { Macro, MacroStep } from '@/types';
 
 export interface MacroDraft {
   name: string;

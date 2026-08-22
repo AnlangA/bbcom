@@ -1,4 +1,4 @@
-import type { ChecksumType, PortConfig } from '../types';
+import type { ChecksumType, PortConfig } from '@/types';
 import { formatHex, hexByteCount, isValidHex, parseHex } from './format';
 
 export interface PortSessionRef {

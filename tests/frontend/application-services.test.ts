@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
-import { createApplicationServices } from '../../src/features/application/application-services.ts';
-import { ApplicationNotificationRouter } from '../../src/features/application/application-notifications.ts';
+import { createApplicationServices } from '../../src/features/platform/application/application-services.ts';
+import { ApplicationNotificationRouter } from '../../src/features/platform/application/application-notifications.ts';
 import { PortLeaseRegistry } from '../../src/features/serial/application/port-lease-registry.ts';
 
 test('application services are explicit instances and shutdown both registries', async () => {

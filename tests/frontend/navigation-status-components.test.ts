@@ -155,8 +155,8 @@ vi.mock('@tanstack/vue-virtual', async () => {
   };
 });
 
-vi.mock('../../src/features/native/tauri-ipc', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/features/native/tauri-ipc')>();
+vi.mock('../../src/features/platform/native/tauri-ipc', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/features/platform/native/tauri-ipc')>();
   return {
     ...actual,
     calculateChecksum: nativeMocks.checksum,

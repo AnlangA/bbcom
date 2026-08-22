@@ -1,5 +1,5 @@
-import type { DataFrame } from '../types';
-import { MAX_MERGED_VISIBLE_BYTES } from '../types/constants';
+import type { DataFrame } from '@/types';
+import { MAX_MERGED_VISIBLE_BYTES } from '@/types/constants';
 
 /**
  * Merged terminal rows deliberately expose only the newest 64 KiB to the UI.

@@ -21,8 +21,8 @@ export {
   type WorkspaceSessionChangeEvent,
   type WorkspaceSessionChangeListener,
   type WorkspaceSessionPort,
-} from './session-ports';
-export { enterWorkspaceSessionPersistenceMode } from '../../stores/session-core';
+} from './ports/session-ports';
+export { enterWorkspaceSessionPersistenceMode } from './store/session-core';
 export {
   SessionRuntimeStatusRegistry,
   type SessionRuntimePhase,

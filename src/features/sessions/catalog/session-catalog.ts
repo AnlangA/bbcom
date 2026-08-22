@@ -1,4 +1,4 @@
-import type { SerialSession } from '../../../types/session';
+import type { SerialSession } from '@/types/session';
 
 const MAX_MRU_SESSIONS = 8;
 

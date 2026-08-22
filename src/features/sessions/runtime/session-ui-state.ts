@@ -1,6 +1,6 @@
 import type { InjectionKey, Ref } from 'vue';
-import type { ToolsTabId } from '../../../lib/tools-tabs';
-import type { DirectionFilter } from '../../../types';
+import type { ToolsTabId } from '@/lib/tools-tabs';
+import type { DirectionFilter } from '@/types';
 
 /**
  * View-local UI state owned by the session runtime so it survives SessionView

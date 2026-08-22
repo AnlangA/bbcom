@@ -1,5 +1,5 @@
-import { isValidAiModel } from '../../lib/ai-models';
-import { IPC_LIMITS, type IpcError, type OperationRecord } from '../../generated/ipc-contracts';
+import { isValidAiModel } from '@/lib/ai-models';
+import { IPC_LIMITS, type IpcError, type OperationRecord } from '@/generated/ipc-contracts';
 import { AiActivityCancelledError } from '../ai-activity';
 import type {
   AiChatMessage,
@@ -8,7 +8,7 @@ import type {
   AiSessionSummary,
   LogAiContextMode,
   SerialSession,
-} from '../../types';
+} from '@/types';
 
 /**
  * Pure, framework-free helpers behind the AI session bridge.

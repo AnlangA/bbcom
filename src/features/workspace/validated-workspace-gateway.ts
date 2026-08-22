@@ -22,7 +22,7 @@ import type {
   WorkspaceCatalogRequest,
   WorkspaceCatalogResponse,
   WorkspaceSaveHealth,
-} from '../../generated/ipc-contracts';
+} from '@/generated/ipc-contracts';
 import type { WorkspaceCoordinatorPort, WorkspacePortCallContext } from './types';
 import {
   InvalidWorkspaceResponseError,

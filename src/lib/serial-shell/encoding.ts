@@ -1,4 +1,4 @@
-import type { SerialShellEncoding } from '../../types/serial-shell';
+import type { SerialShellEncoding } from '@/types/serial-shell';
 
 const TEXT_ENCODER = new TextEncoder();
 

@@ -14,11 +14,11 @@ import {
   type ExportSessionClient,
   type WorkspaceDbExportSource,
 } from '../../src/composables/useExport.ts';
-import type { ExportFramePayload, ExportSource } from '../../src/features/native/index.ts';
+import type { ExportFramePayload, ExportSource } from '../../src/features/platform/native/index.ts';
 import type { DataFrame, DisplayMode } from '../../src/types.ts';
 import type { ExportFormat } from '../../src/lib/constants.ts';
 import { createExportFrameSnapshot } from '../../src/lib/export-filters.ts';
-import { OperationRegistry } from '../../src/features/application/operation-registry.ts';
+import { OperationRegistry } from '../../src/features/platform/application/operation-registry.ts';
 
 function frame(direction: 'RX' | 'TX', data: number[] | Uint8Array, id = 1): DataFrame {
   return {

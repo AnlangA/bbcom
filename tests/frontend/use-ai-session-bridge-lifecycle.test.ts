@@ -4,7 +4,7 @@ import { defineComponent, nextTick, reactive, ref } from 'vue';
 import { mount } from '@vue/test-utils';
 import { beforeEach, expect, test, vi } from 'vitest';
 import type { SerialSession } from '../../src/types.ts';
-import { OperationRegistry } from '../../src/features/application/operation-registry.ts';
+import { OperationRegistry } from '../../src/features/platform/application/operation-registry.ts';
 import {
   AI_BRIDGE_EVENTS,
   createAiBridgeEnvelope,

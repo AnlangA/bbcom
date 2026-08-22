@@ -1,4 +1,4 @@
-import type { ChecksumType } from '../types';
+import type { ChecksumType } from '@/types';
 
 export const checksumOptions: { label: string; value: ChecksumType }[] = [
   { label: 'Checksum', value: 'CHECKSUM' },

@@ -1,23 +1,23 @@
-import { encodeUtf8, parseHex } from '../../../lib/format';
-import { concatUint8Arrays } from '../../../lib/bytes';
-import { mapDataBits, mapFlowControl, mapParity, mapStopBits } from '../../../lib/serial-config';
-import { SerialRxQueue } from '../../../lib/serial-rx-queue';
+import { encodeUtf8, parseHex } from '@/lib/format';
+import { concatUint8Arrays } from '@/lib/bytes';
+import { mapDataBits, mapFlowControl, mapParity, mapStopBits } from '@/lib/serial-config';
+import { SerialRxQueue } from '@/lib/serial-rx-queue';
 import {
   SerialRxDrainScheduler,
   SerialUiPublishScheduler,
   type SerialTimerScheduler,
-} from '../../../lib/serial-rx-scheduler';
+} from '@/lib/serial-rx-scheduler';
 import type { SerialPortAdapter, SerialPortFactory } from './serial-port';
 import {
   SERIAL_WRITE_CLOSE_GRACE_MS,
   SerialWriteScheduler,
   type SerialWriteAdmission,
-} from '../../../lib/serial-write-scheduler';
-import { logger } from '../../../lib/logger';
-import { normalizeRxFrameGapMs } from '../../../lib/serial-framing';
-import { MAX_INPUT_SIZE } from '../../../types';
+} from '@/lib/serial-write-scheduler';
+import { logger } from '@/lib/logger';
+import { normalizeRxFrameGapMs } from '@/lib/serial-framing';
+import { MAX_INPUT_SIZE } from '@/types';
 import type { IpcError } from '../../../generated/ipc-contracts';
-import type { DataFrame, PortConfig, SerialSendResult, SerialWriteOptions } from '../../../types';
+import type { DataFrame, PortConfig, SerialSendResult, SerialWriteOptions } from '@/types';
 import type { PortLeaseClient } from './port-lease-registry';
 import { classifyOpenFailure, type SerialConnectionFailure } from './serial-connection-failure';
 import { createPortLeaseController } from './serial-port-lease';

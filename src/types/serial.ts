@@ -2,7 +2,7 @@ import type { Direction } from './display';
 import type { CaptureOrigin, CaptureSequence } from './capture';
 
 /** Rust-owned serial send contract. Do not redefine these shapes in TS. */
-export type { SerialSendOutcome, SerialSendResult } from '../generated/ipc-contracts';
+export type { SerialSendOutcome, SerialSendResult } from '@/generated/ipc-contracts';
 
 /** A single captured TX/RX frame. `data` is the raw byte payload. */
 export interface DataFrame {

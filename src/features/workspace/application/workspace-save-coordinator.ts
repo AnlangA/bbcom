@@ -1,4 +1,4 @@
-import { CaptureAccountingStore } from '../../application';
+import { CaptureAccountingStore } from '@/features/platform/application';
 import { SaveGate, WorkspaceSaveQueues, type SaveQueuesHooks } from './save-queues';
 import type { WorkspaceLatchedSaveFailure } from './types';
 

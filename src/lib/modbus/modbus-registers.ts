@@ -3,7 +3,7 @@ import type {
   ModbusMasterConfig,
   ModbusRegister,
   ModbusValueType,
-} from '../../types';
+} from '@/types';
 import {
   MODBUS_LIMITS,
   isBitFc,

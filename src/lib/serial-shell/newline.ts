@@ -1,4 +1,4 @@
-import type { SerialShellNewline, SerialShellRxNewline } from '../../types/serial-shell';
+import type { SerialShellNewline, SerialShellRxNewline } from '@/types/serial-shell';
 
 export function serialShellNewlineBytes(kind: SerialShellNewline): Uint8Array {
   if (kind === 'cr') return new Uint8Array([0x0d]);

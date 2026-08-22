@@ -1,5 +1,5 @@
-import type { McumgrTraceFrame } from '../generated/ipc-contracts';
-import type { DataFrame, Direction } from '../types';
+import type { McumgrTraceFrame } from '@/generated/ipc-contracts';
+import type { DataFrame, Direction } from '@/types';
 
 export function mcumgrTraceFramesToDataFrames(
   frames: readonly McumgrTraceFrame[],

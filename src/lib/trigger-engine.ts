@@ -14,7 +14,7 @@
  * - Pure logic, no Vue/DOM deps → fully unit-testable.
  */
 
-import type { Trigger, TriggerMatchMode } from '../types';
+import type { Trigger, TriggerMatchMode } from '@/types';
 
 export type { Trigger, TriggerMatchMode };
 

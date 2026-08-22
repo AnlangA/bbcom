@@ -6,7 +6,7 @@ import {
   ShutdownProtocolAdapter,
   type ShutdownConfirmation,
   type ShutdownDrainResult,
-} from '../../src/features/shutdown/index.ts';
+} from '../../src/features/platform/shutdown/index.ts';
 
 function deferred(): { promise: Promise<void>; resolve(): void } {
   let resolve!: () => void;

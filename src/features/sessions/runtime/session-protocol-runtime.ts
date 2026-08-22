@@ -1,6 +1,6 @@
-import { parserConfigKey, type DisplayParsedFrame } from '../../../lib/parser-frame-collector';
-import { ProtocolParser, type ParserConfig } from '../../../lib/protocol-parser';
-import type { DataFrame } from '../../../types';
+import { parserConfigKey, type DisplayParsedFrame } from '@/lib/parser-frame-collector';
+import { ProtocolParser, type ParserConfig } from '@/lib/protocol-parser';
+import type { DataFrame } from '@/types';
 
 export interface SessionProtocolRuntimeSnapshot {
   /** Parsed RX frames accumulated by the resident session runtime. */

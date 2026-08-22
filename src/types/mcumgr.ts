@@ -1,6 +1,6 @@
 /** Per-session MCUMgr client settings. Persisted; transfer payloads are not. */
 
-import type { McumgrPhase } from '../generated/ipc-contracts';
+import type { McumgrPhase } from '@/generated/ipc-contracts';
 
 export interface McumgrClientConfig {
   /** Negotiate the SMP frame size from the device (os mcumgr params). */

@@ -18,8 +18,8 @@ import type {
   SerialSession,
   Trigger,
   WaveformSourceMode,
-} from '../types';
-import { MAX_HISTORY } from '../types';
+} from '@/types';
+import { MAX_HISTORY } from '@/types';
 import type { ParserConfig } from './protocol-parser';
 import { parseHex } from './format';
 import { nowMillis } from './time';

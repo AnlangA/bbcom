@@ -1,7 +1,7 @@
 import { parseFrame, scanResponse, type ModbusTransport } from './modbus-transport';
 import type { ModbusResponse } from './modbus-core';
-import type { IpcError } from '../../generated/ipc-contracts';
-import type { SerialSendResult, SerialWriteOptions } from '../../types/serial';
+import type { IpcError } from '@/generated/ipc-contracts';
+import type { SerialSendResult, SerialWriteOptions } from '@/types/serial';
 
 /**
  * Modbus RTU ADUs are capped at 256 bytes (and Modbus PDUs at 253 bytes).

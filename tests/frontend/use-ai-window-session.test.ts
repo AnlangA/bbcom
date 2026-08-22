@@ -14,7 +14,7 @@ import {
   parseAiBridgeEnvelope,
 } from '../../src/features/ai-activity/index.ts';
 import { AiActivityCenter } from '../../src/features/ai-activity/ai-activity-center.ts';
-import { OperationRegistry } from '../../src/features/application/operation-registry.ts';
+import { OperationRegistry } from '../../src/features/platform/application/operation-registry.ts';
 
 interface RecordedEmit {
   event: string;

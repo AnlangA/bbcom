@@ -2,8 +2,8 @@ import type {
   WorkspaceMutation,
   WorkspacePortHint,
   WorkspaceSessionKind,
-} from '../../generated/ipc-contracts';
-import type { SerialSession } from '../../types';
+} from '@/generated/ipc-contracts';
+import type { SerialSession } from '@/types';
 import type { WorkspaceSessionChangeEvent, WorkspaceSessionPort } from '../sessions';
 import { projectWorkspaceSessionMutations, projectWorkspaceWaveformPreferences } from './adapters';
 import type { WorkspaceApplicationService } from './application';

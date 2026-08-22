@@ -32,7 +32,7 @@ import type {
   RequestProjectTargetGrantRequest,
   WorkspaceCatalogRequest,
   WorkspaceCatalogResponse,
-} from '../../generated/ipc-contracts';
+} from '@/generated/ipc-contracts';
 import type { WorkspaceHydrationPort } from './adapters';
 import type { WorkspaceCoordinatorPort, WorkspacePortCallContext } from './types';
 

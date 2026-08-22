@@ -1,4 +1,4 @@
-import type { ParserConfig } from '../lib/protocol-parser';
+import type { ParserConfig } from '@/lib/protocol-parser';
 import type { DataFrame, PortConfig, SendHistoryEntry, QuickCommand } from './serial';
 import type { Macro, Trigger, HighlightRule } from './macros';
 import type { ModbusRegister, ModbusMasterConfig } from './modbus';

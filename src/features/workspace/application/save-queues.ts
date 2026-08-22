@@ -1,7 +1,7 @@
 import type { WorkspaceFramePayload } from '../../../generated/ipc-contracts';
 import { IPC_LIMITS } from '../../../generated/ipc-contracts';
 import { toIpcFramePayload, type WorkspaceQueuedFramePayload } from '../adapters';
-import type { WorkspaceMutationCommand } from '../types';
+import type { WorkspaceMutationCommand } from '@/features/workspace/types';
 import {
   WORKSPACE_CONFIG_AUTOSAVE_DELAY_MS,
   WORKSPACE_FRAME_AUTOSAVE_DELAY_MS,

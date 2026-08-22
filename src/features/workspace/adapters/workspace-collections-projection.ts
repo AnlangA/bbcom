@@ -14,14 +14,14 @@ import type {
   SendHistoryEntry,
   SerialSession,
   Trigger,
-} from '../../../types';
-import { MAX_HISTORY } from '../../../types';
+} from '@/types';
+import { MAX_HISTORY } from '@/types';
 import {
   isModbusWriteFc,
   isReadFc,
   normalizeModbusQuantity,
   normalizeModbusRegisters,
-} from '../../../lib/modbus';
+} from '@/lib/modbus';
 import {
   WorkspaceAdapterLimitError,
   WorkspaceAdapterValidationError,

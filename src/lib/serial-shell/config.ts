@@ -4,7 +4,7 @@ import type {
   SerialShellEncoding,
   SerialShellNewline,
   SerialShellRxNewline,
-} from '../../types/serial-shell';
+} from '@/types/serial-shell';
 
 /**
  * Defaults match a conventional terminal emulator (PuTTY/minicom): the device

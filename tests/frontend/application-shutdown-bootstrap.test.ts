@@ -1,13 +1,13 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { ApplicationRuntimeRegistry } from '../../src/features/application/application-runtime-registry.ts';
-import { OperationRegistry } from '../../src/features/application/operation-registry.ts';
+import { ApplicationRuntimeRegistry } from '../../src/features/platform/application/application-runtime-registry.ts';
+import { OperationRegistry } from '../../src/features/platform/application/operation-registry.ts';
 import {
   createApplicationShutdownController,
   TauriShutdownPort,
   type ShutdownCloseRequest,
   type ShutdownProtocolPort,
-} from '../../src/features/shutdown/index.ts';
+} from '../../src/features/platform/shutdown/index.ts';
 
 function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => queueMicrotask(resolve));

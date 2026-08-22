@@ -5,7 +5,7 @@ import type {
   HighlightRule,
   Trigger,
   TriggerMatchMode,
-} from '../types';
+} from '@/types';
 
 export interface TriggerDraft {
   name: string;

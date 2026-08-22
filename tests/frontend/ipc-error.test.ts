@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { getCommandErrorMessage } from '../../src/features/native/index.ts';
+import { getCommandErrorMessage } from '../../src/features/platform/native/index.ts';
 import { ensureLocaleLoaded, setLocale } from '../../src/lib/i18n.ts';
 
 test('stable command errors are localized from their code without backend prose', async () => {

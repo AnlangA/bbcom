@@ -4,7 +4,7 @@
  * tuning plus the shell history and forwards it with each invoke.
  */
 
-import type { McumgrClientConfig } from '../types/mcumgr';
+import type { McumgrClientConfig } from '@/types/mcumgr';
 
 export const MCUMGR_SHELL_HISTORY_LIMIT = 50;
 

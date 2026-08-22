@@ -5,7 +5,7 @@
  * so a user can export just the relevant portion of a long capture. Pure so it
  * is unit-testable; the export composable applies it before formatting.
  */
-import type { DataFrame } from '../types';
+import type { DataFrame } from '@/types';
 
 export interface TimeRangeFilter {
   /** Inclusive start timestamp (ms), or null for no lower bound. */

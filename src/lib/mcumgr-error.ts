@@ -1,4 +1,4 @@
-import type { McumgrError, McumgrErrorKind } from '../generated/ipc-contracts';
+import type { McumgrError, McumgrErrorKind } from '@/generated/ipc-contracts';
 import { t } from './i18n';
 
 /** MCUmgr SMP group ids (Zephyr `mcumgr_group_t`). */

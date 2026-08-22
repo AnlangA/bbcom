@@ -6,7 +6,7 @@ import {
   ApplicationRuntimeRegistryShutdownError,
   DuplicateApplicationRuntimeError,
   type RuntimeDisposalContext,
-} from '../../src/features/application/application-runtime-registry.ts';
+} from '../../src/features/platform/application/application-runtime-registry.ts';
 
 interface TestSession {
   id: string;

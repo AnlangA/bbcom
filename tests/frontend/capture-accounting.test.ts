@@ -3,7 +3,7 @@ import { test } from 'vitest';
 import {
   CaptureAccountingStore,
   type CaptureSessionTotals,
-} from '../../src/features/application/capture-accounting.ts';
+} from '../../src/features/platform/application/capture-accounting.ts';
 
 function totalsOf(store: CaptureAccountingStore, sessionId: string): CaptureSessionTotals | null {
   return store.sessionTotals(sessionId);

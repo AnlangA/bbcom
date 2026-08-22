@@ -1,35 +1,35 @@
 import { computed, onScopeDispose, readonly, ref, shallowRef, watch, type Ref } from 'vue';
-import { useAppStore } from '../../../stores/app';
-import { useSessionCapture, useSessionDocument } from '../session-ports';
+import { useAppStore } from '@/features/settings/store/app-store';
+import { useSessionCapture, useSessionDocument } from '@/features/sessions/ports/session-ports';
 import {
   serialConnectionFailureMessage,
   type SerialStopResult,
   useSerialConnection,
-} from '../../../composables/useSerialConnection';
-import { useSessionModbus } from '../../../composables/useSessionModbus';
-import { useSessionMcumgr } from '../../../composables/useSessionMcumgr';
-import { mcumgrTraceFramesToDataFrames } from '../../../lib/mcumgr-trace';
-import { useTriggers } from '../../../composables/useTriggers';
-import { useAutoLog } from '../../../composables/useAutoLog';
-import { useMacroRunner } from '../../../composables/useMacroRunner';
+} from '@/features/sessions/application/use-serial-connection';
+import { useSessionModbus } from '@/features/sessions/application/use-session-modbus';
+import { useSessionMcumgr } from '@/features/sessions/application/use-session-mcumgr';
+import { mcumgrTraceFramesToDataFrames } from '@/lib/mcumgr-trace';
+import { useTriggers } from '@/features/sessions/application/use-triggers';
+import { useAutoLog } from '@/features/sessions/application/use-auto-log';
+import { useMacroRunner } from '@/features/sessions/application/use-macro-runner';
 import {
   AsyncSendLoop,
   type PortLeaseClient,
   type SerialTransactionLeaseCoordinator,
 } from '../../serial';
-import type { ApplicationNotificationPort } from '../../application';
-import { formatBytes } from '../../../lib/format';
-import { t } from '../../../lib/i18n';
-import { logger } from '../../../lib/logger';
-import { SerialUiPublishScheduler } from '../../../lib/serial-rx-scheduler';
-import type { DisplayParsedFrame } from '../../../lib/parser-frame-collector';
+import type { ApplicationNotificationPort } from '@/features/platform/application';
+import { formatBytes } from '@/lib/format';
+import { t } from '@/lib/i18n';
+import { logger } from '@/lib/logger';
+import { SerialUiPublishScheduler } from '@/lib/serial-rx-scheduler';
+import type { DisplayParsedFrame } from '@/lib/parser-frame-collector';
 import type {
   DataFrame,
   SerialSendResult,
   SerialSession,
   SerialWriteOptions,
-} from '../../../types';
-import type { SerialConnectionFailure } from '../../../composables/useSerialConnection';
+} from '@/types';
+import type { SerialConnectionFailure } from '@/features/sessions/application/use-serial-connection';
 import { SessionProtocolRuntime } from './session-protocol-runtime';
 import { SessionRuntimeStatusRegistry } from './session-runtime-status';
 import type { SessionRuntimeUiState } from './session-ui-state';

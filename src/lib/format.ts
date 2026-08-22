@@ -2,7 +2,7 @@
  * Unified formatting utilities for the application
  */
 
-import type { ChecksumType, Direction, DisplayMode, LineEnding, PortConfig } from '../types';
+import type { ChecksumType, Direction, DisplayMode, LineEnding, PortConfig } from '@/types';
 import { CHECKSUM_BYTE_LENGTH } from './checksum-constants';
 
 // Singleton decoders for better performance
