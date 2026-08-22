@@ -2,7 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { computed } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useSessionStore } from '../../src/features/sessions/store/session-store.ts';
 import { setMaxBufferFrames } from '../../src/lib/buffer-config.ts';
 import { MAX_FRAMES } from '../../src/types/index.ts';
 import {
@@ -31,7 +31,7 @@ const cfg: PortConfig = {
 
 function store() {
   setActivePinia(createPinia());
-  return useSessionCoreStore();
+  return useSessionStore();
 }
 
 async function withLocalStorageMock<T>(fn: () => Promise<T> | T): Promise<T> {

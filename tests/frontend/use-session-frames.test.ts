@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
-import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useSessionStore } from '../../src/features/sessions/store/session-store.ts';
 import { useSessionFrames } from '../../src/features/sessions/application/use-session-frames.ts';
 import type { DataFrame, PortConfig } from '../../src/types/index.ts';
 
@@ -59,9 +59,9 @@ function withLocalStorageMock<T>(fn: () => Promise<T> | T): Promise<T> | T {
   }
 }
 
-function setup(): { sessionId: string; store: ReturnType<typeof useSessionCoreStore> } {
+function setup(): { sessionId: string; store: ReturnType<typeof useSessionStore> } {
   setActivePinia(createPinia());
-  const store = useSessionCoreStore();
+  const store = useSessionStore();
   const sessionId = store.createSession('COM1', cfg);
   return { sessionId, store };
 }

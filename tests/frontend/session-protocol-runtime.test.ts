@@ -10,7 +10,7 @@ import type {
   SerialWatchHandleAdapter,
 } from '../../src/features/serial/index.ts';
 import type { SerialTimerScheduler } from '../../src/lib/serial-rx-scheduler.ts';
-import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useSessionStore } from '../../src/features/sessions/store/session-store.ts';
 import type { PortConfig } from '../../src/types/serial.ts';
 import { PortLeaseRegistry } from '../../src/features/serial/application/port-lease-registry.ts';
 
@@ -78,7 +78,7 @@ function fakeTimerScheduler() {
 
 test('resident protocol parser consumes raw RX while terminal capture and UI publication never run', async () => {
   setActivePinia(createPinia());
-  const store = useSessionCoreStore();
+  const store = useSessionStore();
   const sessionId = store.createSession('COM1', config);
   const port = new FakePort();
   const timer = fakeTimerScheduler();

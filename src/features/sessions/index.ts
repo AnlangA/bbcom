@@ -22,7 +22,7 @@ export {
   type WorkspaceSessionChangeListener,
   type WorkspaceSessionPort,
 } from './ports/session-ports';
-export { enterWorkspaceSessionPersistenceMode } from './store/session-core';
+export { enterWorkspaceSessionPersistenceMode } from './store/session-store';
 export {
   SessionRuntimeStatusRegistry,
   type SessionRuntimePhase,

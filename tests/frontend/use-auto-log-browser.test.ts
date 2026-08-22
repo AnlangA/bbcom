@@ -12,7 +12,7 @@ import {
   AUTO_LOG_MAX_BATCH_BYTES,
   useAutoLog,
 } from '../../src/features/sessions/application/use-auto-log.ts';
-import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useSessionStore } from '../../src/features/sessions/store/session-store.ts';
 import type { DataFrame, PortConfig } from '../../src/types.ts';
 import { createInvokeHandler, unexpectedCommand } from './helpers/invoke-mock.ts';
 
@@ -29,7 +29,7 @@ const config: PortConfig = {
 
 function setup() {
   setActivePinia(createPinia());
-  const sessions = useSessionCoreStore();
+  const sessions = useSessionStore();
   const sessionId = sessions.createSession('COM7', config);
   return { sessions, sessionId };
 }

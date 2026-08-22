@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { computed, effectScope, ref, type EffectScope } from 'vue';
 import { useModbusMaster, type ModbusMasterStatus } from '../../src/features/sessions/application/use-modbus-master.ts';
 import { frameRequest, readRequest, writeSingleRegisterRequest } from '../../src/lib/modbus';
-import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useSessionStore } from '../../src/features/sessions/store/session-store.ts';
 import type {
   ModbusFunctionCode,
   ModbusMasterConfig,
@@ -25,7 +25,7 @@ const cfg: PortConfig = {
 };
 
 interface Harness {
-  store: ReturnType<typeof useSessionCoreStore>;
+  store: ReturnType<typeof useSessionStore>;
   sessionId: string;
   master: ReturnType<typeof useModbusMaster>;
   sent: Uint8Array[];
@@ -48,7 +48,7 @@ function createHarness(
   configPatch: Partial<ModbusMasterConfig> = {},
 ): Harness {
   setActivePinia(createPinia());
-  const store = useSessionCoreStore();
+  const store = useSessionStore();
   const sessionId = store.createSession('COM1', cfg);
   store.setModbusConfig(sessionId, { enabled: false, timeoutMs: 80, ...configPatch });
 

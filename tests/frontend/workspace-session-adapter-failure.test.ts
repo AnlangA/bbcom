@@ -4,7 +4,7 @@ import { test } from 'vitest';
 
 import { SessionStoreWorkspaceAdapter } from '../../src/features/workspace/session-store-workspace-adapter.ts';
 import type { WorkspaceApplicationService } from '../../src/features/workspace/application/index.ts';
-import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useSessionStore } from '../../src/features/sessions/store/session-store.ts';
 import type { PortConfig } from '../../src/types/index.ts';
 
 const config: PortConfig = {
@@ -20,13 +20,13 @@ const config: PortConfig = {
 
 test('workspace adapter converts a synchronous projection failure into one fail-closed rejection', () => {
   setActivePinia(createPinia());
-  const store = useSessionCoreStore();
+  const store = useSessionStore();
   const sessionId = store.createSession('COM-projection-failure', config);
   assert.ok(sessionId);
   const rejected: string[] = [];
   // Permission revocation lives on the persistence facade since the store
   // split; capture it up front so the failure callback cannot lose access.
-  const persistence = useSessionCoreStore();
+  const persistence = useSessionStore();
   const application = {
     subscribe: () => () => undefined,
     rejectPersistence(messageKey: string) {

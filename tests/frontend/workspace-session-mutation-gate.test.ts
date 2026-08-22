@@ -3,9 +3,9 @@ import { test } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
 import {
-  useSessionCoreStore,
+  useSessionStore,
   type WorkspaceSessionChangeEvent,
-} from '../../src/features/sessions/store/session-core.ts';
+} from '../../src/features/sessions/store/session-store.ts';
 import { createSessionCaptureController } from '../../src/features/sessions/capture/session-capture-controller.ts';
 import { createSessionRecord } from '../../src/lib/session-persistence.ts';
 import type { PortConfig } from '../../src/types/index.ts';
@@ -24,12 +24,12 @@ const config: PortConfig = {
 
 function createStore() {
   setActivePinia(createPinia());
-  return useSessionCoreStore();
+  return useSessionStore();
 }
 
 test('workspace mutation gate rejects persisted user changes before touching memory', async () => {
   const store = createStore();
-  const persistence = useSessionCoreStore();
+  const persistence = useSessionStore();
   const firstId = store.createSession('COM1', config);
   const secondId = store.createSession('COM2', config);
   assert.ok(firstId);
@@ -111,7 +111,7 @@ test('workspace mutation gate rejects persisted user changes before touching mem
 
 test('undo emits a restoration event distinct from ordinary catalog changes', async () => {
   const store = createStore();
-  const persistence = useSessionCoreStore();
+  const persistence = useSessionStore();
   const sessionId = store.createSession('COM-undo', config);
   assert.ok(sessionId);
   const events: WorkspaceSessionChangeEvent[] = [];
@@ -128,7 +128,7 @@ test('undo emits a restoration event distinct from ordinary catalog changes', as
 
 test('AI history emits append and clear deltas instead of a destructive session rewrite', () => {
   const store = createStore();
-  const persistence = useSessionCoreStore();
+  const persistence = useSessionStore();
   const sessionId = store.createSession('COM-ai', config);
   assert.ok(sessionId);
   const events: WorkspaceSessionChangeEvent[] = [];
@@ -147,8 +147,8 @@ test('AI history emits append and clear deltas instead of a destructive session 
 
 test('workspace waveform hydrate, append, replace, and cursor are session-owned', () => {
   const store = createStore();
-  const persistence = useSessionCoreStore();
-  const waveform = useSessionCoreStore();
+  const persistence = useSessionStore();
+  const waveform = useSessionStore();
   const session = createSessionRecord('waveform-session', '', config, {
     frames: [
       {
@@ -286,8 +286,8 @@ test('workspace waveform hydrate, append, replace, and cursor are session-owned'
 
 test('workspace waveform retains exactly the latest 600 complete sample groups', () => {
   const store = createStore();
-  const persistence = useSessionCoreStore();
-  const waveform = useSessionCoreStore();
+  const persistence = useSessionStore();
+  const waveform = useSessionStore();
   const sessionId = store.createSession('COM-waveform-bound', config);
   assert.ok(sessionId);
   const events: WorkspaceSessionChangeEvent[] = [];
@@ -320,8 +320,8 @@ test('workspace waveform retains exactly the latest 600 complete sample groups',
 
 test('workspace waveform trims incrementally accumulated groups and stays exact after the trim', () => {
   const store = createStore();
-  const persistence = useSessionCoreStore();
-  const waveform = useSessionCoreStore();
+  const persistence = useSessionStore();
+  const waveform = useSessionStore();
   const sessionId = store.createSession('COM-waveform-incremental', config);
   assert.ok(sessionId);
   const events: WorkspaceSessionChangeEvent[] = [];
@@ -386,7 +386,7 @@ test('workspace waveform trims incrementally accumulated groups and stays exact 
 
 test('create and undo are rejected before memory mutation when workspace limits fail preflight', async () => {
   const store = createStore();
-  const persistence = useSessionCoreStore();
+  const persistence = useSessionStore();
   persistence.setWorkspaceMutationPermissions({
     userMutations: true,
     runtimeCapture: true,

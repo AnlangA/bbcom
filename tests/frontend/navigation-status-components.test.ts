@@ -27,7 +27,7 @@ import SettingsModal from '../../src/features/app-shell/ui/SettingsModal.vue';
 import App from '../../src/App.vue';
 import AiWindow from '../../src/AiWindow.vue';
 import { useAppStore } from '../../src/features/settings/store/app-store.ts';
-import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useSessionStore } from '../../src/features/sessions/store/session-store.ts';
 import { ensureLocaleLoaded, setLocale, t } from '../../src/lib/i18n.ts';
 import type {
   PortConfig,
@@ -218,7 +218,7 @@ function setupSessions() {
   const pinia = createPinia();
   setActivePinia(pinia);
   testUtilsConfig.global.plugins = [pinia];
-  return useSessionCoreStore();
+  return useSessionStore();
 }
 
 beforeEach(() => {

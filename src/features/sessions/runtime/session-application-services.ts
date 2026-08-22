@@ -4,7 +4,7 @@ import type { ApplicationServices } from '@/features/platform/application';
 import type { ApplicationSessionRuntime } from './session-runtime-factory';
 import type { SessionRuntimeStatusRegistry } from './session-runtime-status';
 import type { SessionRuntimeStatus } from './session-runtime-status';
-import { useSessionCoreStore } from '@/features/sessions/store/session-core';
+import { useSessionStore } from '@/features/sessions/store/session-store';
 
 export type SessionApplicationServices = ApplicationServices<
   SerialSession,
@@ -29,7 +29,7 @@ export function useSessionRuntimeStatuses(): {
   isConnected(sessionId: string): boolean;
 } {
   const services = getCurrentInstance() ? inject(SESSION_APPLICATION_SERVICES_KEY, null) : null;
-  const fallbackCore = services ? null : useSessionCoreStore();
+  const fallbackCore = services ? null : useSessionStore();
   const revision = ref(0);
   const unsubscribe = services?.runtimeStatusRegistry.subscribeAll(() => {
     revision.value += 1;

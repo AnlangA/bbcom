@@ -7,16 +7,19 @@ import {
   type SessionCaptureTimeline,
 } from '@/lib/capture-stream';
 import type { WorkspacePortHint, WorkspaceSessionKind } from '@/generated/ipc-contracts';
-import { useSessionCoreStore } from '@/features/sessions/store/session-core';
-import type {
-  CompleteWorkspaceRebindResult,
-  DeletedSessionSnapshot,
-  UndoDeletedSessionResult,
-  WorkspaceSessionChangeEvent,
-  WorkspaceSessionChangeListener,
-  WorkspaceSessionMutationPermissions,
-  SessionCreationOptions,
-} from '@/features/sessions/store/session-core';
+import type { SessionStore } from '@/features/sessions/application/session-store';
+import {
+  type CompleteWorkspaceRebindResult,
+  type DeletedSessionSnapshot,
+  type UndoDeletedSessionResult,
+  type WorkspaceSessionChangeEvent,
+  type WorkspaceSessionChangeListener,
+  type WorkspaceSessionMutationPermissions,
+  type SessionCreationOptions,
+} from '@/features/sessions/application/session-store';
+import { resolveHeadlessSessionStore, useSessionStore } from '@/features/sessions/store/session-store';
+
+type SessionPiniaStore = ReturnType<typeof useSessionStore>;
 
 /** Public application port consumed by workspace persistence projection. */
 export interface WorkspaceSessionPort {
@@ -35,8 +38,8 @@ export interface WorkspaceSessionPort {
     >
   >;
   replaceWorkspaceSessions(
-    ...args: Parameters<ReturnType<typeof useSessionCoreStore>['replaceWorkspaceSessions']>
-  ): ReturnType<ReturnType<typeof useSessionCoreStore>['replaceWorkspaceSessions']>;
+    ...args: Parameters<SessionPiniaStore['replaceWorkspaceSessions']>
+  ): ReturnType<SessionPiniaStore['replaceWorkspaceSessions']>;
   markWorkspacePersisted(): void;
   subscribeWorkspaceChanges(listener: WorkspaceSessionChangeListener): () => void;
   createSession(
@@ -68,8 +71,12 @@ export interface WorkspaceSessionPort {
 
 export type { WorkspaceSessionChangeEvent, WorkspaceSessionChangeListener };
 
-function sessionCore() {
-  return useSessionCoreStore();
+function resolveSessionStore(): SessionStore {
+  return resolveHeadlessSessionStore();
+}
+
+function resolveSessionFacade(): SessionPiniaStore {
+  return useSessionStore();
 }
 
 export interface SessionMutationPolicyPort {
@@ -101,7 +108,7 @@ export interface SessionCatalogPort {
     >
   >;
   create(portName: string, portConfig: PortConfig): string | null;
-  remove(sessionId: string): ReturnType<ReturnType<typeof useSessionCoreStore>['removeSession']>;
+  remove(sessionId: string): ReturnType<SessionPiniaStore['removeSession']>;
   undo(): UndoDeletedSessionResult;
   activate(sessionId: string): void;
   reorder(fromIndex: number, toIndex: number): void;
@@ -136,7 +143,7 @@ export type SessionDocumentPort = Readonly<{
   isDirty: ComputedRef<boolean>;
 }> &
   Pick<
-    ReturnType<typeof useSessionCoreStore>,
+    SessionPiniaStore,
     | 'addSendHistory'
     | 'clearSendHistory'
     | 'setSendDraft'
@@ -172,124 +179,123 @@ export type SessionDocumentPort = Readonly<{
 
 export interface SessionWaveformPort {
   readonly state: ComputedRef<SessionWaveformState | null>;
-  appendSamples: ReturnType<typeof useSessionCoreStore>['appendSessionWaveformSamples'];
-  replaceSamples: ReturnType<typeof useSessionCoreStore>['replaceSessionWaveformSamples'];
-  setChannelVisible: ReturnType<typeof useSessionCoreStore>['setSessionWaveformChannelVisible'];
+  appendSamples: SessionPiniaStore['appendSessionWaveformSamples'];
+  replaceSamples: SessionPiniaStore['replaceSessionWaveformSamples'];
+  setChannelVisible: SessionPiniaStore['setSessionWaveformChannelVisible'];
   clear: () => void;
-  reset: ReturnType<typeof useSessionCoreStore>['resetSessionWaveform'];
-  setFrameCursor: ReturnType<typeof useSessionCoreStore>['setSessionWaveformFrameCursor'];
-  commitFrameIngest: ReturnType<typeof useSessionCoreStore>['commitSessionWaveformFrameIngest'];
+  reset: SessionPiniaStore['resetSessionWaveform'];
+  setFrameCursor: SessionPiniaStore['setSessionWaveformFrameCursor'];
+  commitFrameIngest: SessionPiniaStore['commitSessionWaveformFrameIngest'];
 }
 
 export function useSessionMutationPolicy(): SessionMutationPolicyPort {
-  const core = sessionCore();
-  const refs = storeToRefs(core);
+  const store = resolveSessionStore();
+  const refs = storeToRefs(resolveSessionFacade());
   return {
     userMutationsAllowed: refs.userMutationsAllowed,
     runtimeCaptureAllowed: refs.runtimeCaptureAllowed,
     persistenceReadOnly: refs.persistenceReadOnly,
-    setWorkspaceMutationPermissions: core.setWorkspaceMutationPermissions,
-    registerCleanup: core.registerCleanup,
+    setWorkspaceMutationPermissions: store.setWorkspaceMutationPermissions.bind(store),
+    registerCleanup: store.registerCleanup.bind(store),
   };
 }
 
 export function useSessionCatalog(): SessionCatalogPort {
-  const core = sessionCore();
-  const refs = storeToRefs(core);
+  const store = resolveSessionStore();
+  const refs = storeToRefs(resolveSessionFacade());
   return {
     sessions: refs.sessions,
     activeSessionId: refs.activeSessionId,
     activeSession: refs.activeSession,
-    lastDeletedSession: refs.lastDeletedSession,
+    lastDeletedSession: refs.lastDeletedSession as SessionCatalogPort['lastDeletedSession'],
     workspaceRebindBySessionId: refs.workspaceRebindBySessionId,
-    create: core.createSession,
-    remove: core.removeSession,
-    undo: core.undoLastRemovedSession,
-    activate: core.setActiveSession,
-    reorder: core.reorderSessions,
-    framesVersion: core.getSessionFramesVersion,
-    completeRebind: core.completeWorkspaceRebind,
+    create: store.createSession.bind(store),
+    remove: store.removeSession.bind(store),
+    undo: store.undoLastRemovedSession.bind(store),
+    activate: store.setActiveSession.bind(store),
+    reorder: store.reorderSessions.bind(store),
+    framesVersion: store.getSessionFramesVersion.bind(store),
+    completeRebind: store.completeWorkspaceRebind.bind(store),
   };
 }
 
 export function useSessionCapture(sessionId: string): SessionCapturePort {
-  const core = sessionCore();
-  const refs = storeToRefs(core);
+  const store = resolveSessionStore();
+  const refs = storeToRefs(resolveSessionFacade());
   const session = computed(() => refs.sessions.value.find((item) => item.id === sessionId) ?? null);
   const timeline = computed(() => (session.value ? sessionCaptureTimeline(session.value) : null));
   return {
     session,
-    framesVersion: computed(() => core.getSessionFramesVersion(sessionId)),
+    framesVersion: computed(() => store.getSessionFramesVersion(sessionId)),
     timeline,
-    add: (frame, options) => core.addFrame(sessionId, frame, options),
+    add: (frame, options) => store.addFrame(sessionId, frame, options),
     frameAt: (captureSeq) => {
       const view = timeline.value;
       return view ? findCaptureFrameBySeq(view, captureSeq) : undefined;
     },
-    publish: () => core.publishSessionFrames(sessionId),
-    clear: () => core.clearFrames(sessionId),
-    setPaused: (paused) => core.setCapturePaused(sessionId, paused),
-    updateDroppedBytes: (total) => core.updateDroppedBytes(sessionId, total),
-    projectConnected: (connected) => core.setConnected(sessionId, connected),
-    onCleared: (listener) => core.onFramesCleared(sessionId, listener),
+    publish: () => store.publishSessionFrames(sessionId),
+    clear: () => store.clearFrames(sessionId),
+    setPaused: (paused) => store.setCapturePaused(sessionId, paused),
+    updateDroppedBytes: (total) => store.updateDroppedBytes(sessionId, total),
+    projectConnected: (connected) => store.setConnected(sessionId, connected),
+    onCleared: (listener) => store.onFramesCleared(sessionId, listener),
   };
 }
 
 export function useSessionDocument(sessionId: string): SessionDocumentPort {
-  const core = sessionCore();
-  const refs = storeToRefs(core);
+  const facade = resolveSessionFacade();
+  const refs = storeToRefs(facade);
   return {
     session: computed(() => refs.sessions.value.find((item) => item.id === sessionId) ?? null),
-    isDirty: computed(() => core.isSessionConfigurationDirty(sessionId)),
-    addSendHistory: core.addSendHistory,
-    clearSendHistory: core.clearSendHistory,
-    setSendDraft: core.setSendDraft,
-    addQuickCommand: core.addQuickCommand,
-    removeQuickCommand: core.removeQuickCommand,
-    addMacro: core.addMacro,
-    updateMacro: core.updateMacro,
-    removeMacro: core.removeMacro,
-    addTrigger: core.addTrigger,
-    updateTrigger: core.updateTrigger,
-    removeTrigger: core.removeTrigger,
-    addHighlight: core.addHighlight,
-    updateHighlight: core.updateHighlight,
-    removeHighlight: core.removeHighlight,
-    addModbusRegister: core.addModbusRegister,
-    updateModbusRegister: core.updateModbusRegister,
-    removeModbusRegister: core.removeModbusRegister,
-    setModbusRegisters: core.setModbusRegisters,
-    setModbusRegisterValues: core.setModbusRegisterValues,
-    addLogAiMessage: core.addLogAiMessage,
-    clearLogAiMessages: core.clearLogAiMessages,
-    setParserState: core.setParserState,
-    setModbusConfig: core.setModbusConfig,
-    setShellConfig: core.setShellConfig,
-    setMcumgrConfig: core.setMcumgrConfig,
-    setWaveformSourceMode: core.setWaveformSourceMode,
-    setAutoLogTarget: core.setAutoLogTarget,
-    setTerminalAiModel: core.setTerminalAiModel,
-    setLogAiModel: core.setLogAiModel,
-    setLogAiContextMode: core.setLogAiContextMode,
-    setLogAiFrameLimit: core.setLogAiFrameLimit,
+    isDirty: computed(() => resolveSessionStore().isSessionConfigurationDirty(sessionId)),
+    addSendHistory: facade.addSendHistory,
+    clearSendHistory: facade.clearSendHistory,
+    setSendDraft: facade.setSendDraft,
+    addQuickCommand: facade.addQuickCommand,
+    removeQuickCommand: facade.removeQuickCommand,
+    addMacro: facade.addMacro,
+    updateMacro: facade.updateMacro,
+    removeMacro: facade.removeMacro,
+    addTrigger: facade.addTrigger,
+    updateTrigger: facade.updateTrigger,
+    removeTrigger: facade.removeTrigger,
+    addHighlight: facade.addHighlight,
+    updateHighlight: facade.updateHighlight,
+    removeHighlight: facade.removeHighlight,
+    addModbusRegister: facade.addModbusRegister,
+    updateModbusRegister: facade.updateModbusRegister,
+    removeModbusRegister: facade.removeModbusRegister,
+    setModbusRegisters: facade.setModbusRegisters,
+    setModbusRegisterValues: facade.setModbusRegisterValues,
+    addLogAiMessage: facade.addLogAiMessage,
+    clearLogAiMessages: facade.clearLogAiMessages,
+    setParserState: facade.setParserState,
+    setModbusConfig: facade.setModbusConfig,
+    setShellConfig: facade.setShellConfig,
+    setMcumgrConfig: facade.setMcumgrConfig,
+    setWaveformSourceMode: facade.setWaveformSourceMode,
+    setAutoLogTarget: facade.setAutoLogTarget,
+    setTerminalAiModel: facade.setTerminalAiModel,
+    setLogAiModel: facade.setLogAiModel,
+    setLogAiContextMode: facade.setLogAiContextMode,
+    setLogAiFrameLimit: facade.setLogAiFrameLimit,
   };
 }
 
 export function useSessionWaveform(sessionId: string): SessionWaveformPort {
-  const core = sessionCore();
-  const refs = storeToRefs(core);
+  const store = resolveSessionStore();
   return {
-    state: computed(() => refs.workspaceWaveformBySessionId.value[sessionId] ?? null),
-    appendSamples: core.appendSessionWaveformSamples,
-    replaceSamples: core.replaceSessionWaveformSamples,
-    setChannelVisible: core.setSessionWaveformChannelVisible,
-    clear: () => core.clearSessionWaveform(sessionId),
-    reset: core.resetSessionWaveform,
-    setFrameCursor: core.setSessionWaveformFrameCursor,
-    commitFrameIngest: core.commitSessionWaveformFrameIngest,
+    state: computed(() => store.workspaceWaveformBySessionId.value[sessionId] ?? null),
+    appendSamples: store.appendSessionWaveformSamples,
+    replaceSamples: store.replaceSessionWaveformSamples,
+    setChannelVisible: store.setSessionWaveformChannelVisible,
+    clear: () => store.clearSessionWaveform(sessionId),
+    reset: store.resetSessionWaveform,
+    setFrameCursor: store.setSessionWaveformFrameCursor,
+    commitFrameIngest: store.commitSessionWaveformFrameIngest,
   };
 }
 
 export function useWorkspaceSessionPort(): WorkspaceSessionPort {
-  return sessionCore();
+  return resolveSessionFacade();
 }

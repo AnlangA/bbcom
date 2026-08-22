@@ -11,11 +11,14 @@ import { PortLeaseRegistry } from '../../src/features/serial/application/port-le
 import type { SerialAutomationPausePort } from '../../src/features/serial/application/serial-transaction-lease.ts';
 import { SessionRuntimeStatusRegistry } from '../../src/features/sessions/runtime/session-runtime-status.ts';
 
-const mocked = vi.hoisted(() => ({
+const mocked = vi.hoisted(() => {
+  const { ref } = require('vue') as typeof import('vue');
+  return {
   autoLog: {
     enable: vi.fn(),
     disable: vi.fn(),
     prepareShutdown: vi.fn(),
+    appendFrame: vi.fn(),
   },
   message: {
     error: vi.fn(),
@@ -32,51 +35,113 @@ const mocked = vi.hoisted(() => ({
   },
   modbusOptions: undefined as unknown,
   serial: undefined as unknown,
-  serialArgs: undefined as unknown,
+  serialOptions: undefined as unknown,
   triggerFeed: vi.fn(),
   triggerPause: vi.fn(async () => undefined),
   triggerReset: vi.fn(),
   triggerResume: vi.fn(),
   triggerOptions: undefined as unknown,
-}));
+  macroRunning: ref(false),
+  macroRun: vi.fn(),
+  macroAbort: vi.fn(),
+  macroPause: vi.fn(async () => undefined),
+  macroResume: vi.fn(),
+  };
+});
 
 vi.mock('naive-ui', () => ({ useMessage: () => mocked.message }));
-vi.mock('../../src/features/sessions/application/use-auto-log.ts', () => ({ useAutoLog: () => mocked.autoLog }));
-vi.mock('../../src/features/sessions/application/use-session-modbus.ts', () => ({
-  useSessionModbus: (options: unknown) => {
+vi.mock('../../src/features/sessions/application/modbus-bridge.ts', () => ({
+  createModbusBridge: (options: unknown) => {
     mocked.modbusOptions = options;
     return mocked.modbus;
   },
 }));
-vi.mock('../../src/features/sessions/application/use-session-mcumgr.ts', () => ({
-  useSessionMcumgr: () => ({
+vi.mock('@/features/sessions/application/modbus-bridge', () => ({
+  createModbusBridge: (options: unknown) => {
+    mocked.modbusOptions = options;
+    return mocked.modbus;
+  },
+}));
+vi.mock('../../src/features/sessions/application/mcumgr-bridge.ts', () => ({
+  createMcumgrBridge: () => ({
     status: { value: { kind: 'idle' } },
     lastResult: { value: '' },
     busy: { value: false },
     portYielding: { value: false },
-    run: vi.fn(),
+    execute: vi.fn(),
     cancel: vi.fn(),
     patchConfig: vi.fn(),
     rememberShell: vi.fn(),
-    reportProgress: vi.fn(),
     setResult: vi.fn(),
-    client: {},
   }),
 }));
-vi.mock('../../src/features/sessions/application/use-triggers.ts', () => ({
-  useTriggers: (options: unknown) => {
-    mocked.triggerOptions = options;
+vi.mock('@/features/sessions/application/mcumgr-bridge', () => ({
+  createMcumgrBridge: () => ({
+    status: { value: { kind: 'idle' } },
+    lastResult: { value: '' },
+    busy: { value: false },
+    portYielding: { value: false },
+    execute: vi.fn(),
+    cancel: vi.fn(),
+    patchConfig: vi.fn(),
+    rememberShell: vi.fn(),
+    setResult: vi.fn(),
+  }),
+}));
+vi.mock('../../src/features/sessions/application/automation-bridge.ts', () => ({
+  createAutomationBridge: (options: unknown) => {
+    mocked.triggerOptions = (options as { triggers: unknown }).triggers;
     return {
-      feedBytes: mocked.triggerFeed,
-      pause: mocked.triggerPause,
-      reset: mocked.triggerReset,
-      resume: mocked.triggerResume,
+      triggers: {
+        feedBytes: mocked.triggerFeed,
+        pause: mocked.triggerPause,
+        reset: mocked.triggerReset,
+        resume: mocked.triggerResume,
+      },
+      macro: {
+        running: mocked.macroRunning,
+        run: mocked.macroRun,
+        abort: mocked.macroAbort,
+        pause: mocked.macroPause,
+        resume: mocked.macroResume,
+      },
+      autoLog: mocked.autoLog,
+      dispose: vi.fn(),
     };
   },
 }));
-vi.mock('../../src/features/sessions/application/use-serial-connection.ts', () => ({
-  useSerialConnection: (...args: unknown[]) => {
-    mocked.serialArgs = args;
+vi.mock('@/features/sessions/application/automation-bridge', () => ({
+  createAutomationBridge: (options: unknown) => {
+    mocked.triggerOptions = (options as { triggers: unknown }).triggers;
+    return {
+      triggers: {
+        feedBytes: mocked.triggerFeed,
+        pause: mocked.triggerPause,
+        reset: mocked.triggerReset,
+        resume: mocked.triggerResume,
+      },
+      macro: {
+        running: mocked.macroRunning,
+        run: mocked.macroRun,
+        abort: mocked.macroAbort,
+        pause: mocked.macroPause,
+        resume: mocked.macroResume,
+      },
+      autoLog: mocked.autoLog,
+      dispose: vi.fn(),
+    };
+  },
+}));
+vi.mock('../../src/features/sessions/application/serial-bridge.ts', () => ({
+  createSerialBridge: (options: unknown) => {
+    mocked.serialOptions = options;
+    return mocked.serial;
+  },
+  serialConnectionFailureMessage: () => 'error.port_in_use',
+}));
+vi.mock('@/features/sessions/application/serial-bridge', () => ({
+  createSerialBridge: (options: unknown) => {
+    mocked.serialOptions = options;
     return mocked.serial;
   },
   serialConnectionFailureMessage: () => 'error.port_in_use',
@@ -86,7 +151,7 @@ import {
   useSessionRuntimeController,
   type SessionRuntimeController,
 } from '../../src/features/sessions/runtime/session-runtime-controller.ts';
-import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useSessionStore } from '../../src/features/sessions/store/session-store.ts';
 
 const config: PortConfig = {
   baudRate: 115200,
@@ -248,7 +313,7 @@ function sessionById(session: SerialSession[], id: string): SerialSession {
 
 function setup(runtimeStatusRegistry?: SessionRuntimeStatusRegistry, includeClosing = true) {
   setActivePinia(createPinia());
-  const store = useSessionCoreStore();
+  const store = useSessionStore();
   const id = store.createSession('COM1', config);
   const serial = makeSerial();
   if (!includeClosing) Reflect.deleteProperty(serial, 'isClosing');
@@ -289,6 +354,16 @@ beforeEach(() => {
   mocked.triggerReset.mockReset();
   mocked.triggerResume.mockReset();
   mocked.modbusOptions = undefined;
+  mocked.serialOptions = undefined;
+  mocked.macroRunning.value = false;
+  mocked.macroRun.mockReset();
+  mocked.macroAbort.mockReset();
+  mocked.macroPause.mockClear();
+  mocked.macroResume.mockReset();
+  mocked.macroRun.mockImplementation(async () => {
+    mocked.macroRunning.value = true;
+    return { completed: 1, failedAt: 1, aborted: false };
+  });
 });
 
 afterEach(() => {
@@ -514,13 +589,12 @@ test('prepareShutdown propagates strict auto-log footer or sync failures', async
 
 test('controller surfaces connection callbacks and a failed connect without leaking stale activity', async () => {
   const { id, runtime, scope, serial, store } = setup();
-  const args = mocked.serialArgs as unknown[];
-  const options = args[3] as {
+  const options = (mocked.serialOptions as { options: {
     onDisconnect?: () => void;
     onOverflow?: (total: number) => void;
     onReconnecting?: () => void;
     onReconnected?: () => void;
-  };
+  } }).options;
 
   options.onDisconnect?.();
   options.onOverflow?.(42);
@@ -577,6 +651,7 @@ test('controller exposes lazy status/error branches and joins concurrent shutdow
   assert.equal(runtime.macro.status.value, 'idle');
   const sending = new Promise<SerialSendResult>(() => undefined);
   serial.send.mockReturnValueOnce(sending);
+  mocked.macroRunning.value = true;
   const running = runtime.macro.run({
     id: 'coverage-macro',
     name: 'coverage',

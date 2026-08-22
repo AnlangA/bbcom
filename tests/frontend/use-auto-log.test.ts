@@ -2,7 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
 import { base64ToBytes, bytesToBase64 } from '../../src/lib/base64.ts';
-import { useSessionCoreStore } from '../../src/features/sessions/store/session-core.ts';
+import { useSessionStore } from '../../src/features/sessions/store/session-store.ts';
 import { useAppStore } from '../../src/features/settings/store/app-store.ts';
 import {
   AUTO_LOG_DEBOUNCE_MS,
@@ -81,7 +81,7 @@ type SetupOptions = Omit<UseAutoLogDeps, 'sessionClient'> & {
 
 function setup(options: SetupOptions = {}) {
   setActivePinia(createPinia());
-  const sessions = useSessionCoreStore();
+  const sessions = useSessionStore();
   const app = useAppStore();
   const sessionId = sessions.createSession('COM1', cfg);
   const calls: Calls = { begins: [], appends: [], finishes: [], aborts: [], revoked: [] };
