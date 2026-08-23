@@ -55,19 +55,20 @@
         @cancel="handleExportCancel"
       />
     </KeepAlive>
-    <div class="display-area" :class="{ 'display-area--split': viewMode !== 'terminal' }">
+    <div class="display-area">
       <!--
-        The packet list stays visible so TX/RX from every mode (shell, modbus,
-        MCUmgr, etc.) appears in the terminal view. Tool panels load on first
-        use below the list when a non-terminal mode is active.
+        Only one panel is visible at a time, but the packet list stays mounted
+        (hidden) so MCUmgr / Modbus wire trace keeps syncing into the terminal
+        buffer and RX/TX counters while tool panels are active.
       -->
       <DataPacketList
-        class="packet-pane"
+        v-show="viewMode === 'terminal'"
+        class="display-panel"
         :frames="props.session.frames"
         :frames-version="visibleFramesVersion"
         :highlights="props.session.highlights"
       />
-      <div v-if="viewMode !== 'terminal'" class="tool-pane">
+      <div v-show="viewMode !== 'terminal'" class="display-panel tool-layer">
         <KeepAlive :max="6">
           <WaveformPanel
             v-if="viewMode === 'waveform'"
@@ -261,8 +262,8 @@ useSessionShortcuts({
   isActive: () => catalog.activeSessionId.value === props.session.id,
 });
 
-// View-mode switcher: terminal shows only the packet list; other modes keep
-// the list visible and render their tool panel in a split below it.
+// View-mode switcher: one full-area panel at a time; the packet list stays
+// mounted in the background so capture continues to sync while tools are open.
 const viewMode = runtime.viewMode;
 
 // --- Modbus master ---------------------------------------------------------
@@ -427,33 +428,21 @@ function handleExportCancel() {
 }
 
 .display-area {
+  position: relative;
   flex: 1;
   overflow: hidden;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 
-.packet-pane {
-  flex: 1;
+.display-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
 }
 
-.display-area--split .packet-pane {
-  flex: 0 1 42%;
-  min-height: 120px;
-}
-
-.tool-pane {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  border-top: 1px solid var(--border-subtle);
-  display: flex;
-  flex-direction: column;
-}
-
-.tool-pane :deep(> *) {
+.tool-layer :deep(> *) {
   flex: 1;
   min-height: 0;
 }

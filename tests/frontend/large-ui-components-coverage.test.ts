@@ -815,7 +815,7 @@ describe('SessionView', () => {
     expect(detach).toHaveBeenCalledOnce();
   });
 
-  test('keeps the packet list visible while MCUmgr is active', async () => {
+  test('keeps the packet list mounted while MCUmgr is active for capture sync', () => {
     const session = serialSession();
     const { runtime } = runtimeController();
     runtime.viewMode.value = 'mcumgr';
@@ -830,9 +830,9 @@ describe('SessionView', () => {
         },
       },
     });
-    expect(wrapper.find('.display-area--split').exists()).toBe(true);
-    expect(wrapper.find('.tool-pane').exists()).toBe(true);
+    expect(wrapper.find('.display-area--split').exists()).toBe(false);
     expect(wrapper.find('.packet-list-stub').exists()).toBe(true);
+    expect(wrapper.find('.tool-layer').exists()).toBe(true);
     wrapper.unmount();
   });
 });
