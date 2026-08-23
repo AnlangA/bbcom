@@ -1,21 +1,18 @@
-// Domain-typed barrel for the application's shared types.
+// Cross-feature type barrel. Feature-owned shapes live under `features/*/domain/`.
 //
-// This file re-exports the per-domain modules so existing `from '../types'`
-// (and `'.../types/index'`) imports keep resolving unchanged. New code should
-// prefer importing from the specific domain module (e.g. `from '../types/modbus'`)
-// so dependencies stay explicit and tree-shakeable.
+// This file re-exports the per-domain modules so existing `from '@/types'`
+// imports keep resolving unchanged. New code should import from the feature
+// domain module (e.g. `from '@/features/terminal/domain/modbus'`) so
+// dependencies stay explicit and tree-shakeable.
 //
-// Domains:
+// Cross-feature only (remain in src/types/):
 //   display   — display/view/filter primitives
-//   capture   — capture origin and sequence identity
-//   serial    — DataFrame, PortConfig, send history, quick commands
-//   macros    — macros, triggers, highlight rules
-//   modbus    — register model + master config
-//   waveform  — waveform source mode
-//   ai        — AI models, roles, context modes, chat messages
-//   session   — SerialSession aggregate + parser state
 //   checksum  — checksum algorithm identifier
+//   errors    — shared error shapes
 //   constants — numeric budget limits
+//
+// Feature-owned (re-exported via shims in src/types/):
+//   capture, session, serial, macros, modbus, serial-shell, mcumgr, waveform, ai
 
 export * from './display';
 export * from './capture';

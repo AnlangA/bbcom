@@ -1,6 +1,6 @@
-import type { CaptureFrameIdentity, CaptureOrigin, CaptureSequence } from '../types/capture';
-import type { DataFrame } from '../types/serial';
-import type { SerialSession } from '../types/session';
+import type { CaptureFrameIdentity, CaptureOrigin, CaptureSequence } from '@/types/capture';
+import type { DataFrame } from '@/types/serial';
+import type { SerialSession } from '@/types/session';
 
 export type SessionCaptureSlice = Pick<SerialSession, 'frames' | 'pausedFrames' | 'capturePaused'>;
 

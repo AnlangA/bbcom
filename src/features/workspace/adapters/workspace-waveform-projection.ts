@@ -4,7 +4,7 @@ import type {
   WorkspaceWaveformSample,
 } from '../../../generated/ipc-contracts';
 import { IPC_LIMITS } from '../../../generated/ipc-contracts';
-import type { SerialSession, SessionWaveformFrameCursor } from '../../../types';
+import type { SerialSession, SessionWaveformFrameCursor } from '@/types';
 import {
   WorkspaceAdapterLimitError,
   WorkspaceAdapterValidationError,

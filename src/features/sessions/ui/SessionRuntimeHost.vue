@@ -32,14 +32,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, shallowRef, watch } from 'vue';
 import { useMessage } from 'naive-ui';
-import SessionView from '../../../components/session/SessionView.vue';
-import { logger } from '../../../lib/logger';
-import { t } from '../../../lib/i18n';
-import type { SerialSession } from '../../../types';
-import type { ApplicationRuntimeEntry } from '../../application';
+import SessionView from '../ui/SessionView.vue';
+import { logger } from '@/lib/logger';
+import { t } from '@/lib/i18n';
+import type { SerialSession } from '@/types';
+import type { ApplicationRuntimeEntry } from '@/features/platform/application';
 import { useSessionApplicationServices } from '../runtime/session-application-services';
 import type { ApplicationSessionRuntime } from '../runtime/session-runtime-factory';
-import { useSessionMutationPolicy } from '../session-ports';
+import { useSessionMutationPolicy } from '@/features/sessions/ports/session-ports';
 
 const props = defineProps<{
   sessions: readonly SerialSession[];

@@ -1,4 +1,4 @@
-import type { DataFrame, LogAiContextMode, SerialSession } from '../types';
+import type { DataFrame, LogAiContextMode, SerialSession } from '@/types';
 import { formatHex, formatTimestamp, formatUtf8 } from './format';
 
 /** One capped tail scan; context modes control frame selection, never size. */

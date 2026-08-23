@@ -31,7 +31,7 @@ Thumbs.db
 .codex
 
 # Perf baselines (machine-local)
-tests/frontend/.perf-baseline.json
+src/test/.perf-baseline.json
 
 # Coverage reports (machine-local)
 coverage/

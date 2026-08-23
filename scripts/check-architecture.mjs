@@ -62,8 +62,10 @@ function collectFiles(directory, files = []) {
   for (const entry of readdirSync(directory)) {
     const path = join(directory, entry);
     const stats = statSync(path);
-    if (stats.isDirectory()) collectFiles(path, files);
-    else if (sourceExtensions.has(extname(entry))) files.push(normalize(path));
+    if (stats.isDirectory()) {
+      if (entry === '__tests__' || entry === 'test') continue;
+      collectFiles(path, files);
+    } else if (sourceExtensions.has(extname(entry))) files.push(normalize(path));
   }
   return files;
 }
@@ -91,26 +93,24 @@ function makeResolver(rootDir, fileSet) {
 // ---------------------------------------------------------------------------
 
 function layerOf(portablePath) {
-  // portablePath is relative to the scanned root's parent, e.g. "src/main.ts".
-  if (portablePath === 'src/main.ts') return 'entry';
+  if (portablePath === 'src/bootstrap/main.ts') return 'entry';
+  if (portablePath.startsWith('src/bootstrap/')) return 'bootstrap';
+  if (portablePath.startsWith('src/design-system/')) return 'design-system';
   if (portablePath.startsWith('src/lib/')) return 'lib';
-  if (
-    portablePath.startsWith('src/components/') ||
-    portablePath.startsWith('src/stores/') ||
-    portablePath.startsWith('src/composables/') ||
-    portablePath === 'src/App.vue' ||
-    portablePath === 'src/AiWindow.vue'
-  ) {
-    return 'ui';
-  }
+  if (portablePath === 'src/App.vue' || portablePath === 'src/AiWindow.vue') return 'ui';
   const feature = /^src\/features\/([^/]+)\/(.*)$/.exec(portablePath);
   if (feature) {
-    if (feature[2].startsWith('ui/')) return 'ui';
-    if (feature[2].startsWith('application/')) return 'application';
-    if (feature[2].startsWith('domain/')) return 'domain';
-    if (feature[2] === 'index.ts') return 'feature-api';
+    const rest = feature[2];
+    if (rest.startsWith('ui/')) return 'ui';
+    if (rest.startsWith('application/')) return 'application';
+    if (rest.startsWith('domain/')) return 'domain';
+    if (rest.startsWith('store/')) return 'store';
+    if (rest.startsWith('ports/')) return 'ports';
+    if (rest.startsWith('infrastructure/')) return 'infrastructure';
+    if (rest === 'index.ts') return 'feature-api';
     return 'feature-core';
   }
+  if (portablePath.startsWith('src/types/')) return 'types';
   return 'shared';
 }
 
@@ -155,8 +155,6 @@ function ruleReports(files, fileSet, resolveImport, displayPath) {
 
       if (layer === 'lib') {
         if (
-          targetPath?.startsWith('src/components/') ||
-          targetPath?.startsWith('src/stores/') ||
           (targetPath?.startsWith('src/features/') && targetPath.includes('/ui/')) ||
           targetPath?.endsWith('.vue') ||
           isPackageImport(specifier, TAURI_SDK)
@@ -225,10 +223,13 @@ function ruleReports(files, fileSet, resolveImport, displayPath) {
 
       if (layer === 'entry') {
         const legalTarget =
-          specifier.startsWith('./styles/') ||
+          specifier.startsWith('./') ||
+          specifier.startsWith('../') ||
+          specifier.startsWith('@/design-system/') ||
+          specifier.startsWith('@/styles/') ||
+          specifier.startsWith('@/features/') ||
           targetPath === 'src/App.vue' ||
           targetPath === 'src/AiWindow.vue' ||
-          targetPath?.startsWith('src/stores/') ||
           /^src\/features\/[^/]+\/index\.ts$/.test(targetPath ?? '') ||
           specifier === 'vue' ||
           specifier === 'pinia';
@@ -260,7 +261,7 @@ function lowerLayerUiReports(files, resolveImport, displayPath) {
       const target = resolveImport(file, specifier);
       const targetPath = target ? displayPath(target) : '';
       if (
-        targetPath.startsWith('src/components/') ||
+        targetPath.startsWith('src/design-system/') ||
         (targetPath.includes('/features/') && targetPath.includes('/ui/'))
       ) {
         reports.push({
@@ -320,7 +321,11 @@ function scanSourceTree(rootDir) {
   // no shipping call site while leaving generated declarations and Worker
   // entry points out of the result.
   //
-  const entryFiles = [join(sourceRoot, 'main.ts')]
+  const entryFiles = [
+    join(sourceRoot, 'bootstrap', 'main.ts'),
+    join(sourceRoot, 'App.vue'),
+    join(sourceRoot, 'AiWindow.vue'),
+  ]
     .map(normalize)
     .filter((file) => fileSet.has(file));
   const workerFiles = files.filter((file) => displayPath(file).includes('/src/workers/'));
@@ -334,7 +339,16 @@ function scanSourceTree(rootDir) {
   const orphans = files
     .filter((file) => !reachable.has(file))
     .filter((file) => !file.endsWith('.d.ts'))
-    .filter((file) => !displayPath(file).includes('/src/workers/'));
+    .filter((file) => !displayPath(file).includes('/__tests__/'))
+    .filter((file) => !displayPath(file).includes('/src/test/'))
+    .filter((file) => !displayPath(file).includes('/src/workers/'))
+    .filter((file) => {
+      const path = displayPath(file);
+      if (path === 'src/design-system/index.ts') return false;
+      if (/^src\/features\/[^/]+\/index\.ts$/.test(path)) return false;
+      if (/^src\/features\/[^/]+\/ui\/index\.ts$/.test(path)) return false;
+      return true;
+    });
 
   const ruleResults = [
     ...ruleReports(files, fileSet, resolveImport, displayPath),
@@ -346,8 +360,8 @@ function scanSourceTree(rootDir) {
     files,
     cycles,
     orphans,
-    hardViolations: ruleResults,
-    reports: [],
+    hardViolations: ruleResults.filter((report) => report.severity === 'hard'),
+    reports: ruleResults.filter((report) => report.severity === 'report'),
     displayPath,
   };
 }

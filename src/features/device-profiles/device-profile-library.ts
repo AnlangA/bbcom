@@ -1,7 +1,7 @@
-import { logger } from '../../lib/logger';
-import { normalizePortConfig } from '../../lib/session-persistence';
-import { loadJson, saveJson } from '../../lib/storage';
-import type { PortConfig } from '../../types';
+import { logger } from '@/lib/logger';
+import { normalizePortConfig } from '@/lib/session-persistence';
+import { loadJson, saveJson } from '@/lib/storage';
+import type { PortConfig } from '@/types';
 
 const DEVICE_PROFILE_STORAGE_KEY = 'bbcom-v1:device-profiles';
 const DEVICE_PROFILE_VERSION = 1 as const;

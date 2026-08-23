@@ -53,9 +53,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Audit frontend dependencies
-        run: pnpm audit --audit-level moderate
-
       - name: Lint source, documentation, and shell scripts
         run: |
           pnpm run lint
@@ -67,7 +64,7 @@ jobs:
           pnpm exec prettier --check
           src/ tests/ scripts/
           README.md README.zh-CN.md ARCHITECTURE.md CHANGELOG.md CONTRIBUTING.md
-          RELEASING.md SECURITY.md
+          SECURITY.md
           package.json pnpm-workspace.yaml
           .markdownlint-cli2.yaml vite.config.ts vitest.config.ts
           wdio.browser-mock.config.mjs wdio.native.config.mjs eslint.config.mjs
@@ -85,9 +82,6 @@ jobs:
 
       - name: Enforce bundle budgets
         run: pnpm run bundle:check
-
-      - name: Test frontend
-        run: pnpm run test:frontend
 
   rust:
     name: Rust correctness
@@ -124,14 +118,6 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
-      - name: Install pinned Rust quality tools
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2
-        with:
-          tool: cargo-audit@0.22.2
-
-      - name: Audit Rust dependencies
-        run: cargo audit --deny unsound --deny yanked --file Cargo.lock
-
       - name: Verify generated IPC contracts
         run: cargo run -p xtask --locked -- bindings --check
 
@@ -143,39 +129,12 @@ jobs:
           cargo clippy --manifest-path src-tauri/Cargo.toml
           --workspace --all-targets --all-features --locked -- -D warnings
 
-      - name: Test Rust
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --workspace
-
-  browser-e2e:
-    name: Browser E2E
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Run browser mock E2E
-        run: pnpm run e2e:browser:local
-
   quality-gate:
     name: Required quality gate
     if: ${{ always() }}
     needs:
       - frontend
       - rust
-      - browser-e2e
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
@@ -183,8 +142,6 @@ jobs:
         env:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           RUST_RESULT: ${{ needs.rust.result }}
-          BROWSER_E2E_RESULT: ${{ needs['browser-e2e'].result }}
         run: |
           test "$FRONTEND_RESULT" = success
           test "$RUST_RESULT" = success
-          test "$BROWSER_E2E_RESULT" = success

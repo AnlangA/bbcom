@@ -3,7 +3,7 @@ import type {
   WorkspaceWaveformChannel,
   WorkspaceWaveformSample,
 } from '../../../generated/ipc-contracts';
-import type { DataFrame } from '../../../types/serial';
+import type { DataFrame } from '@/types/serial';
 import type { HydratedWorkspaceSession } from '../adapters';
 import type {
   ActiveWorkspaceViewModel,
@@ -11,7 +11,7 @@ import type {
   WorkspaceActionOutcome,
   WorkspaceMutationCommand,
   WorkspaceLayoutV1,
-} from '../types';
+} from '@/features/workspace/types';
 
 export const WORKSPACE_CONFIG_AUTOSAVE_DELAY_MS = 300;
 export const WORKSPACE_FRAME_AUTOSAVE_DELAY_MS = 250;

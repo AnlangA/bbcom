@@ -1,6 +1,6 @@
 import type { WorkspaceMutation } from '../../../generated/ipc-contracts';
 import { IPC_LIMITS } from '../../../generated/ipc-contracts';
-import type { ModbusMasterConfig, SerialShellConfig } from '../../../types';
+import type { ModbusMasterConfig, SerialShellConfig } from '@/types';
 import {
   WorkspaceAdapterLimitError,
   WorkspaceAdapterValidationError,
@@ -18,7 +18,7 @@ import { utf8ByteLength } from './workspace-adapter-security';
  */
 
 /** Schema version stamped into every projected session feature state. */
-export const WORKSPACE_SESSION_PROJECTION_VERSION = 1 as const;
+export const WORKSPACE_SESSION_PROJECTION_VERSION = 2 as const;
 
 export const WORKSPACE_MUTATION_ENVELOPE_RESERVE_BYTES = 2_048;
 

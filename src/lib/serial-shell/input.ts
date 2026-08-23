@@ -1,5 +1,5 @@
-import type { SerialShellBackspace, SerialShellEncoding } from '../../types/serial-shell';
-import type { SerialShellNewline } from '../../types/serial-shell';
+import type { SerialShellBackspace, SerialShellEncoding } from '@/types/serial-shell';
+import type { SerialShellNewline } from '@/types/serial-shell';
 import { encodeSerialShellText } from './encoding';
 import { serialShellNewlineBytes } from './newline';
 

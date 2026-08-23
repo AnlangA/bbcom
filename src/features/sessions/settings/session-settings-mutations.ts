@@ -1,15 +1,15 @@
-import type { ParserConfig } from '../../../lib/protocol-parser';
-import { cloneParserConfig } from '../../../lib/session-persistence';
-import { normalizeLogAiFrameLimit } from '../../../lib/session-store-helpers';
-import { cloneModbusConfig } from '../../../lib/modbus';
-import { cloneSerialShellConfig } from '../../../lib/serial-shell';
-import { cloneMcumgrConfig } from '../../../lib/mcumgr-config';
-import type { AiModel, LogAiContextMode } from '../../../types/ai';
-import type { ModbusMasterConfig } from '../../../types/modbus';
-import type { McumgrClientConfig } from '../../../types/mcumgr';
-import type { SerialSession } from '../../../types/session';
-import type { SerialShellConfig } from '../../../types/serial-shell';
-import type { WaveformSourceMode } from '../../../types/waveform';
+import type { ParserConfig } from '@/lib/protocol-parser';
+import { cloneParserConfig } from '@/lib/session-persistence';
+import { normalizeLogAiFrameLimit } from '@/lib/session-store-helpers';
+import { cloneModbusConfig } from '@/lib/modbus';
+import { cloneSerialShellConfig } from '@/lib/serial-shell';
+import { cloneMcumgrConfig } from '@/lib/mcumgr-config';
+import type { AiModel, LogAiContextMode } from '@/types/ai';
+import type { ModbusMasterConfig } from '@/types/modbus';
+import type { McumgrClientConfig } from '@/types/mcumgr';
+import type { SerialSession } from '@/types/session';
+import type { SerialShellConfig } from '@/types/serial-shell';
+import type { WaveformSourceMode } from '@/types/waveform';
 
 export interface SessionSettingsMutationDependencies {
   findSession(sessionId: string): SerialSession | undefined;

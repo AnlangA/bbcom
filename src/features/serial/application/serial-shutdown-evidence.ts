@@ -1,8 +1,8 @@
 import type { SerialDrainCompletion } from '../../../generated/ipc-contracts';
-import type { PortConfig } from '../../../types';
+import type { PortConfig } from '@/types';
 import type { SerialPortAdapter, SerialWatchHandleAdapter } from './serial-port';
-import type { SerialWriteScheduler } from '../../../lib/serial-write-scheduler';
-import { logger } from '../../../lib/logger';
+import type { SerialWriteScheduler } from '@/lib/serial-write-scheduler';
+import { logger } from '@/lib/logger';
 
 /**
  * Native shutdown evidence returned to the application shutdown coordinator.

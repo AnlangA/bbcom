@@ -1,11 +1,6 @@
-import type {
-  WorkspaceMutation,
-  WorkspacePortHint,
-  WorkspaceSessionKind,
-} from '../../generated/ipc-contracts';
-import type { SerialSession } from '../../types';
 import type { WorkspaceSessionChangeEvent, WorkspaceSessionPort } from '../sessions';
-import { projectWorkspaceSessionMutations, projectWorkspaceWaveformPreferences } from './adapters';
+import { WorkspacePersistenceDrain } from './adapters/persistence-drain';
+import { SessionProjection, type SessionProjectionState } from './adapters/session-projection';
 import type { WorkspaceApplicationService } from './application';
 import type {
   WorkspaceConfigMutationCommand,
@@ -14,52 +9,57 @@ import type {
   WorkspaceFacadeSnapshot,
 } from './application';
 
-/**
- * Breaks the composition-time cycle between the workspace application and its
- * session adapter without bypassing the adapter's projection baseline.
- *
- * The application is constructed first, then the adapter (which needs that
- * application) is bound exactly once before any workspace can be activated.
- */
 export class WorkspaceSessionFacadeBridge implements WorkspaceSessionFacade {
   private delegate: WorkspaceSessionFacade | null = null;
-
   bind(delegate: WorkspaceSessionFacade): void {
-    if (this.delegate && this.delegate !== delegate) {
+    if (this.delegate && this.delegate !== delegate)
       throw new Error('workspace session facade is already bound');
-    }
     this.delegate = delegate;
   }
-
   replaceWorkspace(snapshot: WorkspaceFacadeSnapshot): void {
-    const delegate = this.delegate;
-    if (!delegate) throw new Error('workspace session facade is not bound');
-    delegate.replaceWorkspace(snapshot);
+    const d = this.delegate;
+    if (!d) throw new Error('workspace session facade is not bound');
+    d.replaceWorkspace(snapshot);
   }
-
   clearWorkspace(): void {
-    const delegate = this.delegate;
-    if (!delegate) throw new Error('workspace session facade is not bound');
-    delegate.clearWorkspace();
+    const d = this.delegate;
+    if (!d) throw new Error('workspace session facade is not bound');
+    d.clearWorkspace();
   }
 }
 
-/** Bridges the temporary Pinia compatibility facade to the application-owned
- * workspace service. The bridge never sees a native path and only submits
- * Rust-generated mutation variants. */
 export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
   private detach: (() => void) | null = null;
   private detachApplication: (() => void) | null = null;
-  private projectionInFlight = new Set<string>();
-  private projectedSessionIds = new Set<string>();
-  private projectedSortOrders = new Map<string, number>();
-  private projectedActiveSessionId: string | null = null;
   private persistenceDrain: WorkspaceRuntimePersistenceDrain | null = null;
+  private readonly projectionState: SessionProjectionState = {
+    projectionInFlight: new Set(),
+    projectedSessionIds: new Set(),
+    projectedSortOrders: new Map(),
+    projectedActiveSessionId: null,
+  };
+  private readonly persistence: WorkspacePersistenceDrain;
+  private readonly projection: SessionProjection;
 
   constructor(
     private readonly store: WorkspaceSessionPort,
     private readonly application: WorkspaceApplicationService,
-  ) {}
+  ) {
+    this.persistence = new WorkspacePersistenceDrain(
+      store,
+      application,
+      () => this.persistenceDrain,
+      (k) => application.rejectPersistence(k),
+    );
+    this.projection = new SessionProjection(
+      store,
+      application,
+      this.projectionState,
+      (c) => this.routeOrdered(c),
+      (c) => this.routeConfig(c),
+      (k) => application.rejectPersistence(k),
+    );
+  }
 
   start(): void {
     if (this.detach) return;
@@ -67,9 +67,6 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
       try {
         this.onChange(event);
       } catch {
-        // Store observers are isolated by design, so the persistence bridge must
-        // translate every projection/clone failure into the application's
-        // fail-closed save state before that isolation boundary swallows it.
         this.application.rejectPersistence('workspace.mutation.invalid');
       }
     });
@@ -105,443 +102,82 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
 
   replaceWorkspace(snapshot: Parameters<WorkspaceSessionFacade['replaceWorkspace']>[0]): void {
     this.store.replaceWorkspaceSessions(snapshot.sessions, snapshot.activeSessionId);
-    this.projectedSessionIds = new Set(snapshot.sessions.map((entry) => entry.session.id));
-    this.projectedSortOrders = new Map(
-      snapshot.sessions.map((entry) => [entry.session.id, entry.sortOrder]),
+    this.projectionState.projectedSessionIds = new Set(snapshot.sessions.map((e) => e.session.id));
+    this.projectionState.projectedSortOrders = new Map(
+      snapshot.sessions.map((e) => [e.session.id, e.sortOrder]),
     );
-    this.projectedActiveSessionId = snapshot.activeSessionId;
+    this.projectionState.projectedActiveSessionId = snapshot.activeSessionId;
   }
 
   clearWorkspace(): void {
     this.store.replaceWorkspaceSessions([], null);
-    this.projectedSessionIds.clear();
-    this.projectedSortOrders.clear();
-    this.projectedActiveSessionId = null;
+    this.projectionState.projectedSessionIds.clear();
+    this.projectionState.projectedSortOrders.clear();
+    this.projectionState.projectedActiveSessionId = null;
   }
 
   private onChange(event: WorkspaceSessionChangeEvent): void {
-    if (this.persistenceDrain && !this.persistenceDrain.accepting) {
-      this.persistenceDrain = null;
-    }
+    if (this.persistenceDrain && !this.persistenceDrain.accepting) this.persistenceDrain = null;
     if (
       event.kind !== 'catalog-changed' &&
       'sessionId' in event &&
       !this.store.isPersistentSession(event.sessionId)
-    ) {
+    )
       return;
-    }
     switch (event.kind) {
       case 'frame-added':
-        this.queueFrame(event.sessionId, event.frame);
+        this.persistence.queueFrame(event.sessionId, event.frame);
         return;
       case 'capture-cleared':
-        this.queueCaptureReset(event.sessionId);
+        this.persistence.queueCaptureReset(event.sessionId);
         return;
       case 'capture-trimmed':
-        this.queueCaptureTrim(event.sessionId, event.droppedFrames, event.droppedBytes);
+        this.persistence.queueCaptureTrim(event.sessionId, event.droppedFrames, event.droppedBytes);
         return;
       case 'waveform-replaced':
-        this.queueWaveformReplacement(event.sessionId, event.waveform);
+        this.persistence.queueWaveformReplacement(event.sessionId, event.waveform);
         return;
       case 'waveform-samples-appended':
-        this.queueWaveformSamples(event.sessionId, event.samples);
+        this.persistence.queueWaveformSamples(event.sessionId, event.samples);
         return;
       case 'waveform-cursor-changed':
-        this.queueWaveformCursor(event.sessionId, event.cursor);
+        this.persistence.queueWaveformCursor(event.sessionId, event.cursor);
         return;
       case 'waveform-channel-config-changed':
-        this.queueWaveformPreferences(event.sessionId, event.waveform);
+        this.persistence.queueWaveformPreferences(event.sessionId, event.waveform);
         return;
       case 'waveform-frame-ingested':
-        this.queueWaveformFrameIngest(event);
+        this.persistence.queueWaveformFrameIngest(event);
         return;
       case 'session-changed':
-        this.projectSession(event.sessionId);
+        this.projection.projectSession(event.sessionId);
         return;
       case 'ai-message-appended':
-        this.queueAiMessage(event.sessionId, event.message, event.startPosition);
+        this.persistence.queueAiMessage(event.sessionId, event.message, event.startPosition);
         return;
       case 'ai-messages-cleared':
-        this.queueAiMessagesCleared(event.sessionId);
+        this.persistence.queueAiMessagesCleared(event.sessionId);
         return;
       case 'session-restored':
-        this.projectRestoredSession(event.sessionId);
+        this.projection.projectRestoredSession(event.sessionId);
         return;
       case 'catalog-changed':
-        this.projectCatalog();
+        this.projection.projectCatalog();
         return;
       default:
         event satisfies never;
     }
   }
 
-  private queueFrame(sessionId: string, frame: import('../../types').DataFrame): void {
-    const outcome = this.persistenceDrain
-      ? this.persistenceDrain.queueCapturedFrame({ sessionId, frame })
-      : this.application.queueCapturedFrame(sessionId, frame);
-    this.requireAccepted(outcome);
-  }
-
-  private queueCaptureReset(sessionId: string): void {
-    const commands: WorkspaceConfigMutationCommand[] = [
-      { kind: 'replace-capture', sessionId, payload: { frames: [] } },
-    ];
-    const outcome = this.persistenceDrain
-      ? this.persistenceDrain.queueOrderedMutations(commands)
-      : this.application.queueCaptureReset(sessionId);
-    this.requireAccepted(outcome);
-  }
-
-  private queueCaptureTrim(sessionId: string, droppedFrames: number, droppedBytes: number): void {
-    const outcome = this.persistenceDrain
-      ? this.persistenceDrain.queueCaptureTrim(sessionId, droppedFrames, droppedBytes)
-      : this.application.queueCaptureTrim(sessionId, droppedFrames, droppedBytes);
-    this.requireAccepted(outcome);
-  }
-
-  private queueWaveformReplacement(
-    sessionId: string,
-    waveform: import('../../types').SessionWaveformState,
-  ): void {
-    const channels = waveform.channels.map((channel) => ({
-      channelIndex: channel.channelIndex,
-      config: structuredClone(channel.config),
-    }));
-    const samples = waveform.samples.map((sample) => ({ ...sample }));
-    const outcome = this.persistenceDrain
-      ? this.persistenceDrain.queueWaveformReplacement(sessionId, channels, samples)
-      : this.application.queueWaveformReplacement(sessionId, channels, samples);
-    this.requireAccepted(outcome);
-  }
-
-  private queueWaveformSamples(
-    sessionId: string,
-    samples: readonly import('../../types').SessionWaveformSample[],
-  ): void {
-    const payload = samples.map((sample) => ({ ...sample }));
-    const outcome = this.persistenceDrain
-      ? this.persistenceDrain.queueWaveformSamples(sessionId, payload)
-      : this.application.queueWaveformSamples(sessionId, payload);
-    this.requireAccepted(outcome);
-  }
-
-  private queueWaveformCursor(
-    sessionId: string,
-    cursor: import('../../types').SessionWaveformFrameCursor,
-  ): void {
-    const session = this.store.sessions.find((candidate) => candidate.id === sessionId);
-    if (!session) return;
-    const command: WorkspaceConfigMutationCommand = {
-      kind: 'upsert-feature-state',
-      entityId: sessionId,
-      payload: {
-        feature: 'waveform',
-        state: projectWorkspaceWaveformPreferences(
-          session,
-          cursor,
-          this.store.workspaceWaveformBySessionId[sessionId]?.channels,
-        ),
-      },
-    };
-    const outcome = this.persistenceDrain
-      ? this.persistenceDrain.queueConfigMutation(command)
-      : this.application.queueConfigMutation(command);
-    this.requireAccepted(outcome);
-  }
-
-  private queueWaveformPreferences(
-    sessionId: string,
-    waveform: import('../../types').SessionWaveformState,
-  ): void {
-    const session = this.store.sessions.find((candidate) => candidate.id === sessionId);
-    if (!session) return;
-    const command: WorkspaceConfigMutationCommand = {
-      kind: 'upsert-feature-state',
-      entityId: sessionId,
-      payload: {
-        feature: 'waveform',
-        state: projectWorkspaceWaveformPreferences(
-          session,
-          waveform.frameCursor,
-          waveform.channels,
-        ),
-      },
-    };
-    const outcome = this.persistenceDrain
-      ? this.persistenceDrain.queueConfigMutation(command)
-      : this.application.queueConfigMutation(command);
-    this.requireAccepted(outcome);
-  }
-
-  private queueWaveformFrameIngest(
-    event: Extract<WorkspaceSessionChangeEvent, { kind: 'waveform-frame-ingested' }>,
-  ): void {
-    const session = this.store.sessions.find((candidate) => candidate.id === event.sessionId);
-    if (!session) return;
-    const channels = event.waveform.channels.map((channel) => ({
-      channelIndex: channel.channelIndex,
-      config: structuredClone(channel.config),
-    }));
-    const samples = event.samples.map((sample) => ({ ...sample }));
-    const ingest = {
-      sessionId: event.sessionId,
-      mode: event.mode,
-      channels,
-      samples,
-      featureState: projectWorkspaceWaveformPreferences(
-        session,
-        event.waveform.frameCursor,
-        event.waveform.channels,
-      ),
-    } as const;
-    const outcome = this.persistenceDrain
-      ? this.persistenceDrain.queueWaveformFrameIngest(ingest)
-      : this.application.queueWaveformFrameIngest(ingest);
-    this.requireAccepted(outcome);
-  }
-
-  private queueAiMessage(
-    sessionId: string,
-    message: import('../../types/ai').AiChatMessage,
-    startPosition: number,
-  ): void {
-    const command: WorkspaceConfigMutationCommand = {
-      kind: 'append-ai-messages',
-      sessionId,
-      payload: {
-        startPosition,
-        messages: [
-          {
-            id: message.id,
-            role: message.role,
-            content: message.content,
-            timestampMs: message.timestamp,
-          },
-        ],
-      },
-    };
-    const outcome = this.persistenceDrain
-      ? this.persistenceDrain.queueConfigMutation(command)
-      : this.application.queueConfigMutation(command);
-    this.requireAccepted(outcome);
-  }
-
-  private queueAiMessagesCleared(sessionId: string): void {
-    const command: WorkspaceConfigMutationCommand = { kind: 'clear-ai-messages', sessionId };
-    const outcome = this.persistenceDrain
-      ? this.persistenceDrain.queueConfigMutation(command)
-      : this.application.queueConfigMutation(command);
-    this.requireAccepted(outcome);
-  }
-
-  private projectRestoredSession(sessionId: string): void {
-    const session = this.store.sessions.find((candidate) => candidate.id === sessionId);
-    if (!session) return;
-    const registration = this.application.registerSession(sessionId);
-    this.requireAccepted(registration);
-    if (!registration.accepted) return;
-    const commands: WorkspaceConfigMutationCommand[] = [];
-    const persistentSessions = this.persistentSessions();
-    for (const [sortOrder, candidate] of persistentSessions.entries()) {
-      if (candidate.id !== sessionId && this.projectedSortOrders.get(candidate.id) === sortOrder) {
-        continue;
-      }
-      if (candidate.id === sessionId) {
-        commands.push(...projectSessionCommands(candidate, this.store, sortOrder));
-      } else {
-        const upsert = projectSessionCommands(candidate, this.store, sortOrder).find(
-          (
-            command,
-          ): command is Extract<WorkspaceConfigMutationCommand, { kind: 'upsert-session' }> =>
-            command.kind === 'upsert-session',
-        );
-        if (upsert) commands.push(upsert);
-      }
-    }
-    const persistentActiveSessionId = this.persistentActiveSessionId(persistentSessions);
-    if (this.projectedActiveSessionId !== persistentActiveSessionId) {
-      commands.push({ kind: 'set-active-session', sessionId: persistentActiveSessionId });
-    }
-    const outcome = this.persistenceDrain
+  private routeOrdered(commands: readonly Readonly<WorkspaceConfigMutationCommand>[]) {
+    return this.persistenceDrain
       ? this.persistenceDrain.queueOrderedMutations(commands)
       : this.application.queueOrderedMutations(commands);
-    if (!outcome.accepted) {
-      this.application.unregisterSession(sessionId);
-      this.requireAccepted(outcome);
-      return;
-    }
-    this.projectedSessionIds.add(sessionId);
-    this.projectedSortOrders = new Map(
-      persistentSessions.map((candidate, sortOrder) => [candidate.id, sortOrder]),
-    );
-    this.projectedActiveSessionId = persistentActiveSessionId;
   }
 
-  private requireAccepted(
-    outcome: ReturnType<WorkspaceApplicationService['queueConfigMutation']>,
-  ): void {
-    if (!outcome.accepted) this.application.rejectPersistence(outcome.messageKey);
+  private routeConfig(commands: readonly Readonly<WorkspaceConfigMutationCommand>[]) {
+    return this.persistenceDrain
+      ? this.persistenceDrain.queueConfigMutations(commands)
+      : this.application.queueConfigMutations(commands);
   }
-
-  private projectCatalog(): void {
-    const activeWorkspace = this.application.snapshot().currentWorkspace;
-    if (!activeWorkspace) return;
-    const persistentSessions = this.persistentSessions();
-    const liveIds = new Set(persistentSessions.map((session) => session.id));
-    const commands: WorkspaceConfigMutationCommand[] = [];
-    const removedIds: string[] = [];
-    const addedIds: string[] = [];
-
-    for (const persistedId of this.projectedSessionIds) {
-      if (!liveIds.has(persistedId)) {
-        commands.push({ kind: 'remove-session', sessionId: persistedId });
-        removedIds.push(persistedId);
-      }
-    }
-    for (const [sortOrder, session] of persistentSessions.entries()) {
-      const commandsForSession = projectSessionCommands(session, this.store, sortOrder);
-      if (!this.projectedSessionIds.has(session.id)) {
-        commands.push(...commandsForSession);
-        addedIds.push(session.id);
-      } else if (this.projectedSortOrders.get(session.id) !== sortOrder) {
-        const catalogCommand = commandsForSession.find(
-          (
-            command,
-          ): command is Extract<WorkspaceConfigMutationCommand, { kind: 'upsert-session' }> =>
-            command.kind === 'upsert-session',
-        );
-        if (catalogCommand) commands.push(catalogCommand);
-      }
-    }
-    const persistentActiveSessionId = this.persistentActiveSessionId(persistentSessions);
-    if (this.projectedActiveSessionId !== persistentActiveSessionId) {
-      commands.push({ kind: 'set-active-session', sessionId: persistentActiveSessionId });
-    }
-    const registeredIds: string[] = [];
-    for (const sessionId of addedIds) {
-      const registration = this.application.registerSession(sessionId);
-      if (!registration.accepted) {
-        for (const registeredId of registeredIds) {
-          this.application.unregisterSession(registeredId);
-        }
-        this.requireAccepted(registration);
-        return;
-      }
-      registeredIds.push(sessionId);
-    }
-    const outcome = this.persistenceDrain
-      ? this.persistenceDrain.queueOrderedMutations(commands)
-      : this.application.queueOrderedMutations(commands);
-    if (!outcome.accepted) {
-      for (const registeredId of registeredIds) this.application.unregisterSession(registeredId);
-      this.requireAccepted(outcome);
-      return;
-    }
-
-    for (const sessionId of removedIds) this.application.forgetSession(sessionId);
-    this.projectedSessionIds = liveIds;
-    this.projectedSortOrders = new Map(
-      persistentSessions.map((session, sortOrder) => [session.id, sortOrder]),
-    );
-    this.projectedActiveSessionId = persistentActiveSessionId;
-  }
-
-  private projectSession(sessionId: string): void {
-    if (this.projectionInFlight.has(sessionId)) return;
-    if (!this.store.isPersistentSession(sessionId)) return;
-    const session = this.store.sessions.find((candidate) => candidate.id === sessionId);
-    if (!session) return;
-    this.projectionInFlight.add(sessionId);
-    try {
-      const commands = projectSessionCommands(
-        session,
-        this.store,
-        this.persistentSessions().findIndex((candidate) => candidate.id === sessionId),
-      );
-      const outcome = this.persistenceDrain
-        ? this.persistenceDrain.queueConfigMutations(commands)
-        : this.application.queueConfigMutations(commands);
-      this.requireAccepted(outcome);
-    } finally {
-      this.projectionInFlight.delete(sessionId);
-    }
-  }
-
-  private persistentSessions(): readonly SerialSession[] {
-    return this.store.sessions.filter((session) => this.store.isPersistentSession(session.id));
-  }
-
-  private persistentActiveSessionId(sessions: readonly SerialSession[]): string | null {
-    const active = this.store.activeSessionId;
-    if (active && this.store.isPersistentSession(active)) return active;
-    if (
-      this.projectedActiveSessionId &&
-      sessions.some((session) => session.id === this.projectedActiveSessionId)
-    ) {
-      return this.projectedActiveSessionId;
-    }
-    return sessions[0]?.id ?? null;
-  }
-}
-
-function projectSessionCommands(
-  session: SerialSession,
-  store: WorkspaceSessionPort,
-  sortOrder: number,
-): WorkspaceConfigMutationCommand[] {
-  const rebind = store.workspaceRebindBySessionId[session.id];
-  const lastPortHint = safePortHint(rebind?.lastPortHint, session.portName);
-  const projection = projectWorkspaceSessionMutations(session, {
-    sequenceStart: 0,
-    sortOrder,
-    name: rebind?.displayName || displaySessionName(session, sortOrder),
-    kind: (rebind?.kind ?? 'live') as WorkspaceSessionKind,
-    ...(lastPortHint ? { lastPortHint } : {}),
-    waveformFrameCursor: store.workspaceWaveformBySessionId[session.id]?.frameCursor ?? {
-      consumed: 0,
-      lastFrameId: null,
-    },
-    waveformChannelVisibility: store.workspaceWaveformBySessionId[session.id]?.channels.map(
-      (channel) => ({
-        channelIndex: channel.channelIndex,
-        visible: channel.config.visible !== false,
-      }),
-    ),
-  });
-  return projection.mutations.flatMap((mutation) => {
-    if (mutation.kind === 'clear-ai-messages' || mutation.kind === 'append-ai-messages') return [];
-    const command = stripSequence(mutation);
-    return command ? [command] : [];
-  });
-}
-
-function stripSequence(mutation: WorkspaceMutation): WorkspaceConfigMutationCommand | null {
-  const { sequence: _sequence, ...command } = mutation;
-  void _sequence;
-  return isConfigCommand(command) ? command : null;
-}
-
-function isConfigCommand(
-  command: import('./types').WorkspaceMutationCommand,
-): command is WorkspaceConfigMutationCommand {
-  return command.kind !== 'append-frames' && command.kind !== 'append-waveform-samples';
-}
-
-function safePortHint(
-  persisted: WorkspacePortHint | null | undefined,
-  portName: string,
-): WorkspacePortHint | undefined {
-  if (persisted) return persisted;
-  const displayName = portName.trim();
-  if (!displayName || displayName.startsWith('/') || /^\\\\[.?]\\/u.test(displayName)) {
-    return undefined;
-  }
-  return { displayName: displayName.slice(0, 256) };
-}
-
-function displaySessionName(session: SerialSession, sortOrder: number): string {
-  if (session.displayName?.trim()) return session.displayName.trim();
-  const portName = session.portName.trim();
-  if (portName && !portName.startsWith('/') && !/^\\\\[.?]\\/u.test(portName)) return portName;
-  return `Session ${sortOrder + 1}`;
 }

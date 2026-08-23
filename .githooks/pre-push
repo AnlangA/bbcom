@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full local quality gate (coverage, browser E2E, benchmark comparison) before
+# Full local quality gate (frontend + Rust tests + browser E2E) before
 # publishing commits. Install with `pnpm run hooks:install`; the pre-commit
 # hook runs the fast gate only.
 set -euo pipefail

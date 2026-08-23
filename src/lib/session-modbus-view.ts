@@ -1,4 +1,4 @@
-import type { ModbusRegister } from '../types';
+import type { ModbusRegister } from '@/types';
 
 export interface SessionModbusStatus {
   kind: string;

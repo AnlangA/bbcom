@@ -6,11 +6,11 @@ import {
   MAX_SESSION_FRAME_BYTES,
   resetSessionFrames,
   trimSessionsToGlobalByteLimit,
-} from '../../../lib/session-store-helpers';
-import { defaultCaptureOrigin } from '../../../lib/capture-stream';
-import { CaptureAccountingStore } from '../../application';
-import type { DataFrame } from '../../../types/serial';
-import type { SerialSession } from '../../../types/session';
+} from '@/lib/session-store-helpers';
+import { defaultCaptureOrigin } from '@/lib/capture-stream';
+import { CaptureAccountingStore } from '@/features/platform/application';
+import type { DataFrame } from '@/types/serial';
+import type { SerialSession } from '@/types/session';
 
 export interface SessionCaptureControllerDependencies {
   getSessions(): readonly SerialSession[];

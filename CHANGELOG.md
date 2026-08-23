@@ -5,6 +5,28 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-22
+
+### Changed
+
+- Feature-sliced modular refactor: `components/`, `stores/`, and `composables/` moved into `features/*/ui`, `store/`, and `application/`
+- Split megamodules (`workspace-application-service`, `serial-connection-controller`, `McumgrPanel`, and related orchestrators)
+- Introduced `design-system` token layers and aligned Naive UI theme with shared visual tokens
+- Slimmed CI to lint, build, and architecture checks; full test suite runs on local pre-push
+- Removed 11 low-value coverage tests; colocated frontend tests under `src/**/__tests__/`
+- Merged `RELEASING.md` into `CONTRIBUTING.md` and removed redundant crate README stubs
+
+### Removed
+
+- `src/components/`, `src/composables/`, and `src/stores/` directories
+- `tests/frontend/` directory (tests colocated with features)
+- Workspace v1 snapshot compatibility (breaking migration to schema v2)
+
+### Breaking Changes
+
+- Workspace local snapshot format upgraded to v2; legacy v1 snapshots are discarded on startup
+- Internal module paths changed across the frontend; no backward compatibility guarantees
+
 ## [1.0.0] - 2026-08-21
 
 ### Added

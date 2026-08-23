@@ -12,7 +12,8 @@ export default [
   {
     files: [
       'src/**/*.{ts,vue}',
-      'tests/frontend/**/*.ts',
+      'src/**/__tests__/**/*.ts',
+      'src/test/**/*.ts',
       'scripts/**/*.{ts,mjs}',
       '*.config.{ts,mjs}',
     ],
@@ -41,9 +42,10 @@ export default [
   {
     // Promise and discriminated-union handling are too error-prone for a
     // desktop app to leave to convention. Type-aware analysis applies to the
-    // production TS, tests, and executable config; Vue templates retain the
-    // Vue parser configuration above.
+    // production TS and executable config; colocated tests keep the lighter
+    // lint profile they had under tests/frontend/.
     files: ['src/**/*.ts', 'scripts/**/*.ts', '*.config.ts'],
+    ignores: ['src/**/__tests__/**', 'src/test/**'],
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {
@@ -64,9 +66,10 @@ export default [
     },
   },
   {
-    files: ['tests/frontend/**', 'scripts/**', '*.config.{ts,mjs}'],
+    files: ['src/**/__tests__/**', 'src/test/**', 'scripts/**', '*.config.{ts,mjs}'],
     rules: {
       'no-console': 'off',
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
   {

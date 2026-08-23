@@ -12,11 +12,11 @@
 <script setup lang="ts">
 import { onErrorCaptured, watch } from 'vue';
 import { NConfigProvider, NDialogProvider, NMessageProvider } from 'naive-ui';
-import AppShell from './components/app-shell/AppShell.vue';
-import ShutdownDialog from './components/app-shell/ShutdownDialog.vue';
-import { useAiSessionBridge } from './composables/useAiSessionBridge';
-import { useAppStore } from './stores/app';
-import { themeOverrides } from './styles/naive-theme';
+import AppShell from '@/features/app-shell/ui/AppShell.vue';
+import ShutdownDialog from '@/features/app-shell/ui/ShutdownDialog.vue';
+import { useAiSessionBridge } from '@/features/ai/application/use-ai-session-bridge';
+import { useAppStore } from '@/features/settings/store/app-store';
+import { themeOverrides } from '@/design-system/naive-theme';
 
 const appStore = useAppStore();
 

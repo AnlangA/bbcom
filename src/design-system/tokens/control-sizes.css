@@ -1,0 +1,40 @@
+/**
+ * Control and layout dimensions — fixed widths, heights, and chrome metrics.
+ */
+
+:root {
+  /* Control widths: the fixed-size select/number controls used across
+     toolbars and panels. Inline pixel widths are forbidden for these. */
+  --control-w-xs: 86px;
+  --control-w-sm: 96px;
+  --control-w-md: 112px;
+  --control-w-lg: 130px;
+
+  /* Control heights — unified button/input hit targets */
+  --control-h-sm: 24px;
+  --control-h-md: 28px;
+  --control-h-lg: 34px;
+
+  /* Icon glyph sizes */
+  --icon-size-sm: 13px;
+  --icon-size-md: 15px;
+  --icon-size-lg: 18px;
+
+  /* Layout */
+  --sidebar-width: 292px;
+  /* Fixed content width of the floating AI assistant panel; shared by
+     AiWindow.vue and the AI settings panel so the resize target and the
+     rendered content can never drift apart. */
+  --ai-panel-width: 820px;
+  --sidebar-width-min: 252px;
+  --sidebar-width-max: 340px;
+  --toolbar-height: 46px;
+  --tab-bar-height: 42px;
+  --statusbar-height: 30px;
+
+  /* Packet list row metric contract (see packet-columns.css) */
+  --packet-row-height: 28px;
+  --packet-row-line-height: 22px;
+  --packet-row-padding-y: 3px;
+  --packet-row-padding-x: 10px;
+}

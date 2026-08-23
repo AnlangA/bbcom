@@ -1,4 +1,4 @@
-import type { DataFrame } from '../../../types';
+import type { DataFrame } from '@/types';
 
 export interface SessionMutationPermissions {
   readonly userMutations: boolean;

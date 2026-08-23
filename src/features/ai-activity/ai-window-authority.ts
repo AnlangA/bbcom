@@ -1,7 +1,7 @@
 import { getCurrentInstance, onMounted, onUnmounted, ref, type Ref } from 'vue';
 import { emit, listen } from '@tauri-apps/api/event';
-import type { AiKeyStatus } from '../../generated/ipc-contracts';
-import type { Locale } from '../../lib/i18n';
+import type { AiKeyStatus } from '@/generated/ipc-contracts';
+import type { Locale } from '@/lib/i18n';
 import {
   AI_BRIDGE_EVENTS,
   AI_BRIDGE_WORKSPACE_ID,

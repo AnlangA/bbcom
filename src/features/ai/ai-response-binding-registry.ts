@@ -1,4 +1,4 @@
-import { IPC_LIMITS, type IpcError } from '../../generated/ipc-contracts';
+import { IPC_LIMITS, type IpcError } from '@/generated/ipc-contracts';
 import type { AiResponseBinding, AiResponseBindingPhase } from './ai-session-projection';
 
 /**

@@ -1,5 +1,5 @@
 import { ref } from 'vue';
-import { MAX_FRAMES } from '../types';
+import { MAX_FRAMES } from '@/types';
 
 /**
  * Live cap on the number of frames retained per session (visible + paused).

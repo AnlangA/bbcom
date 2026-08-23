@@ -21,8 +21,8 @@ export {
   type WorkspaceSessionChangeEvent,
   type WorkspaceSessionChangeListener,
   type WorkspaceSessionPort,
-} from './session-ports';
-export { enterWorkspaceSessionPersistenceMode } from '../../stores/session-core';
+} from './ports/session-ports';
+export { enterWorkspaceSessionPersistenceMode } from './store/session-store';
 export {
   SessionRuntimeStatusRegistry,
   type SessionRuntimePhase,
@@ -41,3 +41,6 @@ export {
   type ApplicationSessionRuntime,
   type SessionRuntimeFactoryDependencies,
 } from './runtime/session-runtime-factory';
+export { useSerialConnection } from './application/use-serial-connection';
+export { useSessionModbus } from './application/use-session-modbus';
+export { useTriggers } from './application/use-triggers';

@@ -1,5 +1,5 @@
-import type { IpcError } from '../generated/ipc-contracts';
-import type { SerialSendResult, SerialWriteOptions } from '../types/serial';
+import type { IpcError } from '@/generated/ipc-contracts';
+import type { SerialSendResult, SerialWriteOptions } from '@/types/serial';
 
 export const SERIAL_WRITE_MAX_OPERATIONS = 256;
 export const SERIAL_WRITE_MAX_QUEUED_BYTES = 4 * 1024 * 1024;

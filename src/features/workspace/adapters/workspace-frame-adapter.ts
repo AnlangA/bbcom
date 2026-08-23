@@ -5,8 +5,8 @@ import type {
   WorkspaceMutation,
 } from '../../../generated/ipc-contracts';
 import { IPC_LIMITS } from '../../../generated/ipc-contracts';
-import { base64ToBytes, bytesToBase64 } from '../../../lib/base64';
-import type { DataFrame } from '../../../types/serial';
+import { base64ToBytes, bytesToBase64 } from '@/lib/base64';
+import type { DataFrame } from '@/types/serial';
 import {
   WorkspaceAdapterLimitError,
   WorkspaceAdapterValidationError,

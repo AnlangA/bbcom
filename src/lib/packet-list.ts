@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'vue';
-import type { DataFrame, DisplayMode, HighlightRule, PacketViewMode } from '../types';
+import type { DataFrame, DisplayMode, HighlightRule, PacketViewMode } from '@/types';
 import {
   formatAscii,
   formatHex,

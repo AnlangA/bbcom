@@ -1,16 +1,16 @@
-import { normalizeModbusRegister, normalizeModbusRegisters } from '../../../lib/modbus';
+import { normalizeModbusRegister, normalizeModbusRegisters } from '@/lib/modbus';
 import {
   appendIdentifiedItem,
   patchIdentifiedItem,
   removeIdentifiedItem,
   upsertSendHistory,
-} from '../../../lib/session-store-helpers';
-import type { AiChatMessage } from '../../../types/ai';
-import { MAX_HISTORY } from '../../../types/constants';
-import type { HighlightRule, Macro, Trigger } from '../../../types/macros';
-import type { ModbusRegister } from '../../../types/modbus';
-import type { SendHistoryEntry } from '../../../types/serial';
-import type { SerialSession } from '../../../types/session';
+} from '@/lib/session-store-helpers';
+import type { AiChatMessage } from '@/types/ai';
+import { MAX_HISTORY } from '@/types/constants';
+import type { HighlightRule, Macro, Trigger } from '@/types/macros';
+import type { ModbusRegister } from '@/types/modbus';
+import type { SendHistoryEntry } from '@/types/serial';
+import type { SerialSession } from '@/types/session';
 
 export interface SessionDocumentMutationDependencies {
   findSession(sessionId: string): SerialSession | undefined;

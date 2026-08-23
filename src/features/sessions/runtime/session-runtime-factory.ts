@@ -1,10 +1,10 @@
 import { effectScope, shallowRef, type EffectScope } from 'vue';
 import { getActivePinia, setActivePinia, type Pinia } from 'pinia';
-import type { SerialSession } from '../../../types';
+import type { SerialSession } from '@/types';
 import type {
   ApplicationNotificationPort,
   ApplicationRuntimeRegistryOptions,
-} from '../../application';
+} from '@/features/platform/application';
 import type { PortLeaseClient } from '../../serial';
 import type { SessionRuntimeStatusRegistry } from './session-runtime-status';
 export { SessionRuntimeStatusRegistry } from './session-runtime-status';

@@ -20,7 +20,7 @@
  */
 
 import { registerSpan } from './modbus-core';
-import type { ModbusFunctionCode, ModbusRegister, ModbusValueType } from '../../types';
+import type { ModbusFunctionCode, ModbusRegister, ModbusValueType } from '@/types';
 
 /** One decoded sample of one register. */
 export interface ModbusStreamRecord {

@@ -7,7 +7,7 @@ import {
   type RunAiRequest,
   type StateEnvelope,
   type StateOrigin,
-} from '../../generated/ipc-contracts';
+} from '@/generated/ipc-contracts';
 
 export const AI_BRIDGE_SCHEMA_VERSION = 1;
 /** Reserved only for bootstrap/control messages before a project is active. */

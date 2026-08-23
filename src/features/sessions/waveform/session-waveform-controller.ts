@@ -4,8 +4,8 @@ import type {
   SessionWaveformSample,
   SessionWaveformSampleInput,
   SessionWaveformState,
-} from '../../../types';
-import { SESSION_WAVEFORM_MAX_GROUPS } from '../../../types';
+} from '@/types';
+import { SESSION_WAVEFORM_MAX_GROUPS } from '@/types';
 
 export type SessionWaveformChangeEvent =
   | Readonly<{

@@ -1,10 +1,10 @@
-import type { PortConfig, SerialSession } from '../../types';
+import type { PortConfig, SerialSession } from '@/types';
 import type {
   SessionCapturePort,
   SessionCatalogPort,
   SessionDocumentPort,
   SessionMutationPolicyPort,
-} from './session-ports';
+} from '@/features/sessions/ports/session-ports';
 
 export interface SessionApplicationServiceOptions {
   readonly catalog: SessionCatalogPort;

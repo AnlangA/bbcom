@@ -1,14 +1,8 @@
 [
-  { "rule": "entry-bootstrap-only", "source": "src/main.ts", "target": "./features/beta/internal" },
   {
-    "rule": "ui-no-direct-tauri",
-    "source": "src/features/alpha/ui/Panel.vue",
+    "rule": "application-no-tauri-sdk",
+    "source": "src/features/alpha/application/service.ts",
     "target": "@tauri-apps/api/core"
-  },
-  {
-    "rule": "cross-feature-public-api",
-    "source": "src/features/alpha/ui/Panel.vue",
-    "target": "../../beta/internal"
   },
   {
     "rule": "application-no-vue-component",
@@ -16,25 +10,28 @@
     "target": "../ui/Panel.vue"
   },
   {
-    "rule": "application-no-tauri-sdk",
-    "source": "src/features/alpha/application/service.ts",
-    "target": "@tauri-apps/api/core"
+    "rule": "cross-feature-public-api",
+    "source": "src/features/alpha/ui/Panel.vue",
+    "target": "../../beta/internal"
+  },
+  {
+    "rule": "domain-framework-free",
+    "source": "src/features/alpha/domain/model.ts",
+    "target": "vue"
+  },
+  {
+    "rule": "entry-bootstrap-only",
+    "source": "src/bootstrap/main.ts",
+    "target": "@/lib/helper"
   },
   {
     "rule": "lib-no-reverse-deps",
     "source": "src/lib/helper.ts",
     "target": "../components/Btn.vue"
   },
-  { "rule": "lower-layer-no-ui", "source": "src/lib/helper.ts", "target": "../components/Btn.vue" },
   {
-    "rule": "domain-framework-free",
-    "source": "src/features/alpha/domain/model.ts",
-    "target": "vue"
-  },
-  { "rule": "ui-no-direct-tauri", "source": "src/stores/app.ts", "target": "@tauri-apps/api/core" },
-  {
-    "rule": "ui-no-serial-sdk",
-    "source": "src/stores/app.ts",
-    "target": "tauri-plugin-serialplugin-api"
+    "rule": "ui-no-direct-tauri",
+    "source": "src/features/alpha/ui/Panel.vue",
+    "target": "@tauri-apps/api/core"
   }
 ]

@@ -1,5 +1,5 @@
-import { CaptureAccountingStore } from '../../application';
-import { SaveGate, WorkspaceSaveQueues, type SaveQueuesHooks } from './save-queues';
+import { CaptureAccountingStore } from '@/features/platform/application';
+import { SaveGate, WorkspaceSaveQueues, type SaveQueuesHooks } from './save-queues/index';
 import type { WorkspaceLatchedSaveFailure } from './types';
 
 /** Single owner of the active write epoch, queues, accounting and save latch. */

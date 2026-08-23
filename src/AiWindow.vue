@@ -11,11 +11,11 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, onErrorCaptured, ref, watch } from 'vue';
 import { NConfigProvider, NMessageProvider } from 'naive-ui';
-import { resizeAiWindow } from './features/native';
-import AiPanel from './components/ai/AiPanel.vue';
+import { resizeAiWindow } from '@/features/platform/native';
+import AiPanel from '@/features/ai/ui/AiPanel.vue';
 import { useAiWindowAuthority } from './features/ai-activity';
-import { useAppStore } from './stores/app';
-import { themeOverrides } from './styles/naive-theme';
+import { useAppStore } from '@/features/settings/store/app-store';
+import { themeOverrides } from '@/design-system/naive-theme';
 
 const appStore = useAppStore();
 useAiWindowAuthority({

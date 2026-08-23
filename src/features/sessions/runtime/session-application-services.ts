@@ -1,10 +1,13 @@
-import { getCurrentInstance, inject, onScopeDispose, ref, type InjectionKey } from 'vue';
-import type { SerialSession } from '../../../types';
-import type { ApplicationServices } from '../../application';
+import { getCurrentInstance, inject, onScopeDispose, ref } from 'vue';
+import type { SerialSession } from '@/types';
+import type { ApplicationServices } from '@/features/platform/application';
 import type { ApplicationSessionRuntime } from './session-runtime-factory';
 import type { SessionRuntimeStatusRegistry } from './session-runtime-status';
 import type { SessionRuntimeStatus } from './session-runtime-status';
-import { useSessionCoreStore } from '../../../stores/session-core';
+import { useSessionStore } from '@/features/sessions/store/session-store';
+import { SESSION_APPLICATION_SERVICES_KEY } from '@/bootstrap/provide-keys';
+
+export { SESSION_APPLICATION_SERVICES_KEY } from '@/bootstrap/provide-keys';
 
 export type SessionApplicationServices = ApplicationServices<
   SerialSession,
@@ -13,12 +16,9 @@ export type SessionApplicationServices = ApplicationServices<
   readonly runtimeStatusRegistry: SessionRuntimeStatusRegistry;
 };
 
-export const SESSION_APPLICATION_SERVICES_KEY: InjectionKey<SessionApplicationServices> = Symbol(
-  'bbcom.session-application-services',
-);
-
 export function useSessionApplicationServices(): SessionApplicationServices {
-  const services = inject(SESSION_APPLICATION_SERVICES_KEY);
+  const services = inject(SESSION_APPLICATION_SERVICES_KEY) as
+    SessionApplicationServices | undefined;
   if (!services) throw new Error('session application services were not provided');
   return services;
 }
@@ -28,8 +28,10 @@ export function useSessionRuntimeStatuses(): {
   statusOf(sessionId: string): SessionRuntimeStatus;
   isConnected(sessionId: string): boolean;
 } {
-  const services = getCurrentInstance() ? inject(SESSION_APPLICATION_SERVICES_KEY, null) : null;
-  const fallbackCore = services ? null : useSessionCoreStore();
+  const services = getCurrentInstance()
+    ? (inject(SESSION_APPLICATION_SERVICES_KEY, null) as SessionApplicationServices | null)
+    : null;
+  const fallbackCore = services ? null : useSessionStore();
   const revision = ref(0);
   const unsubscribe = services?.runtimeStatusRegistry.subscribeAll(() => {
     revision.value += 1;

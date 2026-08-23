@@ -25,9 +25,8 @@ inspectable serial console. It combines multi-session serial TX/RX, protocol
 parsing, Modbus master tooling, waveform plotting, export, and an optional
 Z.ai-powered command/log assistant in one application.
 
-The frontend owns session state and protocol engines so high-volume serial data
-can stay responsive in the webview. Rust owns privileged filesystem/export
-sessions, checksums, OS credential storage, and bounded AI client calls.
+For module ownership, data-flow invariants, and runtime topology, see
+[ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Highlights
 
@@ -181,90 +180,14 @@ chmod +x scripts/dev.sh
 ./scripts/dev.sh build
 ```
 
-## Scripts
+## Documentation
 
-| Command              | Description                                   |
-| -------------------- | --------------------------------------------- |
-| `pnpm dev`           | Start the Vite dev server                     |
-| `pnpm build`         | Type-check the Vue app and build the frontend |
-| `pnpm preview`       | Preview the frontend build                    |
-| `pnpm tauri:dev`     | Run the Tauri desktop app with frontend HMR   |
-| `pnpm tauri:build`   | Build the desktop application bundle          |
-| `pnpm format`        | Format frontend and Rust code                 |
-| `pnpm format:check`  | Check frontend and Rust formatting            |
-| `pnpm lint`          | Run ESLint on `src/`                          |
-| `pnpm test:frontend` | Run frontend unit tests                       |
-| `pnpm test:rust`     | Run Rust unit tests                           |
-| `pnpm test`          | Run frontend and Rust tests                   |
-| `pnpm cycles`        | Fail on TypeScript import cycles              |
-| `pnpm check`         | Run lint, format check, build, and unit tests |
-| `pnpm precommit`     | Run the complete mandatory local commit gate  |
-| `pnpm version:sync`  | Sync Cargo/Tauri versions from package.json   |
-| `pnpm version:check` | Verify package/Cargo/Tauri versions match     |
-
-## Project Map
-
-```text
-bbcom/
-├── src/                         # Vue frontend
-│   ├── components/              # App shell, session view, terminal panels, AI panels
-│   ├── composables/             # Serial connection, Modbus orchestration, export, triggers
-│   ├── lib/                     # Framework-free domain logic and IPC wrappers
-│   │   ├── modbus/              # Request building, batching, transport, loops, replay
-│   │   ├── format.ts            # HEX/text/ANSI/HEX+ASCII formatting
-│   │   ├── serial-rx-queue.ts   # Bounded RX queue for high-rate captures
-│   │   ├── protocol-parser.ts   # Delimiter/fixed/length-field frame parsing
-│   │   ├── waveform*.ts         # Parsing, viewport math, and canvas rendering helpers
-│   │   ├── session-persistence.ts
-│   │   └── ipc.ts
-│   ├── stores/                  # Pinia stores for sessions, serial ports, app settings
-│   ├── styles/                  # Theme tokens and global CSS
-│   ├── types/                   # Domain type barrels
-│   ├── App.vue                  # Main window entry
-│   └── AiWindow.vue             # Floating AI window entry
-├── src-tauri/                   # Rust backend
-│   ├── src/commands/            # Tauri commands: ai, checksum, export/log sessions, window
-│   ├── src/export/              # TXT/CSV/JSONL/BIN formatters
-│   ├── src/models/              # IPC data and app error models
-│   ├── src/utils/               # HEX, timestamp, checksum helpers
-│   └── benches/hot_paths.rs     # Criterion benchmarks
-├── tests/frontend/              # Vitest unit tests and the standalone Node benchmark
-├── images/                      # README screenshots
-├── .github/workflows/           # Tag-triggered release workflow
-├── .githooks/pre-commit         # Versioned local quality gate
-├── ARCHITECTURE.md              # Maintainer architecture guide
-└── scripts/dev.sh               # Development helper
-```
-
-For module ownership, data-flow invariants, upstream constraints, and manual
-verification guidance, read [ARCHITECTURE.md](./ARCHITECTURE.md).
-
-## Verification
-
-The versioned Git pre-commit hook enforces frontend lint/format/build/test,
-global and P0 coverage, browser-mock E2E, architecture, audit, Rust
-fmt/Clippy/tests/llvm-cov, and the base/head frontend benchmark comparison.
-It uses the repository-pinned Node, pnpm, Rust, `cargo-llvm-cov`, and
-`cargo-audit` versions. To ensure it validates exactly the index Git will
-commit, it rejects unstaged or non-ignored untracked files. Do not use
-`--no-verify` to bypass it.
-
-GitHub Actions is intentionally release-only: it runs after an exact
-`vX.Y.Z` tag and performs three-platform release assembly and smoke verification
-rather than repeating local PR checks. Windows and macOS platform signing is
-enabled when the corresponding complete secret set is configured.
-
-Tags matching `vX.Y.Z` produce a draft release containing Windows NSIS, macOS
-arm64 DMG, Linux AppImage/deb packages, explicit signing-status manifests,
-SHA-256 checksums, a CycloneDX SBOM, license inventories, Sigstore bundles, and
-GitHub build provenance. No automatic updater is shipped in v0.5.0.
-
-`pnpm install` installs the hook automatically. Before opening a pull request,
-run the exact same gate manually if it has not already run during commit:
-
-```bash
-pnpm precommit
-```
+| Document                             | Description                                                |
+| ------------------------------------ | ---------------------------------------------------------- |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Topology, runtime ownership, data flow, and boundaries     |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | Quality gate, IPC contracts, release process, and PR rules |
+| [CHANGELOG.md](./CHANGELOG.md)       | Version history                                            |
+| [SECURITY.md](./SECURITY.md)         | Vulnerability reporting                                    |
 
 ## FAQ
 
@@ -295,10 +218,8 @@ the AI assistant settings panel.
 
 ## Contributing
 
-Please use Conventional Commits, keep TypeScript strict, keep Rust warnings
-clean, and include focused tests for behavior changes. For persisted session
-shape changes, bump `SESSION_STORAGE_VERSION`, add a migration step, and cover
-legacy data with a regression test.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the local quality gate, IPC
+contract workflow, and release checklist.
 
 ## License
 

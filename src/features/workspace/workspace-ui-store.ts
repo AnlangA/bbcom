@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth } from '../../lib/sidebar-layout';
+import { SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth } from '@/lib/sidebar-layout';
 import type { WorkspaceLayoutV1 } from './types';
 
 export const DEFAULT_WORKSPACE_LAYOUT: WorkspaceLayoutV1 = Object.freeze({

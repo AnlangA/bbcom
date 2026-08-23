@@ -5,7 +5,7 @@ import type {
   WorkspaceMutation,
   WorkspaceSaveHealth,
   WorkspaceSummary,
-} from '../../generated/ipc-contracts';
+} from '@/generated/ipc-contracts';
 import type {
   ActiveWorkspaceViewModel,
   WorkspaceActionFailure,
@@ -14,7 +14,7 @@ import type {
   WorkspaceProjectViewModel,
 } from './types';
 import { WORKSPACE_PROJECT_EXTENSION } from './types';
-import { clampSidebarWidth } from '../../lib/sidebar-layout';
+import { clampSidebarWidth } from '@/lib/sidebar-layout';
 import type { WorkspaceLayoutV1 } from './types';
 import { DEFAULT_WORKSPACE_LAYOUT } from './workspace-ui-store';
 

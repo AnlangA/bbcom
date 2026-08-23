@@ -1,8 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { AiKeyStatus } from '../../generated/ipc-contracts';
+import type { AiKeyStatus } from '@/generated/ipc-contracts';
 
 /** The only renderer-visible representation of an AI credential. */
-export type { AiKeyStatus } from '../../generated/ipc-contracts';
+export type { AiKeyStatus } from '@/generated/ipc-contracts';
 
 function isTauriRuntime(): boolean {
   if (typeof window === 'undefined') return false;

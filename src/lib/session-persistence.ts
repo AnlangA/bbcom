@@ -18,8 +18,8 @@ import type {
   SerialSession,
   Trigger,
   WaveformSourceMode,
-} from '../types';
-import { MAX_HISTORY } from '../types';
+} from '@/types';
+import { MAX_HISTORY } from '@/types';
 import type { ParserConfig } from './protocol-parser';
 import { parseHex } from './format';
 import { nowMillis } from './time';
@@ -44,7 +44,7 @@ import {
 } from './mcumgr-config';
 
 export const SESSION_STORAGE_KEY = 'bbcom-session-snapshots';
-export const SESSION_STORAGE_VERSION = 3;
+export const SESSION_STORAGE_VERSION = 2;
 /** Number of most-recently-used sessions whose capture tails are retained. */
 export const MAX_PERSISTED_SESSIONS = 8;
 export const MAX_PERSISTED_FRAMES_PER_SESSION = 2_000;
@@ -110,42 +110,15 @@ export interface PersistedSessionsFile {
 }
 
 /**
- * Versioned persistence migration.
+ * Versioned persistence gate for the read-only legacy localStorage reader.
  *
- * Every persisted blob carries a `version` tag. When a shape change lands, bump
- * SESSION_STORAGE_VERSION and register a step here that upgrades a blob from the
- * previous version to the new one. `migratePersistedFile` walks the chain from
- * the blob's recorded version up to the current one, then re-stamps the version.
- *
- * Future versions are rejected rather than re-stamped, preventing an older app
- * from silently overwriting data it does not understand.
+ * Workspace-owned persistence replaced the old writer. Only the current version
+ * is accepted; older blobs are discarded on load.
  */
 export type MigrationStep = (raw: PersistedSessionsFile) => PersistedSessionsFile;
 
-/**
- * Ordered migration steps. Entry zero upgrades the original v1 shape to v2;
- * versionless legacy files take the same path after their implicit v1 stamp.
- * Add one entry and bump SESSION_STORAGE_VERSION for every later shape change.
- */
-export const MIGRATION_STEPS: readonly MigrationStep[] = [
-  (raw) => ({
-    ...raw,
-    version: 2,
-    mruSessionIds: normalizePersistedMruSessionIds(
-      raw.sessions,
-      raw.activeSessionId,
-      raw.mruSessionIds,
-    ),
-  }),
-  (raw) => ({
-    ...raw,
-    version: 3,
-    sessions: raw.sessions.map((session) => ({
-      ...session,
-      mcumgrConfig: normalizeMcumgrConfig(session.mcumgrConfig),
-    })),
-  }),
-];
+/** No in-app migration chain — pre-v2 blobs are discarded on startup. */
+export const MIGRATION_STEPS: readonly MigrationStep[] = [];
 
 export class UnsupportedSessionStorageVersionError extends Error {
   readonly storedVersion: number;
@@ -169,6 +142,14 @@ export function migratePersistedFile(raw: unknown): PersistedSessionsFile {
   if (startVersion > SESSION_STORAGE_VERSION) {
     throw new UnsupportedSessionStorageVersionError(startVersion);
   }
+  if (startVersion < SESSION_STORAGE_VERSION) {
+    return {
+      version: SESSION_STORAGE_VERSION,
+      activeSessionId: null,
+      mruSessionIds: [],
+      sessions: [],
+    };
+  }
 
   let current: PersistedSessionsFile = {
     version: startVersion,
@@ -178,11 +159,8 @@ export function migratePersistedFile(raw: unknown): PersistedSessionsFile {
       : undefined,
     sessions: Array.isArray(source.sessions) ? ([...source.sessions] as PersistedSession[]) : [],
   };
-  // Missing-version blobs are the implicit v1 shape. Migration entry zero is
-  // therefore applied for both version 0 and version 1 inputs.
-  const firstStep = Math.max(0, startVersion - 1);
-  for (let step = firstStep; step < MIGRATION_STEPS.length; step += 1) {
-    current = MIGRATION_STEPS[step](current);
+  for (const step of MIGRATION_STEPS) {
+    current = step(current);
   }
   return {
     ...current,

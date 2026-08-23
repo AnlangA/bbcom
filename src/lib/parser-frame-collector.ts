@@ -1,4 +1,4 @@
-import type { DataFrame } from '../types';
+import type { DataFrame } from '@/types';
 import { ProtocolParser, type ParserConfig } from './protocol-parser';
 
 export interface DisplayParsedFrame {
