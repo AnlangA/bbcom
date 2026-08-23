@@ -87,7 +87,7 @@ pub(crate) fn validate_header(connection: &Connection) -> Result<()> {
 /// Upgrade an already validated workspace before any query depends on the
 /// current schema. Read-only opens cannot safely mutate an older file and
 /// therefore fail closed until it is opened once in writable mode.
-pub(crate) fn migrate_schema(connection: &Connection, writable: bool) -> Result<()> {
+pub(crate) fn migrate_schema(connection: &Connection, _writable: bool) -> Result<()> {
     let application_id: i32 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     if application_id != WORKSPACE_APPLICATION_ID {
