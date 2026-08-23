@@ -17,7 +17,10 @@ import {
   type WorkspaceSessionMutationPermissions,
   type SessionCreationOptions,
 } from '@/features/sessions/application/session-store';
-import { resolveHeadlessSessionStore, useSessionStore } from '@/features/sessions/store/session-store';
+import {
+  resolveHeadlessSessionStore,
+  useSessionStore,
+} from '@/features/sessions/store/session-store';
 
 type SessionPiniaStore = ReturnType<typeof useSessionStore>;
 

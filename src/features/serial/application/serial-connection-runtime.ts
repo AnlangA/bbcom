@@ -1,9 +1,6 @@
 import type { SerialPortAdapter } from './serial-port';
 import type { SerialConnectionFailure } from './serial-connection-failure';
-import type {
-  ConnectionAttempt,
-  SerialStopResult,
-} from './serial-shutdown-evidence';
+import type { ConnectionAttempt, SerialStopResult } from './serial-shutdown-evidence';
 import type {
   SerialTransactionLeaseCoordinator,
   SerialTransactionOutputLines,

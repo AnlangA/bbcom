@@ -26,7 +26,10 @@ export interface ShutdownEvidenceDeps extends SerialConnectionRuntimeRefs {
   rxPipeline: RxPipeline;
   reconnectPolicy: ReconnectPolicy;
   connectLifecycle: ConnectLifecycle;
-  shutdownConnection(connection: ConnectionAttempt, graceMs: number): Promise<import('./serial-shutdown-evidence').PortCloseEvidence>;
+  shutdownConnection(
+    connection: ConnectionAttempt,
+    graceMs: number,
+  ): Promise<import('./serial-shutdown-evidence').PortCloseEvidence>;
   revokeSerialTransaction(generation: number): Promise<boolean> | null;
 }
 
@@ -35,7 +38,9 @@ export interface ShutdownEvidenceController {
   stop(): Promise<SerialStopResult>;
 }
 
-export function createShutdownEvidenceController(deps: ShutdownEvidenceDeps): ShutdownEvidenceController {
+export function createShutdownEvidenceController(
+  deps: ShutdownEvidenceDeps,
+): ShutdownEvidenceController {
   const {
     state,
     sessionId,

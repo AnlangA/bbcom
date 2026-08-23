@@ -112,10 +112,7 @@ vi.mock('tauri-plugin-serialplugin-api', () => {
   };
 });
 
-import {
-  createTauriSerialPort,
-  enumerateTauriSerialPorts,
-} from '@/features/serial/index.ts';
+import { createTauriSerialPort, enumerateTauriSerialPorts } from '@/features/serial/index.ts';
 
 beforeEach(() => {
   mocked.calls.splice(0);

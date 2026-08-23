@@ -128,9 +128,9 @@ export class SessionStore {
   readonly workspaceRebindBySessionId = shallowRef<
     Readonly<Record<string, HydratedWorkspaceSession['rebind']>>
   >({});
-  readonly workspaceWaveformBySessionId = shallowRef<Readonly<Record<string, SessionWaveformState>>>(
-    {},
-  );
+  readonly workspaceWaveformBySessionId = shallowRef<
+    Readonly<Record<string, SessionWaveformState>>
+  >({});
   readonly lastDeletedSession = shallowRef<DeletedSessionSnapshot | null>(null);
   readonly sessionFramesVersions = shallowReactive<Record<string, number>>({});
   readonly workspaceUserMutationsAllowed = ref(!isWorkspacePersistenceSelected());
@@ -486,7 +486,12 @@ export class SessionStore {
     portConfig: PortConfig,
     displayName?: string,
   ): boolean {
-    return this.updateSessionConnectionSettingsInternal(sessionId, portName, portConfig, displayName);
+    return this.updateSessionConnectionSettingsInternal(
+      sessionId,
+      portName,
+      portConfig,
+      displayName,
+    );
   }
 
   updateRuntimeSessionConnectionSettings(
@@ -520,7 +525,9 @@ export class SessionStore {
       persistenceReadOnly: this.persistenceReadOnly,
       workspaceRebindBySessionId: readonly(this.workspaceRebindBySessionId),
       workspaceWaveformBySessionId: readonly(this.workspaceWaveformBySessionId),
-      lastDeletedSession: readonly(this.lastDeletedSession) as SessionStoreFacade['lastDeletedSession'],
+      lastDeletedSession: readonly(
+        this.lastDeletedSession,
+      ) as SessionStoreFacade['lastDeletedSession'],
       getSessionFramesVersion: this.getSessionFramesVersion,
       createSession: this.createSession.bind(this),
       createRuntimeSession: this.createRuntimeSession.bind(this),

@@ -14,9 +14,7 @@ import {
   createMcumgrBridge,
   type McumgrBridge,
 } from '@/features/sessions/application/mcumgr-bridge';
-import {
-  createAutomationBridge,
-} from '@/features/sessions/application/automation-bridge';
+import { createAutomationBridge } from '@/features/sessions/application/automation-bridge';
 import { mcumgrTraceFramesToDataFrames } from '@/lib/mcumgr-trace';
 import {
   AsyncSendLoop,
@@ -29,12 +27,7 @@ import { t } from '@/lib/i18n';
 import { logger } from '@/lib/logger';
 import { SerialUiPublishScheduler } from '@/lib/serial-rx-scheduler';
 import type { DisplayParsedFrame } from '@/lib/parser-frame-collector';
-import type {
-  DataFrame,
-  SerialSendResult,
-  SerialSession,
-  SerialWriteOptions,
-} from '@/types';
+import type { DataFrame, SerialSendResult, SerialSession, SerialWriteOptions } from '@/types';
 import type { SerialConnectionFailure } from '@/features/sessions/application/serial-bridge';
 import { SessionProtocolRuntime } from './session-protocol-runtime';
 import { SessionRuntimeStatusRegistry } from './session-runtime-status';

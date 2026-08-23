@@ -62,16 +62,16 @@ typed command surfaces.
 
 `scripts/check-architecture.mjs` enforces import direction:
 
-| Layer | Path | May depend on |
-| ----- | ---- | ----------- |
-| entry | `bootstrap/main.ts` | bootstrap, feature barrels, design-system |
-| bootstrap | `bootstrap/**` | feature barrels, design-system, lib, types |
-| domain | `features/*/domain/**` | lib, types (cross-feature only) |
-| application | `features/*/application/**` | domain, lib, types, ports |
-| store | `features/*/store/**` | application, domain, types |
-| ui | `features/*/ui/**` | store, application, design-system, lib, types |
-| lib | `lib/**` | types |
-| types | `types/**` | lib (parser types only) |
+| Layer       | Path                        | May depend on                                 |
+| ----------- | --------------------------- | --------------------------------------------- |
+| entry       | `bootstrap/main.ts`         | bootstrap, feature barrels, design-system     |
+| bootstrap   | `bootstrap/**`              | feature barrels, design-system, lib, types    |
+| domain      | `features/*/domain/**`      | lib, types (cross-feature only)               |
+| application | `features/*/application/**` | domain, lib, types, ports                     |
+| store       | `features/*/store/**`       | application, domain, types                    |
+| ui          | `features/*/ui/**`          | store, application, design-system, lib, types |
+| lib         | `lib/**`                    | types                                         |
+| types       | `types/**`                  | lib (parser types only)                       |
 
 Hard rules:
 
@@ -147,16 +147,16 @@ Hard rules:
 
 ## Quality Gates
 
-| Area | Command |
-| ---- | ------- |
-| Frontend lint | `pnpm lint` |
-| Formatting | `pnpm format:check` |
-| Type-check + build | `pnpm build` |
-| Frontend tests | `pnpm test:frontend` |
-| Rust tests | `pnpm test:rust` |
-| Import cycles | `pnpm cycles` |
-| Architecture | `pnpm architecture` |
-| Fast commit gate | `pnpm precommit` |
+| Area               | Command               |
+| ------------------ | --------------------- |
+| Frontend lint      | `pnpm lint`           |
+| Formatting         | `pnpm format:check`   |
+| Type-check + build | `pnpm build`          |
+| Frontend tests     | `pnpm test:frontend`  |
+| Rust tests         | `pnpm test:rust`      |
+| Import cycles      | `pnpm cycles`         |
+| Architecture       | `pnpm architecture`   |
+| Fast commit gate   | `pnpm precommit`      |
 | Full pre-push gate | `pnpm precommit:full` |
 
 ## Change Checklist

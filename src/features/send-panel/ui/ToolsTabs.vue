@@ -205,7 +205,10 @@ import {
 } from '@/lib/tools-tabs';
 import type { QuickCommand, SendHistoryEntry } from '@/types';
 import type { SessionRuntimeMacroController } from '@/features/sessions/runtime/session-runtime-controller';
-import { SESSION_UI_STATE_KEY, type SessionRuntimeUiState } from '@/features/sessions/runtime/session-ui-state';
+import {
+  SESSION_UI_STATE_KEY,
+  type SessionRuntimeUiState,
+} from '@/features/sessions/runtime/session-ui-state';
 
 const props = defineProps<{
   sessionId: string;

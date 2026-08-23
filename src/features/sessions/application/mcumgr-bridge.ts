@@ -400,8 +400,7 @@ export function useSessionMcumgr(options: McumgrBridgeCreateOptions) {
     imageUpload: (fileToken: string, upgradeOnly?: boolean) =>
       bridge.imageUpload(fileToken, upgradeOnly),
     fsUpload: (fileToken: string, remotePath: string) => bridge.fsUpload(fileToken, remotePath),
-    fsDownload: (remotePath: string, saveToken: string) =>
-      bridge.fsDownload(remotePath, saveToken),
+    fsDownload: (remotePath: string, saveToken: string) => bridge.fsDownload(remotePath, saveToken),
     pickFile: (purpose: McumgrFilePurpose) => bridge.pickFile(purpose),
     pickSaveTarget: (suggestedName: string) => bridge.pickSaveTarget(suggestedName),
     cancel: () => bridge.cancel(),

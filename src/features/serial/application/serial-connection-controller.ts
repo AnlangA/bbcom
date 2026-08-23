@@ -145,7 +145,9 @@ export function createSerialConnectionController(
         if (lines.breakActive) await connection.port.setBreak();
         else await connection.port.clearBreak();
         txPipelineRef.current!.currentTransactionConnection(context);
-        txPipelineRef.current!.trackOutputLines(context.generation, { breakActive: lines.breakActive });
+        txPipelineRef.current!.trackOutputLines(context.generation, {
+          breakActive: lines.breakActive,
+        });
       },
       snapshotOutputLines(generation) {
         txPipelineRef.current!.currentGenerationConnection(generation);
@@ -269,71 +271,71 @@ export function createSerialConnectionController(
   // Wire lifecycle and reconnect with deferred references to break circular deps.
   const { connectLifecycle, shutdownEvidence } = (() => {
     const cl = createConnectLifecycle({
-    ...runtimeRefs,
-    sessionId,
-    portName,
-    config,
-    options,
-    sink: dependencies.sink,
-    createPort: dependencies.createPort,
-    closeGraceMs,
-    leases,
-    rxPipeline,
-    reconnectPolicy: {
-      startReconnect: () => rp.startReconnect(),
-      scheduleReconnect: () => rp.scheduleReconnect(),
-      stopReconnect: () => rp.stopReconnect(),
-      attemptReconnect: () => rp.attemptReconnect(),
-    },
-    shutdownConnection,
-    revokeSerialTransaction,
-    failAndReleaseLease,
-    synchronizeConnection: async () => {
-      await serialTransactions.synchronizeConnection();
-    },
-    onOpenCommitted(attempt) {
-      state.trackedOutputLinesGeneration = attempt.generation;
-      state.trackedOutputLines = Object.freeze({
-        dtr: attempt.target.config.dtr,
-        rts: attempt.target.config.rts,
-        breakActive: false,
-      });
-    },
-  });
+      ...runtimeRefs,
+      sessionId,
+      portName,
+      config,
+      options,
+      sink: dependencies.sink,
+      createPort: dependencies.createPort,
+      closeGraceMs,
+      leases,
+      rxPipeline,
+      reconnectPolicy: {
+        startReconnect: () => rp.startReconnect(),
+        scheduleReconnect: () => rp.scheduleReconnect(),
+        stopReconnect: () => rp.stopReconnect(),
+        attemptReconnect: () => rp.attemptReconnect(),
+      },
+      shutdownConnection,
+      revokeSerialTransaction,
+      failAndReleaseLease,
+      synchronizeConnection: async () => {
+        await serialTransactions.synchronizeConnection();
+      },
+      onOpenCommitted(attempt) {
+        state.trackedOutputLinesGeneration = attempt.generation;
+        state.trackedOutputLines = Object.freeze({
+          dtr: attempt.target.config.dtr,
+          rts: attempt.target.config.rts,
+          breakActive: false,
+        });
+      },
+    });
 
     const rp = createReconnectPolicy({
-    ...runtimeRefs,
-    sessionId,
-    sink: dependencies.sink,
-    options,
-    timerPort,
-    leases,
-    readConnectionTarget: () => cl.readConnectionTarget(),
-    resetRxDrain: (rxFrameGapMs) => rxPipeline.resetRxDrain(rxFrameGapMs),
-    clearOverflowTracking: () => rxPipeline.clearOverflowTracking(),
-    openConnection: (generation, target) => cl.openConnection(generation, target),
-    shutdownConnection,
-    detachActiveConnection: () => cl.detachActiveConnection(),
-    retainUnclosedConnection: (attempt, leaseGeneration) =>
-      cl.retainUnclosedConnection(attempt, leaseGeneration),
-    failAndReleaseLease,
-    revokeSerialTransaction,
-  });
+      ...runtimeRefs,
+      sessionId,
+      sink: dependencies.sink,
+      options,
+      timerPort,
+      leases,
+      readConnectionTarget: () => cl.readConnectionTarget(),
+      resetRxDrain: (rxFrameGapMs) => rxPipeline.resetRxDrain(rxFrameGapMs),
+      clearOverflowTracking: () => rxPipeline.clearOverflowTracking(),
+      openConnection: (generation, target) => cl.openConnection(generation, target),
+      shutdownConnection,
+      detachActiveConnection: () => cl.detachActiveConnection(),
+      retainUnclosedConnection: (attempt, leaseGeneration) =>
+        cl.retainUnclosedConnection(attempt, leaseGeneration),
+      failAndReleaseLease,
+      revokeSerialTransaction,
+    });
 
     const se = createShutdownEvidenceController({
-    ...runtimeRefs,
-    sessionId,
-    sink: dependencies.sink,
-    closeGraceMs,
-    leaseClient: dependencies.leaseClient,
-    leases,
-    unsafeRxLatch,
-    rxPipeline,
-    reconnectPolicy: rp,
-    connectLifecycle: cl,
-    shutdownConnection,
-    revokeSerialTransaction,
-  });
+      ...runtimeRefs,
+      sessionId,
+      sink: dependencies.sink,
+      closeGraceMs,
+      leaseClient: dependencies.leaseClient,
+      leases,
+      unsafeRxLatch,
+      rxPipeline,
+      reconnectPolicy: rp,
+      connectLifecycle: cl,
+      shutdownConnection,
+      revokeSerialTransaction,
+    });
 
     return { connectLifecycle: cl, shutdownEvidence: se };
   })();

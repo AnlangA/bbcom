@@ -36,29 +36,57 @@ export class WorkspaceSaveQueues {
 
   private readonly emitNotify: () => void;
 
-  get configQueued(): boolean { return this.configQueue.queued; }
-  get framesQueued(): boolean { return this.frameQueue.queued; }
-  get queuedMutationCount(): number { return this.configQueue.mutationCount + this.frameQueue.mutationCount; }
+  get configQueued(): boolean {
+    return this.configQueue.queued;
+  }
+  get framesQueued(): boolean {
+    return this.frameQueue.queued;
+  }
+  get queuedMutationCount(): number {
+    return this.configQueue.mutationCount + this.frameQueue.mutationCount;
+  }
 
-  enqueueConfigMutations(context: SaveContext, commands: readonly WorkspaceBufferedMutationCommand[]): void {
+  enqueueConfigMutations(
+    context: SaveContext,
+    commands: readonly WorkspaceBufferedMutationCommand[],
+  ): void {
     this.configQueue.enqueue(context, commands);
   }
-  enqueueFrame(frame: PendingFrame): void { this.frameQueue.enqueue(frame); }
-  releaseAll(): void { this.configQueue.release(); this.frameQueue.release(); }
-  abandon(): number { return this.configQueue.abandon() + this.frameQueue.abandon(); }
-  reset(): void { this.configQueue.reset(); this.frameQueue.reset(); }
+  enqueueFrame(frame: PendingFrame): void {
+    this.frameQueue.enqueue(frame);
+  }
+  releaseAll(): void {
+    this.configQueue.release();
+    this.frameQueue.release();
+  }
+  abandon(): number {
+    return this.configQueue.abandon() + this.frameQueue.abandon();
+  }
+  reset(): void {
+    this.configQueue.reset();
+    this.frameQueue.reset();
+  }
 
   notify(): void {
     if (this.frameQueue.queued) {
-      if (this.notifyThrottleTimer !== null) { this.notifyThrottlePending = true; return; }
+      if (this.notifyThrottleTimer !== null) {
+        this.notifyThrottlePending = true;
+        return;
+      }
       this.emitNotify();
       this.notifyThrottleTimer = globalThis.setTimeout(() => {
         this.notifyThrottleTimer = null;
-        if (this.notifyThrottlePending) { this.notifyThrottlePending = false; this.notify(); }
+        if (this.notifyThrottlePending) {
+          this.notifyThrottlePending = false;
+          this.notify();
+        }
       }, WORKSPACE_NOTIFY_THROTTLE_MS);
       return;
     }
-    if (this.notifyThrottleTimer !== null) { globalThis.clearTimeout(this.notifyThrottleTimer); this.notifyThrottleTimer = null; }
+    if (this.notifyThrottleTimer !== null) {
+      globalThis.clearTimeout(this.notifyThrottleTimer);
+      this.notifyThrottleTimer = null;
+    }
     this.notifyThrottlePending = false;
     this.emitNotify();
   }

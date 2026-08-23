@@ -170,12 +170,12 @@ chmod +x scripts/dev.sh
 
 ## 文档
 
-| 文档                                   | 说明                                           |
-| -------------------------------------- | ---------------------------------------------- |
-| [ARCHITECTURE.md](./ARCHITECTURE.md)   | 拓扑、运行时归属、数据流与边界                 |
-| [CONTRIBUTING.md](./CONTRIBUTING.md)   | 质量门禁、IPC 契约、发布流程与 PR 规范         |
-| [CHANGELOG.md](./CHANGELOG.md)         | 版本历史                                       |
-| [SECURITY.md](./SECURITY.md)           | 漏洞报告                                       |
+| 文档                                 | 说明                                   |
+| ------------------------------------ | -------------------------------------- |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | 拓扑、运行时归属、数据流与边界         |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | 质量门禁、IPC 契约、发布流程与 PR 规范 |
+| [CHANGELOG.md](./CHANGELOG.md)       | 版本历史                               |
+| [SECURITY.md](./SECURITY.md)         | 漏洞报告                               |
 
 ## 常见问题
 

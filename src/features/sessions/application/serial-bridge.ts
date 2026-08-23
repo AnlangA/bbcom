@@ -153,7 +153,9 @@ export class SerialBridge {
     return this.controller.rawBytes(callback);
   }
 
-  get serialTransactions(): ReturnType<typeof createSerialConnectionController>['serialTransactions'] {
+  get serialTransactions(): ReturnType<
+    typeof createSerialConnectionController
+  >['serialTransactions'] {
     return this.controller.serialTransactions;
   }
 

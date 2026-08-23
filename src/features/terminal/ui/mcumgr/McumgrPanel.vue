@@ -132,7 +132,12 @@
                   class="mc-grow"
                   @keydown.enter="mcumgr.runOsEcho(osEcho)"
                 />
-                <n-button size="tiny" type="primary" :disabled="busy" @click="mcumgr.runOsEcho(osEcho)">
+                <n-button
+                  size="tiny"
+                  type="primary"
+                  :disabled="busy"
+                  @click="mcumgr.runOsEcho(osEcho)"
+                >
                   {{ t('mcumgr.run') }}
                 </n-button>
               </div>

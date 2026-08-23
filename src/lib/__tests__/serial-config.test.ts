@@ -6,12 +6,7 @@ import {
   Parity as PluginParity,
   FlowControl as PluginFlowControl,
 } from 'tauri-plugin-serialplugin-api';
-import {
-  mapDataBits,
-  mapFlowControl,
-  mapParity,
-  mapStopBits,
-} from '@/lib/serial-config.ts';
+import { mapDataBits, mapFlowControl, mapParity, mapStopBits } from '@/lib/serial-config.ts';
 
 test('mapDataBits maps each valid count and defaults unknown to 8', () => {
   assert.equal(mapDataBits(5), PluginDataBits.Five);

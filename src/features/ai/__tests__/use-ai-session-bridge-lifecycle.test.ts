@@ -5,10 +5,7 @@ import { mount } from '@vue/test-utils';
 import { beforeEach, expect, test, vi } from 'vitest';
 import type { SerialSession } from '@/types.ts';
 import { OperationRegistry } from '@/features/platform/application/operation-registry.ts';
-import {
-  AI_BRIDGE_EVENTS,
-  createAiBridgeEnvelope,
-} from '@/features/ai-activity/protocol.ts';
+import { AI_BRIDGE_EVENTS, createAiBridgeEnvelope } from '@/features/ai-activity/protocol.ts';
 import { useAiSessionBridge } from '@/features/ai/application/use-ai-session-bridge.ts';
 
 type EventHandler = (event: { payload: unknown }) => void;

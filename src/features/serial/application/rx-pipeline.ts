@@ -9,7 +9,11 @@ import {
 import { MAX_INPUT_SIZE } from '@/types';
 import { logger } from '@/lib/logger';
 import type { SerialConnectionRuntimeRefs } from './serial-connection-runtime';
-import type { SerialConnectionOptions, SerialConnectionSink, VisibilityPort } from './serial-connection-types';
+import type {
+  SerialConnectionOptions,
+  SerialConnectionSink,
+  VisibilityPort,
+} from './serial-connection-types';
 
 const MAX_RX_QUEUE_BYTES = MAX_INPUT_SIZE * 2;
 const MAX_RX_QUEUE_CHUNKS = 512;

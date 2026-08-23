@@ -5,7 +5,10 @@ import { useAppStore } from '@/features/settings/store/app-store';
 import { logger } from '@/lib/logger';
 import { t } from '@/lib/i18n';
 import type { PortConfig } from '@/types';
-import { SESSION_APPLICATION_SERVICES_KEY, type SessionApplicationServices } from '@/features/sessions/runtime/session-application-services';
+import {
+  SESSION_APPLICATION_SERVICES_KEY,
+  type SessionApplicationServices,
+} from '@/features/sessions/runtime/session-application-services';
 import {
   SessionApplicationService,
   useSessionCapture,

@@ -1,7 +1,12 @@
 import type { ParserConfig } from '@/lib/protocol-parser';
 import type { AiChatMessage, AiModel, LogAiContextMode } from '@/features/ai/domain/ai';
 import type { Macro, Trigger, HighlightRule } from '@/features/send-panel/domain/macros';
-import type { DataFrame, PortConfig, QuickCommand, SendHistoryEntry } from '@/features/serial/domain/serial';
+import type {
+  DataFrame,
+  PortConfig,
+  QuickCommand,
+  SendHistoryEntry,
+} from '@/features/serial/domain/serial';
 import type { McumgrClientConfig } from '@/features/terminal/domain/mcumgr';
 import type { ModbusMasterConfig, ModbusRegister } from '@/features/terminal/domain/modbus';
 import type { SerialShellConfig } from '@/features/terminal/domain/serial-shell';

@@ -18,8 +18,9 @@ export class WorkspacePersistenceDrain {
 
   queueFrame(sessionId: string, frame: DataFrame): void {
     this.requireAccepted(
-      this.route((d) => d.queueCapturedFrame({ sessionId, frame }), () =>
-        this.application.queueCapturedFrame(sessionId, frame),
+      this.route(
+        (d) => d.queueCapturedFrame({ sessionId, frame }),
+        () => this.application.queueCapturedFrame(sessionId, frame),
       ),
     );
   }
@@ -29,7 +30,10 @@ export class WorkspacePersistenceDrain {
       { kind: 'replace-capture', sessionId, payload: { frames: [] } },
     ];
     this.requireAccepted(
-      this.route((d) => d.queueOrderedMutations(commands), () => this.application.queueCaptureReset(sessionId)),
+      this.route(
+        (d) => d.queueOrderedMutations(commands),
+        () => this.application.queueCaptureReset(sessionId),
+      ),
     );
   }
 
@@ -42,8 +46,14 @@ export class WorkspacePersistenceDrain {
     );
   }
 
-  queueWaveformReplacement(sessionId: string, waveform: import('@/types').SessionWaveformState): void {
-    const channels = waveform.channels.map((c) => ({ channelIndex: c.channelIndex, config: structuredClone(c.config) }));
+  queueWaveformReplacement(
+    sessionId: string,
+    waveform: import('@/types').SessionWaveformState,
+  ): void {
+    const channels = waveform.channels.map((c) => ({
+      channelIndex: c.channelIndex,
+      config: structuredClone(c.config),
+    }));
     const samples = waveform.samples.map((s) => ({ ...s }));
     this.requireAccepted(
       this.route(
@@ -53,7 +63,10 @@ export class WorkspacePersistenceDrain {
     );
   }
 
-  queueWaveformSamples(sessionId: string, samples: readonly import('@/types').SessionWaveformSample[]): void {
+  queueWaveformSamples(
+    sessionId: string,
+    samples: readonly import('@/types').SessionWaveformSample[],
+  ): void {
     const payload = samples.map((s) => ({ ...s }));
     this.requireAccepted(
       this.route(
@@ -63,7 +76,10 @@ export class WorkspacePersistenceDrain {
     );
   }
 
-  queueWaveformCursor(sessionId: string, cursor: import('@/types').SessionWaveformFrameCursor): void {
+  queueWaveformCursor(
+    sessionId: string,
+    cursor: import('@/types').SessionWaveformFrameCursor,
+  ): void {
     const session = this.store.sessions.find((c) => c.id === sessionId);
     if (!session) return;
     this.queueConfigMutation({
@@ -80,7 +96,10 @@ export class WorkspacePersistenceDrain {
     });
   }
 
-  queueWaveformPreferences(sessionId: string, waveform: import('@/types').SessionWaveformState): void {
+  queueWaveformPreferences(
+    sessionId: string,
+    waveform: import('@/types').SessionWaveformState,
+  ): void {
     const session = this.store.sessions.find((c) => c.id === sessionId);
     if (!session) return;
     this.queueConfigMutation({
@@ -88,7 +107,11 @@ export class WorkspacePersistenceDrain {
       entityId: sessionId,
       payload: {
         feature: 'waveform',
-        state: projectWorkspaceWaveformPreferences(session, waveform.frameCursor, waveform.channels),
+        state: projectWorkspaceWaveformPreferences(
+          session,
+          waveform.frameCursor,
+          waveform.channels,
+        ),
       },
     });
   }
@@ -98,14 +121,21 @@ export class WorkspacePersistenceDrain {
   ): void {
     const session = this.store.sessions.find((c) => c.id === event.sessionId);
     if (!session) return;
-    const channels = event.waveform.channels.map((c) => ({ channelIndex: c.channelIndex, config: structuredClone(c.config) }));
+    const channels = event.waveform.channels.map((c) => ({
+      channelIndex: c.channelIndex,
+      config: structuredClone(c.config),
+    }));
     const samples = event.samples.map((s) => ({ ...s }));
     const ingest = {
       sessionId: event.sessionId,
       mode: event.mode,
       channels,
       samples,
-      featureState: projectWorkspaceWaveformPreferences(session, event.waveform.frameCursor, event.waveform.channels),
+      featureState: projectWorkspaceWaveformPreferences(
+        session,
+        event.waveform.frameCursor,
+        event.waveform.channels,
+      ),
     } as const;
     this.requireAccepted(
       this.route(
@@ -115,13 +145,24 @@ export class WorkspacePersistenceDrain {
     );
   }
 
-  queueAiMessage(sessionId: string, message: import('@/types/ai').AiChatMessage, startPosition: number): void {
+  queueAiMessage(
+    sessionId: string,
+    message: import('@/types/ai').AiChatMessage,
+    startPosition: number,
+  ): void {
     this.queueConfigMutation({
       kind: 'append-ai-messages',
       sessionId,
       payload: {
         startPosition,
-        messages: [{ id: message.id, role: message.role, content: message.content, timestampMs: message.timestamp }],
+        messages: [
+          {
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            timestampMs: message.timestamp,
+          },
+        ],
       },
     });
   }
@@ -132,7 +173,10 @@ export class WorkspacePersistenceDrain {
 
   private queueConfigMutation(command: WorkspaceConfigMutationCommand): void {
     this.requireAccepted(
-      this.route((d) => d.queueConfigMutation(command), () => this.application.queueConfigMutation(command)),
+      this.route(
+        (d) => d.queueConfigMutation(command),
+        () => this.application.queueConfigMutation(command),
+      ),
     );
   }
 

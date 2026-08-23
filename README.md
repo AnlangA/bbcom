@@ -182,12 +182,12 @@ chmod +x scripts/dev.sh
 
 ## Documentation
 
-| Document                               | Description                                                |
-| -------------------------------------- | ---------------------------------------------------------- |
-| [ARCHITECTURE.md](./ARCHITECTURE.md)   | Topology, runtime ownership, data flow, and boundaries     |
-| [CONTRIBUTING.md](./CONTRIBUTING.md)   | Quality gate, IPC contracts, release process, and PR rules |
-| [CHANGELOG.md](./CHANGELOG.md)         | Version history                                            |
-| [SECURITY.md](./SECURITY.md)           | Vulnerability reporting                                    |
+| Document                             | Description                                                |
+| ------------------------------------ | ---------------------------------------------------------- |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Topology, runtime ownership, data flow, and boundaries     |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | Quality gate, IPC contracts, release process, and PR rules |
+| [CHANGELOG.md](./CHANGELOG.md)       | Version history                                            |
+| [SECURITY.md](./SECURITY.md)         | Vulnerability reporting                                    |
 
 ## FAQ
 

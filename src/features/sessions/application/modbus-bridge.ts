@@ -94,8 +94,7 @@ export class ModbusBridge {
   }
 
   toggleWaveformSourceMode(): void {
-    const next =
-      this.options.session.value.waveformSourceMode === 'register' ? 'text' : 'register';
+    const next = this.options.session.value.waveformSourceMode === 'register' ? 'text' : 'register';
     this.document.setWaveformSourceMode(this.options.session.value.id, next);
   }
 

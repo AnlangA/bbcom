@@ -11,7 +11,10 @@ import {
   type ConnectionAttempt,
   type PortCloseEvidence,
 } from './serial-shutdown-evidence';
-import { StaleConnectionError, type SerialConnectionRuntimeRefs } from './serial-connection-runtime';
+import {
+  StaleConnectionError,
+  type SerialConnectionRuntimeRefs,
+} from './serial-connection-runtime';
 import type {
   PortConfigSource,
   PortNameSource,

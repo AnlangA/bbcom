@@ -208,11 +208,17 @@ const props = defineProps<{
 // view-local state on the runtime across SessionView remounts.
 provide(SESSION_UI_STATE_KEY, props.runtime.uiState);
 
-const WaveformPanel = defineAsyncComponent(() => import('@/features/terminal/ui/WaveformPanel.vue'));
+const WaveformPanel = defineAsyncComponent(
+  () => import('@/features/terminal/ui/WaveformPanel.vue'),
+);
 const ParserPanel = defineAsyncComponent(() => import('@/features/terminal/ui/ParserPanel.vue'));
 const ModbusPanel = defineAsyncComponent(() => import('@/features/terminal/ui/ModbusPanel.vue'));
-const SerialShellPanel = defineAsyncComponent(() => import('@/features/terminal/ui/SerialShellPanel.vue'));
-const McumgrPanel = defineAsyncComponent(() => import('@/features/terminal/ui/mcumgr/McumgrPanel.vue'));
+const SerialShellPanel = defineAsyncComponent(
+  () => import('@/features/terminal/ui/SerialShellPanel.vue'),
+);
+const McumgrPanel = defineAsyncComponent(
+  () => import('@/features/terminal/ui/mcumgr/McumgrPanel.vue'),
+);
 const ExportDialog = defineAsyncComponent(() => import('./ExportDialog.vue'));
 
 const catalog = useSessionCatalog();

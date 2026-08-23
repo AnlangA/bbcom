@@ -17,7 +17,8 @@ export type SessionApplicationServices = ApplicationServices<
 };
 
 export function useSessionApplicationServices(): SessionApplicationServices {
-  const services = inject(SESSION_APPLICATION_SERVICES_KEY) as SessionApplicationServices | undefined;
+  const services = inject(SESSION_APPLICATION_SERVICES_KEY) as
+    SessionApplicationServices | undefined;
   if (!services) throw new Error('session application services were not provided');
   return services;
 }

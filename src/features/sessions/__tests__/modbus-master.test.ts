@@ -2,7 +2,10 @@ import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPinia, setActivePinia } from 'pinia';
 import { computed, effectScope, ref, type EffectScope } from 'vue';
-import { useModbusMaster, type ModbusMasterStatus } from '@/features/sessions/application/use-modbus-master.ts';
+import {
+  useModbusMaster,
+  type ModbusMasterStatus,
+} from '@/features/sessions/application/use-modbus-master.ts';
 import { frameRequest, readRequest, writeSingleRegisterRequest } from '@/lib/modbus';
 import { useSessionStore } from '@/features/sessions/store/session-store.ts';
 import type {

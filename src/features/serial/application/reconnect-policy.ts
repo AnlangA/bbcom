@@ -5,8 +5,15 @@ import {
   type ConnectionAttempt,
   type PortCloseEvidence,
 } from './serial-shutdown-evidence';
-import { StaleConnectionError, type SerialConnectionRuntimeRefs } from './serial-connection-runtime';
-import type { SerialConnectionOptions, SerialConnectionSink, TimerPort } from './serial-connection-types';
+import {
+  StaleConnectionError,
+  type SerialConnectionRuntimeRefs,
+} from './serial-connection-runtime';
+import type {
+  SerialConnectionOptions,
+  SerialConnectionSink,
+  TimerPort,
+} from './serial-connection-types';
 
 const RECONNECT_INTERVAL_MS = 1500;
 const MAX_RECONNECT_ATTEMPTS = 10;
@@ -17,7 +24,10 @@ export interface ReconnectPolicyDeps extends SerialConnectionRuntimeRefs {
   options: SerialConnectionOptions | undefined;
   timerPort: TimerPort;
   leases: PortLeaseController;
-  readConnectionTarget(): Readonly<{ portName: string; config: Readonly<import('@/types').PortConfig> }>;
+  readConnectionTarget(): Readonly<{
+    portName: string;
+    config: Readonly<import('@/types').PortConfig>;
+  }>;
   resetRxDrain(rxFrameGapMs: number): void;
   clearOverflowTracking(): void;
   openConnection(
@@ -48,9 +58,9 @@ export function createReconnectPolicy(deps: ReconnectPolicyDeps): ReconnectPolic
     timerPort,
     leases,
     readConnectionTarget,
-  resetRxDrain,
-  clearOverflowTracking,
-  openConnection,
+    resetRxDrain,
+    clearOverflowTracking,
+    openConnection,
     shutdownConnection,
     detachActiveConnection,
     retainUnclosedConnection,

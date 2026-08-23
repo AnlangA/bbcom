@@ -58,10 +58,7 @@ function forceSessionFrameCount(
   store.recordFrames(sessionId, target - (store.sessionTotals(sessionId)?.frameCount ?? 0), 0);
 }
 import type { WorkspaceRuntimeLifecycle } from '@/features/workspace/application/types.ts';
-import {
-  WorkspaceCoordinator,
-  type WorkspaceCoordinatorPort,
-} from '@/features/workspace/index.ts';
+import { WorkspaceCoordinator, type WorkspaceCoordinatorPort } from '@/features/workspace/index.ts';
 
 interface WorkspaceDefinition {
   readonly workspaceId: string;

@@ -6,13 +6,7 @@ export interface ActivationAttempt {
   cancelledByUser: boolean;
   activatedWorkspaceId: string | null;
   phase:
-    | 'queued'
-    | 'draining'
-    | 'activating'
-    | 'hydrating'
-    | 'committing'
-    | 'rolling-back'
-    | 'terminal';
+    'queued' | 'draining' | 'activating' | 'hydrating' | 'committing' | 'rolling-back' | 'terminal';
 }
 
 export type ActivationPhase = ActivationAttempt['phase'];

@@ -58,25 +58,38 @@ const pathMap = {
   'composables/useSessionActions': 'features/sessions/application/use-session-actions',
   'composables/useSessionShortcuts': 'features/sessions/application/use-session-shortcuts',
   'composables/useConfirmRemove': 'features/app-shell/application/use-confirm-remove',
-  'features/sessions/application/useSerialConnection': 'features/sessions/application/use-serial-connection',
-  'features/sessions/application/useSessionFrames': 'features/sessions/application/use-session-frames',
-  'features/sessions/application/useSessionModbus': 'features/sessions/application/use-session-modbus',
-  'features/sessions/application/useSessionMcumgr': 'features/sessions/application/use-session-mcumgr',
-  'features/sessions/application/useModbusMaster': 'features/sessions/application/use-modbus-master',
-  'features/sessions/application/usePacketFormatter': 'features/terminal/application/use-packet-formatter',
-  'features/sessions/application/usePacketFilter': 'features/terminal/application/use-packet-filter',
-  'features/sessions/application/usePacketVirtualScroll': 'features/terminal/application/use-packet-virtual-scroll',
+  'features/sessions/application/useSerialConnection':
+    'features/sessions/application/use-serial-connection',
+  'features/sessions/application/useSessionFrames':
+    'features/sessions/application/use-session-frames',
+  'features/sessions/application/useSessionModbus':
+    'features/sessions/application/use-session-modbus',
+  'features/sessions/application/useSessionMcumgr':
+    'features/sessions/application/use-session-mcumgr',
+  'features/sessions/application/useModbusMaster':
+    'features/sessions/application/use-modbus-master',
+  'features/sessions/application/usePacketFormatter':
+    'features/terminal/application/use-packet-formatter',
+  'features/sessions/application/usePacketFilter':
+    'features/terminal/application/use-packet-filter',
+  'features/sessions/application/usePacketVirtualScroll':
+    'features/terminal/application/use-packet-virtual-scroll',
   'features/sessions/application/useExport': 'features/workspace/application/use-export',
   'features/sessions/application/useAutoLog': 'features/sessions/application/use-auto-log',
   'features/sessions/application/useMacroRunner': 'features/sessions/application/use-macro-runner',
   'features/sessions/application/useTriggers': 'features/sessions/application/use-triggers',
-  'features/sessions/application/useAiWindowSession': 'features/ai/application/use-ai-window-session',
-  'features/sessions/application/useAiSessionBridge': 'features/ai/application/use-ai-session-bridge',
+  'features/sessions/application/useAiWindowSession':
+    'features/ai/application/use-ai-window-session',
+  'features/sessions/application/useAiSessionBridge':
+    'features/ai/application/use-ai-session-bridge',
   'features/sessions/application/useAiWindowState': 'features/ai/application/use-ai-window-state',
-  'features/sessions/application/useAppShortcuts': 'features/app-shell/application/use-app-shortcuts',
+  'features/sessions/application/useAppShortcuts':
+    'features/app-shell/application/use-app-shortcuts',
   'features/sessions/application/usePortWatcher': 'features/serial/application/use-port-watcher',
-  'features/sessions/application/useSessionActions': 'features/sessions/application/use-session-actions',
-  'features/sessions/application/useSessionShortcuts': 'features/sessions/application/use-session-shortcuts',
+  'features/sessions/application/useSessionActions':
+    'features/sessions/application/use-session-actions',
+  'features/sessions/application/useSessionShortcuts':
+    'features/sessions/application/use-session-shortcuts',
   'components/ui/': 'design-system/',
   'components/app-shell/': 'features/app-shell/ui/',
   'components/session/': 'features/sessions/ui/',

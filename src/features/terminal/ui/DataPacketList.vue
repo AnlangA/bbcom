@@ -157,7 +157,10 @@ import AppSelect from '@/design-system/AppSelect.vue';
 import { Cable, Copy, Search } from '@lucide/vue';
 import { useAppStore } from '@/features/settings/store/app-store';
 import { usePacketFilter } from '@/features/terminal/application/use-packet-filter';
-import { SESSION_UI_STATE_KEY, type SessionRuntimeUiState } from '@/features/sessions/runtime/session-ui-state';
+import {
+  SESSION_UI_STATE_KEY,
+  type SessionRuntimeUiState,
+} from '@/features/sessions/runtime/session-ui-state';
 import { usePacketFormatter } from '@/features/terminal/application/use-packet-formatter';
 import { usePacketVirtualScroll } from '@/features/terminal/application/use-packet-virtual-scroll';
 import PacketRow from './PacketRow.vue';

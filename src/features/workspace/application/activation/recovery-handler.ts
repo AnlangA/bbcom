@@ -110,7 +110,6 @@ function failed(messageKey: string): WorkspaceActionFailure {
   return Object.freeze({ outcome: 'failed', messageKey });
 }
 
-
 export async function rollbackFailedActivation(
   attempt: ActivationAttempt,
   failure: WorkspaceActionFailure,

@@ -21,11 +21,7 @@ import {
   type RuntimeTransition,
   type WorkspaceActivationEngine,
 } from '../activation';
-import {
-  assertCurrentHydration,
-  createFacadeSnapshot,
-  freezeActive,
-} from './staging-adapter';
+import { assertCurrentHydration, createFacadeSnapshot, freezeActive } from './staging-adapter';
 
 export interface HydrationActivationPort {
   prepareRuntimeFacadeSwap(
@@ -91,17 +87,33 @@ export class WorkspaceHydrationPipeline {
         }),
         attempt.controller.signal,
       );
-      assertCurrentHydration(this.deps.coordinator, this.deps.activations, attempt, header, staging);
+      assertCurrentHydration(
+        this.deps.coordinator,
+        this.deps.activations,
+        attempt,
+        header,
+        staging,
+      );
       const facadeSnapshot = createFacadeSnapshot(header, staging);
       await this.deps.activationCoordinator.prepareRuntimeFacadeSwap(attempt, facadeSnapshot);
-      assertCurrentHydration(this.deps.coordinator, this.deps.activations, attempt, header, staging);
+      assertCurrentHydration(
+        this.deps.coordinator,
+        this.deps.activations,
+        attempt,
+        header,
+        staging,
+      );
       attempt.phase = 'committing';
       this.deps.sessionFacade.replaceWorkspace(facadeSnapshot);
       this.installHydratedWorkspace(attempt, header, staging, frameNextSequences);
       return completed(this.deps.snapshot());
     } catch (error) {
       if (!this.deps.activations.isActive(attempt) || isWorkspaceHydrationAbort(error)) {
-        return abortAndRecoverActivation(attempt, this.deps.activations, this.deps.getRecoveryHost());
+        return abortAndRecoverActivation(
+          attempt,
+          this.deps.activations,
+          this.deps.getRecoveryHost(),
+        );
       }
       const failure = failed('workspace.hydration.failed');
       const rollback = await rollbackFailedActivation(

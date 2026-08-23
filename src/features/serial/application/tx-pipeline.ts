@@ -112,7 +112,13 @@ export interface TxPipeline {
   sendBreak(durationMs?: number): Promise<boolean>;
 }
 
-export function createTxPipeline({ state, serialTransactions, sessionId, sink, timerPort }: TxPipelineDeps): TxPipeline {
+export function createTxPipeline({
+  state,
+  serialTransactions,
+  sessionId,
+  sink,
+  timerPort,
+}: TxPipelineDeps): TxPipeline {
   function currentTransactionConnection(context: {
     readonly generation: number;
     readonly signal: AbortSignal;

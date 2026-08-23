@@ -90,17 +90,26 @@ export class SessionProjection {
     const commands: WorkspaceConfigMutationCommand[] = [];
     const sessions = persistentSessions(this.store);
     for (const [sortOrder, candidate] of sessions.entries()) {
-      if (candidate.id !== sessionId && this.state.projectedSortOrders.get(candidate.id) === sortOrder) continue;
+      if (
+        candidate.id !== sessionId &&
+        this.state.projectedSortOrders.get(candidate.id) === sortOrder
+      )
+        continue;
       if (candidate.id === sessionId) {
         commands.push(...projectSessionCommands(candidate, this.store, sortOrder));
       } else {
         const upsert = projectSessionCommands(candidate, this.store, sortOrder).find(
-          (c): c is Extract<WorkspaceConfigMutationCommand, { kind: 'upsert-session' }> => c.kind === 'upsert-session',
+          (c): c is Extract<WorkspaceConfigMutationCommand, { kind: 'upsert-session' }> =>
+            c.kind === 'upsert-session',
         );
         if (upsert) commands.push(upsert);
       }
     }
-    const activeSessionId = persistentActiveSessionId(this.store, sessions, this.state.projectedActiveSessionId);
+    const activeSessionId = persistentActiveSessionId(
+      this.store,
+      sessions,
+      this.state.projectedActiveSessionId,
+    );
     if (this.state.projectedActiveSessionId !== activeSessionId) {
       commands.push({ kind: 'set-active-session', sessionId: activeSessionId });
     }
@@ -135,11 +144,18 @@ export class SessionProjection {
         commands.push(...cmds);
         addedIds.push(session.id);
       } else if (this.state.projectedSortOrders.get(session.id) !== sortOrder) {
-        const upsert = cmds.find((c): c is Extract<WorkspaceConfigMutationCommand, { kind: 'upsert-session' }> => c.kind === 'upsert-session');
+        const upsert = cmds.find(
+          (c): c is Extract<WorkspaceConfigMutationCommand, { kind: 'upsert-session' }> =>
+            c.kind === 'upsert-session',
+        );
         if (upsert) commands.push(upsert);
       }
     }
-    const activeSessionId = persistentActiveSessionId(this.store, sessions, this.state.projectedActiveSessionId);
+    const activeSessionId = persistentActiveSessionId(
+      this.store,
+      sessions,
+      this.state.projectedActiveSessionId,
+    );
     if (this.state.projectedActiveSessionId !== activeSessionId) {
       commands.push({ kind: 'set-active-session', sessionId: activeSessionId });
     }
@@ -200,10 +216,14 @@ function isConfigCommand(
   return command.kind !== 'append-frames' && command.kind !== 'append-waveform-samples';
 }
 
-function safePortHint(persisted: WorkspacePortHint | null | undefined, portName: string): WorkspacePortHint | undefined {
+function safePortHint(
+  persisted: WorkspacePortHint | null | undefined,
+  portName: string,
+): WorkspacePortHint | undefined {
   if (persisted) return persisted;
   const displayName = portName.trim();
-  if (!displayName || displayName.startsWith('/') || /^\\\\[.?]\\/u.test(displayName)) return undefined;
+  if (!displayName || displayName.startsWith('/') || /^\\\\[.?]\\/u.test(displayName))
+    return undefined;
   return { displayName: displayName.slice(0, 256) };
 }
 

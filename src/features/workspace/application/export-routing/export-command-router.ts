@@ -29,7 +29,8 @@ export class ExportCommandRouter {
   constructor(private readonly deps: ExportCommandRouterDeps) {}
 
   exportWorkspace(suggestedName: string): Promise<WorkspaceProjectExportOutcome> {
-    if (this.deps.state.exportAttempt) return Promise.resolve(failed('workspace.export.in_progress'));
+    if (this.deps.state.exportAttempt)
+      return Promise.resolve(failed('workspace.export.in_progress'));
     const context = this.deps.acceptingSaveContext();
     if (!context) return Promise.resolve(failed(this.deps.queueRejectionMessage()));
     const attempt = {
@@ -44,19 +45,24 @@ export class ExportCommandRouter {
     const exportAtBarrier = predecessor.then(async (): Promise<WorkspaceProjectExportOutcome> => {
       if (attempt.cancelled) return Object.freeze({ outcome: 'cancelled' });
       if (this.deps.saves.lastSaveFailure) return this.deps.saves.lastSaveFailure;
-      if (!this.deps.isCurrentSaveContext(context)) return failed('workspace.activation.incomplete');
+      if (!this.deps.isCurrentSaveContext(context))
+        return failed('workspace.activation.incomplete');
       const flushed = await this.deps.coordinator.flush();
       this.deps.applySaveOutcome(flushed);
       if (flushed.outcome !== 'completed') return flushed;
       if (attempt.cancelled) return Object.freeze({ outcome: 'cancelled' });
       this.deps.syncCurrentFromCoordinator();
-      if (!this.deps.isCurrentSaveContext(context)) return failed('workspace.activation.incomplete');
+      if (!this.deps.isCurrentSaveContext(context))
+        return failed('workspace.activation.incomplete');
       const nativeExport = this.deps.coordinator.exportWorkspace(suggestedName);
       attempt.nativeStarted = true;
       if (attempt.cancelled) void this.deps.coordinator.cancelExport();
       return nativeExport;
     });
-    this.deps.saves.saveTail = exportAtBarrier.then(() => undefined, () => undefined);
+    this.deps.saves.saveTail = exportAtBarrier.then(
+      () => undefined,
+      () => undefined,
+    );
     this.deps.notify();
     const result = exportAtBarrier
       .catch(() => failed('workspace.export.failed'))

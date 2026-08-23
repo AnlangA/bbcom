@@ -113,18 +113,17 @@ import { computed, inject, onUnmounted, ref, shallowReactive } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useMessage } from 'naive-ui';
 import { useSessionDocument } from '@/features/sessions';
-import { SESSION_UI_STATE_KEY, type SessionRuntimeUiState } from '@/features/sessions/runtime/session-ui-state';
+import {
+  SESSION_UI_STATE_KEY,
+  type SessionRuntimeUiState,
+} from '@/features/sessions/runtime/session-ui-state';
 import {
   encodeStream,
   parseStream,
   recordsToRegisterDefs,
   snapshotFromRegisters,
 } from '@/lib/modbus';
-import {
-  isModbusWriteFc,
-  modbusWriteRowValues,
-  normalizeModbusDataQuantity,
-} from '@/lib/modbus';
+import { isModbusWriteFc, modbusWriteRowValues, normalizeModbusDataQuantity } from '@/lib/modbus';
 import {
   boundModbusVirtualItems,
   MODBUS_REGISTER_OVERSCAN,

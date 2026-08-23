@@ -16,10 +16,7 @@ import {
   serialConnectionFailureMessage,
   useSerialConnection,
 } from '@/features/sessions/application/use-serial-connection.ts';
-import type {
-  SerialPortAdapter,
-  SerialWatchHandleAdapter,
-} from '@/features/serial/index.ts';
+import type { SerialPortAdapter, SerialWatchHandleAdapter } from '@/features/serial/index.ts';
 import { createSessionRecord } from '@/lib/session-persistence.ts';
 import { PortLeaseRegistry } from '@/features/serial/application/port-lease-registry.ts';
 import { useSessionStore } from '@/features/sessions/store/session-store.ts';

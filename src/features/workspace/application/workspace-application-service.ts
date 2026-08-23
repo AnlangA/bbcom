@@ -5,7 +5,11 @@ import type {
 } from '../../../generated/ipc-contracts';
 import { IPC_LIMITS } from '../../../generated/ipc-contracts';
 import type { DataFrame } from '@/types/serial';
-import { projectWorkspaceFrame, type WorkspaceHydrationPort, type WorkspaceQueuedFramePayload } from '../adapters';
+import {
+  projectWorkspaceFrame,
+  type WorkspaceHydrationPort,
+  type WorkspaceQueuedFramePayload,
+} from '../adapters';
 import type {
   ActiveWorkspaceViewModel,
   WorkspaceActionFailure,
@@ -102,24 +106,35 @@ export class WorkspaceApplicationService {
       scheduleSaveGroup: (context, commands) => this.scheduleSaveGroup(context, commands),
       emitNotify: () => this.emitNotify(),
     });
-    this.activationCoordinator = new WorkspaceActivationCoordinator(this.activationDeps(), this.activationState());
+    this.activationCoordinator = new WorkspaceActivationCoordinator(
+      this.activationDeps(),
+      this.activationState(),
+    );
     this.hydrationPipeline = new WorkspaceHydrationPipeline({
-      coordinator: this.coordinator, hydrationPort: this.hydrationPort, sessionFacade: this.sessionFacade,
-      saves: this.saves, runtimeLifecycle: this.runtimeLifecycle, activations: this.activations,
-      activationCoordinator: this.activationCoordinator, requestId: this.requestId,
-      getRecoveryHost: () => this.activationRecoveryHost(), notify: () => this.notify(),
+      coordinator: this.coordinator,
+      hydrationPort: this.hydrationPort,
+      sessionFacade: this.sessionFacade,
+      saves: this.saves,
+      runtimeLifecycle: this.runtimeLifecycle,
+      activations: this.activations,
+      activationCoordinator: this.activationCoordinator,
+      requestId: this.requestId,
+      getRecoveryHost: () => this.activationRecoveryHost(),
+      notify: () => this.notify(),
       snapshot: () => this.snapshot(),
       getState: () => this.activationState(),
     });
     this.exportRouter = new ExportCommandRouter({
-      coordinator: this.coordinator, saves: this.saves, state: this.exportState,
+      coordinator: this.coordinator,
+      saves: this.saves,
+      state: this.exportState,
       acceptingSaveContext: () => this.acceptingSaveContext(),
       isCurrentSaveContext: (c) => this.isCurrentSaveContext(c),
       queueRejectionMessage: () => this.queueRejectionMessage(),
       syncCurrentFromCoordinator: () => this.syncCurrentFromCoordinator(),
-      applySaveOutcome: (o) => this.applySaveOutcome(o), notify: () => this.notify(),
+      applySaveOutcome: (o) => this.applySaveOutcome(o),
+      notify: () => this.notify(),
     });
-
   }
 
   private get workspaceEpoch(): number {
@@ -289,7 +304,6 @@ export class WorkspaceApplicationService {
   cancelActivation(): boolean {
     return this.activationCoordinator.cancelActivation();
   }
-
 
   queueConfigMutation(command: Readonly<WorkspaceConfigMutationCommand>): WorkspaceQueueOutcome {
     const context = this.acceptingSaveContext();
@@ -736,16 +750,66 @@ export class WorkspaceApplicationService {
     const svc = this;
     /* eslint-enable @typescript-eslint/no-this-alias */
     return {
-      get current() { return svc.current; }, set current(v) { svc.current = v; },
-      get recoveryRequired() { return svc.recoveryRequired; }, set recoveryRequired(v) { svc.recoveryRequired = v; },
-      get switching() { return svc.switching; }, set switching(v) { svc.switching = v; },
-      get hydrating() { return svc.hydrating; }, set hydrating(v) { svc.hydrating = v; },
-      get applicationStatus() { return svc.applicationStatus; }, set applicationStatus(v) { svc.applicationStatus = v; },
-      get applicationMessageKey() { return svc.applicationMessageKey; }, set applicationMessageKey(v) { svc.applicationMessageKey = v; },
-      get runtimeTransition() { return svc.runtimeTransition; }, set runtimeTransition(v) { svc.runtimeTransition = v; },
-      get internalDrainTransition() { return svc.internalDrainTransition; }, set internalDrainTransition(v) { svc.internalDrainTransition = v; },
-      get runtimeLifecycleTail() { return svc.runtimeLifecycleTail; }, set runtimeLifecycleTail(v) { svc.runtimeLifecycleTail = v; },
-      get switchDrain() { return svc.switchDrain; }, set switchDrain(v) { svc.switchDrain = v; },
+      get current() {
+        return svc.current;
+      },
+      set current(v) {
+        svc.current = v;
+      },
+      get recoveryRequired() {
+        return svc.recoveryRequired;
+      },
+      set recoveryRequired(v) {
+        svc.recoveryRequired = v;
+      },
+      get switching() {
+        return svc.switching;
+      },
+      set switching(v) {
+        svc.switching = v;
+      },
+      get hydrating() {
+        return svc.hydrating;
+      },
+      set hydrating(v) {
+        svc.hydrating = v;
+      },
+      get applicationStatus() {
+        return svc.applicationStatus;
+      },
+      set applicationStatus(v) {
+        svc.applicationStatus = v;
+      },
+      get applicationMessageKey() {
+        return svc.applicationMessageKey;
+      },
+      set applicationMessageKey(v) {
+        svc.applicationMessageKey = v;
+      },
+      get runtimeTransition() {
+        return svc.runtimeTransition;
+      },
+      set runtimeTransition(v) {
+        svc.runtimeTransition = v;
+      },
+      get internalDrainTransition() {
+        return svc.internalDrainTransition;
+      },
+      set internalDrainTransition(v) {
+        svc.internalDrainTransition = v;
+      },
+      get runtimeLifecycleTail() {
+        return svc.runtimeLifecycleTail;
+      },
+      set runtimeLifecycleTail(v) {
+        svc.runtimeLifecycleTail = v;
+      },
+      get switchDrain() {
+        return svc.switchDrain;
+      },
+      set switchDrain(v) {
+        svc.switchDrain = v;
+      },
     };
   }
   private activationDeps() {
@@ -753,19 +817,35 @@ export class WorkspaceApplicationService {
     const s = this;
     /* eslint-enable @typescript-eslint/no-this-alias */
     return {
-      coordinator: this.coordinator, sessionFacade: this.sessionFacade, saves: this.saves,
-      get hydration() { return s.hydrationPipeline; }, runtimeLifecycle: this.runtimeLifecycle, activations: this.activations,
-      getRecoveryHost: () => this.activationRecoveryHost(), snapshot: () => this.snapshot(), notify: () => this.notify(),
+      coordinator: this.coordinator,
+      sessionFacade: this.sessionFacade,
+      saves: this.saves,
+      get hydration() {
+        return s.hydrationPipeline;
+      },
+      runtimeLifecycle: this.runtimeLifecycle,
+      activations: this.activations,
+      getRecoveryHost: () => this.activationRecoveryHost(),
+      snapshot: () => this.snapshot(),
+      notify: () => this.notify(),
       syncCurrentFromCoordinator: () => this.syncCurrentFromCoordinator(),
       applySaveOutcome: (o: WorkspaceSaveOutcome) => this.applySaveOutcome(o),
-      clearUndoCaptureState: () => { this.undoCaptureState = null; },
-      createRuntimePersistenceDrain: (t: RuntimeTransition) => this.createRuntimePersistenceDrain(t),
+      clearUndoCaptureState: () => {
+        this.undoCaptureState = null;
+      },
+      createRuntimePersistenceDrain: (t: RuntimeTransition) =>
+        this.createRuntimePersistenceDrain(t),
       internalSaveContext: (t: RuntimeTransition) => this.internalSaveContext(t),
-      enqueueConfigMutations: (c: SaveContext, cmds: readonly Readonly<WorkspaceConfigMutationCommand>[]) =>
-        this.enqueueConfigMutations(c, cmds),
-      enqueueOrderedMutations: (c: SaveContext, cmds: readonly Readonly<WorkspaceConfigMutationCommand>[]) =>
-        this.enqueueOrderedMutations(c, cmds),
-      enqueueCapturedFrame: (c: SaveContext, cap: WorkspaceFrameCapture) => this.enqueueCapturedFrame(c, cap),
+      enqueueConfigMutations: (
+        c: SaveContext,
+        cmds: readonly Readonly<WorkspaceConfigMutationCommand>[],
+      ) => this.enqueueConfigMutations(c, cmds),
+      enqueueOrderedMutations: (
+        c: SaveContext,
+        cmds: readonly Readonly<WorkspaceConfigMutationCommand>[],
+      ) => this.enqueueOrderedMutations(c, cmds),
+      enqueueCapturedFrame: (c: SaveContext, cap: WorkspaceFrameCapture) =>
+        this.enqueueCapturedFrame(c, cap),
       enqueueCaptureTrim: (c: SaveContext, sid: string, df: number, db: number) =>
         this.enqueueCaptureTrim(c, sid, df, db),
       enqueueWaveformReplacement: (
@@ -774,8 +854,11 @@ export class WorkspaceApplicationService {
         ch: readonly WorkspaceWaveformChannel[],
         sa: readonly WorkspaceWaveformSample[],
       ) => this.enqueueWaveformReplacement(c, sid, ch, sa),
-      enqueueWaveformSamples: (c: SaveContext, sid: string, sa: readonly WorkspaceWaveformSample[]) =>
-        this.enqueueWaveformSamples(c, sid, sa),
+      enqueueWaveformSamples: (
+        c: SaveContext,
+        sid: string,
+        sa: readonly WorkspaceWaveformSample[],
+      ) => this.enqueueWaveformSamples(c, sid, sa),
       enqueueWaveformFrameIngest: (c: SaveContext, ing: Readonly<WorkspaceWaveformFrameIngest>) =>
         this.enqueueWaveformFrameIngest(c, ing),
     };
@@ -783,10 +866,15 @@ export class WorkspaceApplicationService {
   private activationRecoveryHost(): ActivationRecoveryHost {
     const c = this.coordinator;
     return {
-      get activeWorkspaceId() { return c.activeWorkspaceId; },
+      get activeWorkspaceId() {
+        return c.activeWorkspaceId;
+      },
       openWorkspace: (id) => c.openWorkspace(id),
-      restoreRuntimeAfterAbortedTransition: (id) => this.activationCoordinator.restoreRuntimeAfterAbortedTransition(id),
-      adoptRollbackView: (v, pid) => { if (this.current?.workspaceId === pid) this.current = freezeActive(v); },
+      restoreRuntimeAfterAbortedTransition: (id) =>
+        this.activationCoordinator.restoreRuntimeAfterAbortedTransition(id),
+      adoptRollbackView: (v, pid) => {
+        if (this.current?.workspaceId === pid) this.current = freezeActive(v);
+      },
       enterRecoveryLockout: (o) => this.activationCoordinator.enterRecoveryLockout(o),
       finishActivationFailure: (a, f) => this.activationCoordinator.finishActivationFailure(a, f),
       finishAbortedQueuedAttempt: (a) => this.activationCoordinator.finishAbortedQueuedAttempt(a),
@@ -1102,7 +1190,6 @@ function waveformAppendCommands(
   return commands;
 }
 
-
 function cloneAndFreeze<T>(value: T, ancestors = new WeakSet<object>()): T {
   if (!value || typeof value !== 'object') return value;
   if (ancestors.has(value)) throw new Error('workspace command must be acyclic');
@@ -1119,7 +1206,6 @@ function cloneAndFreeze<T>(value: T, ancestors = new WeakSet<object>()): T {
   ancestors.delete(value);
   return Object.freeze(clone) as T;
 }
-
 
 function completed<T>(value: T): WorkspaceActionOutcome<T> {
   return Object.freeze({ outcome: 'completed', value });

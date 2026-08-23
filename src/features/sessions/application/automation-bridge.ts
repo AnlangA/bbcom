@@ -30,10 +30,7 @@ export const AUTO_LOG_TERMINAL_TIMEOUT_MS = 5_000;
 export const AUTO_LOG_FAILURE_EVENT = 'bbcom:auto-log-failure';
 
 export type AutoLogFailureReason =
-  | 'begin-failure'
-  | 'overflow'
-  | 'append-failure'
-  | 'drain-timeout';
+  'begin-failure' | 'overflow' | 'append-failure' | 'drain-timeout';
 
 export type AutoLogShutdownFailureStage = 'append' | 'drain' | 'terminal';
 
@@ -152,8 +149,8 @@ export class TriggersBridge {
   private sendTail: Promise<void> = Promise.resolve();
   private paused = false;
 
-  readonly enabledCount = computed(() =>
-    this.options.triggers.value.filter((item) => item.enabled).length,
+  readonly enabledCount = computed(
+    () => this.options.triggers.value.filter((item) => item.enabled).length,
   );
 
   constructor(options: TriggersBridgeOptions) {
@@ -380,7 +377,10 @@ export class AutoLogBridge {
     this.debounceMs = normalizeTimeout(options.debounceMs, AUTO_LOG_DEBOUNCE_MS);
     this.appendTimeoutMs = normalizeTimeout(options.appendTimeoutMs, AUTO_LOG_APPEND_TIMEOUT_MS);
     this.drainTimeoutMs = normalizeTimeout(options.drainTimeoutMs, AUTO_LOG_DRAIN_TIMEOUT_MS);
-    this.terminalTimeoutMs = normalizeTimeout(options.terminalTimeoutMs, AUTO_LOG_TERMINAL_TIMEOUT_MS);
+    this.terminalTimeoutMs = normalizeTimeout(
+      options.terminalTimeoutMs,
+      AUTO_LOG_TERMINAL_TIMEOUT_MS,
+    );
   }
 
   async enable(sessionId: string): Promise<string | null> {
@@ -566,7 +566,9 @@ export function useAutoLog(deps: UseAutoLogDeps = {}) {
   };
 }
 
-export function autoLogFormatForDisplayMode(displayMode: import('@/types').DisplayMode): AutoLogFormat {
+export function autoLogFormatForDisplayMode(
+  displayMode: import('@/types').DisplayMode,
+): AutoLogFormat {
   return displayMode === 'HEX' || displayMode === 'HEXASCII' ? 'hex' : 'text';
 }
 

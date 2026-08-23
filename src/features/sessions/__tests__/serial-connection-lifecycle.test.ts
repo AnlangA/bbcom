@@ -4,10 +4,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { effectScope } from 'vue';
 import type { WatchHandlers, WatchOptions } from 'tauri-plugin-serialplugin-api';
 import { useSerialConnection } from '@/features/sessions/application/use-serial-connection.ts';
-import type {
-  SerialPortAdapter,
-  SerialWatchHandleAdapter,
-} from '@/features/serial/index.ts';
+import type { SerialPortAdapter, SerialWatchHandleAdapter } from '@/features/serial/index.ts';
 import type { SerialTimerScheduler } from '@/lib/serial-rx-scheduler.ts';
 import { useSessionStore } from '@/features/sessions/store/session-store.ts';
 import type { PortConfig } from '@/types/serial.ts';

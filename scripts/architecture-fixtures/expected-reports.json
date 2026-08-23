@@ -1,5 +1,9 @@
 [
-  { "rule": "entry-bootstrap-only", "source": "src/bootstrap/main.ts", "target": "./features/beta/internal" },
+  {
+    "rule": "entry-bootstrap-only",
+    "source": "src/bootstrap/main.ts",
+    "target": "./features/beta/internal"
+  },
   {
     "rule": "ui-no-direct-tauri",
     "source": "src/features/alpha/ui/Panel.vue",

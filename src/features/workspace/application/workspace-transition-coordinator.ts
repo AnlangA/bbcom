@@ -1,5 +1,8 @@
 import type { DataFrame, SerialSession } from '@/types';
-import type { ApplicationRuntimeRegistry, RuntimeDisposalReason } from '@/features/platform/application';
+import type {
+  ApplicationRuntimeRegistry,
+  RuntimeDisposalReason,
+} from '@/features/platform/application';
 import type {
   WorkspaceRuntimeCommitContext,
   WorkspaceRuntimeDisposeContext,

@@ -12,7 +12,8 @@ import type {
 export class WorkspaceSessionFacadeBridge implements WorkspaceSessionFacade {
   private delegate: WorkspaceSessionFacade | null = null;
   bind(delegate: WorkspaceSessionFacade): void {
-    if (this.delegate && this.delegate !== delegate) throw new Error('workspace session facade is already bound');
+    if (this.delegate && this.delegate !== delegate)
+      throw new Error('workspace session facade is already bound');
     this.delegate = delegate;
   }
   replaceWorkspace(snapshot: WorkspaceFacadeSnapshot): void {
@@ -70,7 +71,11 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
       }
     });
     this.detachApplication = this.application.subscribe((snapshot) => {
-      if (snapshot.currentWorkspace && snapshot.saveHealth === 'clean' && snapshot.unsavedMutationCount === 0) {
+      if (
+        snapshot.currentWorkspace &&
+        snapshot.saveHealth === 'clean' &&
+        snapshot.unsavedMutationCount === 0
+      ) {
         this.store.markWorkspacePersisted();
       }
     });
@@ -98,7 +103,9 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
   replaceWorkspace(snapshot: Parameters<WorkspaceSessionFacade['replaceWorkspace']>[0]): void {
     this.store.replaceWorkspaceSessions(snapshot.sessions, snapshot.activeSessionId);
     this.projectionState.projectedSessionIds = new Set(snapshot.sessions.map((e) => e.session.id));
-    this.projectionState.projectedSortOrders = new Map(snapshot.sessions.map((e) => [e.session.id, e.sortOrder]));
+    this.projectionState.projectedSortOrders = new Map(
+      snapshot.sessions.map((e) => [e.session.id, e.sortOrder]),
+    );
     this.projectionState.projectedActiveSessionId = snapshot.activeSessionId;
   }
 
@@ -111,7 +118,12 @@ export class SessionStoreWorkspaceAdapter implements WorkspaceSessionFacade {
 
   private onChange(event: WorkspaceSessionChangeEvent): void {
     if (this.persistenceDrain && !this.persistenceDrain.accepting) this.persistenceDrain = null;
-    if (event.kind !== 'catalog-changed' && 'sessionId' in event && !this.store.isPersistentSession(event.sessionId)) return;
+    if (
+      event.kind !== 'catalog-changed' &&
+      'sessionId' in event &&
+      !this.store.isPersistentSession(event.sessionId)
+    )
+      return;
     switch (event.kind) {
       case 'frame-added':
         this.persistence.queueFrame(event.sessionId, event.frame);

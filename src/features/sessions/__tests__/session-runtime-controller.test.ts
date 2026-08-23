@@ -14,38 +14,38 @@ import { SessionRuntimeStatusRegistry } from '@/features/sessions/runtime/sessio
 const mocked = vi.hoisted(() => {
   const { ref } = require('vue') as typeof import('vue');
   return {
-  autoLog: {
-    enable: vi.fn(),
-    disable: vi.fn(),
-    prepareShutdown: vi.fn(),
-    appendFrame: vi.fn(),
-  },
-  message: {
-    error: vi.fn(),
-    info: vi.fn(),
-    success: vi.fn(),
-    warning: vi.fn(),
-  },
-  modbus: {
-    master: {
-      stop: vi.fn(),
-      pauseForSerialTransaction: vi.fn(async () => undefined),
-      resumeAfterSerialTransaction: vi.fn(),
+    autoLog: {
+      enable: vi.fn(),
+      disable: vi.fn(),
+      prepareShutdown: vi.fn(),
+      appendFrame: vi.fn(),
     },
-  },
-  modbusOptions: undefined as unknown,
-  serial: undefined as unknown,
-  serialOptions: undefined as unknown,
-  triggerFeed: vi.fn(),
-  triggerPause: vi.fn(async () => undefined),
-  triggerReset: vi.fn(),
-  triggerResume: vi.fn(),
-  triggerOptions: undefined as unknown,
-  macroRunning: ref(false),
-  macroRun: vi.fn(),
-  macroAbort: vi.fn(),
-  macroPause: vi.fn(async () => undefined),
-  macroResume: vi.fn(),
+    message: {
+      error: vi.fn(),
+      info: vi.fn(),
+      success: vi.fn(),
+      warning: vi.fn(),
+    },
+    modbus: {
+      master: {
+        stop: vi.fn(),
+        pauseForSerialTransaction: vi.fn(async () => undefined),
+        resumeAfterSerialTransaction: vi.fn(),
+      },
+    },
+    modbusOptions: undefined as unknown,
+    serial: undefined as unknown,
+    serialOptions: undefined as unknown,
+    triggerFeed: vi.fn(),
+    triggerPause: vi.fn(async () => undefined),
+    triggerReset: vi.fn(),
+    triggerResume: vi.fn(),
+    triggerOptions: undefined as unknown,
+    macroRunning: ref(false),
+    macroRun: vi.fn(),
+    macroAbort: vi.fn(),
+    macroPause: vi.fn(async () => undefined),
+    macroResume: vi.fn(),
   };
 });
 
@@ -589,12 +589,16 @@ test('prepareShutdown propagates strict auto-log footer or sync failures', async
 
 test('controller surfaces connection callbacks and a failed connect without leaking stale activity', async () => {
   const { id, runtime, scope, serial, store } = setup();
-  const options = (mocked.serialOptions as { options: {
-    onDisconnect?: () => void;
-    onOverflow?: (total: number) => void;
-    onReconnecting?: () => void;
-    onReconnected?: () => void;
-  } }).options;
+  const options = (
+    mocked.serialOptions as {
+      options: {
+        onDisconnect?: () => void;
+        onOverflow?: (total: number) => void;
+        onReconnecting?: () => void;
+        onReconnected?: () => void;
+      };
+    }
+  ).options;
 
   options.onDisconnect?.();
   options.onOverflow?.(42);

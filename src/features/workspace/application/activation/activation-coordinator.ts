@@ -16,7 +16,10 @@ import type {
   WorkspaceWaveformFrameIngest,
   WorkspaceFacadeSnapshot,
 } from '../types';
-import type { WorkspaceWaveformChannel, WorkspaceWaveformSample } from '../../../../generated/ipc-contracts';
+import type {
+  WorkspaceWaveformChannel,
+  WorkspaceWaveformSample,
+} from '../../../../generated/ipc-contracts';
 import type { WorkspaceSaveCoordinator } from '../workspace-save-coordinator';
 import type { SaveContext } from '../save-queues/index';
 import {
@@ -24,10 +27,7 @@ import {
   markRecoveryRequired,
   type ActivationRecoveryHost,
 } from './recovery-handler';
-import {
-  type ActivationAttempt,
-  WorkspaceActivationEngine,
-} from './activation-types';
+import { type ActivationAttempt, WorkspaceActivationEngine } from './activation-types';
 
 export type { ActivationAttempt, ActivationPhase } from './activation-types';
 export { ActivationTracker, WorkspaceActivationEngine } from './activation-types';
@@ -64,13 +64,39 @@ export interface ActivationCoordinatorDeps {
   clearUndoCaptureState(): void;
   createRuntimePersistenceDrain(transition: RuntimeTransition): WorkspaceRuntimePersistenceDrain;
   internalSaveContext(transition: RuntimeTransition): SaveContext | null;
-  enqueueConfigMutations(context: SaveContext, commands: readonly Readonly<WorkspaceConfigMutationCommand>[]): import('../types').WorkspaceQueueOutcome;
-  enqueueOrderedMutations(context: SaveContext, commands: readonly Readonly<WorkspaceConfigMutationCommand>[]): import('../types').WorkspaceQueueOutcome;
-  enqueueCapturedFrame(context: SaveContext, capture: WorkspaceFrameCapture): import('../types').WorkspaceQueueOutcome;
-  enqueueCaptureTrim(context: SaveContext, sessionId: string, droppedFrames: number, droppedBytes: number): import('../types').WorkspaceQueueOutcome;
-  enqueueWaveformReplacement(context: SaveContext, sessionId: string, channels: readonly WorkspaceWaveformChannel[], samples: readonly WorkspaceWaveformSample[]): import('../types').WorkspaceQueueOutcome;
-  enqueueWaveformSamples(context: SaveContext, sessionId: string, samples: readonly WorkspaceWaveformSample[]): import('../types').WorkspaceQueueOutcome;
-  enqueueWaveformFrameIngest(context: SaveContext, ingest: Readonly<WorkspaceWaveformFrameIngest>): import('../types').WorkspaceQueueOutcome;
+  enqueueConfigMutations(
+    context: SaveContext,
+    commands: readonly Readonly<WorkspaceConfigMutationCommand>[],
+  ): import('../types').WorkspaceQueueOutcome;
+  enqueueOrderedMutations(
+    context: SaveContext,
+    commands: readonly Readonly<WorkspaceConfigMutationCommand>[],
+  ): import('../types').WorkspaceQueueOutcome;
+  enqueueCapturedFrame(
+    context: SaveContext,
+    capture: WorkspaceFrameCapture,
+  ): import('../types').WorkspaceQueueOutcome;
+  enqueueCaptureTrim(
+    context: SaveContext,
+    sessionId: string,
+    droppedFrames: number,
+    droppedBytes: number,
+  ): import('../types').WorkspaceQueueOutcome;
+  enqueueWaveformReplacement(
+    context: SaveContext,
+    sessionId: string,
+    channels: readonly WorkspaceWaveformChannel[],
+    samples: readonly WorkspaceWaveformSample[],
+  ): import('../types').WorkspaceQueueOutcome;
+  enqueueWaveformSamples(
+    context: SaveContext,
+    sessionId: string,
+    samples: readonly WorkspaceWaveformSample[],
+  ): import('../types').WorkspaceQueueOutcome;
+  enqueueWaveformFrameIngest(
+    context: SaveContext,
+    ingest: Readonly<WorkspaceWaveformFrameIngest>,
+  ): import('../types').WorkspaceQueueOutcome;
 }
 
 export interface ActivationState {
@@ -139,7 +165,9 @@ export class WorkspaceActivationCoordinator {
     return execution;
   }
 
-  activate(invoke: () => Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>>): Promise<WorkspaceApplicationOutcome> {
+  activate(
+    invoke: () => Promise<WorkspaceActionOutcome<ActiveWorkspaceViewModel>>,
+  ): Promise<WorkspaceApplicationOutcome> {
     const predecessor = this.deps.activations.attempt;
     if (predecessor && predecessor.phase !== 'committing' && predecessor.phase !== 'terminal') {
       predecessor.controller.abort();
@@ -200,9 +228,14 @@ export class WorkspaceActivationCoordinator {
     if (drainFailure) {
       const restored = await this.restoreRuntimeAfterAbortedTransition(null);
       if (!this.deps.activations.isActive(attempt))
-        return abortAndRecoverActivation(attempt, this.deps.activations, this.deps.getRecoveryHost());
+        return abortAndRecoverActivation(
+          attempt,
+          this.deps.activations,
+          this.deps.getRecoveryHost(),
+        );
       const failure = restored ? drainFailure : failed('workspace.activation.rollback_failed');
-      if (!restored) markRecoveryRequired(attempt, this.deps.activations, this.deps.getRecoveryHost());
+      if (!restored)
+        markRecoveryRequired(attempt, this.deps.activations, this.deps.getRecoveryHost());
       this.finishActivationFailure(attempt, failure);
       return failure;
     }
@@ -214,12 +247,17 @@ export class WorkspaceActivationCoordinator {
       activation = await invoke();
     } catch {
       if (!this.deps.activations.isActive(attempt))
-        return abortAndRecoverActivation(attempt, this.deps.activations, this.deps.getRecoveryHost());
+        return abortAndRecoverActivation(
+          attempt,
+          this.deps.activations,
+          this.deps.getRecoveryHost(),
+        );
       const restored = await this.restoreRuntimeAfterAbortedTransition(null);
       const failure = restored
         ? failed('workspace.activation.failed')
         : failed('workspace.activation.rollback_failed');
-      if (!restored) markRecoveryRequired(attempt, this.deps.activations, this.deps.getRecoveryHost());
+      if (!restored)
+        markRecoveryRequired(attempt, this.deps.activations, this.deps.getRecoveryHost());
       this.finishActivationFailure(attempt, failure);
       return failure;
     }
@@ -262,7 +300,10 @@ export class WorkspaceActivationCoordinator {
     // A stale transition from a failed open/switch (often previousWorkspaceId
     // null) would throw inside ensureRuntimeTransition and leave the project
     // undeletable. Clear it before starting the deletion transition.
-    if (this.state.runtimeTransition && this.state.runtimeTransition.previousWorkspaceId !== workspaceId) {
+    if (
+      this.state.runtimeTransition &&
+      this.state.runtimeTransition.previousWorkspaceId !== workspaceId
+    ) {
       const cleared = await this.restoreRuntimeAfterAbortedTransition(
         this.state.runtimeTransition.stoppedWorkspaceId,
       );
@@ -331,7 +372,8 @@ export class WorkspaceActivationCoordinator {
       // Commit only drops rollback snapshots; the project is already deleted.
     }
     if (this.state.runtimeTransition === transition) this.state.runtimeTransition = null;
-    if (this.state.internalDrainTransition === transition) this.state.internalDrainTransition = null;
+    if (this.state.internalDrainTransition === transition)
+      this.state.internalDrainTransition = null;
     attempt.phase = 'terminal';
     if (this.deps.activations.attempt === attempt) this.deps.activations.attempt = null;
     this.state.switching = false;
@@ -402,9 +444,7 @@ export class WorkspaceActivationCoordinator {
     }
   }
 
-  async restoreRuntimeAfterAbortedTransition(
-    failedWorkspaceId: string | null,
-  ): Promise<boolean> {
+  async restoreRuntimeAfterAbortedTransition(failedWorkspaceId: string | null): Promise<boolean> {
     const transition = this.state.runtimeTransition;
     if (!transition) return true;
     const lifecycleWasTouched =
@@ -429,7 +469,8 @@ export class WorkspaceActivationCoordinator {
       return false;
     }
     if (this.state.runtimeTransition === transition) this.state.runtimeTransition = null;
-    if (this.state.internalDrainTransition === transition) this.state.internalDrainTransition = null;
+    if (this.state.internalDrainTransition === transition)
+      this.state.internalDrainTransition = null;
     return true;
   }
 
@@ -471,16 +512,14 @@ export class WorkspaceActivationCoordinator {
     this.deps.notify();
   }
 
-  finishActivationFailure(
-    attempt: ActivationAttempt,
-    failure: WorkspaceActionFailure,
-  ): void {
+  finishActivationFailure(attempt: ActivationAttempt, failure: WorkspaceActionFailure): void {
     attempt.phase = 'terminal';
     if (!this.deps.activations.isLatest(attempt)) return;
     this.state.switching = false;
     this.state.hydrating = false;
     this.state.applicationStatus =
-      this.state.current && this.deps.coordinator.activeWorkspaceId === this.state.current.workspaceId
+      this.state.current &&
+      this.deps.coordinator.activeWorkspaceId === this.state.current.workspaceId
         ? 'ready'
         : 'failed';
     this.state.applicationMessageKey = failure.messageKey;
@@ -518,7 +557,8 @@ export class WorkspaceActivationCoordinator {
         quiesceFailure = failed('workspace.runtime.quiesce_failed');
         transition.quiesceFailure = quiesceFailure;
       } finally {
-        if (this.state.internalDrainTransition === transition) this.state.internalDrainTransition = null;
+        if (this.state.internalDrainTransition === transition)
+          this.state.internalDrainTransition = null;
       }
     }
     // The internal persistence capability is closed before the queues are
