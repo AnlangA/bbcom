@@ -814,6 +814,27 @@ describe('SessionView', () => {
     wrapper.unmount();
     expect(detach).toHaveBeenCalledOnce();
   });
+
+  test('keeps the packet list visible while MCUmgr is active', async () => {
+    const session = serialSession();
+    const { runtime } = runtimeController();
+    runtime.viewMode.value = 'mcumgr';
+    const wrapper = shallowMount(SessionView, {
+      props: { session, runtime },
+      global: {
+        stubs: {
+          SessionToolbar: { inheritAttrs: false, template: '<div />' },
+          SessionRebindDialog: { inheritAttrs: false, template: '<div />' },
+          DataPacketList: { inheritAttrs: false, template: '<div class="packet-list-stub" />' },
+          SendPanel: { inheritAttrs: false, template: '<div />' },
+        },
+      },
+    });
+    expect(wrapper.find('.display-area--split').exists()).toBe(true);
+    expect(wrapper.find('.tool-pane').exists()).toBe(true);
+    expect(wrapper.find('.packet-list-stub').exists()).toBe(true);
+    wrapper.unmount();
+  });
 });
 
 interface WorkspaceSetup {

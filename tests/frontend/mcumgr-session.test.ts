@@ -16,7 +16,7 @@ vi.mock('@tauri-apps/api/core', () => {
 import { useSessionMcumgr } from '../../src/composables/useSessionMcumgr.ts';
 import { DEFAULT_MCUMGR_CONFIG } from '../../src/lib/mcumgr-config.ts';
 import type { McumgrClientConfig, SerialSession } from '../../src/types.ts';
-import type { McumgrProgress } from '../../src/generated/ipc-contracts.ts';
+import type { McumgrProgress, McumgrTraceFrame } from '../../src/generated/ipc-contracts.ts';
 
 afterEach(() => {
   mocked.invoke.mockReset();
@@ -33,7 +33,9 @@ interface Harness {
   resumeResult: { value: boolean };
 }
 
-function createHarness(options: { connected?: boolean; portName?: string } = {}): Harness {
+function createHarness(
+  options: { connected?: boolean; portName?: string; ingestTraceFrames?: (frames: readonly McumgrTraceFrame[]) => void } = {},
+): Harness {
   const session = ref({
     id: 's1',
     portName: options.portName ?? '/dev/ttyUSB0',
@@ -57,7 +59,7 @@ function createHarness(options: { connected?: boolean; portName?: string } = {})
       if (resumeResult.value) isConnected.value = true;
       return resumeResult.value;
     },
-    ingestTraceFrames: () => undefined,
+    ingestTraceFrames: options.ingestTraceFrames ?? (() => undefined),
     setConfig: (patch) => {
       patches.push(patch);
       session.value!.mcumgrConfig = { ...session.value!.mcumgrConfig, ...patch };
@@ -115,6 +117,24 @@ test('busy stays true until the yielded connection is restored', async () => {
   assert.equal(controller.busy.value, false);
   assert.equal(controller.portYielding.value, false);
   assert.equal(isConnected.value, true);
+});
+
+test('execute replays wire trace frames into ingestTraceFrames', async () => {
+  const ingested: McumgrTraceFrame[][] = [];
+  const harness = createHarness({
+    connected: false,
+    ingestTraceFrames: (frames) => ingested.push([...frames]),
+  });
+  const traceFrames: McumgrTraceFrame[] = [
+    { direction: 'TX', timestampMs: 1, data: [1, 2] },
+    { direction: 'RX', timestampMs: 2, data: [3, 4, 5] },
+  ];
+  mocked.invoke.mockResolvedValue({ resultJson: '{"ok":true}', traceFrames });
+
+  await harness.controller.execute('image-state', { kind: 'image-state' });
+
+  assert.equal(ingested.length, 1);
+  assert.deepEqual(ingested[0], traceFrames);
 });
 
 test('execute yields the port around the invoke and restores the connection', async () => {
