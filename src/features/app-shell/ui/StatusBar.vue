@@ -5,17 +5,11 @@
     </span>
     <template v-if="session">
       <div class="traffic-stats" :aria-label="t('session.stats.aria')">
-        <span
-          class="mini-stat tx"
-          :title="`TX ${trafficStats.txFrames} ${t('status.frames')}`"
-        >
+        <span class="mini-stat tx" :title="`TX ${trafficStats.txFrames} ${t('status.frames')}`">
           <span class="mini-label">TX</span>
           {{ formatBytes(trafficStats.txBytes) }}
         </span>
-        <span
-          class="mini-stat rx"
-          :title="`RX ${trafficStats.rxFrames} ${t('status.frames')}`"
-        >
+        <span class="mini-stat rx" :title="`RX ${trafficStats.rxFrames} ${t('status.frames')}`">
           <span class="mini-label">RX</span>
           {{ formatBytes(trafficStats.rxBytes) }}
         </span>
@@ -59,12 +53,14 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import type { SerialSession } from '@/types';
 import { formatBytes, formatDuration, formatRate } from '@/lib/format';
 import { t } from '@/lib/i18n';
-import { useSessionRuntimeStatuses } from '@/features/sessions';
+import { useSessionRuntimeStatuses, type SessionRawDataView } from '@/features/sessions';
 
 const props = defineProps<{
   session: SerialSession | null;
-  /** Invalidates template reads from the session's raw frame arrays/counters. */
-  framesVersion: number;
+  /** Shared receive/transmit-layer data used by the presentation. */
+  rawData?: SessionRawDataView | null;
+  /** @deprecated Compatibility invalidation for isolated component callers. */
+  framesVersion?: number;
 }>();
 const { isConnected } = useSessionRuntimeStatuses();
 const connected = computed(() => Boolean(props.session && isConnected(props.session.id)));
@@ -72,13 +68,27 @@ const connected = computed(() => Boolean(props.session && isConnected(props.sess
 const trafficStats = computed(() => {
   void props.framesVersion;
   const session = props.session;
+  const rawData = rawDataForSession();
   return {
-    txBytes: session?.txBytes ?? 0,
-    rxBytes: session?.rxBytes ?? 0,
-    txFrames: session?.txFrames ?? 0,
-    rxFrames: session?.rxFrames ?? 0,
+    txBytes: rawData?.txBytes.value ?? session?.txBytes ?? 0,
+    rxBytes: rawData?.rxBytes.value ?? session?.rxBytes ?? 0,
+    txFrames: rawData?.txFrames.value ?? session?.txFrames ?? 0,
+    rxFrames: rawData?.rxFrames.value ?? session?.rxFrames ?? 0,
   };
 });
+
+function rawDataForSession(): SessionRawDataView | null {
+  return props.rawData && props.rawData.sessionId === props.session?.id ? props.rawData : null;
+}
+
+function currentTrafficSample(): { txBytes: number; rxBytes: number; frames: number } {
+  const rawData = rawDataForSession();
+  return {
+    txBytes: rawData?.txBytes.value ?? props.session?.txBytes ?? 0,
+    rxBytes: rawData?.rxBytes.value ?? props.session?.rxBytes ?? 0,
+    frames: rawData?.frames.value.length ?? props.session?.frames.length ?? 0,
+  };
+}
 
 import { maxBufferFrames } from '@/lib/buffer-config';
 
@@ -100,22 +110,24 @@ watch(
       timer = null;
     }
     if (connected) {
-      prevTxBytes = props.session?.txBytes ?? 0;
-      prevRxBytes = props.session?.rxBytes ?? 0;
-      prevFrames = props.session?.frames.length ?? 0;
+      const initial = currentTrafficSample();
+      prevTxBytes = initial.txBytes;
+      prevRxBytes = initial.rxBytes;
+      prevFrames = initial.frames;
       lastSampleTime = Date.now();
       timer = setInterval(() => {
         now.value = Date.now();
         if (props.session) {
+          const sample = currentTrafficSample();
           const elapsed = (now.value - lastSampleTime) / 1000;
           if (elapsed > 0) {
             // Counters reset to 0 on clearFrames; a negative delta means a reset
             // happened since the last sample, so measure from zero instead of
             // producing a (hidden, negative) bogus rate.
-            let txDelta = props.session.txBytes - prevTxBytes;
-            let rxDelta = props.session.rxBytes - prevRxBytes;
-            if (txDelta < 0) txDelta = props.session.txBytes;
-            if (rxDelta < 0) rxDelta = props.session.rxBytes;
+            let txDelta = sample.txBytes - prevTxBytes;
+            let rxDelta = sample.rxBytes - prevRxBytes;
+            if (txDelta < 0) txDelta = sample.txBytes;
+            if (rxDelta < 0) rxDelta = sample.rxBytes;
             txRate.value = Math.round(txDelta / elapsed);
             rxRate.value = Math.round(rxDelta / elapsed);
           }
@@ -123,13 +135,13 @@ watch(
           // divisor the same way as the byte rates — a zero-ms interval tick
           // would otherwise render "Infinity/s".
           if (elapsed > 0) {
-            let frameDelta = props.session.frames.length - prevFrames;
-            if (frameDelta < 0) frameDelta = props.session.frames.length;
+            let frameDelta = sample.frames - prevFrames;
+            if (frameDelta < 0) frameDelta = sample.frames;
             frameRate.value = Math.round(frameDelta / elapsed);
           }
-          prevTxBytes = props.session.txBytes;
-          prevRxBytes = props.session.rxBytes;
-          prevFrames = props.session.frames.length;
+          prevTxBytes = sample.txBytes;
+          prevRxBytes = sample.rxBytes;
+          prevFrames = sample.frames;
           lastSampleTime = now.value;
         }
       }, 1000);
@@ -144,10 +156,11 @@ watch(
 watch(
   () => props.session?.id,
   () => {
+    const sample = currentTrafficSample();
     now.value = Date.now();
-    prevTxBytes = props.session?.txBytes ?? 0;
-    prevRxBytes = props.session?.rxBytes ?? 0;
-    prevFrames = props.session?.frames.length ?? 0;
+    prevTxBytes = sample.txBytes;
+    prevRxBytes = sample.rxBytes;
+    prevFrames = sample.frames;
     lastSampleTime = Date.now();
     txRate.value = 0;
     rxRate.value = 0;
@@ -175,14 +188,16 @@ const duration = computed(() => {
 /** Buffer level: how full the rolling frame buffer is. */
 const bufferLevel = computed(() => {
   if (!props.session) return '';
-  const pct = Math.round((props.session.frames.length / maxBufferFrames.value) * 100);
-  return `${props.session.frames.length}/${maxBufferFrames.value} ${pct}%`;
+  const frames = rawDataForSession()?.frames.value.length ?? props.session.frames.length;
+  const pct = Math.round((frames / maxBufferFrames.value) * 100);
+  return `${frames}/${maxBufferFrames.value} ${pct}%`;
 });
 
 /** Cumulative dropped bytes this connection. */
 const droppedDisplay = computed(() => {
-  if (!props.session || props.session.droppedBytes === 0) return '';
-  return formatBytes(props.session.droppedBytes);
+  if (!props.session) return '';
+  const dropped = rawDataForSession()?.droppedBytes.value ?? props.session.droppedBytes;
+  return dropped === 0 ? '' : formatBytes(dropped);
 });
 
 const connectionAnnouncement = computed(() => {

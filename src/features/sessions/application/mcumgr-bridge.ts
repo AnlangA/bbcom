@@ -39,14 +39,17 @@ export interface McumgrFirmwareUpdateOptions {
 
 export interface McumgrBridgeCreateOptions {
   session: Ref<SerialSession>;
-  isConnected: Ref<boolean>;
-  /** Cleanly closes the frontend serial connection (port yield). */
-  suspendConnection: () => Promise<void>;
-  /** Re-opens the frontend serial connection after the operation. */
-  resumeConnection: () => Promise<boolean>;
-  /** Replays MCUmgr wire trace into the session capture buffer. */
-  ingestTraceFrames: (frames: readonly McumgrTraceFrame[]) => void;
+  transport: McumgrTransportPort;
   setConfig: (patch: Partial<McumgrClientConfig>) => void;
+  /** Stop higher-level background work before yielding the physical port. */
+  beforeSuspend?: () => void;
+}
+
+export interface McumgrTransportPort {
+  readonly isConnected: Ref<boolean>;
+  suspendConnection(): Promise<void>;
+  resumeConnection(): Promise<boolean>;
+  ingestTraceFrames(frames: readonly McumgrTraceFrame[]): void;
 }
 
 const RESUME_RETRY_DELAYS_MS = [0, 1_000, 2_500];
@@ -69,11 +72,13 @@ export class McumgrBridge {
   );
 
   private readonly options: McumgrBridgeCreateOptions;
+  private readonly transport: McumgrTransportPort;
   private runGeneration = 0;
   private rejectActiveRun: ((error: McumgrError) => void) | null = null;
 
   constructor(options: McumgrBridgeCreateOptions) {
     this.options = options;
+    this.transport = options.transport;
   }
 
   private portRequest(): McumgrPortRequest | null {
@@ -94,7 +99,7 @@ export class McumgrBridge {
     for (const delay of RESUME_RETRY_DELAYS_MS) {
       if (delay > 0) await sleep(delay);
       try {
-        if (await this.options.resumeConnection()) return true;
+        if (await this.transport.resumeConnection()) return true;
       } catch {
         // The controller records its own failure state; keep retrying.
       }
@@ -118,7 +123,7 @@ export class McumgrBridge {
     const generation = ++this.runGeneration;
     this.status.value = { kind: 'busy', action };
     this.lastResult.value = '';
-    const wasConnected = this.options.isConnected.value;
+    const wasConnected = this.transport.isConnected.value;
     this.portYielding.value = wasConnected;
     let outcome: T | null = null;
     const cancelRace = new Promise<never>((_, reject) => {
@@ -126,7 +131,8 @@ export class McumgrBridge {
     });
     try {
       if (wasConnected) {
-        await Promise.race([this.options.suspendConnection(), cancelRace]);
+        this.options.beforeSuspend?.();
+        await Promise.race([this.transport.suspendConnection(), cancelRace]);
       }
       if (generation !== this.runGeneration) throw cancelledError();
       outcome = await Promise.race([work(port), cancelRace]);
@@ -189,7 +195,7 @@ export class McumgrBridge {
   private replayTrace(result: { traceFrames?: McumgrTraceFrame[] } | null | undefined): void {
     const frames = result?.traceFrames;
     if (!frames?.length) return;
-    this.options.ingestTraceFrames(frames);
+    this.transport.ingestTraceFrames(frames);
   }
 
   async execute(action: string, op: McumgrOp): Promise<string | null> {

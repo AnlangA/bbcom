@@ -265,8 +265,7 @@ export function createSessionCaptureController({
       notifyFramesCleared(sessionId);
       return;
     }
-    const hadRetainedFrames =
-      session.frames.length > 0 || session.pausedFrames.length > 0;
+    const hadRetainedFrames = session.frames.length > 0 || session.pausedFrames.length > 0;
     if (hadRetainedFrames) setRetainedFrameBytes(sessionId, 0);
     resetSessionFrames(session);
     accounting.resetFrameSequence(sessionId);

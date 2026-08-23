@@ -112,7 +112,12 @@ export function useSessionActions() {
     return sessions.isImportant(sessionId);
   }
 
-  function requestClearFrames(sessionId: string) {
+  function requestClearFrames(
+    sessionId: string,
+    clear: () => void = () => {
+      sessions.clearCapture(sessionId);
+    },
+  ) {
     if (!mutationPolicy.userMutationsAllowed.value) return;
     const session = sessions.session(sessionId);
     if (!session || !sessionHasClearableCapture(session)) return;
@@ -123,7 +128,7 @@ export function useSessionActions() {
       positiveText: t('common.clear'),
       negativeText: t('common.cancel'),
       onPositiveClick: () => {
-        sessions.clearCapture(sessionId);
+        clear();
       },
     });
   }

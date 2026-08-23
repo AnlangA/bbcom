@@ -41,11 +41,7 @@
           </template>
           {{ t('session.disconnect') }}
         </n-button>
-        <n-button
-          size="small"
-          :disabled="!sessionHasClearableCapture(session)"
-          @click="$emit('clear')"
-        >
+        <n-button size="small" :disabled="!captureCanClear" @click="$emit('clear')">
           <template #icon>
             <Trash2 class="icon-sm" />
           </template>
@@ -55,15 +51,15 @@
           v-if="isConnected"
           size="small"
           ghost
-          :type="session.capturePaused ? 'warning' : 'default'"
-          :title="session.capturePaused ? t('session.resume.title') : t('session.pause.title')"
+          :type="captureIsPaused ? 'warning' : 'default'"
+          :title="captureIsPaused ? t('session.resume.title') : t('session.pause.title')"
           @click="$emit('toggle-pause')"
         >
           <template #icon>
-            <Pause v-if="!session.capturePaused" class="icon-sm" />
+            <Pause v-if="!captureIsPaused" class="icon-sm" />
             <Play v-else class="icon-sm" />
           </template>
-          {{ session.capturePaused ? t('session.resume') : t('session.pause') }}
+          {{ captureIsPaused ? t('session.resume') : t('session.pause') }}
         </n-button>
         <n-button
           v-if="isConnected"
@@ -300,7 +296,7 @@
             class="toolbar-export-btn"
             size="small"
             quaternary
-            :disabled="session.frames.length === 0"
+            :disabled="captureFrames === 0"
             :loading="isExporting"
             :title="t('toolbar.exportData')"
             @click="$emit('export')"
@@ -316,6 +312,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import { NButton, NTag } from 'naive-ui';
 import AppSelect from '@/design-system/AppSelect.vue';
 import {
@@ -348,10 +345,11 @@ import type { PortLeaseConflict } from '@/generated/ipc-contracts';
 
 export type SessionViewMode = 'terminal' | 'waveform' | 'parser' | 'modbus' | 'shell' | 'mcumgr';
 
-defineProps<{
+const props = defineProps<{
   session: SerialSession;
-  /** Per-session invalidation pulse for the raw frame arrays. */
-  framesVersion: number;
+  capturePaused?: boolean;
+  captureFrameCount?: number;
+  captureHasData?: boolean;
   isConnected: boolean;
   isConnecting: boolean;
   reconnecting: boolean;
@@ -379,6 +377,14 @@ defineEmits<{
   'show-conflicting-session': [sessionId: string];
   rebind: [];
 }>();
+
+const captureIsPaused = computed(() => props.capturePaused ?? props.session.capturePaused);
+const captureFrames = computed(() => props.captureFrameCount ?? props.session.frames.length);
+const captureCanClear = computed(() =>
+  props.captureFrameCount === undefined
+    ? sessionHasClearableCapture(props.session)
+    : Boolean(props.captureHasData),
+);
 
 const appStore = useAppStore();
 

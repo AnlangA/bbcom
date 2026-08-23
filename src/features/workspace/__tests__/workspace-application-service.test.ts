@@ -1461,7 +1461,14 @@ test('captured-frame ordering, reset and trim boundaries preserve exact append s
   const state = system.application as unknown as AccountingProbe;
 
   assert.deepEqual(
-    system.application.queueCapturedFrame({ sessionId: 'alpha', frame: dataFrame('object', 1) }),
+    system.application.queueCapturedFrame({
+      sessionId: 'alpha',
+      frame: {
+        ...dataFrame('object', 1),
+        captureSeq: 0,
+        origin: 'serial-rx',
+      },
+    }),
     { accepted: true },
   );
   assert.deepEqual(

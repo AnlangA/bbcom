@@ -47,17 +47,19 @@ function createHarness(options: { connected?: boolean; portName?: string } = {})
   const resumeResult = { value: true };
   const controller = useSessionMcumgr({
     session: session as never,
-    isConnected,
-    suspendConnection: async () => {
-      suspends.push(Date.now());
-      isConnected.value = false;
+    transport: {
+      isConnected,
+      suspendConnection: async () => {
+        suspends.push(Date.now());
+        isConnected.value = false;
+      },
+      resumeConnection: async () => {
+        resumes.push(Date.now());
+        if (resumeResult.value) isConnected.value = true;
+        return resumeResult.value;
+      },
+      ingestTraceFrames: () => undefined,
     },
-    resumeConnection: async () => {
-      resumes.push(Date.now());
-      if (resumeResult.value) isConnected.value = true;
-      return resumeResult.value;
-    },
-    ingestTraceFrames: () => undefined,
     setConfig: (patch) => {
       patches.push(patch);
       session.value!.mcumgrConfig = { ...session.value!.mcumgrConfig, ...patch };
@@ -90,16 +92,18 @@ test('busy stays true until the yielded connection is restored', async () => {
   });
   const controller = useSessionMcumgr({
     session: session as never,
-    isConnected,
-    suspendConnection: async () => {
-      isConnected.value = false;
+    transport: {
+      isConnected,
+      suspendConnection: async () => {
+        isConnected.value = false;
+      },
+      resumeConnection: async () => {
+        await resumeGate;
+        isConnected.value = true;
+        return true;
+      },
+      ingestTraceFrames: () => undefined,
     },
-    resumeConnection: async () => {
-      await resumeGate;
-      isConnected.value = true;
-      return true;
-    },
-    ingestTraceFrames: () => undefined,
     setConfig: () => undefined,
   });
   mocked.invoke.mockResolvedValue({ resultJson: '{}' });

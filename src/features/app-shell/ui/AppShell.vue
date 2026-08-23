@@ -122,9 +122,13 @@
             >
           </div>
         </div>
-        <SessionRuntimeHost :sessions="sessions" :active-session-id="activeSession?.id ?? null" />
+        <SessionRuntimeHost
+          :sessions="sessions"
+          :active-session-id="activeSession?.id ?? null"
+          @active-raw-data="activeRawData = $event"
+        />
       </div>
-      <StatusBar :session="activeSession" :frames-version="activeFramesVersion" />
+      <StatusBar :session="activeSession" :raw-data="activeRawData" />
     </main>
 
     <CreateSessionDialog v-model:show="showCreateDialog" :preferred-port="preferredCreatePort" />
@@ -133,7 +137,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onErrorCaptured, onMounted, onUnmounted, ref } from 'vue';
+import {
+  computed,
+  defineAsyncComponent,
+  onErrorCaptured,
+  onMounted,
+  onUnmounted,
+  ref,
+  shallowRef,
+} from 'vue';
 import { NButton, useMessage } from 'naive-ui';
 import { Bot, BotOff, Cable, PanelLeftClose, PanelLeftOpen, Plus, Settings } from '@lucide/vue';
 import SessionTabs from '@/features/sessions/ui/SessionTabs.vue';
@@ -144,7 +156,11 @@ import { useAiWindowState } from '@/features/ai/application/use-ai-window-state'
 import { useAppShortcuts } from '@/features/app-shell/application/use-app-shortcuts';
 import { useSessionActions } from '@/features/sessions/application/use-session-actions';
 import { useWorkspaceUiStore } from '@/features/workspace';
-import { useSessionCatalog, useSessionMutationPolicy } from '@/features/sessions';
+import {
+  useSessionCatalog,
+  useSessionMutationPolicy,
+  type SessionRawDataView,
+} from '@/features/sessions';
 import { AUTO_LOG_FAILURE_EVENT } from '@/features/sessions/application/use-auto-log';
 import { t } from '@/lib/i18n';
 import {
@@ -170,9 +186,7 @@ const { visible: aiWindowVisible, toggle: toggleAiWindow } = useAiWindowState();
 
 const sessions = computed(() => catalog.sessions.value);
 const activeSession = computed(() => catalog.activeSession.value);
-const activeFramesVersion = computed(() =>
-  activeSession.value ? catalog.framesVersion(activeSession.value.id) : 0,
-);
+const activeRawData = shallowRef<SessionRawDataView | null>(null);
 const showCreateDialog = ref(false);
 const preferredCreatePort = ref('');
 const showSettings = ref(false);

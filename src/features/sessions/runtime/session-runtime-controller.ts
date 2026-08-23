@@ -15,7 +15,6 @@ import {
   type McumgrBridge,
 } from '@/features/sessions/application/mcumgr-bridge';
 import { createAutomationBridge } from '@/features/sessions/application/automation-bridge';
-import { mcumgrTraceFramesToDataFrames } from '@/lib/mcumgr-trace';
 import {
   AsyncSendLoop,
   type PortLeaseClient,
@@ -33,6 +32,10 @@ import { SessionProtocolRuntime } from './session-protocol-runtime';
 import { SessionRuntimeStatusRegistry } from './session-runtime-status';
 import type { SessionRuntimeUiState } from './session-ui-state';
 import { createSessionShellController, type SessionShellController } from '../../serial-shell';
+import {
+  createSessionTransceiver,
+  type SessionRawDataView,
+} from '@/features/sessions/application/session-transceiver';
 
 let nextRuntimeInstanceId = 0;
 
@@ -142,6 +145,8 @@ export interface SessionRuntimeController {
   readonly viewMode: Ref<SessionRuntimeViewMode>;
   /** View-local UI state retained across SessionView remounts. */
   readonly uiState: SessionRuntimeUiState;
+  /** Read-only display projection owned by the shared RX/TX layer. */
+  readonly rawData: SessionRawDataView;
   readonly parser: SessionRuntimeProtocolView;
   readonly modbus: SessionRuntimeModbusController;
   readonly mcumgr: SessionRuntimeMcumgrController;
@@ -152,7 +157,8 @@ export interface SessionRuntimeController {
   disconnect: () => Promise<void>;
   send: (data: string, isHex: boolean) => Promise<boolean>;
   sendBytes: (payload: Uint8Array, options?: SerialWriteOptions) => Promise<SerialSendResult>;
-  rawBytes: (callback: (bytes: Uint8Array) => void) => () => void;
+  clearRawData: () => void;
+  setCapturePaused: (paused: boolean) => void;
   sendBreak: () => Promise<boolean>;
   startSendLoop: (data: string, isHex: boolean) => boolean;
   stopSendLoop: () => void;
@@ -193,47 +199,51 @@ export function useSessionRuntimeController(
   });
   const feedTriggerBytes = automation.triggers.feedBytes.bind(automation.triggers);
 
-  const serial = bridgeFactory.createSerialBridge({
-    sessionId: session.value.id,
-    portName: () => session.value.portName,
-    config: () => session.value.portConfig,
-    options: {
-      onDisconnect: () => {
-        notifications.warning(t('serial.error.disconnected'));
+  const transceiver = createSessionTransceiver({
+    capture,
+    createSerial: bridgeFactory.createSerialBridge,
+    serial: {
+      sessionId: session.value.id,
+      portName: () => session.value.portName,
+      config: () => session.value.portConfig,
+      options: {
+        onDisconnect: () => {
+          notifications.warning(t('serial.error.disconnected'));
+        },
+        onOverflow: (total) => {
+          notifications.warning(t('serial.error.rxOverflow', { bytes: formatBytes(total) }));
+          capture.updateDroppedBytes(total);
+        },
+        autoReconnect: () => appStore.autoReconnect,
+        onReconnecting: () => {
+          notifications.info(t('serial.error.reconnecting'));
+        },
+        onReconnected: () => {
+          notifications.success(t('serial.error.reconnected'));
+        },
       },
-      onOverflow: (total) => {
-        notifications.warning(t('serial.error.rxOverflow', { bytes: formatBytes(total) }));
-        capture.updateDroppedBytes(total);
+      dependencies: {
+        leaseClient: dependencies.portLeaseClient,
+        sessionName: () => session.value.portName,
       },
-      autoReconnect: () => appStore.autoReconnect,
-      onReconnecting: () => {
-        notifications.info(t('serial.error.reconnecting'));
-      },
-      onReconnected: () => {
-        notifications.success(t('serial.error.reconnected'));
-      },
+      appendAutoLogFrame: (id, frame) => automation.autoLog.appendFrame(id, frame),
     },
-    dependencies: {
-      leaseClient: dependencies.portLeaseClient,
-      sessionName: () => session.value.portName,
-    },
-    appendAutoLogFrame: (id, frame) => automation.autoLog.appendFrame(id, frame),
   });
   const connectionErrorText = computed(() =>
-    serial.connectionFailure.value
-      ? serialConnectionFailureMessage(serial.connectionFailure.value)
-      : serial.error.value,
+    transceiver.connectionFailure.value
+      ? serialConnectionFailureMessage(transceiver.connectionFailure.value)
+      : transceiver.error.value,
   );
-  const serialClosing = serial.isClosing ?? ref(false);
+  const serialClosing = transceiver.isClosing ?? ref(false);
   const stopRuntimeStatusProjection = watch(
     [
-      serial.isConnecting,
-      serial.isConnected,
+      transceiver.isConnecting,
+      transceiver.isConnected,
       serialClosing,
-      serial.reconnecting,
-      serial.connectionFailure,
-      serial.error,
-      serial.totalDroppedBytes,
+      transceiver.reconnecting,
+      transceiver.connectionFailure,
+      transceiver.error,
+      transceiver.totalDroppedBytes,
     ],
     ([isConnecting, isConnected, isClosing, reconnecting, failure, error, droppedBytes]) => {
       const phase = isClosing
@@ -287,8 +297,8 @@ export function useSessionRuntimeController(
     // Reconfiguration deliberately retains the historical parser-panel
     // behavior, including paused capture data. This generator avoids creating
     // a second full frame array; the normal RX path below remains raw-only.
-    yield* session.value.frames;
-    yield* session.value.pausedFrames;
+    const timeline = transceiver.rawData.timeline.value;
+    if (timeline) yield* timeline.all;
   }
 
   const stopParserConfigWatch = watch(
@@ -302,12 +312,12 @@ export function useSessionRuntimeController(
     },
     { immediate: true, flush: 'sync' },
   );
-  const removeParserFrameClearObserver = capture.onCleared(() => {
+  const removeParserFrameClearObserver = transceiver.onCaptureCleared(() => {
     protocolRuntime.clear();
     parserUiPublisher.cancel();
     publishParserSnapshot();
   });
-  const removeParserRawObserver = serial.rawBytes((bytes) => {
+  const removeParserRawObserver = transceiver.onReceive((bytes) => {
     if (protocolRuntime.feed(bytes)) parserUiPublisher.markDirty();
   });
   const parser: SessionRuntimeProtocolView = {
@@ -318,7 +328,7 @@ export function useSessionRuntimeController(
     resetVersion: readonly(parserResetVersion),
   };
 
-  const removeTriggerRawObserver = serial.rawBytes((bytes) => {
+  const removeTriggerRawObserver = transceiver.onReceive((bytes) => {
     // Feed the matcher before the UI capture queue.  It has its own streaming
     // decoder and response FIFO, so background rendering cannot delay or
     // reorder trigger recognition.
@@ -339,12 +349,10 @@ export function useSessionRuntimeController(
     modbusValueDrafts: ref<Record<string, string>>({}),
     shellSearch: ref(''),
   };
-  const shellController = createSessionShellController(() => session.value.shellConfig, {
-    sendBytes: (payload, writeOptions) => serial.sendBytes(payload, writeOptions),
-    rawBytes: (callback) => serial.rawBytes(callback),
-    registerAutomation: (port) => serial.serialTransactions.registerAutomation(port),
-    onCleared: (listener) => capture.onCleared(listener),
-  });
+  const shellController = createSessionShellController(
+    () => session.value.shellConfig,
+    transceiver,
+  );
   const stopShellConfigWatch = watch(
     () => session.value.shellConfig,
     (config) => shellController.configure(config),
@@ -358,27 +366,13 @@ export function useSessionRuntimeController(
   };
   const mcumgr = bridgeFactory.createMcumgrBridge({
     session: computed(() => session.value),
-    isConnected: serial.isConnected,
-    // Port yield: MCUmgr operations close the frontend connection cleanly,
-    // let Rust own the port for the operation, then reconnect afterwards.
-    suspendConnection: async () => {
-      stopSendLoop();
-      await serial.stop();
-    },
-    resumeConnection: () => serial.start(),
-    ingestTraceFrames: (frames) => {
-      const mapped = mcumgrTraceFramesToDataFrames(frames);
-      for (let index = 0; index < mapped.length; index += 1) {
-        capture.add(mapped[index], { publish: index === mapped.length - 1 });
-      }
-    },
+    transport: transceiver,
+    beforeSuspend: () => stopSendLoop(),
     setConfig: (patch) => sessionDocument.setMcumgrConfig(session.value.id, patch),
   });
   const modbus = bridgeFactory.createModbusBridge({
     session: computed(() => session.value),
-    sendBytes: (payload, writeOptions) => serial.sendBytes(payload, writeOptions),
-    rawBytes: (callback) => serial.rawBytes(callback),
-    isConnected: serial.isConnected,
+    transport: transceiver,
     waveformRef,
     showWaveform: () => {
       viewMode.value = 'waveform';
@@ -393,7 +387,7 @@ export function useSessionRuntimeController(
     pause: (signal) => macroRunner.pause(signal),
     resume: () => macroRunner.resume(),
     run: (definition) =>
-      serial.serialTransactions.snapshot().manualWriteAllowed
+      transceiver.serialTransactions.snapshot().manualWriteAllowed
         ? macroRunner.run(definition)
         : Promise.resolve({ completed: 0, failedAt: 0, aborted: true }),
     status: readonly(computed(() => (macroRunner.running.value ? 'running' : 'idle'))),
@@ -411,7 +405,7 @@ export function useSessionRuntimeController(
     () => appStore.loopIntervalMs,
     () => notifications.error(t('send.error.failed')),
   );
-  serial.serialTransactions.registerAutomation({
+  transceiver.serialTransactions.registerAutomation({
     id: 'cyclic-send',
     async pause() {
       if (!sendLoop.isRunning || !loopPayload) return null;
@@ -424,7 +418,7 @@ export function useSessionRuntimeController(
       };
     },
   });
-  serial.serialTransactions.registerAutomation({
+  transceiver.serialTransactions.registerAutomation({
     id: 'macro-runner',
     async pause({ signal }) {
       if (!macroRunner.running.value) return null;
@@ -432,14 +426,14 @@ export function useSessionRuntimeController(
       return { restore: async () => macroRunner.resume() };
     },
   });
-  serial.serialTransactions.registerAutomation({
+  transceiver.serialTransactions.registerAutomation({
     id: 'modbus-master',
     async pause({ signal }) {
       await modbus.master.pauseForSerialTransaction(signal);
       return { restore: async () => modbus.master.resumeAfterSerialTransaction() };
     },
   });
-  serial.serialTransactions.registerAutomation({
+  transceiver.serialTransactions.registerAutomation({
     id: 'trigger-responses',
     async pause({ signal }) {
       await automation.triggers.pause(signal);
@@ -456,12 +450,12 @@ export function useSessionRuntimeController(
     if (disposed) return false;
     // While MCUmgr owns the port the toolbar cannot open a competing handle.
     if (mcumgr.busy.value) return false;
-    const ok = await serial.start();
-    if (!ok && serial.error.value) {
+    const ok = await transceiver.start();
+    if (!ok && transceiver.error.value) {
       notifications.error(
-        serial.connectionFailure.value
-          ? serialConnectionFailureMessage(serial.connectionFailure.value)
-          : t('serial.error.connectFailed', { error: serial.error.value }),
+        transceiver.connectionFailure.value
+          ? serialConnectionFailureMessage(transceiver.connectionFailure.value)
+          : t('serial.error.connectFailed', { error: transceiver.error.value }),
       );
     }
     return ok;
@@ -470,12 +464,12 @@ export function useSessionRuntimeController(
   async function disconnect(): Promise<void> {
     if (mcumgr.busy.value) return;
     stopSendLoop();
-    await serial.stop();
+    await transceiver.stop();
   }
 
   async function send(data: string, isHex: boolean): Promise<boolean> {
     if (disposed) return false;
-    const result = await serial.send(data, isHex);
+    const result = await transceiver.send(data, isHex);
     const completed = result.outcome === 'complete';
     if (completed) sessionDocument.addSendHistory(session.value.id, { data, isHex });
     return completed;
@@ -486,7 +480,7 @@ export function useSessionRuntimeController(
     if (sendingBreak.value || disposed) return false;
     sendingBreak.value = true;
     try {
-      const ok = await serial.sendBreak();
+      const ok = await transceiver.sendBreak();
       if (ok) notifications.success(t('message.breakSent'));
       else notifications.warning(t('message.breakFailed'));
       return ok;
@@ -498,8 +492,8 @@ export function useSessionRuntimeController(
   function startSendLoop(data: string, isHex: boolean): boolean {
     if (
       disposed ||
-      !serial.isConnected.value ||
-      !serial.serialTransactions.snapshot().manualWriteAllowed ||
+      !transceiver.isConnected.value ||
+      !transceiver.serialTransactions.snapshot().manualWriteAllowed ||
       looping.value ||
       data.length === 0
     ) {
@@ -560,7 +554,7 @@ export function useSessionRuntimeController(
       // Stop the native stream before closing auto-log. This lets the serial
       // adapter enqueue its final RX bytes before the log footer is committed.
       try {
-        assertSerialStopEvidence(await serial.stop());
+        assertSerialStopEvidence(await transceiver.stop());
       } catch (error) {
         failures.push(error);
       }
@@ -586,7 +580,6 @@ export function useSessionRuntimeController(
       try {
         await prepareShutdown();
       } finally {
-        await serial.serialTransactions.dispose();
         viewBinding.value = null;
         shellController.dispose();
         stopShellConfigWatch();
@@ -602,13 +595,14 @@ export function useSessionRuntimeController(
           document.removeEventListener('visibilitychange', onParserVisibilityChange);
         }
         removeTriggerRawObserver();
+        await transceiver.dispose();
         automation.dispose();
       }
     })();
     return disposePromise;
   }
 
-  stopConnectionWatch = watch(serial.isConnected, (connected) => {
+  stopConnectionWatch = watch(transceiver.isConnected, (connected) => {
     if (!connected) {
       stopSendLoop();
       macroRunner.abort();
@@ -622,33 +616,35 @@ export function useSessionRuntimeController(
     void dispose();
   });
 
-  const sessionLinkUp = computed(() => serial.isConnected.value || mcumgr.portYielding.value);
+  const sessionLinkUp = computed(() => transceiver.isConnected.value || mcumgr.portYielding.value);
 
   return {
     sessionId: session.value.id,
     instanceId,
-    isConnecting: readonly(serial.isConnecting),
-    isConnected: readonly(serial.isConnected),
+    isConnecting: readonly(transceiver.isConnecting),
+    isConnected: readonly(transceiver.isConnected),
     sessionLinkUp: readonly(sessionLinkUp),
-    reconnecting: readonly(serial.reconnecting),
+    reconnecting: readonly(transceiver.reconnecting),
     error: readonly(connectionErrorText),
-    connectionFailure: readonly(serial.connectionFailure),
-    totalDroppedBytes: readonly(serial.totalDroppedBytes),
+    connectionFailure: readonly(transceiver.connectionFailure),
+    totalDroppedBytes: readonly(transceiver.totalDroppedBytes),
     sendingBreak: readonly(sendingBreak),
     looping: readonly(looping),
     viewMode,
     uiState,
+    rawData: transceiver.rawData,
     parser,
     modbus,
     mcumgr,
     shell,
     macro,
-    serialTransactions: serial.serialTransactions,
+    serialTransactions: transceiver.serialTransactions,
     connect,
     disconnect,
     send,
-    sendBytes: serial.sendBytes,
-    rawBytes: serial.rawBytes,
+    sendBytes: (payload, options) => transceiver.sendBytes(payload, options),
+    clearRawData: () => transceiver.clearRawData(),
+    setCapturePaused: (paused) => transceiver.setCapturePaused(paused),
     sendBreak,
     startSendLoop,
     stopSendLoop,

@@ -102,20 +102,36 @@ Hard rules:
 
 ## Data Flows
 
+### RX/TX ownership: shared session transceiver
+
+Every resident session owns exactly one `SessionTransceiver`. It is the public
+data plane shared by Shell, Modbus, MCUmgr, parser, triggers, macros, and the
+presentation layer:
+
+- function layers call its `send` / `sendBytes` APIs and subscribe through
+  `onReceive`; they never create a separate serial stream;
+- native RX and successfully written TX are retained in the same session
+  capture timeline;
+- MCUmgr temporarily yields the physical port to Rust, then replays its exact
+  TX/RX wire trace through the same transceiver;
+- packet, waveform, export, toolbar, and status presentation read the
+  transceiver's read-only `rawData` projection.
+
 ### RX: device to screen
 
 1. `tauri-plugin-serialplugin` delivers raw binary channel data to the resident
    session runtime.
-2. Raw-byte observers receive the exact plugin chunk first (Modbus CRC matching).
+2. The session transceiver publishes the exact plugin chunk to every function
+   subscriber first (for example, Modbus CRC matching and Shell decoding).
 3. The chunk enters `SerialRxQueue` (2 MiB / 512 chunks cap).
 4. The runtime drains at 64 KiB, 64 chunks, or 16 ms.
-5. `SessionCaptureController` appends the coalesced display frame and bumps the
-   per-session frame version.
+5. The transceiver-backed `SessionCaptureController` appends the coalesced raw
+   frame and bumps the per-session frame version consumed by presentation.
 
 ### TX: caller to device
 
-1. Quick commands, macros, triggers, AI fill, and Modbus enter the session
-   `SerialWriteScheduler`.
+1. Quick commands, Shell, macros, triggers, Modbus, and other function layers
+   enter the shared transceiver, then the session `SerialWriteScheduler`.
 2. Text/HEX sends pass through `buildSendPayload`.
 3. One bounded FIFO operation owns a logical send (4096-byte chunks).
 4. A complete TX frame is appended only after full success.
