@@ -41,7 +41,11 @@
           </template>
           {{ t('session.disconnect') }}
         </n-button>
-        <n-button size="small" :disabled="session.frames.length === 0" @click="$emit('clear')">
+        <n-button
+          size="small"
+          :disabled="!sessionHasClearableCapture(session)"
+          @click="$emit('clear')"
+        >
           <template #icon>
             <Trash2 class="icon-sm" />
           </template>
@@ -337,6 +341,7 @@ import {
   WrapText,
 } from '@lucide/vue';
 import { useAppStore } from '@/features/settings/store/app-store';
+import { sessionHasClearableCapture } from '@/lib/session-store-helpers';
 import { t } from '@/lib/i18n';
 import type { DisplayMode, SerialSession } from '@/types';
 import type { PortLeaseConflict } from '@/generated/ipc-contracts';

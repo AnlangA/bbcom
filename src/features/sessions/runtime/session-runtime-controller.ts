@@ -368,10 +368,9 @@ export function useSessionRuntimeController(
     resumeConnection: () => serial.start(),
     ingestTraceFrames: (frames) => {
       const mapped = mcumgrTraceFramesToDataFrames(frames);
-      for (const frame of mapped) {
-        capture.add(frame, { publish: false });
+      for (let index = 0; index < mapped.length; index += 1) {
+        capture.add(mapped[index], { publish: index === mapped.length - 1 });
       }
-      if (mapped.length > 0) capture.publish();
     },
     setConfig: (patch) => sessionDocument.setMcumgrConfig(session.value.id, patch),
   });

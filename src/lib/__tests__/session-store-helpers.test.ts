@@ -9,6 +9,7 @@ import {
   patchIdentifiedItem,
   removeIdentifiedItem,
   resetSessionFrames,
+  sessionHasClearableCapture,
   trimFrameBuffer,
   trimSessionsToGlobalByteLimit,
   upsertSendHistory,
@@ -166,6 +167,18 @@ test('resetSessionFrames clears live and paused buffers plus counters', () => {
   assert.equal(session.txBytes, 0);
   assert.equal(session.rxFrames, 0);
   assert.equal(session.txFrames, 0);
+});
+
+test('sessionHasClearableCapture treats retained buffers and cumulative counters as clearable', () => {
+  const session = createSessionRecord('s1', 'COM1', cfg);
+  assert.equal(sessionHasClearableCapture(session), false);
+
+  session.txBytes = 4;
+  assert.equal(sessionHasClearableCapture(session), true);
+
+  resetSessionFrames(session);
+  session.frames.push(frame('a', 'RX', [1]));
+  assert.equal(sessionHasClearableCapture(session), true);
 });
 
 test('upsertSendHistory moves duplicates to the front and caps length', () => {

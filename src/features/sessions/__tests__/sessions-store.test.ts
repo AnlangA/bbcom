@@ -68,6 +68,17 @@ test('addFrame appends to frames and counts bytes/frames', () => {
   assert.equal(sess.txFrames, 1);
 });
 
+test('mcumgr trace frames update the shared TX/RX counters', () => {
+  const s = store();
+  const id = s.createSession('COM1', cfg);
+  s.addFrame(id, { direction: 'TX', data: new Uint8Array([1, 2]), origin: 'mcumgr-trace' });
+  s.addFrame(id, { direction: 'RX', data: new Uint8Array([3, 4, 5]), origin: 'mcumgr-trace' });
+  const sess = s.sessions[0];
+  assert.equal(sess.frames.length, 2);
+  assert.equal(sess.txBytes, 2);
+  assert.equal(sess.rxBytes, 3);
+});
+
 test('pause routes frames off-screen; counters advance; resume flushes in order', () => {
   const s = store();
   const id = s.createSession('COM1', cfg);

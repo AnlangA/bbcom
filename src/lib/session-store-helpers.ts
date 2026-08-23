@@ -209,6 +209,23 @@ export function resetSessionFrames(session: SerialSession): void {
   session.rxFrames = 0;
 }
 
+/** True when clear should reset retained buffers and/or cumulative TX/RX counters. */
+export function sessionHasClearableCapture(
+  session: Pick<
+    SerialSession,
+    'frames' | 'pausedFrames' | 'txBytes' | 'rxBytes' | 'txFrames' | 'rxFrames'
+  >,
+): boolean {
+  return (
+    session.frames.length > 0 ||
+    session.pausedFrames.length > 0 ||
+    session.txBytes > 0 ||
+    session.rxBytes > 0 ||
+    session.txFrames > 0 ||
+    session.rxFrames > 0
+  );
+}
+
 export function upsertSendHistory(
   history: readonly SendHistoryEntry[],
   entry: SendHistoryEntry,

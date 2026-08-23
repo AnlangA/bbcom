@@ -5,13 +5,19 @@
     </span>
     <template v-if="session">
       <div class="traffic-stats" :aria-label="t('session.stats.aria')">
-        <span class="mini-stat tx" :title="`TX ${session.txFrames} ${t('status.frames')}`">
+        <span
+          class="mini-stat tx"
+          :title="`TX ${trafficStats.txFrames} ${t('status.frames')}`"
+        >
           <span class="mini-label">TX</span>
-          {{ formatBytes(session.txBytes) }}
+          {{ formatBytes(trafficStats.txBytes) }}
         </span>
-        <span class="mini-stat rx" :title="`RX ${session.rxFrames} ${t('status.frames')}`">
+        <span
+          class="mini-stat rx"
+          :title="`RX ${trafficStats.rxFrames} ${t('status.frames')}`"
+        >
           <span class="mini-label">RX</span>
-          {{ formatBytes(session.rxBytes) }}
+          {{ formatBytes(trafficStats.rxBytes) }}
         </span>
       </div>
       <div class="status-group">
@@ -62,6 +68,17 @@ const props = defineProps<{
 }>();
 const { isConnected } = useSessionRuntimeStatuses();
 const connected = computed(() => Boolean(props.session && isConnected(props.session.id)));
+
+const trafficStats = computed(() => {
+  void props.framesVersion;
+  const session = props.session;
+  return {
+    txBytes: session?.txBytes ?? 0,
+    rxBytes: session?.rxBytes ?? 0,
+    txFrames: session?.txFrames ?? 0,
+    rxFrames: session?.rxFrames ?? 0,
+  };
+});
 
 import { maxBufferFrames } from '@/lib/buffer-config';
 

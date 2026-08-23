@@ -316,6 +316,10 @@ test('StatusBar renders idle and connected telemetry, including reset-safe rates
   session.txBytes = 1_124;
   session.rxBytes = 2_248;
   session.frames.push({ id: 'f2', direction: 'TX', timestamp: now, data: new Uint8Array([2]) });
+  await wrapper.setProps({ framesVersion: 1 });
+  await wrapper.vm.$nextTick();
+  expect(wrapper.text()).toContain('1.1 KB');
+  expect(wrapper.text()).toContain('2.2 KB');
   await vi.advanceTimersByTimeAsync(1_000);
   await wrapper.vm.$nextTick();
   expect(wrapper.text()).toContain('TX 1.0 KB/s');
@@ -326,7 +330,14 @@ test('StatusBar renders idle and connected telemetry, including reset-safe rates
   session.txBytes = 5;
   session.rxBytes = 7;
   session.frames.splice(0, session.frames.length);
+  await wrapper.setProps({ framesVersion: 2 });
+  await wrapper.vm.$nextTick();
+  expect(wrapper.text()).toContain('5 B');
+  expect(wrapper.text()).toContain('7 B');
   await vi.advanceTimersByTimeAsync(1_000);
+  await wrapper.vm.$nextTick();
+  expect(wrapper.text()).toContain('TX 5 B/s');
+  expect(wrapper.text()).toContain('RX 7 B/s');
   await wrapper.vm.$nextTick();
   expect(wrapper.text()).toContain('TX 5 B/s');
   expect(wrapper.text()).toContain('RX 7 B/s');

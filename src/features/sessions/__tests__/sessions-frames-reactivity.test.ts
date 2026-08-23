@@ -206,11 +206,26 @@ test('per-session frame version advances only for live or paused frame-buffer mu
       4,
       'clearing non-empty buffers emits one pulse',
     );
+
+    store.addFrame(id, { direction: 'TX', data: new Uint8Array([1, 2, 3]) });
+    while (store.sessions[0].frames.length > 0) {
+      store.sessions[0].frames.shift();
+    }
+    assert.equal(store.sessions[0].txBytes, 3);
+    assert.equal(store.sessions[0].frames.length, 0);
+    store.clearFrames(id);
+    assert.equal(store.sessions[0].txBytes, 0);
+    assert.equal(
+      store.getSessionFramesVersion(id),
+      6,
+      'clearing counter-only traffic after buffer trim emits one pulse',
+    );
+
     store.clearFrames(id);
     assert.equal(
       store.getSessionFramesVersion(id),
-      4,
-      'clearing already-empty buffers is not a frame mutation',
+      6,
+      'clearing already-empty capture is not a frame mutation',
     );
   });
 });
