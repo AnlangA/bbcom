@@ -5,6 +5,7 @@ import { useAppStore } from '@/features/settings/store/app-store';
 import { logger } from '@/lib/logger';
 import { t } from '@/lib/i18n';
 import type { PortConfig } from '@/types';
+import { sessionHasClearableCapture } from '@/lib/session-store-helpers';
 import {
   SESSION_APPLICATION_SERVICES_KEY,
   type SessionApplicationServices,
@@ -111,10 +112,15 @@ export function useSessionActions() {
     return sessions.isImportant(sessionId);
   }
 
-  function requestClearFrames(sessionId: string) {
+  function requestClearFrames(
+    sessionId: string,
+    clear: () => void = () => {
+      sessions.clearCapture(sessionId);
+    },
+  ) {
     if (!mutationPolicy.userMutationsAllowed.value) return;
     const session = sessions.session(sessionId);
-    if (!session || session.frames.length === 0) return;
+    if (!session || !sessionHasClearableCapture(session)) return;
 
     getDialog()?.warning({
       title: t('dialog.clearDataTitle'),
@@ -122,7 +128,7 @@ export function useSessionActions() {
       positiveText: t('common.clear'),
       negativeText: t('common.cancel'),
       onPositiveClick: () => {
-        sessions.clearCapture(sessionId);
+        clear();
       },
     });
   }

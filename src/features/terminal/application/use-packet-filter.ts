@@ -4,7 +4,7 @@ import { TERMINAL_CACHE_ENTRY_MAX_BYTES } from '@/types/constants';
 import type { DataFrame, DirectionFilter, PacketViewMode, SearchMode } from '@/types';
 
 interface PacketFilterOptions {
-  frames: Ref<DataFrame[]>;
+  frames: Readonly<Ref<readonly DataFrame[]>>;
   framesVersion?: Readonly<Ref<unknown>>;
   searchMode: Ref<SearchMode>;
   packetViewMode: Ref<PacketViewMode>;
@@ -47,8 +47,8 @@ export function usePacketFilter({
   const searchQuery = ref('');
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
-  let cachedFiltered: DataFrame[] = [];
-  let cachedSource: DataFrame[] | null = null;
+  let cachedFiltered: readonly DataFrame[] = [];
+  let cachedSource: readonly DataFrame[] | null = null;
   let cachedSourceCount = 0;
   let cachedSourceLast: DataFrame | undefined;
   let needsFullRebuild = true;
@@ -84,20 +84,20 @@ export function usePacketFilter({
     return getTextSearchData(frame).includes(query);
   }
 
-  function sourceWasReplaced(source: DataFrame[]): boolean {
+  function sourceWasReplaced(source: readonly DataFrame[]): boolean {
     if (!cachedSource || cachedSourceCount === 0) return false;
     // For a pure append, the frame that used to end the source is still at the
     // previous final index. A rolling trim, clear, or replacement violates it.
     return source.length < cachedSourceCount || source[cachedSourceCount - 1] !== cachedSourceLast;
   }
 
-  function snapshotSource(source: DataFrame[]): void {
+  function snapshotSource(source: readonly DataFrame[]): void {
     cachedSource = source;
     cachedSourceCount = source.length;
     cachedSourceLast = source[source.length - 1];
   }
 
-  function markSourceReplacement(source: DataFrame[]): void {
+  function markSourceReplacement(source: readonly DataFrame[]): void {
     if (sourceReplacementPending || !sourceWasReplaced(source)) return;
     sourceReplacementPending = true;
     needsFullRebuild = true;
@@ -112,7 +112,7 @@ export function usePacketFilter({
     mergedNeedsFullRebuild = false;
   }
 
-  function reconcileMerged(source: DataFrame[]): readonly DataFrame[] {
+  function reconcileMerged(source: readonly DataFrame[]): readonly DataFrame[] {
     const replaced =
       source.length < mergedSourceCount ||
       (mergedSourceCount > 0 && source[mergedSourceCount - 1] !== mergedSourceLast);
@@ -188,7 +188,7 @@ export function usePacketFilter({
       for (let index = previousSourceCount; index < source.length; index += 1) {
         const frame = source[index];
         if (frame && matchesFilter(frame, query, hasDirection, hasSearch, hexNeedle)) {
-          cachedFiltered.push(frame);
+          (cachedFiltered as DataFrame[]).push(frame);
         }
       }
     }

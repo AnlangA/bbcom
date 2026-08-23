@@ -18,6 +18,7 @@ import {
   WorkspaceFrameMutationBuilder,
   hydrateWorkspaceFrame,
   hydrateWorkspaceSession,
+  projectWorkspaceFrame,
   projectWorkspaceSessionMutations,
   stageWorkspaceHydration,
   toIpcFramePayload,
@@ -523,6 +524,25 @@ function frame(id: string, bytes: number, timestamp = 1) {
     data: new Uint8Array(bytes).fill(1),
   };
 }
+
+test('frame projection accepts and strips runtime capture identity metadata', () => {
+  const captured = {
+    ...frame('captured-frame', 3, 42),
+    captureSeq: 7,
+    origin: 'mcumgr-trace' as const,
+  };
+
+  const projected = projectWorkspaceFrame(captured);
+
+  assert.deepEqual(projected, {
+    id: 'captured-frame',
+    direction: 'RX',
+    timestampMs: 42,
+    data: captured.data,
+  });
+  assert.equal('captureSeq' in projected, false);
+  assert.equal('origin' in projected, false);
+});
 
 test('frame builder flushes on time/count/bytes and rejects limits before mutating pending state', () => {
   const builder = new WorkspaceFrameMutationBuilder({

@@ -19,7 +19,7 @@ export const SERIAL_SHELL_REPLAY_MAX_CHARS = 256 * 1024;
 
 export interface SessionShellControllerPorts {
   sendBytes(payload: Uint8Array, options?: SerialWriteOptions): Promise<SerialSendResult>;
-  rawBytes(callback: (bytes: Uint8Array) => void): () => void;
+  onReceive(callback: (bytes: Uint8Array) => void): () => void;
   registerAutomation(port: SerialAutomationPausePort): () => void;
   onCleared(listener: () => void): () => void;
   scheduler?: SerialTimerScheduler;
@@ -125,7 +125,7 @@ export function createSessionShellController(
     for (const listener of resetListeners) listener();
   }
 
-  const stopRaw = ports.rawBytes((bytes) => {
+  const stopRaw = ports.onReceive((bytes) => {
     if (disposed || bytes.length === 0) return;
     const decoded = decoder.push(bytes);
     if (decoded.length === 0) return;

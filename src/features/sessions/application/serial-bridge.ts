@@ -1,6 +1,8 @@
 import { onScopeDispose, ref, shallowRef, type Ref } from 'vue';
-import { useSessionCapture } from '@/features/sessions/ports/session-ports';
-import { useSessionFrames } from './use-session-frames';
+import {
+  useSessionCapture,
+  type SessionCapturePort,
+} from '@/features/sessions/ports/session-ports';
 import { useAutoLog } from './use-auto-log';
 import type { DataFrame } from '@/types';
 import {
@@ -47,6 +49,8 @@ export interface SerialBridgeCreateOptions {
   config: PortConfig | (() => PortConfig);
   options: SerialConnectionOptions | undefined;
   dependencies: SerialConnectionDependencies;
+  /** Capture storage injected by the owning session transceiver. */
+  capture?: SessionCapturePort;
   appendAutoLogFrame: (sessionId: string, frame: DataFrame) => void;
 }
 
@@ -70,8 +74,7 @@ export class SerialBridge {
   private disposed = false;
 
   constructor(options: SerialBridgeCreateOptions) {
-    const capture = useSessionCapture(options.sessionId);
-    const { addFrame, publishFrames } = useSessionFrames(options.sessionId);
+    const capture = options.capture ?? useSessionCapture(options.sessionId);
 
     this.controller = createSerialConnectionController(
       options.sessionId,
@@ -92,8 +95,8 @@ export class SerialBridge {
         sink: {
           setConnected: (_id, connected) => capture.projectConnected(connected),
           updateDroppedBytes: (_id, total) => capture.updateDroppedBytes(total),
-          addFrame: (_id, frame, frameOptions) => addFrame(frame, frameOptions),
-          publishFrames: () => publishFrames(),
+          addFrame: (_id, frame, frameOptions) => capture.add(frame, frameOptions),
+          publishFrames: () => capture.publish(),
           appendAutoLogFrame: (id, frame) => options.appendAutoLogFrame(id, frame),
         },
       },
@@ -163,14 +166,14 @@ export class SerialBridge {
     return this.controller.stop();
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribe();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibilityChange);
     }
-    void this.controller.dispose();
+    await this.controller.dispose();
   }
 }
 

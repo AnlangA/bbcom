@@ -178,6 +178,7 @@ interface FakeSerial {
   sendBytes: ReturnType<typeof vi.fn>;
   sendBreak: ReturnType<typeof vi.fn>;
   rawBytes: ReturnType<typeof vi.fn>;
+  dispose: ReturnType<typeof vi.fn>;
   serialTransactions: {
     registerAutomation: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>;
@@ -289,6 +290,7 @@ function makeSerial(): FakeSerial {
       observers.add(callback);
       return () => observers.delete(callback);
     }),
+    dispose: vi.fn(async () => serial.serialTransactions.dispose()),
     serialTransactions: {
       registerAutomation: vi.fn(() => () => undefined),
       dispose: vi.fn(async () => undefined),

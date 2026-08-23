@@ -13,7 +13,9 @@
     -->
     <SessionToolbar
       :session="props.session"
-      :frames-version="visibleFramesVersion"
+      :capture-paused="capturePaused"
+      :capture-frame-count="captureFrameCount"
+      :capture-has-data="captureHasData"
       :is-connected="runtime.sessionLinkUp.value"
       :is-connecting="runtime.isConnecting.value"
       :reconnecting="runtime.reconnecting.value"
@@ -48,7 +50,7 @@
       <ExportDialog
         v-if="exportDialogVisible || isExporting"
         :show="exportDialogVisible"
-        :frames="props.session.frames"
+        :frames="displayFrames"
         :is-exporting="isExporting"
         :progress="progress"
         @confirm="handleExport"
@@ -65,7 +67,7 @@
         <WaveformPanel
           v-if="viewMode === 'waveform'"
           ref="waveformRef"
-          :frames="props.session.frames"
+          :frames="displayFrames"
           :frames-version="visibleFramesVersion"
           direction="RX"
           :mode="props.session.waveformSourceMode"
@@ -132,7 +134,7 @@
         />
         <DataPacketList
           v-else
-          :frames="props.session.frames"
+          :frames="displayFrames"
           :frames-version="visibleFramesVersion"
           :highlights="props.session.highlights"
         />
@@ -173,7 +175,6 @@ import SendPanel from '@/features/send-panel/ui/SendPanel.vue';
 import SessionToolbar from './SessionToolbar.vue';
 import SessionRebindDialog from './SessionRebindDialog.vue';
 import {
-  useSessionCapture,
   useSessionCatalog,
   useSessionDocument,
   useSessionMutationPolicy,
@@ -222,12 +223,23 @@ const McumgrPanel = defineAsyncComponent(
 const ExportDialog = defineAsyncComponent(() => import('./ExportDialog.vue'));
 
 const catalog = useSessionCatalog();
-const capture = useSessionCapture(props.session.id);
 const sessionDocument = useSessionDocument(props.session.id);
 const mutationPolicy = useSessionMutationPolicy();
 const waveform = useSessionWaveform(props.session.id);
 const runtime = props.runtime;
-const visibleFramesVersion = capture.framesVersion;
+const displayFrames = runtime.rawData.frames;
+const bufferedFrames = runtime.rawData.bufferedFrames;
+const visibleFramesVersion = runtime.rawData.version;
+const capturePaused = runtime.rawData.paused;
+const captureFrameCount = computed(() => displayFrames.value.length + bufferedFrames.value.length);
+const captureHasData = computed(
+  () =>
+    captureFrameCount.value > 0 ||
+    runtime.rawData.txBytes.value > 0 ||
+    runtime.rawData.rxBytes.value > 0 ||
+    runtime.rawData.txFrames.value > 0 ||
+    runtime.rawData.rxFrames.value > 0,
+);
 const appStore = useAppStore();
 const { requestClearFrames } = useSessionActions();
 const { isExporting, progress, cancelExport, resetExportProgress, exportData } = useExport({
@@ -249,11 +261,11 @@ async function disconnect() {
 }
 
 function clear() {
-  requestClearFrames(props.session.id);
+  requestClearFrames(props.session.id, runtime.clearRawData);
 }
 
 function togglePause() {
-  capture.setPaused(!props.session.capturePaused);
+  runtime.setCapturePaused(!capturePaused.value);
 }
 
 // Pro-terminal keyboard shortcuts: Ctrl/Cmd+L clears the buffer, Esc toggles

@@ -89,13 +89,15 @@ function setup() {
   const api = scope.run(() =>
     useSessionModbus({
       session: computed(() => store.sessions[0]),
-      sendBytes: async (payload) => ({
-        outcome: 'complete',
-        requestedBytes: payload.length,
-        sentBytes: payload.length,
-      }),
-      rawBytes: () => () => undefined,
-      isConnected: ref(true),
+      transport: {
+        sendBytes: async (payload) => ({
+          outcome: 'complete',
+          requestedBytes: payload.length,
+          sentBytes: payload.length,
+        }),
+        onReceive: () => () => undefined,
+        isConnected: ref(true),
+      },
       waveformRef,
       showWaveform,
       notifications: mocked.message,

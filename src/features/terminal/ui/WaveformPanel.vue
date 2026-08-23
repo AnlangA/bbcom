@@ -119,7 +119,7 @@ import { useWaveformViewport, waveformPlotLayout } from './waveform/useWaveformV
 import { useWaveformExport } from './waveform/useWaveformExport';
 
 const props = defineProps<{
-  frames: DataFrame[];
+  frames: readonly DataFrame[];
   /** Shallow frame arrays are updated through this explicit store signal. */
   framesVersion?: number;
   /** Which direction's data to plot. RX is the usual sensor stream. */

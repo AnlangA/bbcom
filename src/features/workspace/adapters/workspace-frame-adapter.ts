@@ -251,6 +251,8 @@ export function projectWorkspaceFrame(
       'direction',
       'timestamp',
       'data',
+      'captureSeq',
+      'origin',
       'contentVersion',
       'omittedBytes',
       'txStatus',

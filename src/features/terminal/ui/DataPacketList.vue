@@ -185,7 +185,7 @@ import {
 import type { DataFrame, DirectionFilter, HighlightRule } from '@/types';
 
 const props = defineProps<{
-  frames: DataFrame[];
+  frames: readonly DataFrame[];
   framesVersion: number;
   highlights?: HighlightRule[];
 }>();

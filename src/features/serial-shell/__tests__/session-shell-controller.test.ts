@@ -29,7 +29,7 @@ function createHarness(initial: Partial<SerialShellConfig> = {}) {
       sent.push(Uint8Array.from(payload));
       return complete(payload.length);
     },
-    rawBytes: (callback) => {
+    onReceive: (callback) => {
       rawObservers.add(callback);
       return () => rawObservers.delete(callback);
     },

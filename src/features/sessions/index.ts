@@ -42,5 +42,14 @@ export {
   type SessionRuntimeFactoryDependencies,
 } from './runtime/session-runtime-factory';
 export { useSerialConnection } from './application/use-serial-connection';
+/** @deprecated Use a session runtime's shared transceiver instead. */
+export { useSessionFrames } from './application/use-session-frames';
+export {
+  createSessionTransceiver,
+  SessionTransceiver,
+  type SessionFeatureTransport,
+  type SessionRawDataView,
+  type SessionTransceiverCreateOptions,
+} from './application/session-transceiver';
 export { useSessionModbus } from './application/use-session-modbus';
 export { useTriggers } from './application/use-triggers';

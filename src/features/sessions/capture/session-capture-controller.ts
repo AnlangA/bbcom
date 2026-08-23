@@ -5,6 +5,7 @@ import {
   MAX_GLOBAL_FRAME_BYTES,
   MAX_SESSION_FRAME_BYTES,
   resetSessionFrames,
+  sessionHasClearableCapture,
   trimSessionsToGlobalByteLimit,
 } from '@/lib/session-store-helpers';
 import { defaultCaptureOrigin } from '@/lib/capture-stream';
@@ -260,14 +261,18 @@ export function createSessionCaptureController({
     if (!canMutateUserState()) return;
     const session = findSession(sessionId);
     if (!session) return;
-    const hadFrames = session.frames.length > 0 || session.pausedFrames.length > 0;
-    if (hadFrames) setRetainedFrameBytes(sessionId, 0);
+    if (!sessionHasClearableCapture(session)) {
+      notifyFramesCleared(sessionId);
+      return;
+    }
+    const hadRetainedFrames = session.frames.length > 0 || session.pausedFrames.length > 0;
+    if (hadRetainedFrames) setRetainedFrameBytes(sessionId, 0);
     resetSessionFrames(session);
     accounting.resetFrameSequence(sessionId);
-    if (hadFrames) notifyFramesChanged(sessionId);
+    notifyFramesChanged(sessionId);
     notifyFramesCleared(sessionId);
     scheduleFramesPersist();
-    if (hadFrames) onCaptureCleared(sessionId);
+    onCaptureCleared(sessionId);
   }
 
   function setCapturePaused(sessionId: string, paused: boolean): void {

@@ -10,8 +10,9 @@ import {
   type SessionModbusStatus,
 } from '@/lib/session-modbus-view';
 import { t } from '@/lib/i18n';
-import type { ModbusRegister, SerialSendResult, SerialSession, SerialWriteOptions } from '@/types';
+import type { ModbusRegister, SerialSession } from '@/types';
 import type { ApplicationNotificationPort } from '@/features/platform/application/application-notifications';
+import type { SessionFeatureTransport } from './session-transceiver';
 
 const NOOP_NOTIFICATIONS: ApplicationNotificationPort = Object.freeze({
   info: () => undefined,
@@ -22,9 +23,8 @@ const NOOP_NOTIFICATIONS: ApplicationNotificationPort = Object.freeze({
 
 export interface ModbusBridgeCreateOptions {
   session: Ref<SerialSession>;
-  sendBytes: (payload: Uint8Array, options?: SerialWriteOptions) => Promise<SerialSendResult>;
-  rawBytes: (cb: (bytes: Uint8Array) => void) => () => void;
-  isConnected: Ref<boolean>;
+  /** Shared per-session data plane used by every protocol function. */
+  transport: SessionFeatureTransport & { readonly isConnected: Ref<boolean> };
   waveformRef: Ref<{
     pushRegisterSample: (channel: number, value: number, timestamp?: number) => void;
     pushRegisterSamples: (
@@ -65,9 +65,9 @@ export class ModbusBridge {
       sessionId: options.session.value.id,
       config: configRef,
       registers: registersRef,
-      sendBytes: options.sendBytes,
-      rawBytes: options.rawBytes,
-      isConnected: options.isConnected,
+      sendBytes: (payload, writeOptions) => options.transport.sendBytes(payload, writeOptions),
+      rawBytes: (listener) => options.transport.onReceive(listener),
+      isConnected: options.transport.isConnected,
       onSamples: (samples) => {
         if (options.session.value.waveformSourceMode !== 'register') return;
         const waveformSamples: { channel: number; value: number; timestamp?: number }[] = [];

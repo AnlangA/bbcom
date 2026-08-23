@@ -46,6 +46,10 @@ const props = defineProps<{
   activeSessionId: string | null;
 }>();
 
+const emit = defineEmits<{
+  'active-raw-data': [rawData: ApplicationSessionRuntime['rawData'] | null];
+}>();
+
 const services = useSessionApplicationServices();
 const mutationPolicy = useSessionMutationPolicy();
 const message = useMessage();
@@ -130,9 +134,14 @@ const activeBinding = computed(() => {
 
 // A runtime arriving from the registry (e.g. reconcile created it after a
 // failed ensure) resolves the pending phase without another ensure round.
-watch(activeBinding, (binding) => {
-  if (binding) activationPhase.value = 'idle';
-});
+watch(
+  activeBinding,
+  (binding) => {
+    if (binding) activationPhase.value = 'idle';
+    emit('active-raw-data', binding?.runtime.rawData ?? null);
+  },
+  { immediate: true },
+);
 
 onBeforeUnmount(() => {
   attached = false;
