@@ -1,6 +1,6 @@
 [package]
 name = "bbcom"
-version = "1.0.1"
+version = "1.0.2"
 description = "Serial Port Assistant"
 edition = "2024"
 rust-version = "1.97"

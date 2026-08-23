@@ -5,6 +5,18 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-23
+
+### Changed
+
+- Unified Shell, Modbus, MCUmgr, parser, triggers, and presentation around one shared per-session TX/RX data plane.
+- Terminal packets, waveform, toolbar, status, and export now read the same raw capture timeline, including paused capture and MCUmgr trace replay.
+
+### Fixed
+
+- Workspace autosave no longer rejects live captured frames when runtime `captureSeq` and `origin` metadata is present.
+- Clearing capture now resets TX/RX counters even after the rolling frame buffer has trimmed empty, and MCUmgr trace batches publish synchronized totals.
+
 ## [1.0.1] - 2026-08-22
 
 ### Changed
