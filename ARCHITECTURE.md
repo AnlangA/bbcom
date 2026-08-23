@@ -106,19 +106,25 @@ Hard rules:
 
 1. `tauri-plugin-serialplugin` delivers raw binary channel data to the resident
    session runtime.
-2. Raw-byte observers receive the exact plugin chunk first (Modbus CRC matching).
+2. Raw-byte observers receive the exact plugin chunk first (Modbus CRC matching
+   and trigger responses). These are protocol engines, not displays.
 3. The chunk enters `SerialRxQueue` (2 MiB / 512 chunks cap).
 4. The runtime drains at 64 KiB, 64 chunks, or 16 ms.
 5. `SessionCaptureController` appends the coalesced display frame and bumps the
-   per-session frame version.
+   per-session frame version. This capture buffer is the independent send/receive
+   system for the session.
+6. Display surfaces project that buffer: packet list, parser, serial shell,
+   waveform, and status counters all consume live capture frames (or derived
+   samples) rather than keeping a private RX copy.
 
 ### TX: caller to device
 
-1. Quick commands, macros, triggers, AI fill, and Modbus enter the session
-   `SerialWriteScheduler`.
+1. Quick commands, macros, triggers, AI fill, Modbus, and the serial shell enter
+   the session `SerialWriteScheduler`.
 2. Text/HEX sends pass through `buildSendPayload`.
 3. One bounded FIFO operation owns a logical send (4096-byte chunks).
-4. A complete TX frame is appended only after full success.
+4. A complete TX frame is appended only after full success, so every display that
+   reads capture sees the same transmitted bytes.
 
 ### Persistence
 
@@ -141,6 +147,8 @@ Hard rules:
 - Modbus is half-duplex through `ModbusTransactionRunner`.
 - MCUMgr operations own the port exclusively (port yield).
 - RX bytes reach protocol observers before display batching.
+- Display UIs (terminal packet list, parser, shell, waveform) read the session
+  capture buffer; they do not keep a private TX/RX copy.
 - Frame arrays stay shallow and bounded (64 MiB per session, 256 MiB global).
 - Auto-log preserves append order with visible stop on overflow or disk error.
 - Hot paths stay framework-free when practical.

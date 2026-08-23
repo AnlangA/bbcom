@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import {
+  captureDisplayCursorAtEnd,
   captureFrameIdentity,
   compareCaptureSeq,
   defaultCaptureOrigin,
+  EMPTY_CAPTURE_DISPLAY_CURSOR,
   findCaptureFrameById,
   findCaptureFrameBySeq,
+  planCaptureDisplayIngest,
   sessionCaptureTimeline,
 } from '@/lib/capture-stream.ts';
 import type { DataFrame } from '@/types/serial.ts';
@@ -73,4 +76,36 @@ test('compareCaptureSeq orders defined sequences before undefined', () => {
   assert.equal(compareCaptureSeq(1, 2), -1);
   assert.equal(compareCaptureSeq(undefined, 0), -1);
   assert.equal(compareCaptureSeq(0, undefined), 1);
+});
+
+test('planCaptureDisplayIngest appends from a fresh cursor and after overlap', () => {
+  const first = frame('a', 'RX', 0);
+  const second = frame('b', 'TX', 1);
+  const initial = planCaptureDisplayIngest([first, second], EMPTY_CAPTURE_DISPLAY_CURSOR);
+  assert.deepEqual(initial, {
+    startIndex: 0,
+    reset: false,
+    nextCursor: { consumed: 2, lastFrameId: 'b' },
+  });
+
+  const third = frame('c', 'RX', 2);
+  const appended = planCaptureDisplayIngest([first, second, third], initial.nextCursor);
+  assert.equal(appended.startIndex, 2);
+  assert.equal(appended.reset, false);
+  assert.deepEqual(appended.nextCursor, captureDisplayCursorAtEnd([first, second, third]));
+});
+
+test('planCaptureDisplayIngest resets after clear, trim, or replaced overlap', () => {
+  const cursor = captureDisplayCursorAtEnd([frame('a', 'RX', 0), frame('b', 'TX', 1)]);
+  const cleared = planCaptureDisplayIngest([], cursor);
+  assert.equal(cleared.reset, true);
+  assert.deepEqual(cleared.nextCursor, EMPTY_CAPTURE_DISPLAY_CURSOR);
+
+  const trimmed = planCaptureDisplayIngest([frame('b', 'TX', 1), frame('c', 'RX', 2)], cursor);
+  assert.equal(trimmed.reset, false);
+  assert.equal(trimmed.startIndex, 1);
+
+  const replaced = planCaptureDisplayIngest([frame('x', 'RX', 8), frame('y', 'TX', 9)], cursor);
+  assert.equal(replaced.reset, true);
+  assert.equal(replaced.startIndex, 0);
 });

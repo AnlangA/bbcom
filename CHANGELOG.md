@@ -5,6 +5,12 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- Session displays (packet list, parser, shell, waveform) now project one
+  independent capture TX/RX buffer. Protocol engines (triggers, Modbus)
+  still observe raw serial bytes.
+
 ## [1.0.1] - 2026-08-22
 
 ### Changed

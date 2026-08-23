@@ -143,6 +143,36 @@ test('resident protocol parser resets for settings changes and explicit clears',
   assert.deepEqual(parsedText(parser), []);
 });
 
+test('resident protocol parser projects capture frames and ignores TX rows', () => {
+  const parser = new SessionProtocolRuntime();
+  parser.configure({ kind: 'delimiter', delimiter: [0x0a], includeDelimiter: false });
+
+  assert.equal(
+    parser.ingestCapturedFrames(
+      [
+        { id: 'tx', direction: 'TX', data: bytes('sent\n') },
+        { id: 'rx-1', direction: 'RX', data: bytes('one\npar') },
+      ],
+      1_000,
+    ),
+    true,
+  );
+  assert.deepEqual(parsedText(parser), ['one']);
+
+  parser.ingestCapturedFrames(
+    [
+      { id: 'tx', direction: 'TX', data: bytes('sent\n') },
+      { id: 'rx-1', direction: 'RX', data: bytes('one\npar') },
+      { id: 'rx-2', direction: 'RX', data: bytes('tial\n') },
+    ],
+    1_100,
+  );
+  assert.deepEqual(parsedText(parser), ['one', 'partial']);
+
+  parser.ingestCapturedFrames([], 1_200);
+  assert.deepEqual(parsedText(parser), []);
+});
+
 test('resident protocol parser reports raw-byte throughput before a frame completes', () => {
   const parser = new SessionProtocolRuntime();
   parser.configure({ kind: 'delimiter', delimiter: [0x0a], includeDelimiter: false });

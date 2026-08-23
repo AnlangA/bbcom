@@ -2,6 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { computed } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
+import { useSessionCapture } from '@/features/sessions/ports/session-ports.ts';
 import { useSessionStore } from '@/features/sessions/store/session-store.ts';
 import type { PortConfig } from '@/types/index.ts';
 
@@ -262,5 +263,31 @@ test('per-session frame versions isolate resident views from other sessions', ()
     store.clearFrames(firstId);
     assert.equal(firstVersion.value, 2);
     assert.equal(store.getSessionFramesVersion(secondId), 1);
+  });
+});
+
+test('capture timeline live window is the display source and tracks framesVersion', () => {
+  withLocalStorageMock(() => {
+    setActivePinia(createPinia());
+    const store = useSessionStore();
+    const id = store.createSession('COM1', cfg);
+    const capture = useSessionCapture(id);
+    const liveCount = computed(() => capture.timeline.value?.liveCount ?? -1);
+    const allCount = computed(() => capture.timeline.value?.totalCount ?? -1);
+
+    assert.equal(liveCount.value, 0);
+    store.addFrame(id, { direction: 'RX', data: new Uint8Array([1]) });
+    store.addFrame(id, { direction: 'TX', data: new Uint8Array([2]) });
+    assert.equal(liveCount.value, 2);
+    assert.equal(allCount.value, 2);
+    store.setCapturePaused(id, true);
+    store.addFrame(id, { direction: 'RX', data: new Uint8Array([3]) });
+    assert.equal(liveCount.value, 2, 'paused capture does not grow the live display window');
+    assert.equal(allCount.value, 3);
+    store.setCapturePaused(id, false);
+    assert.equal(liveCount.value, 3);
+    store.clearFrames(id);
+    assert.equal(liveCount.value, 0);
+    assert.equal(allCount.value, 0);
   });
 });

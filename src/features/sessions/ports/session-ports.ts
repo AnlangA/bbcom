@@ -226,10 +226,14 @@ export function useSessionCapture(sessionId: string): SessionCapturePort {
   const store = resolveSessionStore();
   const refs = storeToRefs(resolveSessionFacade());
   const session = computed(() => refs.sessions.value.find((item) => item.id === sessionId) ?? null);
-  const timeline = computed(() => (session.value ? sessionCaptureTimeline(session.value) : null));
+  const framesVersion = computed(() => store.getSessionFramesVersion(sessionId));
+  const timeline = computed(() => {
+    void framesVersion.value;
+    return session.value ? sessionCaptureTimeline(session.value) : null;
+  });
   return {
     session,
-    framesVersion: computed(() => store.getSessionFramesVersion(sessionId)),
+    framesVersion,
     timeline,
     add: (frame, options) => store.addFrame(sessionId, frame, options),
     frameAt: (captureSeq) => {

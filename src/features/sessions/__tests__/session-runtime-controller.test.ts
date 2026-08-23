@@ -370,7 +370,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test('resident controller parses raw RX without a panel, rebuilds on settings, and clears with the terminal', async () => {
+test('resident controller parses capture frames without a panel, rebuilds on settings, and clears with the terminal', async () => {
   const { id, runtime, scope, serial, store } = setup();
   store.setParserState(id, { kind: 'delimiter', delimiter: [0x0a], includeDelimiter: false });
   const triggerId = store.addTrigger(id, {
@@ -389,15 +389,20 @@ test('resident controller parses raw RX without a panel, rebuilds on settings, a
   assert.equal(mocked.message.info.mock.calls.length, 2);
 
   serial.emit(new TextEncoder().encode('one\npar'));
+  store.addFrame(id, { direction: 'RX', data: new TextEncoder().encode('one\npar') });
   assert.deepEqual(parserTexts(runtime), [], 'parser presentation is UI-throttled');
   await vi.advanceTimersByTimeAsync(17);
   assert.deepEqual(parserTexts(runtime), ['one']);
+  assert.equal(runtime.shell.replay(), 'one\r\npar');
 
   serial.emit(new TextEncoder().encode('tial\n'));
+  store.addFrame(id, { direction: 'RX', data: new TextEncoder().encode('tial\n') });
   await vi.advanceTimersByTimeAsync(17);
   assert.deepEqual(parserTexts(runtime), ['one', 'partial']);
+  assert.equal(runtime.shell.replay(), 'one\r\npartial\r\n');
   assert.equal(mocked.triggerFeed.mock.calls.length, 2, 'triggers see the same raw stream');
 
+  store.clearFrames(id);
   store.addFrame(id, { direction: 'RX', data: new Uint8Array([0x41, 0x42, 0x43, 0x44]) });
   store.setParserState(id, { kind: 'fixed', frameSize: 2 });
   assert.deepEqual(parserTexts(runtime), ['AB', 'CD'], 'settings rebuild retained capture history');
@@ -410,6 +415,7 @@ test('resident controller parses raw RX without a panel, rebuilds on settings, a
   // Replacing state with the same parser key must preserve the active stream.
   store.setParserState(id, { kind: 'fixed', frameSize: 2 });
   serial.emit(new Uint8Array([0x11, 0x22]));
+  store.addFrame(id, { direction: 'RX', data: new Uint8Array([0x11, 0x22]) });
   await vi.advanceTimersByTimeAsync(17);
   assert.deepEqual(
     runtime.parser.frames.value.map((frame) => Array.from(frame.data)),
@@ -429,10 +435,13 @@ test('resident controller parses raw RX without a panel, rebuilds on settings, a
 });
 
 test('resident controller publishes bounded-parser drop counters and resets them on clear', async () => {
-  const { id, runtime, scope, serial, store } = setup();
+  const { id, runtime, scope, store } = setup();
   store.setParserState(id, { kind: 'fixed', frameSize: 1 });
 
-  serial.emit(Uint8Array.from({ length: 5_001 }, (_, index) => index));
+  store.addFrame(id, {
+    direction: 'RX',
+    data: Uint8Array.from({ length: 5_001 }, (_, index) => index),
+  });
   await vi.advanceTimersByTimeAsync(17);
 
   assert.equal(runtime.parser.frames.value.length, 5_000);
@@ -444,6 +453,51 @@ test('resident controller publishes bounded-parser drop counters and resets them
   assert.equal(runtime.parser.frames.value.length, 0);
   assert.equal(runtime.parser.droppedFrames.value, 0);
   assert.equal(runtime.parser.droppedBytes.value, 0);
+
+  await runtime.dispose();
+  scope.stop();
+});
+
+test('parser and shell project the shared capture buffer, not the raw-byte observers', async () => {
+  const { id, runtime, scope, serial, store } = setup();
+  store.setParserState(id, { kind: 'delimiter', delimiter: [0x0a], includeDelimiter: false });
+
+  serial.emit(new TextEncoder().encode('raw-only\n'));
+  await vi.advanceTimersByTimeAsync(17);
+  assert.deepEqual(parserTexts(runtime), []);
+  assert.equal(runtime.shell.replay(), '');
+  assert.equal(mocked.triggerFeed.mock.calls.length, 1, 'triggers still observe raw bytes');
+
+  store.addFrame(id, {
+    direction: 'TX',
+    data: new TextEncoder().encode('cmd\n'),
+    origin: 'mcumgr-trace',
+  });
+  store.addFrame(id, {
+    direction: 'RX',
+    data: new TextEncoder().encode('trace\n'),
+    origin: 'mcumgr-trace',
+  });
+  await vi.advanceTimersByTimeAsync(17);
+  assert.deepEqual(parserTexts(runtime), ['trace']);
+  assert.equal(runtime.shell.replay(), 'trace\r\n');
+
+  runtime.shell.clear();
+  assert.equal(store.sessions[0]?.frames.length, 0);
+  assert.deepEqual(parserTexts(runtime), []);
+  assert.equal(runtime.shell.replay(), '');
+
+  store.addFrame(id, { direction: 'RX', data: new TextEncoder().encode('live\n') });
+  await vi.advanceTimersByTimeAsync(17);
+  store.setCapturePaused(id, true);
+  store.addFrame(id, { direction: 'RX', data: new TextEncoder().encode('held\n') });
+  await vi.advanceTimersByTimeAsync(17);
+  assert.deepEqual(parserTexts(runtime), ['live']);
+  assert.equal(runtime.shell.replay(), 'live\r\n');
+  store.setCapturePaused(id, false);
+  await vi.advanceTimersByTimeAsync(17);
+  assert.deepEqual(parserTexts(runtime), ['live', 'held']);
+  assert.equal(runtime.shell.replay(), 'live\r\nheld\r\n');
 
   await runtime.dispose();
   scope.stop();

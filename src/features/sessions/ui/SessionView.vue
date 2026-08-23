@@ -48,7 +48,7 @@
       <ExportDialog
         v-if="exportDialogVisible || isExporting"
         :show="exportDialogVisible"
-        :frames="props.session.frames"
+        :frames="captureFrames"
         :is-exporting="isExporting"
         :progress="progress"
         @confirm="handleExport"
@@ -59,13 +59,14 @@
       <!--
         Only one display mode renders at a time. Non-terminal panels load on
         first use, then KeepAlive preserves their local viewport/editor state
-        while the user switches modes.
+        while the user switches modes. Every panel still projects the same
+        session capture buffer (captureFrames / framesVersion).
       -->
       <KeepAlive :max="6">
         <WaveformPanel
           v-if="viewMode === 'waveform'"
           ref="waveformRef"
-          :frames="props.session.frames"
+          :frames="captureFrames"
           :frames-version="visibleFramesVersion"
           direction="RX"
           :mode="props.session.waveformSourceMode"
@@ -132,7 +133,7 @@
         />
         <DataPacketList
           v-else
-          :frames="props.session.frames"
+          :frames="captureFrames"
           :frames-version="visibleFramesVersion"
           :highlights="props.session.highlights"
         />
@@ -228,6 +229,10 @@ const mutationPolicy = useSessionMutationPolicy();
 const waveform = useSessionWaveform(props.session.id);
 const runtime = props.runtime;
 const visibleFramesVersion = capture.framesVersion;
+const captureFrames = computed(() => {
+  void visibleFramesVersion.value;
+  return capture.timeline.value?.live ?? [];
+});
 const appStore = useAppStore();
 const { requestClearFrames } = useSessionActions();
 const { isExporting, progress, cancelExport, resetExportProgress, exportData } = useExport({

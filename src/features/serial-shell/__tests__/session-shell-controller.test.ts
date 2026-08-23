@@ -7,11 +7,26 @@ import {
 } from '@/features/serial-shell';
 import { DEFAULT_SERIAL_SHELL_CONFIG, cloneSerialShellConfig } from '@/lib/serial-shell';
 import type { SerialAutomationPausePort } from '@/features/serial';
-import type { SerialSendResult } from '@/types/serial';
+import type { DataFrame, SerialSendResult } from '@/types/serial';
 import type { SerialShellConfig } from '@/types/serial-shell';
 
 function complete(bytes: number): SerialSendResult {
   return { outcome: 'complete', requestedBytes: bytes, sentBytes: bytes };
+}
+
+function captureFrame(
+  id: string,
+  direction: DataFrame['direction'],
+  text: string,
+  origin: DataFrame['origin'] = direction === 'TX' ? 'serial-tx' : 'serial-rx',
+): DataFrame {
+  return {
+    id,
+    direction,
+    timestamp: 1,
+    data: new TextEncoder().encode(text),
+    origin,
+  };
 }
 
 function createHarness(initial: Partial<SerialShellConfig> = {}) {
@@ -19,7 +34,6 @@ function createHarness(initial: Partial<SerialShellConfig> = {}) {
   const sent: Uint8Array[] = [];
   const outputs: string[] = [];
   let resets = 0;
-  const rawObservers = new Set<(bytes: Uint8Array) => void>();
   const cleared = new Set<() => void>();
   const automations: SerialAutomationPausePort[] = [];
   const timers: Array<{ id: number; fire: () => void }> = [];
@@ -28,10 +42,6 @@ function createHarness(initial: Partial<SerialShellConfig> = {}) {
     sendBytes: async (payload) => {
       sent.push(Uint8Array.from(payload));
       return complete(payload.length);
-    },
-    rawBytes: (callback) => {
-      rawObservers.add(callback);
-      return () => rawObservers.delete(callback);
     },
     registerAutomation: (port) => {
       automations.push(port);
@@ -67,8 +77,8 @@ function createHarness(initial: Partial<SerialShellConfig> = {}) {
     sent,
     outputs,
     resetCount: () => resets,
-    emit(bytes: Uint8Array) {
-      for (const observer of rawObservers) observer(bytes);
+    ingest(frames: readonly DataFrame[]) {
+      controller.ingestCapturedFrames(frames);
     },
     clearCapture() {
       for (const listener of cleared) listener();
@@ -113,17 +123,44 @@ test('local echo writes typed characters into the output stream and replay', asy
   harness.controller.dispose();
 });
 
-test('RX bytes are decoded, newline-adapted, published, and retained for replay', () => {
+test('capture RX frames are decoded, newline-adapted, published, and retained for replay', () => {
   const harness = createHarness({ rxNewline: 'auto' });
-  harness.emit(new TextEncoder().encode('ok\nnext'));
+  harness.ingest([captureFrame('rx-1', 'RX', 'ok\nnext')]);
   assert.deepEqual(harness.outputs, ['ok\r\nnext']);
   assert.equal(harness.controller.replay(), 'ok\r\nnext');
   harness.controller.dispose();
 });
 
+test('capture TX from other views appears when local echo is on, without doubling typed echo', () => {
+  const harness = createHarness({ localEcho: true, rxNewline: 'none' });
+  harness.controller.handleTerminalData('ab');
+  harness.ingest([
+    captureFrame('tx-typed', 'TX', 'ab'),
+    captureFrame('tx-panel', 'TX', 'OK'),
+    captureFrame('rx-1', 'RX', 'ack'),
+  ]);
+  assert.deepEqual(harness.outputs, ['ab', 'OK', 'ack']);
+  assert.equal(harness.controller.replay(), 'abOKack');
+  harness.controller.dispose();
+});
+
+test('capture TX is hidden when local echo is off', () => {
+  const harness = createHarness({ localEcho: false, rxNewline: 'none' });
+  harness.ingest([captureFrame('tx-1', 'TX', 'sent'), captureFrame('rx-1', 'RX', 'echoed')]);
+  assert.deepEqual(harness.outputs, ['echoed']);
+  harness.controller.dispose();
+});
+
+test('mcumgr trace RX is projected from the shared capture buffer', () => {
+  const harness = createHarness({ rxNewline: 'none' });
+  harness.ingest([captureFrame('trace', 'RX', 'smp', 'mcumgr-trace')]);
+  assert.deepEqual(harness.outputs, ['smp']);
+  harness.controller.dispose();
+});
+
 test('clear resets the replay buffer and notifies reset listeners', () => {
   const harness = createHarness();
-  harness.emit(new TextEncoder().encode('data'));
+  harness.ingest([captureFrame('rx-1', 'RX', 'data')]);
   assert.equal(harness.controller.replay(), 'data');
   harness.clearCapture();
   assert.equal(harness.controller.replay(), '');
@@ -131,11 +168,26 @@ test('clear resets the replay buffer and notifies reset listeners', () => {
   harness.controller.dispose();
 });
 
+test('capture window overlap appends only new frames', () => {
+  const harness = createHarness({ rxNewline: 'none' });
+  const first = captureFrame('a', 'RX', 'one');
+  const second = captureFrame('b', 'RX', 'two');
+  harness.ingest([first, second]);
+  harness.ingest([second, captureFrame('c', 'RX', 'three')]);
+  assert.equal(harness.controller.replay(), 'onetwothree');
+  harness.ingest([]);
+  assert.equal(harness.controller.replay(), '');
+  assert.ok(harness.resetCount() >= 1);
+  harness.controller.dispose();
+});
+
 test('replay buffer is bounded', () => {
   const harness = createHarness({ rxNewline: 'none' });
   const chunk = 'x'.repeat(64 * 1024);
+  const frames: DataFrame[] = [];
   for (let i = 0; i < 8; i += 1) {
-    harness.emit(new TextEncoder().encode(chunk));
+    frames.push(captureFrame(`rx-${i}`, 'RX', chunk));
+    harness.ingest(frames);
   }
   assert.ok(harness.controller.replay().length <= SERIAL_SHELL_REPLAY_MAX_CHARS);
   harness.controller.dispose();

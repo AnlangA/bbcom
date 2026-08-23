@@ -77,3 +77,83 @@ export function compareCaptureSeq(
   if (right === undefined) return 1;
   return left - right;
 }
+
+/**
+ * Incremental display cursor over the live capture window. Length alone is
+ * not enough: the store mutates the array in place and can trim a prefix
+ * while the visible length stays unchanged.
+ */
+export interface CaptureDisplayCursor {
+  readonly consumed: number;
+  readonly lastFrameId: string | null;
+}
+
+export interface CaptureDisplayIngestPlan {
+  readonly startIndex: number;
+  readonly reset: boolean;
+  readonly nextCursor: CaptureDisplayCursor;
+}
+
+export const EMPTY_CAPTURE_DISPLAY_CURSOR: CaptureDisplayCursor = Object.freeze({
+  consumed: 0,
+  lastFrameId: null,
+});
+
+export function captureDisplayCursorAtEnd(
+  frames: readonly Pick<DataFrame, 'id'>[],
+): CaptureDisplayCursor {
+  const last = frames[frames.length - 1];
+  return {
+    consumed: frames.length,
+    lastFrameId: typeof last?.id === 'string' ? last.id : null,
+  };
+}
+
+/**
+ * Plan how a display projection should consume the live capture window.
+ * `reset` means the previous overlap is gone (clear, trim, or replace) and
+ * the consumer must rebuild from `startIndex`.
+ */
+export function planCaptureDisplayIngest(
+  frames: readonly Pick<DataFrame, 'id'>[],
+  cursor: CaptureDisplayCursor,
+): CaptureDisplayIngestPlan {
+  const nextCursor = captureDisplayCursorAtEnd(frames);
+  if (frames.length === 0) {
+    return {
+      startIndex: 0,
+      reset: cursor.consumed > 0 || cursor.lastFrameId !== null,
+      nextCursor,
+    };
+  }
+
+  if (cursor.lastFrameId) {
+    const previousIndex = frames.findIndex((frame) => frame.id === cursor.lastFrameId);
+    if (previousIndex !== -1) {
+      return {
+        startIndex: previousIndex + 1,
+        reset: false,
+        nextCursor,
+      };
+    }
+    return {
+      startIndex: 0,
+      reset: true,
+      nextCursor,
+    };
+  }
+
+  if (cursor.consumed > frames.length) {
+    return {
+      startIndex: 0,
+      reset: true,
+      nextCursor,
+    };
+  }
+
+  return {
+    startIndex: Math.max(0, cursor.consumed),
+    reset: false,
+    nextCursor,
+  };
+}

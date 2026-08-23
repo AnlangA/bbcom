@@ -256,9 +256,9 @@ export function useSessionRuntimeController(
     { immediate: true, flush: 'sync' },
   );
 
-  // Protocol parsing is deliberately attached to the native raw-byte stream,
-  // before the queued terminal capture/UI publication path. This runtime stays
-  // resident while the ParserPanel is unmounted and while RAF never runs.
+  // Parser, shell, waveform, and the packet list all project the session
+  // capture buffer. Protocol engines (triggers, Modbus CRC) stay on raw
+  // bytes so matching is not delayed by display batching.
   const protocolRuntime = new SessionProtocolRuntime();
   const parserFrames = shallowRef<readonly DisplayParsedFrame[]>([]);
   const parserDroppedFrames = ref(0);
@@ -283,33 +283,22 @@ export function useSessionRuntimeController(
     parserResetVersion.value = snapshot.resetVersion;
   }
 
-  function* capturedParserHistory(): Iterable<Pick<DataFrame, 'direction' | 'data'>> {
-    // Reconfiguration deliberately retains the historical parser-panel
-    // behavior, including paused capture data. This generator avoids creating
-    // a second full frame array; the normal RX path below remains raw-only.
-    yield* session.value.frames;
-    yield* session.value.pausedFrames;
+  function liveCaptureFrames(): readonly DataFrame[] {
+    return session.value.frames;
   }
 
   const stopParserConfigWatch = watch(
     () => session.value.parserState.config,
     (config) => {
-      if (!protocolRuntime.configure(config, capturedParserHistory())) return;
+      if (!protocolRuntime.configure(config)) return;
+      protocolRuntime.ingestCapturedFrames(liveCaptureFrames());
       // Applying a parser setting must immediately clear stale display data;
-      // future raw bytes will update this snapshot on the normal UI cadence.
+      // future capture frames will update this snapshot on the normal UI cadence.
       parserUiPublisher.cancel();
       publishParserSnapshot();
     },
     { immediate: true, flush: 'sync' },
   );
-  const removeParserFrameClearObserver = capture.onCleared(() => {
-    protocolRuntime.clear();
-    parserUiPublisher.cancel();
-    publishParserSnapshot();
-  });
-  const removeParserRawObserver = serial.rawBytes((bytes) => {
-    if (protocolRuntime.feed(bytes)) parserUiPublisher.markDirty();
-  });
   const parser: SessionRuntimeProtocolView = {
     frames: readonly(parserFrames),
     droppedFrames: readonly(parserDroppedFrames),
@@ -341,20 +330,43 @@ export function useSessionRuntimeController(
   };
   const shellController = createSessionShellController(() => session.value.shellConfig, {
     sendBytes: (payload, writeOptions) => serial.sendBytes(payload, writeOptions),
-    rawBytes: (callback) => serial.rawBytes(callback),
     registerAutomation: (port) => serial.serialTransactions.registerAutomation(port),
     onCleared: (listener) => capture.onCleared(listener),
   });
+  function syncDisplaysFromCapture(): void {
+    const frames = liveCaptureFrames();
+    const parserChanged = protocolRuntime.ingestCapturedFrames(frames);
+    if (parserChanged) {
+      if (frames.length === 0) {
+        parserUiPublisher.cancel();
+        publishParserSnapshot();
+      } else {
+        parserUiPublisher.markDirty();
+      }
+    }
+    shellController.ingestCapturedFrames(frames);
+  }
+  const stopCaptureDisplayWatch = watch(
+    () => capture.framesVersion.value,
+    () => {
+      syncDisplaysFromCapture();
+    },
+    { immediate: true, flush: 'sync' },
+  );
   const stopShellConfigWatch = watch(
     () => session.value.shellConfig,
-    (config) => shellController.configure(config),
+    (config) => {
+      if (shellController.configure(config)) {
+        shellController.ingestCapturedFrames(liveCaptureFrames());
+      }
+    },
   );
   const shell: SessionRuntimeShellController = {
     replay: () => shellController.replay(),
     onOutput: (listener) => shellController.onOutput(listener),
     onReset: (listener) => shellController.onReset(listener),
     handleTerminalData: (data) => shellController.handleTerminalData(data),
-    clear: () => shellController.clear(),
+    clear: () => capture.clear(),
   };
   const mcumgr = bridgeFactory.createMcumgrBridge({
     session: computed(() => session.value),
@@ -590,8 +602,7 @@ export function useSessionRuntimeController(
         viewBinding.value = null;
         shellController.dispose();
         stopShellConfigWatch();
-        removeParserRawObserver();
-        removeParserFrameClearObserver();
+        stopCaptureDisplayWatch();
         stopParserConfigWatch();
         stopRuntimeStatusProjection();
         runtimeStatusRegistry.stop(session.value.id);
