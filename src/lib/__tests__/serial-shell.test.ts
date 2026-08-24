@@ -82,6 +82,18 @@ test('serialShellKeysFromData maps typing, enter, and control characters', () =>
   ]);
 });
 
+test('serialShellKeysFromData treats pasted CRLF as one internal newline', () => {
+  assert.deepEqual(serialShellKeysFromData('first\r\nsecond\nthird\rfourth'), [
+    { kind: 'text', text: 'first' },
+    { kind: 'enter' },
+    { kind: 'text', text: 'second' },
+    { kind: 'enter' },
+    { kind: 'text', text: 'third' },
+    { kind: 'enter' },
+    { kind: 'text', text: 'fourth' },
+  ]);
+});
+
 test('serialShellKeysFromData forwards arrow keys and CSI sequences as raw bytes', () => {
   const up = serialShellKeysFromData('\u001b[A');
   assert.equal(up.length, 1);

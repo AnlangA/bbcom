@@ -11,3 +11,7 @@ resolver = "3"
 # This reviewed glib backport is kept in-tree until Tauri's Linux backend can
 # consume a fixed upstream release.
 glib = { path = "src-tauri/vendor/security-patches/glib-0.18.5" }
+# serialplugin 3.0.0 routes watch data through a line classifier that drops
+# CR/LF bytes and empty lines. Keep the raw-byte preservation fix in-tree until
+# an upstream release contains the equivalent change.
+tauri-plugin-serialplugin = { path = "src-tauri/vendor/patches/tauri-plugin-serialplugin-3.0.0" }

@@ -74,7 +74,9 @@ export function serialShellKeysFromData(data: string): SerialShellKey[] {
     }
     if (char === '\r' || char === '\n') {
       keys.push({ kind: 'enter' });
-      index += 1;
+      // A pasted CRLF is one logical newline, not two Enter presses. Bare CR
+      // and LF remain valid independently and use the configured TX EOL.
+      index += char === '\r' && data[index + 1] === '\n' ? 2 : 1;
       continue;
     }
     if (char === '\u007f' || char === '\b') {

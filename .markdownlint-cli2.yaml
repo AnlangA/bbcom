@@ -13,3 +13,5 @@ config:
 ignores:
   - .zcode/
   - '**/target/**'
+  # Vendored crates retain upstream and generated documentation verbatim.
+  - 'src-tauri/vendor/**'

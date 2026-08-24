@@ -95,6 +95,20 @@ test('terminal data coalesces text and flushes on enter with the configured EOL'
   harness.controller.dispose();
 });
 
+test('pasted internal newlines use the configured EOL once per logical line', async () => {
+  const harness = createHarness({ txNewline: 'crlf', localEcho: false });
+  harness.controller.handleTerminalData('first\r\nsecond\n');
+  await harness.controller.flush();
+  assert.deepEqual(
+    harness.sent.map((payload) => Array.from(payload)),
+    [
+      [0x66, 0x69, 0x72, 0x73, 0x74, 0x0d, 0x0a],
+      [0x73, 0x65, 0x63, 0x6f, 0x6e, 0x64, 0x0d, 0x0a],
+    ],
+  );
+  harness.controller.dispose();
+});
+
 test('control characters transmit immediately', async () => {
   const harness = createHarness({ localEcho: false });
   harness.controller.handleTerminalData('\u0003');
@@ -110,6 +124,47 @@ test('local echo writes typed characters into the output stream and replay', asy
   await harness.controller.flush();
   assert.deepEqual(harness.outputs, ['hi', '\r\n']);
   assert.equal(harness.controller.replay(), 'hi\r\n');
+  harness.controller.dispose();
+});
+
+test('enter with local echo disabled waits for the device response', async () => {
+  const harness = createHarness({ localEcho: false, txNewline: 'lf' });
+  harness.controller.handleTerminalData('\r');
+  await harness.controller.flush();
+  assert.deepEqual(harness.outputs, []);
+  harness.flushTimers();
+  assert.deepEqual(harness.outputs, []);
+  assert.deepEqual(Array.from(harness.sent[0] ?? []), [0x0a]);
+  harness.controller.dispose();
+});
+
+test('device Enter response split across RX chunks is rendered exactly once', () => {
+  const harness = createHarness({ localEcho: false, rxNewline: 'auto' });
+  harness.controller.handleTerminalData('\r');
+  harness.emit(new Uint8Array([0x0d]));
+  harness.emit(new TextEncoder().encode('\nprompt> '));
+  harness.flushTimers();
+  assert.equal(harness.outputs.join(''), '\r\nprompt> ');
+  assert.equal(harness.controller.replay(), '\r\nprompt> ');
+  harness.controller.dispose();
+});
+
+test('consecutive device Enter responses are not altered', () => {
+  const harness = createHarness({ localEcho: false, rxNewline: 'auto' });
+  harness.controller.handleTerminalData('\r');
+  harness.controller.handleTerminalData('\r');
+  harness.emit(new TextEncoder().encode('\r\nprompt> \r\nprompt> '));
+  harness.flushTimers();
+  assert.equal(harness.outputs.join(''), '\r\nprompt> \r\nprompt> ');
+  harness.controller.dispose();
+});
+
+test('whole-command device echo is not rewritten', () => {
+  const harness = createHarness({ localEcho: false, rxNewline: 'auto' });
+  harness.controller.handleTerminalData('help\r');
+  harness.emit(new TextEncoder().encode('help\r\n'));
+  harness.flushTimers();
+  assert.equal(harness.outputs.join(''), 'help\r\n');
   harness.controller.dispose();
 });
 

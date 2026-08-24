@@ -280,7 +280,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bbcom"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "base64 0.22.1",
  "bbcom-contracts",
@@ -4684,8 +4684,6 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-serialplugin"
 version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2906d2f6ded5c4da55d9451be5fb720d5ec26c5aafbec998929ed33e437f2cf6"
 dependencies = [
  "android-usb-serial",
  "jni 0.21.1",
