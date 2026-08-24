@@ -1,0 +1,846 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PermissionFile",
+  "description": "Permission file that can define a default permission, a set of permissions or a list of inlined permissions.",
+  "type": "object",
+  "properties": {
+    "default": {
+      "description": "The default permission set for the plugin",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DefaultPermission"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "set": {
+      "description": "A list of permissions sets defined",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PermissionSet"
+      }
+    },
+    "permission": {
+      "description": "A list of inlined permissions",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Permission"
+      }
+    }
+  },
+  "definitions": {
+    "DefaultPermission": {
+      "description": "The default permission set of the plugin.\n\nWorks similarly to a permission with the \"default\" identifier.",
+      "type": "object",
+      "required": [
+        "permissions"
+      ],
+      "properties": {
+        "version": {
+          "description": "The version of the permission.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 1.0
+        },
+        "description": {
+          "description": "Human-readable description of what the permission does. Tauri convention is to use `<h4>` headings in markdown content for Tauri documentation generation purposes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permissions": {
+          "description": "All permissions this set contains.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "PermissionSet": {
+      "description": "A set of direct permissions grouped together under a new name.",
+      "type": "object",
+      "required": [
+        "description",
+        "identifier",
+        "permissions"
+      ],
+      "properties": {
+        "identifier": {
+          "description": "A unique identifier for the permission.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Human-readable description of what the permission does.",
+          "type": "string"
+        },
+        "permissions": {
+          "description": "All permissions this set contains.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PermissionKind"
+          }
+        }
+      }
+    },
+    "Permission": {
+      "description": "Descriptions of explicit privileges of commands.\n\nIt can enable commands to be accessible in the frontend of the application.\n\nIf the scope is defined it can be used to fine grain control the access of individual or multiple commands.",
+      "type": "object",
+      "required": [
+        "identifier"
+      ],
+      "properties": {
+        "version": {
+          "description": "The version of the permission.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 1.0
+        },
+        "identifier": {
+          "description": "A unique identifier for the permission.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Human-readable description of what the permission does. Tauri internal convention is to use `<h4>` headings in markdown content for Tauri documentation generation purposes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commands": {
+          "description": "Allowed or denied commands when using this permission.",
+          "default": {
+            "allow": [],
+            "deny": []
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/Commands"
+            }
+          ]
+        },
+        "scope": {
+          "description": "Allowed or denied scoped when using this permission.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Scopes"
+            }
+          ]
+        },
+        "platforms": {
+          "description": "Target platforms this permission applies. By default all platforms are affected by this permission.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/Target"
+          }
+        }
+      }
+    },
+    "Commands": {
+      "description": "Allowed and denied commands inside a permission.\n\nIf two commands clash inside of `allow` and `deny`, it should be denied by default.",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Allowed command.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny": {
+          "description": "Denied command, which takes priority.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "Scopes": {
+      "description": "An argument for fine grained behavior control of Tauri commands.\n\nIt can be of any serde serializable type and is used to allow or prevent certain actions inside a Tauri command. The configured scope is passed to the command and will be enforced by the command implementation.\n\n## Example\n\n```json { \"allow\": [{ \"path\": \"$HOME/**\" }], \"deny\": [{ \"path\": \"$HOME/secret.txt\" }] } ```",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Data that defines what is allowed by the scope.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/Value"
+          }
+        },
+        "deny": {
+          "description": "Data that defines what is denied by the scope. This should be prioritized by validation logic.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/Value"
+          }
+        }
+      }
+    },
+    "Value": {
+      "description": "All supported ACL values.",
+      "anyOf": [
+        {
+          "description": "Represents a null JSON value.",
+          "type": "null"
+        },
+        {
+          "description": "Represents a [`bool`].",
+          "type": "boolean"
+        },
+        {
+          "description": "Represents a valid ACL [`Number`].",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Number"
+            }
+          ]
+        },
+        {
+          "description": "Represents a [`String`].",
+          "type": "string"
+        },
+        {
+          "description": "Represents a list of other [`Value`]s.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Value"
+          }
+        },
+        {
+          "description": "Represents a map of [`String`] keys to [`Value`]s.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Value"
+          }
+        }
+      ]
+    },
+    "Number": {
+      "description": "A valid ACL number.",
+      "anyOf": [
+        {
+          "description": "Represents an [`i64`].",
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "description": "Represents a [`f64`].",
+          "type": "number",
+          "format": "double"
+        }
+      ]
+    },
+    "Target": {
+      "description": "Platform target.",
+      "oneOf": [
+        {
+          "description": "MacOS.",
+          "type": "string",
+          "enum": [
+            "macOS"
+          ]
+        },
+        {
+          "description": "Windows.",
+          "type": "string",
+          "enum": [
+            "windows"
+          ]
+        },
+        {
+          "description": "Linux.",
+          "type": "string",
+          "enum": [
+            "linux"
+          ]
+        },
+        {
+          "description": "Android.",
+          "type": "string",
+          "enum": [
+            "android"
+          ]
+        },
+        {
+          "description": "iOS.",
+          "type": "string",
+          "enum": [
+            "iOS"
+          ]
+        }
+      ]
+    },
+    "PermissionKind": {
+      "type": "string",
+      "oneOf": [
+        {
+          "description": "Enables the at command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-at",
+          "markdownDescription": "Enables the at command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the at command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-at",
+          "markdownDescription": "Denies the at command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the at_phases command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-at-phases",
+          "markdownDescription": "Enables the at_phases command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the at_phases command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-at-phases",
+          "markdownDescription": "Denies the at_phases command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the available_ports command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-available-ports",
+          "markdownDescription": "Enables the available_ports command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the available_ports command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-available-ports",
+          "markdownDescription": "Denies the available_ports command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the bytes_to_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-bytes-to-read",
+          "markdownDescription": "Enables the bytes_to_read command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the bytes_to_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-bytes-to-read",
+          "markdownDescription": "Denies the bytes_to_read command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the bytes_to_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-bytes-to-write",
+          "markdownDescription": "Enables the bytes_to_write command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the bytes_to_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-bytes-to-write",
+          "markdownDescription": "Denies the bytes_to_write command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_exchange command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-exchange",
+          "markdownDescription": "Enables the cancel_exchange command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_exchange command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-exchange",
+          "markdownDescription": "Denies the cancel_exchange command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-read",
+          "markdownDescription": "Enables the cancel_read command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-read",
+          "markdownDescription": "Denies the cancel_read command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-capabilities",
+          "markdownDescription": "Enables the capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-capabilities",
+          "markdownDescription": "Denies the capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the clear_break command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-break",
+          "markdownDescription": "Enables the clear_break command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_break command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-break",
+          "markdownDescription": "Denies the clear_break command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the clear_buffer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-buffer",
+          "markdownDescription": "Enables the clear_buffer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_buffer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-buffer",
+          "markdownDescription": "Denies the clear_buffer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-close",
+          "markdownDescription": "Enables the close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-close",
+          "markdownDescription": "Denies the close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the close_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-close-all",
+          "markdownDescription": "Enables the close_all command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the close_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-close-all",
+          "markdownDescription": "Denies the close_all command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the configure_at_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-configure-at-session",
+          "markdownDescription": "Enables the configure_at_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the configure_at_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-configure-at-session",
+          "markdownDescription": "Denies the configure_at_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the disable_mux command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-disable-mux",
+          "markdownDescription": "Enables the disable_mux command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the disable_mux command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-disable-mux",
+          "markdownDescription": "Denies the disable_mux command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the enable_mux command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-enable-mux",
+          "markdownDescription": "Enables the enable_mux command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the enable_mux command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-enable-mux",
+          "markdownDescription": "Denies the enable_mux command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the exchange command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-exchange",
+          "markdownDescription": "Enables the exchange command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the exchange command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-exchange",
+          "markdownDescription": "Denies the exchange command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the exchange_binary command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-exchange-binary",
+          "markdownDescription": "Enables the exchange_binary command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the exchange_binary command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-exchange-binary",
+          "markdownDescription": "Denies the exchange_binary command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the force_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-force-close",
+          "markdownDescription": "Enables the force_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the force_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-force-close",
+          "markdownDescription": "Denies the force_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_log_level command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-log-level",
+          "markdownDescription": "Enables the get_log_level command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_log_level command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-log-level",
+          "markdownDescription": "Denies the get_log_level command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the managed_ports command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-managed-ports",
+          "markdownDescription": "Enables the managed_ports command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the managed_ports command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-managed-ports",
+          "markdownDescription": "Denies the managed_ports command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open",
+          "markdownDescription": "Enables the open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open",
+          "markdownDescription": "Denies the open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_mux_channel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-mux-channel",
+          "markdownDescription": "Enables the open_mux_channel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_mux_channel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-mux-channel",
+          "markdownDescription": "Denies the open_mux_channel command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the read command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read",
+          "markdownDescription": "Enables the read command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the read command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read",
+          "markdownDescription": "Denies the read command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the read_binary command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-binary",
+          "markdownDescription": "Enables the read_binary command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the read_binary command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-binary",
+          "markdownDescription": "Denies the read_binary command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the read_carrier_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-carrier-detect",
+          "markdownDescription": "Enables the read_carrier_detect command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the read_carrier_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-carrier-detect",
+          "markdownDescription": "Denies the read_carrier_detect command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the read_clear_to_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-clear-to-send",
+          "markdownDescription": "Enables the read_clear_to_send command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the read_clear_to_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-clear-to-send",
+          "markdownDescription": "Denies the read_clear_to_send command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the read_data_set_ready command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-data-set-ready",
+          "markdownDescription": "Enables the read_data_set_ready command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the read_data_set_ready command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-data-set-ready",
+          "markdownDescription": "Denies the read_data_set_ready command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the read_ring_indicator command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-ring-indicator",
+          "markdownDescription": "Enables the read_ring_indicator command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the read_ring_indicator command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-ring-indicator",
+          "markdownDescription": "Denies the read_ring_indicator command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the send_sms_pdu command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-send-sms-pdu",
+          "markdownDescription": "Enables the send_sms_pdu command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the send_sms_pdu command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-send-sms-pdu",
+          "markdownDescription": "Denies the send_sms_pdu command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_baud_rate command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-baud-rate",
+          "markdownDescription": "Enables the set_baud_rate command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_baud_rate command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-baud-rate",
+          "markdownDescription": "Denies the set_baud_rate command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_break command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-break",
+          "markdownDescription": "Enables the set_break command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_break command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-break",
+          "markdownDescription": "Denies the set_break command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_data_bits command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-data-bits",
+          "markdownDescription": "Enables the set_data_bits command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_data_bits command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-data-bits",
+          "markdownDescription": "Denies the set_data_bits command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_flow_control command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-flow-control",
+          "markdownDescription": "Enables the set_flow_control command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_flow_control command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-flow-control",
+          "markdownDescription": "Denies the set_flow_control command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_log_level command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-log-level",
+          "markdownDescription": "Enables the set_log_level command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_log_level command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-log-level",
+          "markdownDescription": "Denies the set_log_level command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_parity command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-parity",
+          "markdownDescription": "Enables the set_parity command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_parity command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-parity",
+          "markdownDescription": "Denies the set_parity command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_stop_bits command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-stop-bits",
+          "markdownDescription": "Enables the set_stop_bits command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_stop_bits command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-stop-bits",
+          "markdownDescription": "Denies the set_stop_bits command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_timeout command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-timeout",
+          "markdownDescription": "Enables the set_timeout command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_timeout command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-timeout",
+          "markdownDescription": "Denies the set_timeout command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the unwatch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-unwatch",
+          "markdownDescription": "Enables the unwatch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the unwatch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-unwatch",
+          "markdownDescription": "Denies the unwatch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the unwatch_ports command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-unwatch-ports",
+          "markdownDescription": "Enables the unwatch_ports command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the unwatch_ports command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-unwatch-ports",
+          "markdownDescription": "Denies the unwatch_ports command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the watch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-watch",
+          "markdownDescription": "Enables the watch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the watch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-watch",
+          "markdownDescription": "Denies the watch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the watch_ports command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-watch-ports",
+          "markdownDescription": "Enables the watch_ports command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the watch_ports command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-watch-ports",
+          "markdownDescription": "Denies the watch_ports command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the write command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-write",
+          "markdownDescription": "Enables the write command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-write",
+          "markdownDescription": "Denies the write command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the write_binary command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-write-binary",
+          "markdownDescription": "Enables the write_binary command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write_binary command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-write-binary",
+          "markdownDescription": "Denies the write_binary command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the write_data_terminal_ready command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-write-data-terminal-ready",
+          "markdownDescription": "Enables the write_data_terminal_ready command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write_data_terminal_ready command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-write-data-terminal-ready",
+          "markdownDescription": "Denies the write_data_terminal_ready command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the write_request_to_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-write-request-to-send",
+          "markdownDescription": "Enables the write_request_to_send command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write_request_to_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-write-request-to-send",
+          "markdownDescription": "Denies the write_request_to_send command without any pre-configured scope."
+        },
+        {
+          "description": "Default permissions for the serialplugin: enumerate, open, read/write, watch/unwatch,\nport hotplug, AT session, exchange, and configure serial ports on desktop and Android.\n\n#### This default permission set includes:\n\n- `allow-managed-ports`\n- `allow-available-ports`\n- `allow-watch-ports`\n- `allow-unwatch-ports`\n- `allow-cancel-read`\n- `allow-close`\n- `allow-close-all`\n- `allow-force-close`\n- `allow-open`\n- `allow-read`\n- `allow-read-binary`\n- `allow-write`\n- `allow-write-binary`\n- `allow-capabilities`\n- `allow-watch`\n- `allow-unwatch`\n- `allow-bytes-to-read`\n- `allow-bytes-to-write`\n- `allow-clear-break`\n- `allow-clear-buffer`\n- `allow-read-carrier-detect`\n- `allow-read-clear-to-send`\n- `allow-read-data-set-ready`\n- `allow-read-ring-indicator`\n- `allow-set-baud-rate`\n- `allow-set-break`\n- `allow-set-data-bits`\n- `allow-set-flow-control`\n- `allow-set-parity`\n- `allow-set-stop-bits`\n- `allow-set-timeout`\n- `allow-write-data-terminal-ready`\n- `allow-write-request-to-send`\n- `allow-set-log-level`\n- `allow-get-log-level`\n- `allow-exchange`\n- `allow-exchange-binary`\n- `allow-cancel-exchange`\n- `allow-at`\n- `allow-at-phases`\n- `allow-send-sms-pdu`\n- `allow-configure-at-session`\n- `allow-enable-mux`\n- `allow-open-mux-channel`\n- `allow-disable-mux`",
+          "type": "string",
+          "const": "default",
+          "markdownDescription": "Default permissions for the serialplugin: enumerate, open, read/write, watch/unwatch,\nport hotplug, AT session, exchange, and configure serial ports on desktop and Android.\n\n#### This default permission set includes:\n\n- `allow-managed-ports`\n- `allow-available-ports`\n- `allow-watch-ports`\n- `allow-unwatch-ports`\n- `allow-cancel-read`\n- `allow-close`\n- `allow-close-all`\n- `allow-force-close`\n- `allow-open`\n- `allow-read`\n- `allow-read-binary`\n- `allow-write`\n- `allow-write-binary`\n- `allow-capabilities`\n- `allow-watch`\n- `allow-unwatch`\n- `allow-bytes-to-read`\n- `allow-bytes-to-write`\n- `allow-clear-break`\n- `allow-clear-buffer`\n- `allow-read-carrier-detect`\n- `allow-read-clear-to-send`\n- `allow-read-data-set-ready`\n- `allow-read-ring-indicator`\n- `allow-set-baud-rate`\n- `allow-set-break`\n- `allow-set-data-bits`\n- `allow-set-flow-control`\n- `allow-set-parity`\n- `allow-set-stop-bits`\n- `allow-set-timeout`\n- `allow-write-data-terminal-ready`\n- `allow-write-request-to-send`\n- `allow-set-log-level`\n- `allow-get-log-level`\n- `allow-exchange`\n- `allow-exchange-binary`\n- `allow-cancel-exchange`\n- `allow-at`\n- `allow-at-phases`\n- `allow-send-sms-pdu`\n- `allow-configure-at-session`\n- `allow-enable-mux`\n- `allow-open-mux-channel`\n- `allow-disable-mux`"
+        }
+      ]
+    }
+  }
+}

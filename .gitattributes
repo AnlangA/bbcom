@@ -3,3 +3,6 @@
 *.png binary
 *.ico binary
 *.icns binary
+
+# Reviewed third-party patches stay byte-for-byte compatible with upstream.
+src-tauri/vendor/patches/** -whitespace

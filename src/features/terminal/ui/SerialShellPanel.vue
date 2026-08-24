@@ -219,8 +219,7 @@ const backspaceOptions = [
 ];
 
 function cssVariable(name: string): string {
-  if (typeof window === 'undefined') return '';
-  return getComputedStyle(window.document.documentElement).getPropertyValue(name).trim();
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 function xtermAnsiPalette(): Partial<ITheme> {
@@ -257,22 +256,33 @@ function terminalTheme(): ITheme {
 
 function safeFit(): void {
   const host = terminalHost.value;
-  if (!fitAddon || !host || host.clientWidth === 0 || host.clientHeight === 0) return;
+  if (!fitAddon || !host || !host.clientWidth || !host.clientHeight) return;
   fitAddon.fit();
+}
+
+function handleTerminalData(data: string): void {
+  if (props.isConnected) props.shell.handleTerminalData(data);
 }
 
 function handleCustomKey(event: KeyboardEvent): boolean {
   if (event.type !== 'keydown') return true;
-  if (event.ctrlKey && event.shiftKey && event.code === 'KeyC') {
-    const selection = terminal?.getSelection();
-    if (selection) void navigator.clipboard.writeText(selection);
+  if (event.key === 'Enter' && !event.isComposing) {
+    handleTerminalData('\r');
+    event.preventDefault();
     return false;
   }
-  if (event.ctrlKey && event.shiftKey && event.code === 'KeyV') {
-    void navigator.clipboard.readText().then((text) => {
-      if (text) terminal?.paste(text);
-    });
-    return false;
+  if (event.ctrlKey && event.shiftKey) {
+    if (event.code === 'KeyC') {
+      const selection = terminal?.getSelection();
+      if (selection) void navigator.clipboard.writeText(selection);
+      return false;
+    }
+    if (event.code === 'KeyV') {
+      void navigator.clipboard.readText().then((text) => {
+        if (text) terminal?.paste(text);
+      });
+      return false;
+    }
   }
   return true;
 }
@@ -297,13 +307,11 @@ onMounted(() => {
   terminal = term;
   safeFit();
   const replay = props.shell.replay();
-  if (replay.length > 0) term.write(replay, () => term.scrollToBottom());
+  if (replay.length) term.write(replay, () => term.scrollToBottom());
   stopOutput = props.shell.onOutput((chunk) => term.write(chunk));
   stopReset = props.shell.onReset(() => term.reset());
-  term.onData((data) => {
-    if (props.isConnected) props.shell.handleTerminalData(data);
-  });
-  resizeObserver = new ResizeObserver(() => safeFit());
+  term.onData(handleTerminalData);
+  resizeObserver = new ResizeObserver(safeFit);
   resizeObserver.observe(host);
   term.focus();
 });

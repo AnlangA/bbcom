@@ -5,6 +5,13 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-08-24
+
+### Fixed
+
+- Serial Shell now sends the configured CR, LF, or CRLF exactly once when Enter is pressed in desktop WebViews and treats pasted CRLF as one logical line break.
+- Native serial watch data now preserves the device's exact bytes, including CR/LF, empty lines, and non-UTF-8 payloads, so Shell output keeps its original internal line breaks.
+
 ## [1.0.2] - 2026-08-23
 
 ### Changed
