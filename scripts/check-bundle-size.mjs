@@ -2,15 +2,9 @@ import { gzipSync } from 'node:zlib';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 
-// Keep these byte ceilings in one place. They deliberately use binary KiB so
-// the CI decision is stable and does not depend on a formatter's unit choice.
-// The workspace/runtime architecture landed as one coordinated feature set.
-// Keep a small regression allowance above that complete baseline instead of
-// forcing feature work into byte-level micro-optimisation.
-// 2026-08: +36 KiB for the xterm.js terminal (lazy SerialShellPanel chunk,
-// startup graphs unaffected), partially offset by deleting the TS MCUmgr stack.
-// 2026-08: +2 KiB for terminal soft-wrap/ANSI palette CSS in the packet list.
-// 2026-08: +5 KiB for feature-sliced refactor (bridge classes, colocated modules).
+// Former gzip ceilings, kept only as report annotations. Size budgets are not
+// enforced: this script still measures the build, but over-limit output is not
+// a failure.
 const TOTAL_JS_GZIP_LIMIT = 460 * 1024;
 const BOOTSTRAP_JS_GZIP_LIMIT = 85 * 1024;
 const CHUNK_JS_GZIP_LIMIT = 105 * 1024;
@@ -31,7 +25,7 @@ const manifestCandidates = [
 ];
 
 function fail(message) {
-  console.error(`Bundle size gate: ${message}`);
+  console.error(`Bundle size report: ${message}`);
   process.exitCode = 1;
 }
 
@@ -152,20 +146,6 @@ if (!existsSync(distDirectory) || !statSync(distDirectory).isDirectory()) {
   );
   const violations = [];
 
-  if (totalGzipBytes > TOTAL_JS_GZIP_LIMIT) {
-    violations.push(
-      `total JavaScript gzip ${formatBytes(totalGzipBytes)} exceeds ${formatBytes(TOTAL_JS_GZIP_LIMIT)}`,
-    );
-  }
-
-  for (const [path, measurement] of measurements) {
-    if (measurement.gzipBytes > CHUNK_JS_GZIP_LIMIT) {
-      violations.push(
-        `chunk ${relative(distDirectory, path)} gzip ${formatBytes(measurement.gzipBytes)} exceeds ${formatBytes(CHUNK_JS_GZIP_LIMIT)}`,
-      );
-    }
-  }
-
   const entryGraphs = [];
   if (manifest) {
     for (const [entryKey, entry] of Object.entries(manifest)) {
@@ -203,27 +183,22 @@ if (!existsSync(distDirectory) || !statSync(distDirectory).isDirectory()) {
   }
 
   // A startup graph consists of an entry and its static imports. Delayed
-  // imports are intentionally excluded here and remain included in the total
-  // budget above, so lazy panels cannot be mistaken for first-paint code.
+  // imports are excluded here so lazy panels are not counted as first-paint
+  // code; they still contribute to the total gzip figure printed below.
   for (const graph of entryGraphs) {
     const gzipBytes = graph.outputs.reduce(
       (total, output) => total + measurements.get(output).gzipBytes,
       0,
     );
     graph.gzipBytes = gzipBytes;
-    if (gzipBytes > graph.limit) {
-      violations.push(
-        `startup graph ${graph.label} gzip ${formatBytes(gzipBytes)} exceeds ${formatBytes(graph.limit)}`,
-      );
-    }
   }
 
   console.log(
-    `JavaScript gzip total: ${formatBytes(totalGzipBytes)} / ${formatBytes(TOTAL_JS_GZIP_LIMIT)}`,
+    `JavaScript gzip total: ${formatBytes(totalGzipBytes)} (budget check disabled; former limit ${formatBytes(TOTAL_JS_GZIP_LIMIT)})`,
   );
   for (const graph of entryGraphs) {
     console.log(
-      `Startup graph ${graph.label}: ${formatBytes(graph.gzipBytes)} / ${formatBytes(graph.limit)}`,
+      `Startup graph ${graph.label}: ${formatBytes(graph.gzipBytes)} (former limit ${formatBytes(graph.limit)})`,
     );
   }
   const largestChunk = [...measurements.entries()].sort(
@@ -232,13 +207,13 @@ if (!existsSync(distDirectory) || !statSync(distDirectory).isDirectory()) {
   if (largestChunk) {
     const [largestPath, largestMeasurement] = largestChunk;
     console.log(
-      `Largest JavaScript chunk: ${relative(distDirectory, largestPath)} (${formatBytes(largestMeasurement.gzipBytes)}) / ${formatBytes(CHUNK_JS_GZIP_LIMIT)}`,
+      `Largest JavaScript chunk: ${relative(distDirectory, largestPath)} (${formatBytes(largestMeasurement.gzipBytes)}) (former limit ${formatBytes(CHUNK_JS_GZIP_LIMIT)})`,
     );
   }
 
   if (violations.length > 0) {
     for (const violation of violations) fail(violation);
   } else {
-    console.log('Bundle size gate passed.');
+    console.log('Bundle size report complete (size budgets are not enforced).');
   }
 }

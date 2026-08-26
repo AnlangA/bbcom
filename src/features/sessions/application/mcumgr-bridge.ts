@@ -33,6 +33,7 @@ import type { McumgrClientConfig, McumgrClientStatus, SerialSession } from '@/ty
 
 export interface McumgrFirmwareUpdateOptions {
   skipReboot?: boolean;
+  /** Permanently confirm the new slot before reboot. Defaults to true. */
   forceConfirm?: boolean;
   upgradeOnly?: boolean;
 }
@@ -52,7 +53,15 @@ export interface McumgrTransportPort {
   ingestTraceFrames(frames: readonly McumgrTraceFrame[]): void;
 }
 
-const RESUME_RETRY_DELAYS_MS = [0, 1_000, 2_500];
+/** Normal operations: try immediately, then 1s and 2.5s later. */
+export const MCUMGR_RESUME_RETRY_DELAYS_MS = [0, 1_000, 2_500] as const;
+/**
+ * After a device reset the USB/CDC port often disappears while MCUboot swaps.
+ * Wait before the first reopen, then keep retrying for ~40s.
+ */
+export const MCUMGR_RESUME_AFTER_REBOOT_DELAYS_MS = [
+  2_000, 3_000, 5_000, 5_000, 8_000, 10_000, 10_000,
+] as const;
 
 /**
  * MCUmgr orchestration: yields the session's serial port to the Rust backend
@@ -95,8 +104,8 @@ export class McumgrBridge {
     };
   }
 
-  private async resumeWithRetry(): Promise<boolean> {
-    for (const delay of RESUME_RETRY_DELAYS_MS) {
+  private async resumeWithRetry(delays: readonly number[]): Promise<boolean> {
+    for (const delay of delays) {
       if (delay > 0) await sleep(delay);
       try {
         if (await this.transport.resumeConnection()) return true;
@@ -110,6 +119,7 @@ export class McumgrBridge {
   private async run<T>(
     action: string,
     work: (port: McumgrPortRequest) => Promise<T>,
+    options: { resumeAfterReboot?: boolean } = {},
   ): Promise<T | null> {
     if (this.busy.value) return null;
     const port = this.portRequest();
@@ -142,11 +152,31 @@ export class McumgrBridge {
       if (generation === this.runGeneration) this.rejectActiveRun = null;
       const statusKind = this.status.value.kind;
       const returnToIdle = statusKind === 'busy' || statusKind === 'progress';
+      const waitForReboot =
+        Boolean(options.resumeAfterReboot) && generation === this.runGeneration && returnToIdle;
+      if (waitForReboot) {
+        this.status.value = {
+          kind: 'progress',
+          action,
+          phase: 'rebooting',
+          detail: t('mcumgr.resume.waitingForDevice'),
+        };
+      }
       let resumeFailed = false;
       try {
-        if (wasConnected && !(await this.resumeWithRetry())) {
-          resumeFailed = true;
-          this.status.value = { kind: 'error', message: t('mcumgr.error.resumeFailed') };
+        if (wasConnected) {
+          const delays = waitForReboot
+            ? MCUMGR_RESUME_AFTER_REBOOT_DELAYS_MS
+            : MCUMGR_RESUME_RETRY_DELAYS_MS;
+          if (!(await this.resumeWithRetry(delays))) {
+            resumeFailed = true;
+            this.status.value = {
+              kind: 'error',
+              message: waitForReboot
+                ? t('mcumgr.error.resumeAfterReboot')
+                : t('mcumgr.error.resumeFailed'),
+            };
+          }
         }
       } finally {
         this.portYielding.value = false;
@@ -199,7 +229,9 @@ export class McumgrBridge {
   }
 
   async execute(action: string, op: McumgrOp): Promise<string | null> {
-    const result = await this.run(action, async (port) => invokeMcumgrExecute({ port, op }));
+    const result = await this.run(action, async (port) => invokeMcumgrExecute({ port, op }), {
+      resumeAfterReboot: op.kind === 'os-reset',
+    });
     if (result === null) return null;
     this.replayTrace(result);
     this.lastResult.value = prettyJson(result.resultJson);
@@ -211,17 +243,21 @@ export class McumgrBridge {
     options: McumgrFirmwareUpdateOptions = {},
   ): Promise<string | null> {
     const action = 'firmware-update';
-    const result = await this.run(action, async (port) =>
-      invokeMcumgrFirmwareUpdate(
-        {
-          port,
-          fileToken,
-          skipReboot: options.skipReboot ?? false,
-          forceConfirm: options.forceConfirm ?? false,
-          upgradeOnly: options.upgradeOnly ?? false,
-        },
-        this.progressChannel(action),
-      ),
+    const skipReboot = options.skipReboot ?? false;
+    const result = await this.run(
+      action,
+      async (port) =>
+        invokeMcumgrFirmwareUpdate(
+          {
+            port,
+            fileToken,
+            skipReboot,
+            forceConfirm: options.forceConfirm ?? true,
+            upgradeOnly: options.upgradeOnly ?? false,
+          },
+          this.progressChannel(action),
+        ),
+      { resumeAfterReboot: !skipReboot },
     );
     if (result === null) return null;
     this.replayTrace(result);

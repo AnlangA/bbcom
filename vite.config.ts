@@ -51,7 +51,7 @@ export default defineConfig(async () => ({
   },
   build: {
     target: 'esnext',
-    // The bundle-size gate consumes the Vite manifest to identify every
+    // Emit a Vite manifest so optional bundle reporting can identify every
     // emitted entry rather than guessing from a hashed filename.
     manifest: true,
     // Vite 8 uses its built-in Oxc minifier. A boolean keeps that optimized

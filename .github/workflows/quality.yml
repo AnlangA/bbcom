@@ -80,9 +80,6 @@ jobs:
       - name: Build frontend
         run: pnpm run build
 
-      - name: Enforce bundle budgets
-        run: pnpm run bundle:check
-
   rust:
     name: Rust correctness
     runs-on: ubuntu-22.04

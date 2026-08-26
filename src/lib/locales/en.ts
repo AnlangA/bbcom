@@ -563,8 +563,14 @@ const en: Catalog = {
   'mcumgr.group.query': 'Query',
   'mcumgr.group.danger': 'Destructive',
   'mcumgr.group.inspect': 'Inspect',
+  'mcumgr.group.inspectHint':
+    'Query images and slot layout on the device. Erase targets the inactive slot only.',
   'mcumgr.group.boot': 'Boot flags',
+  'mcumgr.group.bootHint':
+    'Set MCUboot trial-boot or permanent confirm flags. Copy the hash from Image state.',
   'mcumgr.group.update': 'Firmware',
+  'mcumgr.group.updateHint':
+    'One-click upgrade uploads, permanently confirms the slot, and reboots. You can also upload only, then Test or Confirm by hand.',
   'mcumgr.group.key': 'Key',
   'mcumgr.group.persist': 'Persist',
   'mcumgr.group.enum': 'Enumerate',
@@ -590,16 +596,34 @@ const en: Catalog = {
   'mcumgr.os.reset': 'Reset',
   'mcumgr.os.bootloader': 'Bootloader',
   'mcumgr.image.state': 'Image state',
+  'mcumgr.image.stateHint':
+    'List slot images with hashes, versions, and active / pending / confirmed boot flags.',
   'mcumgr.image.slotInfo': 'Slot info',
+  'mcumgr.image.slotInfoHint': 'Show flash slot layout, sizes, and whether upload is allowed.',
   'mcumgr.image.erase': 'Erase',
-  'mcumgr.image.hash': 'Image hash (hex)',
+  'mcumgr.image.eraseHint':
+    'Erase the inactive image slot so a new upload can start clean. The running image is not erased.',
+  'mcumgr.image.hash': 'Image hash',
+  'mcumgr.image.hashHint':
+    'SHA-256 of the target image, as hex. Copy it from Image state. Test requires a hash; leave Confirm empty to confirm the running image.',
+  'mcumgr.image.hashPlaceholder': 'Hex hash from Image state',
   'mcumgr.image.test': 'Test',
+  'mcumgr.image.testHint':
+    'Mark this image for a trial boot (pending). If it is not confirmed after reboot, MCUboot reverts. A hash is required.',
   'mcumgr.image.confirm': 'Confirm',
-  'mcumgr.image.update': 'Firmware update',
+  'mcumgr.image.confirmHint':
+    'Permanently confirm an image so it will not revert. Leave the hash empty to confirm the currently running image.',
+  'mcumgr.image.update': 'Firmware upgrade',
   'mcumgr.image.upload': 'Upload image',
-  'mcumgr.image.upgradeOnly': 'Upgrade only (reject older versions)',
+  'mcumgr.image.uploadCaption': 'Write the inactive slot only',
+  'mcumgr.image.uploadHint':
+    'Write the image to the inactive slot only. Does not confirm or reboot. Activate it afterwards with Test or Confirm.',
+  'mcumgr.image.upgradeOnly': 'Upgrade only',
+  'mcumgr.image.upgradeOnlyHint':
+    'Reject the file if its version is not newer than the image already on the device.',
+  'mcumgr.image.updateCaption': 'Upload, confirm, and reboot',
   'mcumgr.image.updateHint':
-    'Pick an MCUboot image, upload it, confirm the slot, and reboot in one flow.',
+    'Pick an MCUboot image, upload it, permanently confirm the slot, and reboot. The device may take a while to re-enumerate; no extra confirm is needed afterwards.',
   'mcumgr.shell.placeholder': 'mcumgr shell command',
   'mcumgr.fs.path': 'Absolute path',
   'mcumgr.fs.status': 'Status',
@@ -636,7 +660,7 @@ const en: Catalog = {
   'mcumgr.confirm.delete': 'Delete this setting?',
   'mcumgr.confirm.zephyr': 'Erase Zephyr storage?',
   'mcumgr.confirm.update':
-    'Run the full firmware update with "{name}" ({size})? The device will reboot.',
+    'Run the full firmware upgrade with "{name}" ({size})? The new image will be confirmed permanently and the device will reboot.',
   'mcumgr.confirm.upload': 'Upload "{name}" ({size}) to the inactive image slot?',
   'mcumgr.status.idle': 'Idle',
   'mcumgr.status.busy': 'Running {action}',
@@ -644,6 +668,9 @@ const en: Catalog = {
   'mcumgr.result.empty': 'Results appear here.',
   'mcumgr.error.noPort': 'No serial port is bound to this session.',
   'mcumgr.error.resumeFailed': 'Operation finished, but reopening the session connection failed.',
+  'mcumgr.error.resumeAfterReboot':
+    'The image was written and reboot was triggered, but the serial port is not back yet. The device can take a while to boot; reconnect when it reappears.',
+  'mcumgr.resume.waitingForDevice': 'waiting for the serial port to reappear',
   'mcumgr.error.fallback': 'MCUmgr operation failed.',
   'mcumgr.error.kind.busy': 'Another MCUmgr operation is still running.',
   'mcumgr.error.kind.cancelled': 'Operation cancelled.',
@@ -718,7 +745,7 @@ const en: Catalog = {
   'mcumgr.action.imageErase': 'Erase image slot',
   'mcumgr.action.imageTest': 'Test image',
   'mcumgr.action.imageConfirm': 'Confirm image',
-  'mcumgr.action.firmwareUpdate': 'Firmware update',
+  'mcumgr.action.firmwareUpdate': 'Firmware upgrade',
   'mcumgr.action.imageUpload': 'Image upload',
   'mcumgr.action.fsUpload': 'File upload',
   'mcumgr.action.fsDownload': 'File download',
