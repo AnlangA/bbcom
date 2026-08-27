@@ -5,6 +5,12 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-08-27
+
+### Added
+
+- Protocol parser now supports MCUmgr SMP, CBOR, CRC, and transaction correlation, with a resizable detail inspector.
+
 ### Changed
 
 - Bundle size measurement is report-only; gzip budgets no longer fail pre-commit, `pnpm check`, or CI.
