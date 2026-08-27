@@ -1524,10 +1524,7 @@ mod tests {
         ));
         assert!(is_expected_reset_disconnect(&broken));
 
-        let other = MCUmgrClientError::ReaderError(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "device removed",
-        ));
+        let other = MCUmgrClientError::ReaderError(std::io::Error::other("device removed"));
         assert!(is_expected_reset_disconnect(&other));
 
         let rejected =
