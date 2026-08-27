@@ -20,7 +20,14 @@ import type {
   WaveformSourceMode,
 } from '@/types';
 import { MAX_HISTORY } from '@/types';
-import type { ParserConfig } from './protocol-parser';
+import {
+  DEFAULT_SMP_PARSER_CONFIG,
+  MAX_SMP_PARSER_MAX_PACKET_BYTES,
+  MAX_SMP_REASSEMBLY_TIMEOUT_MS,
+  MIN_SMP_PARSER_MAX_PACKET_BYTES,
+  MIN_SMP_REASSEMBLY_TIMEOUT_MS,
+  type ParserConfig,
+} from './protocol-parser';
 import { parseHex } from './format';
 import { nowMillis } from './time';
 import { DEFAULT_RX_FRAME_GAP_MS, normalizeRxFrameGapMs } from './serial-framing';
@@ -214,6 +221,17 @@ function decorateFrame(frame: DataFrame, options: SessionPersistenceOptions): Da
 }
 
 export function cloneParserConfig(config: ParserConfig): ParserConfig {
+  if (config.kind === 'mcumgr-smp') {
+    if (!isValidSmpParserConfig(config)) {
+      return { ...DEFAULT_SMP_PARSER_CONFIG };
+    }
+    return {
+      kind: 'mcumgr-smp',
+      transport: config.transport,
+      maxPacketBytes: config.maxPacketBytes,
+      reassemblyTimeoutMs: config.reassemblyTimeoutMs,
+    };
+  }
   if (config.kind === 'fixed') {
     return {
       kind: 'fixed',
@@ -246,6 +264,45 @@ export function cloneParserConfig(config: ParserConfig): ParserConfig {
   return cloneParserConfig(DEFAULT_PARSER_STATE.config);
 }
 
+function isValidSmpParserConfig(config: Extract<ParserConfig, { kind: 'mcumgr-smp' }>): boolean {
+  return (
+    (config.transport === 'serial-console' || config.transport === 'raw-uart') &&
+    integerInRange(
+      config.maxPacketBytes,
+      MIN_SMP_PARSER_MAX_PACKET_BYTES,
+      MAX_SMP_PARSER_MAX_PACKET_BYTES,
+    ) &&
+    integerInRange(
+      config.reassemblyTimeoutMs,
+      MIN_SMP_REASSEMBLY_TIMEOUT_MS,
+      MAX_SMP_REASSEMBLY_TIMEOUT_MS,
+    )
+  );
+}
+
+function integerInRange(value: number, min: number, max: number): boolean {
+  return Number.isInteger(value) && value >= min && value <= max;
+}
+
+const INVALID_SMP_PARSER_RECOVERY = Symbol('invalid-smp-parser-recovery');
+type RecoveredParserState = SessionParserState & {
+  [INVALID_SMP_PARSER_RECOVERY]?: true;
+};
+
+/** Runtime-only marker; it is intentionally non-enumerable and never persisted. */
+export function parserStateRecoveredInvalidSmp(state: SessionParserState): boolean {
+  return (state as RecoveredParserState)[INVALID_SMP_PARSER_RECOVERY] === true;
+}
+
+export function recoverInvalidSmpParserState(): SessionParserState {
+  const state = cloneParserState({ config: DEFAULT_SMP_PARSER_CONFIG, presetId: null });
+  Object.defineProperty(state, INVALID_SMP_PARSER_RECOVERY, {
+    value: true,
+    enumerable: false,
+  });
+  return state;
+}
+
 export function cloneParserState(state: SessionParserState): SessionParserState {
   return {
     config: cloneParserConfig(state.config),
@@ -259,8 +316,11 @@ export function normalizeParserState(raw: unknown): SessionParserState {
   if (!state.config || typeof state.config !== 'object') {
     return cloneParserState(DEFAULT_PARSER_STATE);
   }
+  const config = state.config as ParserConfig;
+  const recoveredInvalidSmp = config.kind === 'mcumgr-smp' && !isValidSmpParserConfig(config);
+  if (recoveredInvalidSmp) return recoverInvalidSmpParserState();
   return cloneParserState({
-    config: state.config as ParserConfig,
+    config,
     presetId: typeof state.presetId === 'string' ? state.presetId : null,
   });
 }

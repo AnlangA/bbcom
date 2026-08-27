@@ -7,6 +7,12 @@ test('PARSER_PRESETS is non-empty and each preset has a unique id', () => {
   assert.ok(PARSER_PRESETS.length >= 4);
   const ids = PARSER_PRESETS.map((p) => p.id);
   assert.equal(new Set(ids).size, ids.length, 'all ids unique');
+  for (const preset of PARSER_PRESETS) {
+    assert.ok(preset.name.length > 0, `${preset.id}: English name`);
+    assert.ok(preset.nameZh?.length, `${preset.id}: Chinese name`);
+    assert.ok(preset.description.length > 0, `${preset.id}: English description`);
+    assert.ok(preset.descriptionZh?.length, `${preset.id}: Chinese description`);
+  }
 });
 
 test('findPreset returns the matching preset', () => {

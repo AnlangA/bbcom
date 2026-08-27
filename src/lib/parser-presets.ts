@@ -10,7 +10,9 @@ import type { ParserConfig } from './protocol-parser';
 export interface ParserPreset {
   id: string;
   name: string;
+  nameZh?: string;
   description: string;
+  descriptionZh?: string;
   config: ParserConfig;
 }
 
@@ -22,7 +24,9 @@ export interface ParserPreset {
 const NMEA: ParserPreset = {
   id: 'nmea0183',
   name: 'NMEA 0183',
+  nameZh: 'NMEA 0183',
   description: 'GPS sentences: $...*CS terminated by CRLF',
+  descriptionZh: 'GPS 语句：以 $ 开始，并由 CRLF 结束',
   config: {
     kind: 'delimiter',
     delimiter: [0x0d, 0x0a],
@@ -37,7 +41,9 @@ const NMEA: ParserPreset = {
 const AT_RESPONSE: ParserPreset = {
   id: 'at-crlf',
   name: 'AT / modem (CRLF)',
+  nameZh: 'AT / 调制解调器（CRLF）',
   description: 'Text lines terminated by CR LF',
+  descriptionZh: '按 CR LF 结束符拆分 AT 命令响应和文本行',
   config: {
     kind: 'delimiter',
     delimiter: [0x0d, 0x0a],
@@ -51,7 +57,9 @@ const AT_RESPONSE: ParserPreset = {
 const TEXT_LF: ParserPreset = {
   id: 'text-lf',
   name: 'Text line (LF)',
+  nameZh: '文本行（LF）',
   description: 'Lines terminated by LF',
+  descriptionZh: '按 LF 结束符拆分日志或普通文本行',
   config: {
     kind: 'delimiter',
     delimiter: [0x0a],
@@ -69,7 +77,9 @@ const TEXT_LF: ParserPreset = {
 const MODBUS_FIXED_8: ParserPreset = {
   id: 'modbus-fixed-8',
   name: 'Modbus RTU (8B fixed)',
+  nameZh: 'Modbus RTU（定长 8B）',
   description: 'Fixed 8-byte frames (tune for your function code)',
+  descriptionZh: '每 8 字节拆分一帧，可按实际功能码调整',
   config: {
     kind: 'fixed',
     frameSize: 8,
@@ -83,7 +93,9 @@ const MODBUS_FIXED_8: ParserPreset = {
 const LEN_PREFIX_1B: ParserPreset = {
   id: 'len-prefix-1b',
   name: 'Length-prefixed (1B)',
+  nameZh: '长度前缀（1B）',
   description: '1-byte big-endian length prefix + payload',
+  descriptionZh: '1 字节大端长度前缀加负载',
   config: {
     kind: 'length',
     lengthOffset: 0,
@@ -100,7 +112,9 @@ const LEN_PREFIX_1B: ParserPreset = {
 const LEN_PREFIX_2B_LE: ParserPreset = {
   id: 'len-prefix-2b-le',
   name: 'Length-prefixed (2B LE)',
+  nameZh: '长度前缀（2B 小端）',
   description: '2-byte little-endian length prefix + payload',
+  descriptionZh: '2 字节小端长度前缀加负载',
   config: {
     kind: 'length',
     lengthOffset: 0,
@@ -118,7 +132,9 @@ const LEN_PREFIX_2B_LE: ParserPreset = {
 const SCPI_LF: ParserPreset = {
   id: 'scpi-lf',
   name: 'SCPI / instrument (LF)',
+  nameZh: 'SCPI / 仪器（LF）',
   description: 'SCPI measurement lines terminated by LF',
+  descriptionZh: '按 LF 拆分 SCPI 仪器测量响应',
   config: {
     kind: 'delimiter',
     delimiter: [0x0a],
@@ -133,7 +149,9 @@ const SCPI_LF: ParserPreset = {
 const NUL_DELIMITED: ParserPreset = {
   id: 'nul-delimited',
   name: 'NUL-delimited (0x00)',
+  nameZh: 'NUL 分隔（0x00）',
   description: 'Binary frames terminated by a NUL byte',
+  descriptionZh: '按 NUL 字节拆分二进制帧',
   config: {
     kind: 'delimiter',
     delimiter: [0x00],
@@ -148,7 +166,9 @@ const NUL_DELIMITED: ParserPreset = {
 const LEN_PREFIX_2B_BE: ParserPreset = {
   id: 'len-prefix-2b-be',
   name: 'Length-prefixed (2B BE)',
+  nameZh: '长度前缀（2B 大端）',
   description: '2-byte big-endian length prefix + payload',
+  descriptionZh: '2 字节大端长度前缀加负载',
   config: {
     kind: 'length',
     lengthOffset: 0,

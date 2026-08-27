@@ -307,6 +307,10 @@ function parserTexts(runtime: SessionRuntimeController): string[] {
   return runtime.parser.frames.value.map((frame) => new TextDecoder().decode(frame.data));
 }
 
+function rawSmpMessage(op: 0 | 1 | 2 | 3, sequence: number): Uint8Array {
+  return Uint8Array.of(0x08 | op, 0, 0, 1, 0, 0, sequence, 0, 0xa0);
+}
+
 function sessionById(session: SerialSession[], id: string): SerialSession {
   const found = session.find((item) => item.id === id);
   assert.ok(found);
@@ -418,6 +422,14 @@ test('resident controller parses raw RX without a panel, rebuilds on settings, a
     [[0x11, 0x22]],
   );
 
+  runtime.parser.setReplayHistoryForNextConfigure(false);
+  store.setParserState(id, { kind: 'fixed', frameSize: 2 });
+  assert.deepEqual(
+    runtime.parser.frames.value,
+    [],
+    'an explicit unchanged Apply is forced and consumes its no-replay preference',
+  );
+
   const modbusOptions = mocked.modbusOptions as ModbusRuntimeOptions;
   assert.equal(modbusOptions.waveformRef.value, null);
   const detach = runtime.attachView({ waveformRef: ref(null) });
@@ -446,6 +458,58 @@ test('resident controller publishes bounded-parser drop counters and resets them
   assert.equal(runtime.parser.frames.value.length, 0);
   assert.equal(runtime.parser.droppedFrames.value, 0);
   assert.equal(runtime.parser.droppedBytes.value, 0);
+
+  await runtime.dispose();
+  scope.stop();
+});
+
+test('controller SMP mode consumes ordered serial capture, ignores trace, and honors no-replay Apply', async () => {
+  const { id, runtime, scope, serial, store } = setup();
+  store.addFrame(id, {
+    direction: 'RX',
+    origin: 'serial-rx',
+    timestamp: 100,
+    data: rawSmpMessage(1, 1),
+  });
+
+  runtime.parser.setReplayHistoryForNextConfigure(false);
+  store.setParserState(id, {
+    kind: 'mcumgr-smp',
+    transport: 'raw-uart',
+    maxPacketBytes: 1024,
+    reassemblyTimeoutMs: 3000,
+  });
+  await vi.advanceTimersByTimeAsync(17);
+  assert.deepEqual(runtime.parser.frames.value, [], 'disabled replay skips retained capture');
+
+  // Native RX alone is intentionally insufficient in SMP mode: the capture
+  // timeline supplies origin, sequence and the TX half of the conversation.
+  serial.emit(rawSmpMessage(1, 2));
+  await vi.advanceTimersByTimeAsync(17);
+  assert.deepEqual(runtime.parser.frames.value, []);
+
+  store.addFrame(id, {
+    direction: 'RX',
+    origin: 'mcumgr-trace',
+    timestamp: 110,
+    data: rawSmpMessage(1, 2),
+  });
+  store.addFrame(id, {
+    direction: 'TX',
+    origin: 'serial-tx',
+    timestamp: 120,
+    data: rawSmpMessage(0, 3),
+  });
+  await vi.advanceTimersByTimeAsync(17);
+
+  assert.equal(runtime.parser.frames.value.length, 1);
+  assert.deepEqual(
+    runtime.parser.frames.value.map((record) => ({
+      captureSeq: record.captureSeq,
+      direction: 'direction' in record ? record.direction : undefined,
+    })),
+    [{ captureSeq: 2, direction: 'TX' }],
+  );
 
   await runtime.dispose();
   scope.stop();

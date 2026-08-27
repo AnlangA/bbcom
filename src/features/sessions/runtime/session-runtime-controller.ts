@@ -1,4 +1,13 @@
-import { computed, onScopeDispose, readonly, ref, shallowRef, watch, type Ref } from 'vue';
+import {
+  computed,
+  onScopeDispose,
+  readonly,
+  ref,
+  shallowReadonly,
+  shallowRef,
+  watch,
+  type Ref,
+} from 'vue';
 import { useAppStore } from '@/features/settings/store/app-store';
 import { useSessionCapture, useSessionDocument } from '@/features/sessions/ports/session-ports';
 import {
@@ -25,7 +34,7 @@ import { formatBytes } from '@/lib/format';
 import { t } from '@/lib/i18n';
 import { logger } from '@/lib/logger';
 import { SerialUiPublishScheduler } from '@/lib/serial-rx-scheduler';
-import type { DisplayParsedFrame } from '@/lib/parser-frame-collector';
+import type { DisplayProtocolRecord } from '@/lib/protocol-record';
 import type { DataFrame, SerialSendResult, SerialSession, SerialWriteOptions } from '@/types';
 import type { SerialConnectionFailure } from '@/features/sessions/application/serial-bridge';
 import { SessionProtocolRuntime } from './session-protocol-runtime';
@@ -73,12 +82,14 @@ export interface SessionRuntimeViewBinding {
 
 /** UI-facing, throttled snapshot of the resident raw-byte protocol parser. */
 export interface SessionRuntimeProtocolView {
-  readonly frames: Readonly<Ref<readonly DisplayParsedFrame[]>>;
+  readonly frames: Readonly<Ref<readonly DisplayProtocolRecord[]>>;
   readonly droppedFrames: Readonly<Ref<number>>;
   readonly droppedBytes: Readonly<Ref<number>>;
   readonly throughputBps: Readonly<Ref<number>>;
   /** Increments on a parser configuration change or explicit terminal clear. */
   readonly resetVersion: Readonly<Ref<number>>;
+  /** Runtime-only preference consumed by the next parser configuration Apply. */
+  setReplayHistoryForNextConfigure(enabled: boolean): void;
 }
 
 export type SessionRuntimeModbusController = ModbusBridge;
@@ -270,7 +281,7 @@ export function useSessionRuntimeController(
   // before the queued terminal capture/UI publication path. This runtime stays
   // resident while the ParserPanel is unmounted and while RAF never runs.
   const protocolRuntime = new SessionProtocolRuntime();
-  const parserFrames = shallowRef<readonly DisplayParsedFrame[]>([]);
+  const parserFrames = shallowRef<readonly DisplayProtocolRecord[]>([]);
   const parserDroppedFrames = ref(0);
   const parserDroppedBytes = ref(0);
   const parserThroughputBps = ref(0);
@@ -283,6 +294,9 @@ export function useSessionRuntimeController(
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', onParserVisibilityChange);
   }
+  const removeProtocolRuntimeChangeListener = protocolRuntime.onChange(() => {
+    parserUiPublisher.markDirty();
+  });
 
   function publishParserSnapshot(): void {
     const snapshot = protocolRuntime.snapshot();
@@ -293,7 +307,7 @@ export function useSessionRuntimeController(
     parserResetVersion.value = snapshot.resetVersion;
   }
 
-  function* capturedParserHistory(): Iterable<Pick<DataFrame, 'direction' | 'data'>> {
+  function* capturedParserHistory(): Iterable<DataFrame> {
     // Reconfiguration deliberately retains the historical parser-panel
     // behavior, including paused capture data. This generator avoids creating
     // a second full frame array; the normal RX path below remains raw-only.
@@ -301,10 +315,21 @@ export function useSessionRuntimeController(
     if (timeline) yield* timeline.all;
   }
 
+  let replayHistoryForNextParserConfigure = true;
+  let forceNextParserConfigure = false;
+
   const stopParserConfigWatch = watch(
     () => session.value.parserState.config,
     (config) => {
-      if (!protocolRuntime.configure(config, capturedParserHistory())) return;
+      const replayHistory = replayHistoryForNextParserConfigure;
+      const force = forceNextParserConfigure;
+      replayHistoryForNextParserConfigure = true;
+      forceNextParserConfigure = false;
+      // SMP always receives the current boundary, even when replay is disabled,
+      // so subsequent capture updates cannot accidentally ingest old history.
+      const history =
+        config.kind === 'mcumgr-smp' || replayHistory ? capturedParserHistory() : undefined;
+      if (!protocolRuntime.configure(config, history, { replayHistory, force })) return;
       // Applying a parser setting must immediately clear stale display data;
       // future raw bytes will update this snapshot on the normal UI cadence.
       parserUiPublisher.cancel();
@@ -320,12 +345,29 @@ export function useSessionRuntimeController(
   const removeParserRawObserver = transceiver.onReceive((bytes) => {
     if (protocolRuntime.feed(bytes)) parserUiPublisher.markDirty();
   });
+  const stopParserCaptureWatch = watch(
+    transceiver.rawData.version,
+    () => {
+      if (!protocolRuntime.isSmpMode) return;
+      const timeline = transceiver.rawData.timeline.value;
+      if (timeline && protocolRuntime.syncCaptureTimeline(timeline.all)) {
+        parserUiPublisher.markDirty();
+      }
+    },
+    { flush: 'sync' },
+  );
   const parser: SessionRuntimeProtocolView = {
-    frames: readonly(parserFrames),
+    // Records contain Uint8Array and mutable correlation links internally;
+    // expose the shallow ref as readonly without deep-unwrapping that model.
+    frames: shallowReadonly(parserFrames),
     droppedFrames: readonly(parserDroppedFrames),
     droppedBytes: readonly(parserDroppedBytes),
     throughputBps: readonly(parserThroughputBps),
     resetVersion: readonly(parserResetVersion),
+    setReplayHistoryForNextConfigure: (enabled) => {
+      replayHistoryForNextParserConfigure = enabled;
+      forceNextParserConfigure = true;
+    },
   };
 
   const removeTriggerRawObserver = transceiver.onReceive((bytes) => {
@@ -585,7 +627,10 @@ export function useSessionRuntimeController(
         stopShellConfigWatch();
         removeParserRawObserver();
         removeParserFrameClearObserver();
+        stopParserCaptureWatch();
         stopParserConfigWatch();
+        removeProtocolRuntimeChangeListener();
+        protocolRuntime.dispose();
         stopRuntimeStatusProjection();
         runtimeStatusRegistry.stop(session.value.id);
         stopConnectionWatch?.();

@@ -114,6 +114,7 @@
           :dropped-bytes="runtime.parser.droppedBytes.value"
           :throughput-bps="runtime.parser.throughputBps.value"
           :parser-reset-version="runtime.parser.resetVersion.value"
+          :on-apply-replay-preference="runtime.parser.setReplayHistoryForNextConfigure"
           @close="viewMode = 'terminal'"
         />
         <SerialShellPanel
