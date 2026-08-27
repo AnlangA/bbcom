@@ -415,3 +415,12 @@ export function truncateHexPreview(value: string, max: number): string {
 export function frameAsciiText(frame: { data: Uint8Array }): string {
   return Array.from(frame.data, byteAscii).join('');
 }
+
+export function protocolRecordRawBytes(
+  record: { data: Uint8Array; transportData?: Uint8Array } | null | undefined,
+): Uint8Array {
+  if (!record) return new Uint8Array();
+  const transport = record.transportData;
+  if (transport && transport.length > 0) return transport;
+  return record.data;
+}

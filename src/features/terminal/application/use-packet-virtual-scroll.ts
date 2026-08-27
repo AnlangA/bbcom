@@ -13,6 +13,7 @@ interface PacketVirtualScrollOptions {
 }
 
 const ROW_HEIGHT = 28;
+const INITIAL_SCROLL_RECT = { width: 800, height: 480 };
 
 /**
  * Pure threshold test for "user is parked near the bottom of the scroll area",
@@ -57,17 +58,30 @@ export function usePacketVirtualScroll({
   const shouldAutoScroll = ref(true);
 
   const virtualizer = useVirtualizer(
-    computed(() => ({
-      count: frameCount.value,
-      getScrollElement: () => scrollRef.value,
-      estimateSize: (index) => rowSize?.(index) ?? ROW_HEIGHT,
-      ...(itemKey ? { getItemKey: itemKey } : {}),
-      overscan: 15,
-    })),
+    computed(() => {
+      const element = scrollRef.value;
+      return {
+        count: frameCount.value,
+        getScrollElement: () => scrollRef.value ?? element,
+        estimateSize: (index: number) => rowSize?.(index) ?? ROW_HEIGHT,
+        ...(itemKey ? { getItemKey: itemKey } : {}),
+        overscan: 15,
+        initialRect: INITIAL_SCROLL_RECT,
+      };
+    }),
   );
 
   const virtualItems = computed(() => virtualizer.value.getVirtualItems());
-  const totalSize = computed(() => virtualizer.value.getTotalSize());
+  const totalSize = computed(() => {
+    const size = virtualizer.value.getTotalSize();
+    if (size > 0) return size;
+    return Math.max(0, frameCount.value) * (rowSize?.(0) ?? ROW_HEIGHT);
+  });
+
+  watch(scrollRef, (element) => {
+    if (!element) return;
+    virtualizer.value.measure?.();
+  });
 
   function measureElement(element: Element | ComponentPublicInstance | null) {
     virtualizer.value.measureElement(element as Element | null);
