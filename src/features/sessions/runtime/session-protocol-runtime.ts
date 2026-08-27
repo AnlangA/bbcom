@@ -54,13 +54,10 @@ type ProtocolCaptureFrame = Pick<DataFrame, 'direction' | 'data'> &
 interface ReplayJob {
   readonly generation: number;
   readonly history: readonly ProtocolCaptureFrame[];
-  readonly untrustedOriginCount: number;
-  readonly untrustedOriginBoundary?: ProtocolCaptureFrame;
   historyIndex: number;
   live: ProtocolCaptureFrame[];
   liveIndex: number;
   liveBytes: number;
-  untrustedOriginWarningEmitted: boolean;
 }
 
 export const DEFAULT_SESSION_PROTOCOL_MAX_FRAMES = 5_000;
@@ -74,9 +71,10 @@ const DEFAULT_REPLAY_FRAMES_PER_SLICE = 128;
  * Resident protocol data plane for one serial session.
  *
  * Legacy byte framers stay attached to native RX so capture/UI publication
- * cannot delay stream reassembly. SMP instead consumes the retained capture
- * timeline: that is the only existing session boundary which contains both TX
- * and RX with their capture sequence, origin and timestamp.
+ * cannot delay stream reassembly. SMP instead consumes the shared session
+ * TX/RX timeline used by every other module: native serial, MCUmgr wire
+ * replay, paused capture, and presentation all publish onto that one stream.
+ * Frame `origin` is display attribution, not a consumption filter.
  */
 export class SessionProtocolRuntime {
   private readonly maxFrames: number;
@@ -204,9 +202,9 @@ export class SessionProtocolRuntime {
   }
 
   /**
-   * Consume one native RX chunk. SMP deliberately ignores this path because
-   * origin, TX traffic, timestamp and capture ordering only exist on the
-   * capture timeline.
+   * Consume one native RX chunk. SMP ignores this path so it cannot double-
+   * ingest bytes that already land on the shared TX/RX timeline (including
+   * MCUmgr replay, which broadcasts RX before capture publication).
    */
   feed(bytes: Uint8Array, now = Date.now()): boolean {
     if (!this.byteParser || bytes.length === 0) return false;
@@ -227,16 +225,15 @@ export class SessionProtocolRuntime {
 
     if (!this.captureInitialized) {
       this.updateCaptureBoundary(timeline);
-      const eligible = timeline.filter(isSerialCaptureFrame);
       if (this.replayJob) {
-        this.queueReplayLive(eligible);
-        return this.recordLiveThroughput(totalBytes(eligible), now);
+        this.queueReplayLive(timeline);
+        return this.recordLiveThroughput(totalBytes(timeline), now);
       }
       const before = this.liveFrameCount();
-      this.feedSmpFrames(eligible);
+      this.feedSmpFrames(timeline);
       this.armSmpExpiry();
       return (
-        this.recordLiveThroughput(totalBytes(eligible), now) || this.liveFrameCount() !== before
+        this.recordLiveThroughput(totalBytes(timeline), now) || this.liveFrameCount() !== before
       );
     }
 
@@ -260,18 +257,16 @@ export class SessionProtocolRuntime {
     }
 
     this.updateCaptureBoundary(timeline);
-    const eligible = appended.filter(isSerialCaptureFrame);
-    const bytes = totalBytes(eligible);
+    const bytes = totalBytes(appended);
     const throughputChanged = this.recordLiveThroughput(bytes, now);
-    if (eligible.length === 0) return throughputChanged;
 
     if (this.replayJob) {
-      this.queueReplayLive(eligible);
+      this.queueReplayLive(appended);
       return throughputChanged;
     }
 
     const before = this.liveFrameCount();
-    this.feedSmpFrames(eligible);
+    this.feedSmpFrames(appended);
     this.armSmpExpiry();
     return throughputChanged || this.liveFrameCount() !== before;
   }
@@ -351,29 +346,16 @@ export class SessionProtocolRuntime {
 
   private startReplay(timeline: readonly ProtocolCaptureFrame[]): void {
     if (!this.smpParser) return;
-    const history: ProtocolCaptureFrame[] = [];
-    let untrustedOriginCount = 0;
-    let untrustedOriginBoundary: ProtocolCaptureFrame | undefined;
-    for (const frame of timeline) {
-      if (isSerialCaptureFrame(frame)) {
-        history.push(frame);
-      } else if (frame.origin === undefined) {
-        untrustedOriginCount += 1;
-        untrustedOriginBoundary = frame;
-      }
-    }
-    if (history.length === 0 && untrustedOriginCount === 0) return;
+    const history = timeline.filter((frame) => frame.data.length > 0);
+    if (history.length === 0) return;
     const generation = ++this.replayGeneration;
     this.replayJob = {
       generation,
       history,
-      untrustedOriginCount,
-      ...(untrustedOriginBoundary ? { untrustedOriginBoundary } : {}),
       historyIndex: 0,
       live: [],
       liveIndex: 0,
       liveBytes: 0,
-      untrustedOriginWarningEmitted: false,
     };
     this.scheduleReplay(generation);
   }
@@ -431,21 +413,6 @@ export class SessionProtocolRuntime {
     const before = this.liveFrameCount();
     let processed = 0;
 
-    if (!job.untrustedOriginWarningEmitted && job.untrustedOriginCount > 0) {
-      job.untrustedOriginWarningEmitted = true;
-      const boundary = job.untrustedOriginBoundary;
-      this.pushParsedFrame(
-        parser.diagnostic({
-          direction: boundary?.direction ?? 'RX',
-          timestamp: boundary?.timestamp ?? Date.now(),
-          captureSeq: boundary?.captureSeq,
-          code: 'smp.runtime.untrusted-origin',
-          message: `Skipped ${job.untrustedOriginCount} historical capture frame(s) without a verifiable serial origin`,
-          severity: 'warning',
-        }),
-      );
-    }
-
     while (
       processed < this.replayFramesPerSlice &&
       (processed === 0 || this.replayScheduler.now() - startedAt < this.replayTimeSliceMs)
@@ -492,7 +459,7 @@ export class SessionProtocolRuntime {
   }
 
   private feedSmpFrame(frame: ProtocolCaptureFrame): void {
-    if (!this.smpParser || !isSerialCaptureFrame(frame) || frame.data.length === 0) return;
+    if (!this.smpParser || frame.data.length === 0) return;
     const timestamp = frame.timestamp ?? Date.now();
     this.updateSmpClock(timestamp);
     const records = this.smpParser.feed({
@@ -627,10 +594,6 @@ export class SessionProtocolRuntime {
 
 function isEmptyDelimiter(config: ParserConfig): boolean {
   return config.kind === 'delimiter' && config.delimiter.length === 0;
-}
-
-function isSerialCaptureFrame(frame: ProtocolCaptureFrame): boolean {
-  return frame.origin === 'serial-rx' || frame.origin === 'serial-tx';
 }
 
 function hasCaptureSequenceGap(

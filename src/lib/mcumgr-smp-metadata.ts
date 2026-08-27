@@ -182,7 +182,6 @@ const DIAGNOSTIC_NAMES_ZH: Readonly<Record<string, string>> = Object.freeze({
   'smp.transaction.orphan-response': '未找到匹配的 SMP 请求',
   'smp.transaction.unmatched-request': 'SMP 请求未获得匹配响应',
   'smp.runtime.replay-backlog': '实时积压超限，已放弃历史重放并继续实时解析',
-  'smp.runtime.untrusted-origin': '已跳过来源无法验证的历史捕获帧',
 });
 
 export function smpDiagnosticMessageZh(code: string, fallback: string): string {

@@ -463,7 +463,7 @@ test('resident controller publishes bounded-parser drop counters and resets them
   scope.stop();
 });
 
-test('controller SMP mode consumes ordered serial capture, ignores trace, and honors no-replay Apply', async () => {
+test('controller SMP mode consumes ordered serial capture, MCUmgr traces, and honors no-replay Apply', async () => {
   const { id, runtime, scope, serial, store } = setup();
   store.addFrame(id, {
     direction: 'RX',
@@ -502,13 +502,16 @@ test('controller SMP mode consumes ordered serial capture, ignores trace, and ho
   });
   await vi.advanceTimersByTimeAsync(17);
 
-  assert.equal(runtime.parser.frames.value.length, 1);
+  assert.equal(runtime.parser.frames.value.length, 2);
   assert.deepEqual(
     runtime.parser.frames.value.map((record) => ({
       captureSeq: record.captureSeq,
       direction: 'direction' in record ? record.direction : undefined,
     })),
-    [{ captureSeq: 2, direction: 'TX' }],
+    [
+      { captureSeq: 1, direction: 'RX' },
+      { captureSeq: 2, direction: 'TX' },
+    ],
   );
 
   await runtime.dispose();
