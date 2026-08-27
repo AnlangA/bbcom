@@ -37,7 +37,13 @@ function ensurePortIsAvailable() {
 
 function run(command, args, cwd = root) {
   return new Promise((resolveRun, rejectRun) => {
-    const child = spawn(command, args, { cwd, stdio: 'inherit' });
+    const child = spawn(command, args, {
+      cwd,
+      stdio: 'inherit',
+      // Windows cannot spawn .cmd/.bat without a shell; EFTYPE otherwise
+      // aborts the pre-push browser-mock E2E after Vite is already up.
+      shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(command),
+    });
     child.once('error', rejectRun);
     child.once('exit', (code, signal) => {
       if (code === 0) resolveRun();
