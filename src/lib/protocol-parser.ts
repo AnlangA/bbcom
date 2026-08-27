@@ -12,7 +12,9 @@
  * it has no DOM/Vue deps, so it is fully unit-testable.
  */
 
-export type ParserKind = 'delimiter' | 'length' | 'fixed';
+export type ParserKind = 'delimiter' | 'length' | 'fixed' | 'mcumgr-smp';
+
+export type SmpParserTransport = 'serial-console' | 'raw-uart';
 
 export interface DelimiterConfig {
   kind: 'delimiter';
@@ -42,7 +44,41 @@ export interface FixedConfig {
   frameSize: number;
 }
 
-export type ParserConfig = DelimiterConfig | LengthConfig | FixedConfig;
+export interface SmpParserConfig {
+  kind: 'mcumgr-smp';
+  transport: SmpParserTransport;
+  maxPacketBytes: number;
+  reassemblyTimeoutMs: number;
+}
+
+export type ByteParserConfig = DelimiterConfig | LengthConfig | FixedConfig;
+export type ParserConfig = ByteParserConfig | SmpParserConfig;
+
+export const MIN_SMP_PARSER_MAX_PACKET_BYTES = 8;
+export const MAX_SMP_PARSER_MAX_PACKET_BYTES = 1024 * 1024;
+export const MIN_SMP_REASSEMBLY_TIMEOUT_MS = 100;
+export const MAX_SMP_REASSEMBLY_TIMEOUT_MS = 60_000;
+
+export const DEFAULT_SMP_PARSER_CONFIG: SmpParserConfig = {
+  kind: 'mcumgr-smp',
+  transport: 'serial-console',
+  maxPacketBytes: MAX_SMP_PARSER_MAX_PACKET_BYTES,
+  reassemblyTimeoutMs: 3000,
+};
+
+/** Stable normalized identity used by parser runtimes to detect draft changes. */
+export function parserConfigKey(config: ParserConfig): string {
+  switch (config.kind) {
+    case 'fixed':
+      return `fixed:${config.frameSize}`;
+    case 'length':
+      return `length:${config.lengthOffset}:${config.lengthSize}:${config.bigEndian ? 1 : 0}:${config.lengthAdjust}`;
+    case 'delimiter':
+      return `delimiter:${config.includeDelimiter ? 1 : 0}:${config.delimiter.join(',')}`;
+    case 'mcumgr-smp':
+      return `mcumgr-smp:${config.transport}:${config.maxPacketBytes}:${config.reassemblyTimeoutMs}`;
+  }
+}
 
 export interface ParsedFrame {
   data: Uint8Array;
@@ -94,9 +130,12 @@ export class ProtocolParser {
   private discardedBytes = 0;
   private overflowEvents = 0;
   private resyncEvents = 0;
-  readonly config: ParserConfig;
+  readonly config: ByteParserConfig;
 
   constructor(config: ParserConfig, options: ProtocolParserOptions = {}) {
+    if (config.kind === 'mcumgr-smp') {
+      throw new RangeError('mcumgr-smp config requires McumgrSmpParser');
+    }
     this.config = validateAndCloneConfig(config);
     const requestedLimit = options.maxPendingBytes ?? DEFAULT_PROTOCOL_PARSER_MAX_PENDING_BYTES;
     const normalizedLimit = Number.isFinite(requestedLimit)
@@ -317,7 +356,7 @@ export class ProtocolParser {
   }
 }
 
-function validateAndCloneConfig(config: ParserConfig): ParserConfig {
+function validateAndCloneConfig(config: ByteParserConfig): ByteParserConfig {
   if (!config || typeof config !== 'object') throw new TypeError('parser config must be an object');
 
   if (config.kind === 'fixed') {

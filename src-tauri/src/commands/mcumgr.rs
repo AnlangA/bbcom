@@ -310,6 +310,77 @@ fn is_timeout(error: &MCUmgrClientError) -> bool {
     }
 }
 
+fn io_kind_is_disconnect(kind: io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::NotFound
+            | io::ErrorKind::Interrupted
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::Other
+    )
+}
+
+/// Reset typically never gets an SMP ACK: the device drops the USB/serial
+/// link as soon as it reboots. Timeouts and transport disconnects are success.
+fn is_expected_reset_disconnect(error: &MCUmgrClientError) -> bool {
+    if is_timeout(error) {
+        return true;
+    }
+    match error {
+        MCUmgrClientError::WriterError(io_error) | MCUmgrClientError::ReaderError(io_error) => {
+            io_kind_is_disconnect(io_error.kind())
+        }
+        MCUmgrClientError::ExecuteError(ExecuteError::ErrorResponse(_)) => false,
+        _ => {
+            let mut current: Option<&dyn std::error::Error> = Some(error);
+            while let Some(node) = current {
+                if let Some(io_error) = node.downcast_ref::<std::io::Error>()
+                    && io_kind_is_disconnect(io_error.kind())
+                {
+                    return true;
+                }
+                current = node.source();
+            }
+            false
+        }
+    }
+}
+
+/// Do not burn the configured timeout×retries budget waiting for a reset ACK.
+const RESET_ACK_TIMEOUT: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResetTriggerResult {
+    Acknowledged,
+    DeviceDropped,
+}
+
+fn trigger_device_reset(
+    client: &MCUmgrClient,
+    force: bool,
+) -> Result<ResetTriggerResult, MCUmgrClientError> {
+    let _ = client.set_timeout(RESET_ACK_TIMEOUT);
+    client.set_retries(0);
+    match client.os_system_reset(force, None) {
+        Ok(()) => Ok(ResetTriggerResult::Acknowledged),
+        Err(error) if is_expected_reset_disconnect(&error) => Ok(ResetTriggerResult::DeviceDropped),
+        Err(error) => Err(error),
+    }
+}
+
+fn reset_outcome_label(outcome: ResetTriggerResult) -> &'static str {
+    match outcome {
+        ResetTriggerResult::Acknowledged => "acknowledged",
+        ResetTriggerResult::DeviceDropped => "disconnected",
+    }
+}
+
 fn map_client_error(error: &MCUmgrClientError, cancelled: bool) -> McumgrError {
     if let MCUmgrClientError::ProgressCallbackError = error
         && cancelled
@@ -624,8 +695,8 @@ fn run_quick_op(client: &MCUmgrClient, op: &McumgrOp) -> Result<JsonValue, Mcumg
             to_json(&info)
         }
         McumgrOp::OsReset { force } => {
-            client.os_system_reset(*force, None).map_err(map_err)?;
-            Ok(json!({ "ok": true }))
+            let outcome = trigger_device_reset(client, *force).map_err(map_err)?;
+            Ok(json!({ "ok": true, "reboot": reset_outcome_label(outcome) }))
         }
         McumgrOp::ImageState => {
             let images = client.image_get_state().map_err(map_err)?;
@@ -929,9 +1000,11 @@ pub async fn mcumgr_firmware_update(
         let opened = open_client(&request.port, &cancel)?;
         let reporter = ProgressReporter::new(on_progress, cancel);
         let mut progress = firmware_step_progress(&reporter);
+        // Toolkit reboot treats a missing SMP ACK as failure. Skip it and send
+        // reset ourselves so a USB drop after os-reset is a successful upgrade.
         let params = FirmwareUpdateParams {
             bootloader_type: None,
-            skip_reboot: request.skip_reboot,
+            skip_reboot: true,
             force_confirm: request.force_confirm,
             upgrade_only: request.upgrade_only,
         };
@@ -939,7 +1012,25 @@ pub async fn mcumgr_firmware_update(
             .client
             .firmware_update(&firmware, None, params, Some(&mut progress))
             .map_err(|error| map_firmware_error(&error, reporter.cancelled()))?;
-        finish_command(opened, json!({ "ok": true, "bytes": firmware.len() }))
+        let reboot = if request.skip_reboot {
+            "skipped"
+        } else if !reporter.phase(McumgrPhase::Rebooting, None) {
+            return Err(cancelled_error());
+        } else {
+            match trigger_device_reset(&opened.client, false) {
+                Ok(outcome) => reset_outcome_label(outcome),
+                Err(error) => {
+                    return Err(map_firmware_error(
+                        &FirmwareUpdateError::RebootFailed(error),
+                        reporter.cancelled(),
+                    ));
+                }
+            }
+        };
+        finish_command(
+            opened,
+            json!({ "ok": true, "bytes": firmware.len(), "reboot": reboot }),
+        )
     })
     .await
     .map_err(|error| {
@@ -1419,6 +1510,32 @@ mod tests {
             map_client_error(&send, false).kind,
             McumgrErrorKind::Timeout
         );
+    }
+
+    #[test]
+    fn reset_without_an_ack_is_treated_as_the_device_dropping() {
+        let timeout =
+            MCUmgrClientError::ExecuteError(ExecuteError::ReceiveFailed(ReceiveError::Timeout));
+        assert!(is_expected_reset_disconnect(&timeout));
+
+        let broken = MCUmgrClientError::WriterError(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "pipe",
+        ));
+        assert!(is_expected_reset_disconnect(&broken));
+
+        let other = MCUmgrClientError::ReaderError(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "device removed",
+        ));
+        assert!(is_expected_reset_disconnect(&other));
+
+        let rejected =
+            MCUmgrClientError::ExecuteError(ExecuteError::ErrorResponse(DeviceError::V1 {
+                rc: 8,
+                rsn: Some("not supported".to_owned()),
+            }));
+        assert!(!is_expected_reset_disconnect(&rejected));
     }
 
     #[test]

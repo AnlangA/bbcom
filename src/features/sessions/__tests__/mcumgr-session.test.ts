@@ -13,10 +13,15 @@ vi.mock('@tauri-apps/api/core', () => {
   return { invoke: mocked.invoke, Channel: MockChannel };
 });
 
-import { useSessionMcumgr } from '@/features/sessions/application/use-session-mcumgr.ts';
+import {
+  MCUMGR_RESUME_AFTER_REBOOT_DELAYS_MS,
+  MCUMGR_RESUME_RETRY_DELAYS_MS,
+  useSessionMcumgr,
+} from '@/features/sessions/application/use-session-mcumgr.ts';
 import { DEFAULT_MCUMGR_CONFIG } from '@/lib/mcumgr-config.ts';
 import type { McumgrClientConfig, SerialSession } from '@/types.ts';
 import type { McumgrProgress } from '@/generated/ipc-contracts.ts';
+import { t } from '@/lib/i18n.ts';
 
 afterEach(() => {
   mocked.invoke.mockReset();
@@ -31,6 +36,7 @@ interface Harness {
   patches: Partial<McumgrClientConfig>[];
   setConnected: (value: boolean) => void;
   resumeResult: { value: boolean };
+  resumeSucceedsOnAttempt: { value: number | null };
 }
 
 function createHarness(options: { connected?: boolean; portName?: string } = {}): Harness {
@@ -45,6 +51,7 @@ function createHarness(options: { connected?: boolean; portName?: string } = {})
   const resumes: number[] = [];
   const patches: Partial<McumgrClientConfig>[] = [];
   const resumeResult = { value: true };
+  const resumeSucceedsOnAttempt = { value: null as number | null };
   const controller = useSessionMcumgr({
     session: session as never,
     transport: {
@@ -55,8 +62,10 @@ function createHarness(options: { connected?: boolean; portName?: string } = {})
       },
       resumeConnection: async () => {
         resumes.push(Date.now());
-        if (resumeResult.value) isConnected.value = true;
-        return resumeResult.value;
+        const succeedOn = resumeSucceedsOnAttempt.value;
+        const ok = succeedOn === null ? resumeResult.value : resumes.length >= succeedOn;
+        if (ok) isConnected.value = true;
+        return ok;
       },
       ingestTraceFrames: () => undefined,
     },
@@ -75,6 +84,7 @@ function createHarness(options: { connected?: boolean; portName?: string } = {})
       isConnected.value = value;
     },
     resumeResult,
+    resumeSucceedsOnAttempt,
   };
 }
 
@@ -232,6 +242,8 @@ test('firmware update forwards channel progress into the status', async () => {
     };
     assert.equal(request.fileToken, 'grant-1');
     assert.equal(request.upgradeOnly, true);
+    assert.equal(request.forceConfirm, true);
+    assert.equal(request.skipReboot, false);
     const progress: McumgrProgress = {
       phase: 'uploading',
       detail: null,
@@ -256,6 +268,73 @@ test('firmware update forwards channel progress into the status', async () => {
   assert.equal(seen.length, 1);
   assert.equal(result, '"ok"');
   assert.deepEqual(harness.controller.status.value, { kind: 'idle' });
+});
+
+test('firmware update waits through the reboot window before giving up on resume', async () => {
+  vi.useFakeTimers();
+  const harness = createHarness({ connected: true });
+  harness.resumeResult.value = false;
+  mocked.invoke.mockResolvedValue({ resultJson: '{"ok":true}' });
+
+  const pending = harness.controller.firmwareUpdate('grant-1');
+  await vi.runAllTimersAsync();
+  await pending;
+
+  assert.equal(harness.resumes.length, MCUMGR_RESUME_AFTER_REBOOT_DELAYS_MS.length);
+  assert.equal(harness.controller.status.value.kind, 'error');
+  if (harness.controller.status.value.kind === 'error') {
+    assert.equal(harness.controller.status.value.message, t('mcumgr.error.resumeAfterReboot'));
+  }
+});
+
+test('firmware update skipReboot uses the short resume budget', async () => {
+  vi.useFakeTimers();
+  const harness = createHarness({ connected: true });
+  harness.resumeResult.value = false;
+  mocked.invoke.mockResolvedValue({ resultJson: '{"ok":true}' });
+
+  const pending = harness.controller.firmwareUpdate('grant-1', { skipReboot: true });
+  await vi.runAllTimersAsync();
+  await pending;
+
+  assert.equal(harness.resumes.length, MCUMGR_RESUME_RETRY_DELAYS_MS.length);
+  assert.equal(harness.controller.status.value.kind, 'error');
+  if (harness.controller.status.value.kind === 'error') {
+    assert.equal(harness.controller.status.value.message, t('mcumgr.error.resumeFailed'));
+  }
+});
+
+test('firmware update resume can succeed on a later reboot-window attempt', async () => {
+  vi.useFakeTimers();
+  const harness = createHarness({ connected: true });
+  harness.resumeSucceedsOnAttempt.value = 3;
+  mocked.invoke.mockResolvedValue({ resultJson: '{"ok":true}' });
+
+  const pending = harness.controller.firmwareUpdate('grant-1');
+  await vi.runAllTimersAsync();
+  const result = await pending;
+
+  assert.equal(harness.resumes.length, 3);
+  assert.equal(result, JSON.stringify({ ok: true }, null, 2));
+  assert.deepEqual(harness.controller.status.value, { kind: 'idle' });
+});
+
+test('os reset also waits for the port after reboot', async () => {
+  vi.useFakeTimers();
+  const harness = createHarness({ connected: true });
+  harness.resumeResult.value = false;
+  mocked.invoke.mockResolvedValue({ resultJson: '{"ok":true}' });
+
+  const pending = harness.controller.execute('reset', { kind: 'os-reset', force: false });
+  await vi.runAllTimersAsync();
+  await pending;
+
+  assert.equal(harness.resumes.length, MCUMGR_RESUME_AFTER_REBOOT_DELAYS_MS.length);
+  if (harness.controller.status.value.kind === 'error') {
+    assert.equal(harness.controller.status.value.message, t('mcumgr.error.resumeAfterReboot'));
+  } else {
+    assert.equal(harness.controller.status.value.kind, 'error');
+  }
 });
 
 test('cancelled long operations return to idle instead of error', async () => {

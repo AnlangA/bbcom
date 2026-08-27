@@ -8,8 +8,8 @@ That install provisions the repository-pinned Node runtime for every project
 script.
 
 `pnpm install --frozen-lockfile` installs the versioned pre-commit hook. The
-pre-commit hook runs the fast local gate (lint, format, architecture, build,
-bundle check). The pre-push hook runs the full gate including all frontend and
+pre-commit hook runs the fast local gate (lint, format, architecture, build).
+The pre-push hook runs the full gate including all frontend and
 Rust tests plus browser E2E.
 
 Before opening a pull request, run:

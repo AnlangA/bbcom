@@ -17,6 +17,7 @@ import {
   createSessionRecord,
   normalizeParserState,
   normalizePortConfig,
+  recoverInvalidSmpParserState,
 } from '@/lib/session-persistence';
 import { cloneModbusConfig, normalizeModbusConfig } from '@/lib/modbus';
 import {
@@ -573,11 +574,29 @@ function hydrateParser(value: Record<string, unknown>): SerialSession['parserSta
   assertExactKeys(value, ['schemaVersion', 'config', 'presetId'], 'parser');
   expectVersion(value.schemaVersion, 'parser.schemaVersion');
   if (!isRecord(value.config)) throw new WorkspaceAdapterValidationError('parser.config');
-  validateParserConfig(value.config);
   const presetId =
     value.presetId === null
       ? null
       : validateSafeText(value.presetId, 'parser.presetId', { maxBytes: 128 });
+
+  if (value.config.kind === 'mcumgr-smp') {
+    // Unknown fields are still rejected: fallback is for invalid SMP values,
+    // not a way to smuggle arbitrary data through workspace hydration.
+    assertExactKeys(
+      value.config,
+      ['kind', 'transport', 'maxPacketBytes', 'reassemblyTimeoutMs'],
+      'parser.config',
+    );
+  }
+  try {
+    validateParserConfig(value.config);
+  } catch (error) {
+    // SMP settings can become unreadable after a partial/manual workspace
+    // edit. Recover into the safe console defaults while preserving strict
+    // fail-closed hydration for every legacy parser kind and unknown input.
+    if (value.config.kind !== 'mcumgr-smp') throw error;
+    return recoverInvalidSmpParserState();
+  }
   return normalizeParserState({ config: value.config, presetId });
 }
 

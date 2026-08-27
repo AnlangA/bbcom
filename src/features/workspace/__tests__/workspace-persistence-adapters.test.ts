@@ -10,12 +10,21 @@ import type {
   WorkspaceSessionSnapshot,
 } from '@/generated/ipc-contracts.ts';
 import { IPC_LIMITS } from '@/generated/ipc-contracts.ts';
-import { createSessionRecord } from '@/lib/session-persistence.ts';
+import {
+  DEFAULT_SMP_PARSER_CONFIG,
+  MAX_SMP_PARSER_MAX_PACKET_BYTES,
+  MAX_SMP_REASSEMBLY_TIMEOUT_MS,
+  MIN_SMP_PARSER_MAX_PACKET_BYTES,
+  MIN_SMP_REASSEMBLY_TIMEOUT_MS,
+  type ByteParserConfig,
+} from '@/lib/protocol-parser.ts';
+import { createSessionRecord, parserStateRecoveredInvalidSmp } from '@/lib/session-persistence.ts';
 import type { SerialSession } from '@/types/session.ts';
 import {
   WorkspaceAdapterLimitError,
   WorkspaceAdapterValidationError,
   WorkspaceFrameMutationBuilder,
+  WORKSPACE_SESSION_PROJECTION_VERSION,
   hydrateWorkspaceFrame,
   hydrateWorkspaceSession,
   projectWorkspaceFrame,
@@ -24,6 +33,7 @@ import {
   toIpcFramePayload,
   type WorkspaceHydrationPort,
 } from '@/features/workspace/adapters/index.ts';
+import { validateParserConfig } from '@/features/workspace/adapters/workspace-validation.ts';
 
 const portConfig = {
   baudRate: 115200,
@@ -35,6 +45,38 @@ const portConfig = {
   dtr: false,
   rts: false,
 };
+
+const LEGACY_WORKSPACE_PARSER_CASES: Array<{
+  name: string;
+  config: ByteParserConfig;
+  presetId: string;
+}> = [
+  {
+    name: 'delimiter',
+    config: {
+      kind: 'delimiter',
+      delimiter: [0x00, 0x0d, 0x0a, 0xff],
+      includeDelimiter: true,
+    },
+    presetId: 'workspace-delimiter',
+  },
+  {
+    name: 'fixed',
+    config: { kind: 'fixed', frameSize: 37 },
+    presetId: 'workspace-fixed',
+  },
+  {
+    name: 'length',
+    config: {
+      kind: 'length',
+      lengthOffset: 2,
+      lengthSize: 2,
+      bigEndian: false,
+      lengthAdjust: 4,
+    },
+    presetId: 'workspace-length',
+  },
+];
 
 function richSession(): SerialSession {
   return createSessionRecord('session-1', '/dev/ttyUSB0', portConfig, {
@@ -324,6 +366,180 @@ test('session projection covers every persisted feature and strips all runtime s
   ]);
   assert.equal(hydrated.waveform.channels[0]?.config.visible, false);
   assert.deepEqual(hydrated.waveform.frameCursor, { consumed: 1, lastFrameId: 'frame-1' });
+});
+
+test.each(LEGACY_WORKSPACE_PARSER_CASES)(
+  'workspace parser state round-trips legacy $name settings through JSON',
+  ({ config, presetId }) => {
+    const session = richSession();
+    session.parserState = { config, presetId };
+    const projection = projectWorkspaceSessionMutations(session, {
+      sequenceStart: 0,
+      sortOrder: 0,
+      name: 'Legacy parser session',
+    });
+    const parts = JSON.parse(JSON.stringify(roundTripParts(projection))) as ReturnType<
+      typeof roundTripParts
+    >;
+    const projectedParser = parts.snapshot.parserState as {
+      schemaVersion: number;
+      config: ByteParserConfig;
+      presetId: string | null;
+    };
+
+    assert.equal(
+      WORKSPACE_SESSION_PROJECTION_VERSION,
+      2,
+      'legacy workspace parser schema must not be bumped',
+    );
+    assert.equal(projectedParser.schemaVersion, 2);
+    assert.deepEqual(projectedParser.config, config);
+    assert.equal(projectedParser.presetId, presetId);
+    assert.notEqual(projectedParser.config, config);
+
+    const hydrated = hydrateWorkspaceSession(parts.snapshot, {
+      frames: [],
+      collections: parts.collections,
+      aiMessages: parts.aiMessages,
+      waveformChannels: parts.waveformChannels,
+      waveformSamples: parts.waveformSamples,
+    });
+    assert.deepEqual(hydrated.session.parserState, { config, presetId });
+    assert.notEqual(hydrated.session.parserState.config, projectedParser.config);
+
+    if (
+      config.kind === 'delimiter' &&
+      projectedParser.config.kind === 'delimiter' &&
+      hydrated.session.parserState.config.kind === 'delimiter'
+    ) {
+      assert.notEqual(projectedParser.config.delimiter, config.delimiter);
+      assert.notEqual(
+        hydrated.session.parserState.config.delimiter,
+        projectedParser.config.delimiter,
+      );
+      const hydratedDelimiter = [...hydrated.session.parserState.config.delimiter];
+      projectedParser.config.delimiter[0] = 0xaa;
+      assert.deepEqual(hydrated.session.parserState.config.delimiter, hydratedDelimiter);
+      assert.deepEqual(config.delimiter, [0x00, 0x0d, 0x0a, 0xff]);
+    }
+  },
+);
+
+test('workspace parser state round-trips SMP settings and recovers invalid stored values', () => {
+  const session = richSession();
+  session.parserState = {
+    config: {
+      kind: 'mcumgr-smp',
+      transport: 'raw-uart',
+      maxPacketBytes: 64 * 1024,
+      reassemblyTimeoutMs: 2500,
+    },
+    presetId: null,
+  };
+  const projection = projectWorkspaceSessionMutations(session, {
+    sequenceStart: 0,
+    sortOrder: 0,
+    name: 'SMP session',
+  });
+  const parts = roundTripParts(projection);
+  const sidecars = {
+    frames: [],
+    collections: parts.collections,
+    aiMessages: parts.aiMessages,
+    waveformChannels: parts.waveformChannels,
+    waveformSamples: parts.waveformSamples,
+  };
+
+  const hydrated = hydrateWorkspaceSession(parts.snapshot, sidecars);
+  assert.deepEqual(hydrated.session.parserState, session.parserState);
+
+  const recovered = hydrateWorkspaceSession(
+    {
+      ...parts.snapshot,
+      parserState: {
+        schemaVersion: 2,
+        config: {
+          kind: 'mcumgr-smp',
+          transport: 'auto',
+          maxPacketBytes: 0,
+          reassemblyTimeoutMs: 0,
+        },
+        presetId: 'stale-preset',
+      },
+    },
+    sidecars,
+  );
+  assert.deepEqual(recovered.session.parserState, {
+    config: DEFAULT_SMP_PARSER_CONFIG,
+    presetId: null,
+  });
+  assert.equal(parserStateRecoveredInvalidSmp(recovered.session.parserState), true);
+
+  session.parserState.config = {
+    ...DEFAULT_SMP_PARSER_CONFIG,
+    maxPacketBytes: 0,
+  };
+  assert.throws(
+    () =>
+      projectWorkspaceSessionMutations(session, {
+        sequenceStart: 0,
+        sortOrder: 0,
+        name: 'SMP session',
+      }),
+    WorkspaceAdapterValidationError,
+  );
+
+  assert.throws(
+    () =>
+      hydrateWorkspaceSession(
+        {
+          ...parts.snapshot,
+          parserState: {
+            schemaVersion: 2,
+            config: { ...DEFAULT_SMP_PARSER_CONFIG, secret: 'must-not-pass' },
+            presetId: null,
+          },
+        },
+        sidecars,
+      ),
+    WorkspaceAdapterValidationError,
+  );
+});
+
+test('workspace validation accepts SMP boundaries and rejects invalid settings', () => {
+  for (const config of [
+    {
+      kind: 'mcumgr-smp',
+      transport: 'serial-console',
+      maxPacketBytes: MIN_SMP_PARSER_MAX_PACKET_BYTES,
+      reassemblyTimeoutMs: MIN_SMP_REASSEMBLY_TIMEOUT_MS,
+    },
+    {
+      kind: 'mcumgr-smp',
+      transport: 'raw-uart',
+      maxPacketBytes: MAX_SMP_PARSER_MAX_PACKET_BYTES,
+      reassemblyTimeoutMs: MAX_SMP_REASSEMBLY_TIMEOUT_MS,
+    },
+  ]) {
+    assert.doesNotThrow(() => validateParserConfig(config));
+  }
+
+  for (const config of [
+    { ...DEFAULT_SMP_PARSER_CONFIG, transport: 'auto' },
+    { ...DEFAULT_SMP_PARSER_CONFIG, maxPacketBytes: MIN_SMP_PARSER_MAX_PACKET_BYTES - 1 },
+    { ...DEFAULT_SMP_PARSER_CONFIG, maxPacketBytes: MAX_SMP_PARSER_MAX_PACKET_BYTES + 1 },
+    {
+      ...DEFAULT_SMP_PARSER_CONFIG,
+      reassemblyTimeoutMs: MIN_SMP_REASSEMBLY_TIMEOUT_MS - 1,
+    },
+    {
+      ...DEFAULT_SMP_PARSER_CONFIG,
+      reassemblyTimeoutMs: MAX_SMP_REASSEMBLY_TIMEOUT_MS + 1,
+    },
+    { ...DEFAULT_SMP_PARSER_CONFIG, unexpected: true },
+  ]) {
+    assert.throws(() => validateParserConfig(config), WorkspaceAdapterValidationError);
+  }
 });
 
 test('legacy text waveform state forces one retained-frame rebuild', () => {

@@ -15,6 +15,10 @@ import ModbusAddRegisterForm from '@/features/terminal/ui/ModbusAddRegisterForm.
 import ModbusRegisterRow from '@/features/terminal/ui/ModbusRegisterRow.vue';
 import ParserConfigBar from '@/features/terminal/ui/ParserConfigBar.vue';
 import ParserFrameDetail from '@/features/terminal/ui/ParserFrameDetail.vue';
+import ParserStatsBar from '@/features/terminal/ui/ParserStatsBar.vue';
+import ParserBytePager from '@/features/terminal/ui/ParserBytePager.vue';
+import ParserCborTree from '@/features/terminal/ui/ParserCborTree.vue';
+import AppSelect from '@/design-system/AppSelect.vue';
 import ChecksumPanel from '@/features/send-panel/ui/ChecksumPanel.vue';
 import AppShell from '@/features/app-shell/ui/AppShell.vue';
 import WaveformLegend from '@/features/terminal/ui/WaveformLegend.vue';
@@ -29,6 +33,7 @@ import AiWindow from '@/AiWindow.vue';
 import { useAppStore } from '@/features/settings/store/app-store.ts';
 import { useSessionStore } from '@/features/sessions/store/session-store.ts';
 import { ensureLocaleLoaded, setLocale, t } from '@/lib/i18n.ts';
+import { recoverInvalidSmpParserState } from '@/lib/session-persistence.ts';
 import type {
   PortConfig,
   SerialSession,
@@ -239,6 +244,7 @@ beforeEach(() => {
   appShellMocks.shortcuts = null;
   packetVirtualMocks.measureElement.mockReset();
   packetVirtualMocks.onScroll.mockReset();
+  packetVirtualMocks.scrollToIndex.mockReset();
   packetVirtualMocks.options = null;
 });
 
@@ -727,14 +733,20 @@ test('ModbusAddRegisterForm normalizes function/type choices and advances an acc
   expect(wrapper.findAll('input')[4].element.value).toBe('');
 });
 
-test('ParserConfigBar emits each delimiter, fixed, and length protocol configuration edit', async () => {
+test('ParserConfigBar emits every protocol draft edit and disables invalid Apply', async () => {
   const props = {
+    editing: true,
+    configSummary: 'Delimiter · 0D 0A',
+    recoveryWarning: '',
+    validationError: '',
+    presetDescription: 'Text lines terminated by CR LF',
     presetId: null,
     presetOptions: [{ label: 'Modbus', value: 'modbus' }],
     kindOptions: [
       { label: 'Delimiter', value: 'delimiter' },
       { label: 'Fixed', value: 'fixed' },
       { label: 'Length', value: 'length' },
+      { label: 'MCUmgr SMP', value: 'mcumgr-smp' },
     ],
     lenSizeOptions: [
       { label: '1', value: 1 },
@@ -749,11 +761,20 @@ test('ParserConfigBar emits each delimiter, fixed, and length protocol configura
     lenSize: 2,
     lenBigEndian: true,
     lenAdjust: 3,
+    transportOptions: [
+      { label: 'Serial Console', value: 'serial-console' },
+      { label: 'Raw UART', value: 'raw-uart' },
+    ],
+    smpTransport: 'serial-console',
+    smpMaxPacketBytes: 1024 * 1024,
+    smpReassemblyTimeoutMs: 3000,
+    reparseExisting: true,
   };
   const wrapper = mount(ParserConfigBar, { props });
   const delimiterSelects = wrapper.findAll('select');
   await delimiterSelects[0].setValue('0');
-  await delimiterSelects[1].setValue('1');
+  expect(wrapper.findAll('.parser-kind-option')).toHaveLength(4);
+  await wrapper.findAll('.parser-kind-option')[1].trigger('click');
   await wrapper.find('input').setValue('AA BB');
   await wrapper.get('[role="checkbox"]').trigger('click');
   expect(wrapper.emitted('apply-preset')).toEqual([['modbus']]);
@@ -762,6 +783,24 @@ test('ParserConfigBar emits each delimiter, fixed, and length protocol configura
   expect(wrapper.emitted('update:includeDelimiter')).toEqual([[true]]);
 
   await wrapper.setProps({ kind: 'fixed' });
+  const modeButtons = wrapper.findAll('.parser-kind-option');
+  expect(modeButtons.map((button) => button.attributes('tabindex'))).toEqual([
+    '-1',
+    '0',
+    '-1',
+    '-1',
+  ]);
+  for (const [key, value] of [
+    ['ArrowRight', 'length'],
+    ['ArrowDown', 'length'],
+    ['ArrowLeft', 'delimiter'],
+    ['ArrowUp', 'delimiter'],
+    ['Home', 'delimiter'],
+    ['End', 'mcumgr-smp'],
+  ] as const) {
+    await modeButtons[1].trigger('keydown', { key });
+    expect(wrapper.emitted('update:kind')?.at(-1)).toEqual([value]);
+  }
   await wrapper.find('input').setValue('32');
   expect(wrapper.emitted('update:fixedSize')).toEqual([[32]]);
 
@@ -769,12 +808,32 @@ test('ParserConfigBar emits each delimiter, fixed, and length protocol configura
   const lengthInputs = wrapper.findAll('input');
   await lengthInputs[0].setValue('4');
   await lengthInputs[1].setValue('9');
-  await wrapper.findAll('select')[2].setValue('2');
+  await wrapper.findAll('select')[1].setValue('2');
   await wrapper.get('[role="checkbox"]').trigger('click');
   expect(wrapper.emitted('update:lenOffset')).toEqual([[4]]);
   expect(wrapper.emitted('update:lenAdjust')).toEqual([[9]]);
   expect(wrapper.emitted('update:lenSize')).toEqual([[4]]);
   expect(wrapper.emitted('update:lenBigEndian')).toEqual([[false]]);
+
+  await wrapper.setProps({ kind: 'mcumgr-smp' });
+  const smpInputs = wrapper.findAll('input');
+  wrapper.findAllComponents(AppSelect).at(-1)!.vm.$emit('update:value', 'raw-uart');
+  await smpInputs[0].setValue('2048');
+  await smpInputs[1].setValue('2500');
+  expect(wrapper.emitted('update:smpTransport')).toEqual([['raw-uart']]);
+  expect(wrapper.emitted('update:smpMaxPacketBytes')).toEqual([[2048]]);
+  expect(wrapper.emitted('update:smpReassemblyTimeoutMs')).toEqual([[2500]]);
+
+  await wrapper.setProps({ validationError: 'Invalid parser draft' });
+  expect(wrapper.get('.config-error').attributes('role')).toBe('alert');
+  const applyButton = wrapper
+    .findAll('button')
+    .find((button) => button.text().includes(t('parser.config.apply')));
+  expect(applyButton).toBeDefined();
+  expect(applyButton!.attributes('disabled')).toBeDefined();
+
+  await wrapper.setProps({ recoveryWarning: 'Recovered invalid SMP settings' });
+  expect(wrapper.get('[role="status"]').text()).toContain('Recovered invalid SMP settings');
 
   await wrapper.find('.pp-close').trigger('click');
   expect(wrapper.emitted('close')).toEqual([[]]);
@@ -784,10 +843,22 @@ test('ParserFrameDetail switches from its empty state to a dump and exposes both
   const wrapper = mount(ParserFrameDetail, { props: { frame: null, dump: [] } });
   expect(wrapper.classes()).toContain('pp-detail-empty');
   await wrapper.setProps({
-    frame: { offset: 42, data: new Uint8Array([0x41, 0x42]) },
+    frame: {
+      offset: 42,
+      data: new Uint8Array([0x41, 0x42]),
+      kind: 'bytes',
+      parserKind: 'delimiter',
+    },
     dump: [{ offset: 42, hex: '41 42', ascii: 'AB' }],
   });
+  expect(wrapper.findAll('[role="tabpanel"]')).toHaveLength(4);
+  for (const tab of wrapper.findAll('[role="tab"]')) {
+    const controls = tab.attributes('aria-controls');
+    expect(controls).toBeTruthy();
+    expect(wrapper.find(`#${controls}`).exists()).toBe(true);
+  }
   expect(wrapper.text()).toContain('42');
+  expect(wrapper.get('.detail-meta').text()).toContain('42');
   expect(wrapper.text()).toContain('41 42');
   expect(wrapper.text()).toContain('AB');
   const buttons = wrapper.findAll('.detail-copy');
@@ -795,6 +866,73 @@ test('ParserFrameDetail switches from its empty state to a dump and exposes both
   await buttons[1].trigger('click');
   expect(wrapper.emitted('copy')).toEqual([[]]);
   expect(wrapper.emitted('copy-ascii')).toEqual([[]]);
+  await wrapper.findAll('[role="tab"]')[0].trigger('click');
+  expect(wrapper.get('.overview-grid').text()).toContain(t('parser.kind.delimiter'));
+});
+
+test('ParserFrameDetail reserves Header and CBOR tabs for SMP records', () => {
+  const legacy = mount(ParserFrameDetail, {
+    props: { frame: { offset: 12, data: new Uint8Array([0x41]) } },
+  });
+  expect(legacy.findAll('[role="tab"]')).toHaveLength(4);
+  expect(legacy.text()).not.toContain('CBOR');
+
+  const smp = mount(ParserFrameDetail, {
+    props: {
+      frame: {
+        kind: 'smp',
+        id: 'smp-1',
+        offset: 0,
+        data: new Uint8Array(8),
+        header: { version: 2, op: 0, dataLength: 0, group: 0, sequence: 1, command: 0 },
+      },
+    },
+  });
+  expect(smp.findAll('[role="tab"]')).toHaveLength(6);
+  expect(smp.text()).toContain('CBOR');
+});
+
+test('ParserFrameDetail keeps HEX byte cells separate from the fixed-width ASCII column', () => {
+  const data = new TextEncoder().encode('ABCDEFGHIJKLMNOP');
+  const wrapper = mount(ParserFrameDetail, {
+    props: { frame: { offset: 0, data }, dump: [] },
+  });
+
+  const row = wrapper.get('.detail-row');
+  const byteCells = row.findAll('.dump-byte');
+  expect(byteCells).toHaveLength(16);
+  expect(byteCells.every((cell) => /^[0-9A-F]{2}$/.test(cell.text()))).toBe(true);
+  expect(row.get('.dump-ascii').text()).toBe('ABCDEFGHIJKLMNOP');
+});
+
+test('Parser CBOR tree bounds scalar DOM and pages every map entry', async () => {
+  const scalar = mount(ParserCborTree, { props: { value: 'x'.repeat(1_000_000) } });
+  expect(scalar.get('.cbor-value').text().length).toBeLessThan(700);
+
+  const decimalSpy = vi.spyOn(BigInt.prototype, 'toString');
+  const bigint = mount(ParserCborTree, { props: { value: 10n ** 10_000n } });
+  expect(bigint.get('.cbor-value').text()).toContain('> 96 digits');
+  expect(decimalSpy.mock.calls.some(([radix]) => radix === 10)).toBe(false);
+  decimalSpy.mockRestore();
+
+  const value = new Map(
+    Array.from({ length: 150 }, (_, index) => [`key-${index}`, index] as const),
+  );
+  const tree = mount(ParserCborTree, { props: { value } });
+  expect(tree.findAll('.cbor-leaf')).toHaveLength(100);
+  expect(tree.text()).toContain('key-0');
+  expect(tree.text()).not.toContain('key-149');
+  await tree.findAll('.cbor-page button')[1].trigger('click');
+  expect(tree.findAll('.cbor-leaf')).toHaveLength(50);
+  expect(tree.text()).toContain('key-149');
+});
+
+test('Parser byte pager displays an inclusive final byte offset', () => {
+  const wrapper = mount(ParserBytePager, {
+    props: { page: 0, pageCount: 1, start: 0, end: 2, total: 2 },
+  });
+  expect(wrapper.text()).toContain('0–1');
+  expect(wrapper.text()).not.toContain('0–2');
 });
 
 test('ModbusRegisterRow updates read and write register state while preserving typed row actions', async () => {
@@ -1322,13 +1460,15 @@ test('ParserPanel edits resident parser settings, filters/selects parsed frames,
       parserResetVersion: 0,
     },
   });
+  await wrapper.vm.$nextTick();
+  expect(packetVirtualMocks.scrollToIndex).toHaveBeenCalledWith(1);
   expect(wrapper.find('.parser-dropped-stat').exists()).toBe(false);
   await wrapper.setProps({ droppedFrames: 3, droppedBytes: 42 });
-  expect(wrapper.get('.parser-dropped-stat').text()).toContain('Dropped');
+  expect(wrapper.get('.parser-dropped-stat').text()).toContain('Retention evicted');
   expect(wrapper.get('.parser-dropped-stat').text()).toContain('3 frames / 42 B');
   setLocale('zh');
   await wrapper.vm.$nextTick();
-  expect(wrapper.get('.parser-dropped-stat').text()).toContain('丢弃');
+  expect(wrapper.get('.parser-dropped-stat').text()).toContain('保留窗口淘汰');
   expect(wrapper.get('.parser-dropped-stat').text()).toContain('3 帧 / 42 B');
   expect(wrapper.findAll('.pp-frame')).toHaveLength(2);
   await wrapper.findAll('.pp-frame')[0].trigger('click');
@@ -1341,13 +1481,23 @@ test('ParserPanel edits resident parser settings, filters/selects parsed frames,
   await searchInput.setValue('beta');
   expect(wrapper.findAll('.pp-frame')).toHaveLength(1);
   const configBar = wrapper.findComponent(ParserConfigBar);
+  configBar.vm.$emit('edit');
+  await wrapper.vm.$nextTick();
   configBar.vm.$emit('apply-preset', 'modbus-fixed-8');
+  await wrapper.vm.$nextTick();
+  expect(sessions.sessions[0].parserState.config.kind).toBe('delimiter');
+  configBar.vm.$emit('apply');
   await wrapper.vm.$nextTick();
   expect(sessions.sessions[0].parserState).toMatchObject({
     presetId: 'modbus-fixed-8',
     config: { kind: 'fixed', frameSize: 8 },
   });
+  configBar.vm.$emit('edit');
+  await wrapper.vm.$nextTick();
   configBar.vm.$emit('update:kind', 'length');
+  await wrapper.vm.$nextTick();
+  expect(sessions.sessions[0].parserState.config.kind).toBe('fixed');
+  configBar.vm.$emit('apply');
   await wrapper.vm.$nextTick();
   expect(sessions.sessions[0].parserState.config.kind).toBe('length');
 
@@ -1355,10 +1505,298 @@ test('ParserPanel edits resident parser settings, filters/selects parsed frames,
   detail.vm.$emit('copy-ascii');
   await Promise.resolve();
   expect(clipboard.writeText).toHaveBeenLastCalledWith('alpha');
+  await wrapper.find('.pp-copy').trigger('keydown', { key: 'Escape' });
+  await wrapper.vm.$nextTick();
+  expect(wrapper.find('.pp-detail-empty').exists()).toBe(true);
   await wrapper.setProps({ parserResetVersion: 1 });
   expect(wrapper.find('.pp-detail-empty').exists()).toBe(true);
   configBar.vm.$emit('close');
   expect(wrapper.emitted('close')).toEqual([[]]);
+});
+
+test('ParserPanel inspector supports bounded pointer and keyboard resizing across both layouts', async () => {
+  await ensureLocaleLoaded('en');
+  setLocale('en');
+  const resizeCallbacks: ResizeObserverCallback[] = [];
+  const disconnect = vi.fn();
+  class TestResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      resizeCallbacks.push(callback);
+    }
+    observe() {}
+    disconnect() {
+      disconnect();
+    }
+  }
+  vi.stubGlobal('ResizeObserver', TestResizeObserver);
+
+  const sessions = setupSessions();
+  const sessionId = sessions.createSession('COM-parser-resize', config);
+  const parserStateBeforeResize = structuredClone(sessions.sessions[0].parserState);
+  const setParserState = vi.spyOn(sessions, 'setParserState');
+  const props = {
+    sessionId,
+    parsedFrames: [
+      {
+        id: 'resize-1',
+        kind: 'bytes',
+        parserKind: 'delimiter' as const,
+        offset: 0,
+        data: new TextEncoder().encode('alpha'),
+      },
+    ],
+    droppedFrames: 0,
+    droppedBytes: 0,
+    throughputBps: 0,
+    parserResetVersion: 0,
+  };
+  const wrapper = mount(ParserPanel, { props });
+  await wrapper.vm.$nextTick();
+  await Promise.resolve();
+  expect(resizeCallbacks).toHaveLength(1);
+
+  const body = wrapper.get('.parser-body');
+  const handle = wrapper.get('.inspector-resize-handle');
+  const inspector = wrapper.get('.pp-detail');
+  const notifySize = (width: number, height: number, index = 0) => {
+    resizeCallbacks[index]!(
+      [{ target: body.element, contentRect: { width, height } } as unknown as ResizeObserverEntry],
+      {} as ResizeObserver,
+    );
+  };
+  const currentSize = () => Number(handle.attributes('aria-valuenow'));
+  const pointer = (
+    target: EventTarget,
+    type: string,
+    clientX: number,
+    clientY: number,
+    pointerId: number,
+  ) => {
+    const event = new MouseEvent(type, { bubbles: true, button: 0, clientX, clientY });
+    Object.defineProperty(event, 'pointerId', { configurable: true, value: pointerId });
+    target.dispatchEvent(event);
+  };
+
+  notifySize(1200, 600);
+  await wrapper.vm.$nextTick();
+  expect(handle.attributes()).toMatchObject({
+    role: 'separator',
+    tabindex: '0',
+    'aria-orientation': 'vertical',
+    'aria-valuemin': '300',
+    'aria-valuemax': '932',
+    'aria-valuenow': '440',
+    'aria-valuetext': '440px',
+  });
+  expect(handle.attributes('aria-controls')).toBe(inspector.attributes('id'));
+  expect(handle.element.previousElementSibling).toBe(body.get('.pp-list').element);
+  expect(handle.element.nextElementSibling).toBe(inspector.element);
+  expect((inspector.element as HTMLElement).style.width).toBe('440px');
+
+  pointer(handle.element, 'pointerdown', 700, 0, 7);
+  pointer(handle.element, 'pointerdown', 650, 0, 8);
+  pointer(document, 'pointermove', 600, 0, 8);
+  await wrapper.vm.$nextTick();
+  expect(currentSize()).toBe(440);
+  pointer(document, 'pointermove', 600, 0, 7);
+  await wrapper.vm.$nextTick();
+  expect(currentSize()).toBe(540);
+  expect((inspector.element as HTMLElement).style.width).toBe('540px');
+  expect(document.body.style.cursor).toBe('col-resize');
+  expect(document.body.style.userSelect).toBe('none');
+  pointer(document, 'pointermove', -10_000, 0, 7);
+  await wrapper.vm.$nextTick();
+  expect(currentSize()).toBe(932);
+  pointer(document, 'pointerup', -10_000, 0, 8);
+  expect(document.body.style.cursor).toBe('col-resize');
+  pointer(document, 'pointerup', -10_000, 0, 7);
+  expect(document.body.style.cursor).toBe('');
+  expect(document.body.style.userSelect).toBe('');
+  pointer(document, 'pointermove', 10_000, 0, 7);
+  await wrapper.vm.$nextTick();
+  expect(currentSize()).toBe(932);
+
+  await handle.trigger('dblclick');
+  expect(currentSize()).toBe(440);
+  await handle.trigger('keydown', { key: 'ArrowLeft' });
+  expect(currentSize()).toBe(456);
+  await handle.trigger('keydown', { key: 'ArrowRight', shiftKey: true });
+  expect(currentSize()).toBe(408);
+  await handle.trigger('keydown', { key: 'ArrowUp' });
+  expect(currentSize()).toBe(408);
+  await handle.trigger('keydown', { key: 'Home' });
+  expect(currentSize()).toBe(300);
+  await handle.trigger('keydown', { key: 'End' });
+  expect(currentSize()).toBe(932);
+  await handle.trigger('keydown', { key: 'Enter' });
+  expect(currentSize()).toBe(440);
+
+  notifySize(820, 500);
+  await wrapper.vm.$nextTick();
+  expect(handle.attributes('aria-orientation')).toBe('horizontal');
+  expect(handle.attributes('aria-valuemin')).toBe('160');
+  expect(handle.attributes('aria-valuemax')).toBe('352');
+  expect(currentSize()).toBe(240);
+  expect(wrapper.find('.pp-detail').exists()).toBe(true);
+  expect((inspector.element as HTMLElement).style.height).toBe('240px');
+  await handle.trigger('keydown', { key: 'ArrowRight' });
+  expect(currentSize()).toBe(240);
+  await handle.trigger('keydown', { key: 'ArrowUp' });
+  expect(currentSize()).toBe(256);
+  await handle.trigger('keydown', { key: 'ArrowDown', shiftKey: true });
+  expect(currentSize()).toBe(208);
+  await handle.trigger('keydown', { key: ' ' });
+  expect(currentSize()).toBe(240);
+  pointer(handle.element, 'pointerdown', 0, 300, 9);
+  pointer(document, 'pointermove', 0, 250, 9);
+  await wrapper.vm.$nextTick();
+  expect(currentSize()).toBe(290);
+  expect(document.body.style.cursor).toBe('row-resize');
+  pointer(document, 'pointerup', 0, 250, 9);
+  await handle.trigger('dblclick');
+  expect(currentSize()).toBe(240);
+
+  pointer(handle.element, 'pointerdown', 0, 300, 10);
+  expect(document.body.style.cursor).toBe('row-resize');
+  window.dispatchEvent(new Event('blur'));
+  expect(document.body.style.cursor).toBe('');
+  expect(document.body.style.userSelect).toBe('');
+
+  notifySize(820, 200);
+  await wrapper.vm.$nextTick();
+  expect(handle.attributes('aria-valuemin')).toBe('112');
+  expect(handle.attributes('aria-valuemax')).toBe('112');
+  expect(currentSize()).toBe(112);
+  expect((inspector.element as HTMLElement).style.height).toBe('112px');
+
+  notifySize(821, 500);
+  await wrapper.vm.$nextTick();
+  expect(handle.attributes('aria-orientation')).toBe('vertical');
+  expect(currentSize()).toBe(345);
+  await handle.trigger('keydown', { key: 'ArrowLeft' });
+  expect(currentSize()).toBe(361);
+  expect(setParserState).not.toHaveBeenCalled();
+  expect(sessions.sessions[0].parserState).toEqual(parserStateBeforeResize);
+
+  wrapper.unmount();
+  expect(disconnect).toHaveBeenCalledTimes(1);
+  const remounted = mount(ParserPanel, { props });
+  await remounted.vm.$nextTick();
+  await Promise.resolve();
+  expect(resizeCallbacks).toHaveLength(2);
+  const remountedBody = remounted.get('.parser-body');
+  resizeCallbacks[1]!(
+    [
+      {
+        target: remountedBody.element,
+        contentRect: { width: 821, height: 500 },
+      } as unknown as ResizeObserverEntry,
+    ],
+    {} as ResizeObserver,
+  );
+  await remounted.vm.$nextTick();
+  expect(remounted.get('.inspector-resize-handle').attributes('aria-valuenow')).toBe('345');
+  remounted.unmount();
+  expect(disconnect).toHaveBeenCalledTimes(2);
+  vi.unstubAllGlobals();
+});
+
+test('ParserPanel hides and clears SMP-only filters when returning to a legacy parser', async () => {
+  const sessions = setupSessions();
+  const sessionId = sessions.createSession('COM-parser-legacy-filters', config);
+  const parsedFrames = [
+    {
+      id: 'legacy-1',
+      kind: 'bytes',
+      parserKind: 'delimiter',
+      offset: 0,
+      data: new TextEncoder().encode('alpha'),
+    },
+    {
+      id: 'legacy-2',
+      kind: 'bytes',
+      parserKind: 'delimiter',
+      offset: 5,
+      data: new TextEncoder().encode('beta'),
+    },
+  ];
+  const wrapper = mount(ParserPanel, {
+    props: {
+      sessionId,
+      parsedFrames,
+      droppedFrames: 0,
+      droppedBytes: 0,
+      throughputBps: 0,
+      parserResetVersion: 0,
+    },
+  });
+  await wrapper.vm.$nextTick();
+
+  expect(wrapper.find('.transaction-filter').exists()).toBe(false);
+  expect(wrapper.find('.sequence-filter').exists()).toBe(false);
+  expect(wrapper.findAll('.framing-badge')).toHaveLength(2);
+
+  sessions.setParserState(sessionId, {
+    kind: 'mcumgr-smp',
+    transport: 'serial-console',
+    maxPacketBytes: 1024 * 1024,
+    reassemblyTimeoutMs: 3000,
+  });
+  await wrapper.vm.$nextTick();
+  expect(wrapper.find('.transaction-filter').exists()).toBe(true);
+  expect(wrapper.findAll('.field-filter')).toHaveLength(2);
+  expect(wrapper.find('.sequence-filter').exists()).toBe(true);
+
+  const stats = wrapper.findComponent(ParserStatsBar);
+  stats.vm.$emit('update:transactionFilter', 'request');
+  stats.vm.$emit('update:groupFilter', 'OS');
+  stats.vm.$emit('update:commandFilter', 'echo');
+  stats.vm.$emit('update:sequenceFilter', '7');
+  await wrapper.vm.$nextTick();
+  expect(wrapper.findAll('.pp-frame')).toHaveLength(0);
+
+  sessions.setParserState(sessionId, {
+    kind: 'delimiter',
+    delimiter: [0x0a],
+    includeDelimiter: false,
+  });
+  await wrapper.vm.$nextTick();
+
+  expect(stats.props('smpMode')).toBe(false);
+  expect(stats.props('transactionFilter')).toBe('all');
+  expect(stats.props('groupFilter')).toBe('');
+  expect(stats.props('commandFilter')).toBe('');
+  expect(stats.props('sequenceFilter')).toBe('');
+  expect(wrapper.find('.transaction-filter').exists()).toBe(false);
+  expect(wrapper.findAll('.pp-frame')).toHaveLength(2);
+});
+
+test('ParserPanel surfaces a non-persisted invalid SMP recovery notice until Apply', async () => {
+  await ensureLocaleLoaded('en');
+  setLocale('en');
+  const sessions = setupSessions();
+  const sessionId = sessions.createSession('COM-parser-recovery', config);
+  sessions.sessions[0].parserState = recoverInvalidSmpParserState();
+  const wrapper = mount(ParserPanel, {
+    props: {
+      sessionId,
+      parsedFrames: [],
+      droppedFrames: 0,
+      droppedBytes: 0,
+      throughputBps: 0,
+      parserResetVersion: 0,
+    },
+  });
+  expect(wrapper.get('.config-recovery-warning').text()).toContain(
+    'restored to the safe Serial Console defaults',
+  );
+
+  const configBar = wrapper.findComponent(ParserConfigBar);
+  configBar.vm.$emit('edit');
+  await wrapper.vm.$nextTick();
+  configBar.vm.$emit('apply');
+  await wrapper.vm.$nextTick();
+  expect(wrapper.find('.config-recovery-warning').exists()).toBe(false);
 });
 
 test('ModbusPanel bridges header, virtual row, add form, write feedback, source controls, and save actions', async () => {

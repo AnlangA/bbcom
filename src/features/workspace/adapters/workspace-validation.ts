@@ -2,6 +2,12 @@ import type { WorkspaceMutation } from '../../../generated/ipc-contracts';
 import { IPC_LIMITS } from '../../../generated/ipc-contracts';
 import type { ModbusMasterConfig, SerialShellConfig } from '@/types';
 import {
+  MAX_SMP_PARSER_MAX_PACKET_BYTES,
+  MAX_SMP_REASSEMBLY_TIMEOUT_MS,
+  MIN_SMP_PARSER_MAX_PACKET_BYTES,
+  MIN_SMP_REASSEMBLY_TIMEOUT_MS,
+} from '@/lib/protocol-parser';
+import {
   WorkspaceAdapterLimitError,
   WorkspaceAdapterValidationError,
 } from './workspace-adapter-errors';
@@ -53,6 +59,29 @@ export function canonicalJson(value: unknown): string {
 }
 
 export function validateParserConfig(config: Record<string, unknown>): void {
+  if (config.kind === 'mcumgr-smp') {
+    assertExactKeys(
+      config,
+      ['kind', 'transport', 'maxPacketBytes', 'reassemblyTimeoutMs'],
+      'parser.config',
+    );
+    if (config.transport !== 'serial-console' && config.transport !== 'raw-uart') {
+      throw new WorkspaceAdapterValidationError('parser.config.transport');
+    }
+    boundedInteger(
+      config.maxPacketBytes,
+      MIN_SMP_PARSER_MAX_PACKET_BYTES,
+      MAX_SMP_PARSER_MAX_PACKET_BYTES,
+      'parser.config.maxPacketBytes',
+    );
+    boundedInteger(
+      config.reassemblyTimeoutMs,
+      MIN_SMP_REASSEMBLY_TIMEOUT_MS,
+      MAX_SMP_REASSEMBLY_TIMEOUT_MS,
+      'parser.config.reassemblyTimeoutMs',
+    );
+    return;
+  }
   if (config.kind === 'delimiter') {
     assertExactKeys(config, ['kind', 'delimiter', 'includeDelimiter'], 'parser.config');
     if (

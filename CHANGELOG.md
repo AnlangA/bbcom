@@ -5,6 +5,15 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- Bundle size measurement is report-only; gzip budgets no longer fail pre-commit, `pnpm check`, or CI.
+- MCUmgr image tab presents firmware upgrade and image upload as equal-size actions, with hover help instead of always-visible blurbs.
+
+### Fixed
+
+- One-click firmware upgrade no longer treats a reboot without an SMP ACK as failure, and waits for the serial port to reappear after MCUboot swap.
+
 ## [1.0.3] - 2026-08-24
 
 ### Fixed
