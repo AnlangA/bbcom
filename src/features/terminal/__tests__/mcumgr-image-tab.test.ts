@@ -71,17 +71,19 @@ test('image tab uses equal action tiles without an always-visible update blurb',
   assert.equal(text.includes('拒绝旧版本'), false);
 });
 
-test('firmware upgrade and image upload use the same small primary button chrome', () => {
+test('firmware actions use matching compact primary buttons', () => {
   const wrapper = mountTab();
   const upgrade = buttonByLabel(wrapper, t('mcumgr.image.update'));
   const upload = buttonByLabel(wrapper, t('mcumgr.image.upload'));
   const classOf = (node: ReturnType<typeof buttonByLabel>) => node.classes().join(' ');
-  assert.match(classOf(upgrade), /small/);
-  assert.match(classOf(upload), /small/);
-  assert.equal(/tiny/.test(classOf(upgrade)), false);
-  assert.equal(/tiny/.test(classOf(upload)), false);
+  assert.match(classOf(upgrade), /tiny/);
+  assert.match(classOf(upload), /tiny/);
   assert.match(classOf(upgrade), /primary/);
   assert.match(classOf(upload), /primary/);
+
+  assert.equal(wrapper.find('.mc-action-content .mc-hover-tip-host.is-block').exists(), false);
+  assert.equal(/block/.test(classOf(upgrade)), false);
+  assert.equal(/block/.test(classOf(upload)), false);
 });
 
 test('every image action and section header exposes hover hint copy', () => {

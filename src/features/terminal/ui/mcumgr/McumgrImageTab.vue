@@ -9,13 +9,15 @@
           </span>
         </McumgrHoverTip>
       </header>
-      <p class="mc-action-caption">{{ t('mcumgr.image.updateCaption') }}</p>
-      <McumgrHoverTip :text="t('mcumgr.image.updateHint')" block>
-        <n-button size="small" type="primary" block :disabled="busy" @click="onFirmwareUpdate">
-          <template #icon><Upload class="icon-sm" /></template>
-          {{ t('mcumgr.image.update') }}
-        </n-button>
-      </McumgrHoverTip>
+      <div class="mc-action-content">
+        <p class="mc-action-caption">{{ t('mcumgr.image.updateCaption') }}</p>
+        <McumgrHoverTip :text="t('mcumgr.image.updateHint')">
+          <n-button size="tiny" type="primary" :disabled="busy" @click="onFirmwareUpdate">
+            <template #icon><Upload class="icon-sm" /></template>
+            {{ t('mcumgr.image.update') }}
+          </n-button>
+        </McumgrHoverTip>
+      </div>
     </article>
 
     <article class="mc-card mc-action-tile">
@@ -27,13 +29,15 @@
           </span>
         </McumgrHoverTip>
       </header>
-      <p class="mc-action-caption">{{ t('mcumgr.image.uploadCaption') }}</p>
-      <McumgrHoverTip :text="t('mcumgr.image.uploadHint')" block>
-        <n-button size="small" type="primary" block :disabled="busy" @click="onImageUpload">
-          <template #icon><FileUp class="icon-sm" /></template>
-          {{ t('mcumgr.image.upload') }}
-        </n-button>
-      </McumgrHoverTip>
+      <div class="mc-action-content">
+        <p class="mc-action-caption">{{ t('mcumgr.image.uploadCaption') }}</p>
+        <McumgrHoverTip :text="t('mcumgr.image.uploadHint')">
+          <n-button size="tiny" type="primary" :disabled="busy" @click="onImageUpload">
+            <template #icon><FileUp class="icon-sm" /></template>
+            {{ t('mcumgr.image.upload') }}
+          </n-button>
+        </McumgrHoverTip>
+      </div>
     </article>
 
     <div class="mc-span mc-upgrade-row">
@@ -236,6 +240,13 @@ async function onImageConfirm(): Promise<void> {
   min-width: 0;
 }
 
+.mc-action-content {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
 .mc-card-head {
   display: flex;
   align-items: center;
@@ -269,8 +280,9 @@ async function onImageConfirm(): Promise<void> {
 }
 
 .mc-action-caption {
+  flex: 1 1 150px;
+  min-width: 0;
   margin: 0;
-  min-height: calc(var(--line-height-normal) * 2em);
   font-size: var(--font-size-sm);
   color: var(--text-muted);
   line-height: var(--line-height-normal);
@@ -313,15 +325,5 @@ async function onImageConfirm(): Promise<void> {
 
 .mc-hash-input :deep(.n-input__input-el) {
   font-family: var(--font-mono);
-}
-
-.mc-action-tile :deep(.n-tooltip) {
-  display: block;
-  width: 100%;
-}
-
-.mc-action-tile :deep(.n-button) {
-  width: 100%;
-  justify-content: center;
 }
 </style>
