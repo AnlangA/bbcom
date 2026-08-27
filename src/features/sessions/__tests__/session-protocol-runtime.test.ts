@@ -429,7 +429,7 @@ test('resident protocol parser rejects invalid injected limits', () => {
   );
 });
 
-test('SMP history replay is asynchronous, capture ordered, and excludes MCUmgr trace', () => {
+test('SMP history replay is asynchronous, capture ordered, and consumes the shared TX/RX timeline', () => {
   const replay = fakeReplayScheduler();
   const parser = new SessionProtocolRuntime({
     replayScheduler: replay.scheduler,
@@ -486,17 +486,15 @@ test('SMP history replay is asynchronous, capture ordered, and excludes MCUmgr t
   replay.drain();
 
   const records = parser.snapshot().frames;
-  const diagnostics = records.filter((record) => !('header' in record) || !record.header);
-  assert.equal(diagnostics.length, 1, 'originless history produces one aggregated warning');
-  assert.equal(diagnostics[0].diagnostics[0]?.code, 'smp.runtime.untrusted-origin');
   const messages = records.filter((record) => 'header' in record && record.header);
   assert.deepEqual(
     messages.map((record) => record.captureSeq),
-    [1, 3],
+    [0, 1, 2, 3],
+    'shared timeline frames are parsed regardless of origin metadata',
   );
   assert.deepEqual(
     messages.map((record) => ('direction' in record ? record.direction : undefined)),
-    ['RX', 'TX'],
+    ['RX', 'RX', 'RX', 'TX'],
   );
   assert.ok(changes > 0, 'time-sliced replay publishes progress');
 });
@@ -665,6 +663,50 @@ test('SMP ignores a cancelled expiry callback after a newer timer is armed', () 
   assert.equal(records.length, 1);
   assert.equal(records[0].direction, 'TX');
   assert.equal(records[0].diagnostics?.[0]?.code, 'smp.raw.timeout');
+});
+
+test('SMP live capture parses MCUmgr traces and correlates their request/response', () => {
+  const parser = new SessionProtocolRuntime();
+  parser.configure(
+    {
+      kind: 'mcumgr-smp',
+      transport: 'raw-uart',
+      maxPacketBytes: 1024,
+      reassemblyTimeoutMs: 3000,
+    },
+    [],
+    { replayHistory: false },
+  );
+  const request = rawSmpMessage(0, 11);
+  const response = rawSmpMessage(1, 11);
+
+  parser.syncCaptureTimeline([
+    {
+      captureSeq: 0,
+      direction: 'TX',
+      origin: 'mcumgr-trace',
+      timestamp: 10,
+      data: request,
+    },
+    {
+      captureSeq: 1,
+      direction: 'RX',
+      origin: 'mcumgr-trace',
+      timestamp: 25,
+      data: response,
+    },
+  ]);
+
+  const records = parser.snapshot().frames;
+  assert.equal(records.length, 2);
+  const [requestRecord, responseRecord] = records;
+  assert.ok('header' in requestRecord && requestRecord.header);
+  assert.ok('header' in responseRecord && responseRecord.header);
+  assert.equal(requestRecord.direction, 'TX');
+  assert.equal(responseRecord.direction, 'RX');
+  assert.equal(responseRecord.requestId, requestRecord.id);
+  assert.equal(requestRecord.responseId, responseRecord.id);
+  assert.equal(responseRecord.rttMs, 15);
 });
 
 test('SMP keeps TX and RX reassembly independent while consuming the capture timeline', () => {

@@ -443,8 +443,13 @@ function handleExportCancel() {
   overflow: hidden;
 }
 
+/* Must stay a flex container: every display panel sizes itself with `flex: 1`,
+   which silently resolves to content height in a block box and leaves long
+   lists clipped by the `overflow: hidden` below instead of scrolling. */
 .display-area {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   min-height: 0;
 }

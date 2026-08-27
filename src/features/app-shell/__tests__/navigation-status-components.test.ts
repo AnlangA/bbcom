@@ -16,7 +16,6 @@ import ModbusRegisterRow from '@/features/terminal/ui/ModbusRegisterRow.vue';
 import ParserConfigBar from '@/features/terminal/ui/ParserConfigBar.vue';
 import ParserFrameDetail from '@/features/terminal/ui/ParserFrameDetail.vue';
 import ParserStatsBar from '@/features/terminal/ui/ParserStatsBar.vue';
-import ParserBytePager from '@/features/terminal/ui/ParserBytePager.vue';
 import ParserCborTree from '@/features/terminal/ui/ParserCborTree.vue';
 import AppSelect from '@/design-system/AppSelect.vue';
 import ChecksumPanel from '@/features/send-panel/ui/ChecksumPanel.vue';
@@ -95,8 +94,22 @@ const packetVirtualMocks = vi.hoisted(() => ({
   onScroll: vi.fn(),
   scrollToIndex: vi.fn(),
   options: null as {
+    frameCount?: { readonly value: number };
+    rowSize?: (index: number) => number;
     itemKey?: (index: number) => string | number;
     rowSizeVersion?: { readonly value: unknown };
+  } | null,
+}));
+
+const parserRecordListMocks = vi.hoisted(() => ({
+  measureElement: vi.fn(),
+  onScroll: vi.fn(),
+  scrollToIndex: vi.fn(),
+  options: null as {
+    recordCount?: { readonly value: number };
+    listKind?: { readonly value: 'legacy' | 'smp' };
+    autoScroll?: { readonly value: boolean };
+    itemKey?: (index: number) => string | number;
   } | null,
 }));
 
@@ -130,17 +143,29 @@ vi.mock('@/features/sessions', async (importOriginal) => ({
 }));
 
 vi.mock('@/features/terminal/application/use-packet-virtual-scroll', async () => {
-  const { ref } = await import('vue');
+  const { computed, ref, unref } = await import('vue');
   return {
     usePacketVirtualScroll: (options: NonNullable<typeof packetVirtualMocks.options>) => {
       packetVirtualMocks.options = options;
+      const virtualItems = computed(() => {
+        const count = Math.max(0, Number(unref(options.frameCount)) || 0);
+        const limit = Math.min(count, 64);
+        const size = options.rowSize?.(0) ?? 28;
+        return Array.from({ length: limit }, (_, index) => ({
+          index,
+          start: index * size,
+          size,
+        }));
+      });
+      const totalSize = computed(() => {
+        const count = Math.max(0, Number(unref(options.frameCount)) || 0);
+        const size = options.rowSize?.(0) ?? 28;
+        return count * size;
+      });
       return {
         scrollRef: ref<HTMLDivElement | null>(null),
-        virtualItems: ref([
-          { index: 0, start: 0, size: 28 },
-          { index: 1, start: 28, size: 28 },
-        ]),
-        totalSize: ref(56),
+        virtualItems,
+        totalSize,
         measureElement: packetVirtualMocks.measureElement,
         onScroll: packetVirtualMocks.onScroll,
         scrollToIndex: packetVirtualMocks.scrollToIndex,
@@ -149,13 +174,92 @@ vi.mock('@/features/terminal/application/use-packet-virtual-scroll', async () =>
   };
 });
 
-vi.mock('@tanstack/vue-virtual', async () => {
-  const { ref } = await import('vue');
+vi.mock('@/features/terminal/application/use-parser-record-list', async () => {
+  const { computed, ref, unref } = await import('vue');
+  const { PARSER_LIST_ROW_HEIGHT } = await import('@/lib/parser-virtual-list.ts');
   return {
-    useVirtualizer: () =>
-      ref({
-        getTotalSize: () => 32,
-        getVirtualItems: () => [{ index: 0, start: 0, size: 32 }],
+    useParserRecordList: (options: NonNullable<typeof parserRecordListMocks.options>) => {
+      parserRecordListMocks.options = options;
+      const virtualRows = computed(() => {
+        const count = Math.max(0, Number(unref(options.recordCount)) || 0);
+        const limit = Math.min(count, 64);
+        return Array.from({ length: limit }, (_, index) => ({
+          index,
+          start: index * PARSER_LIST_ROW_HEIGHT,
+          size: PARSER_LIST_ROW_HEIGHT,
+        }));
+      });
+      return {
+        scrollRef: ref<HTMLDivElement | null>(null),
+        virtualRows,
+        visibleListColumns: computed(() => {
+          const kind = unref(options.listKind);
+          if (kind === 'smp') {
+            return [
+              { key: 'idx', start: 0, size: 56 },
+              { key: 'direction', start: 56, size: 40 },
+              { key: 'transaction', start: 96, size: 56 },
+              { key: 'route', start: 152, size: 280 },
+            ];
+          }
+          return [
+            { key: 'idx', start: 0, size: 56 },
+            { key: 'direction', start: 56, size: 40 },
+            { key: 'framing', start: 176, size: 84 },
+            { key: 'hex', start: 260, size: 462 },
+            { key: 'copy', start: 722, size: 28 },
+          ];
+        }),
+        listTotalHeight: computed(
+          () => Math.max(0, Number(unref(options.recordCount)) || 0) * PARSER_LIST_ROW_HEIGHT,
+        ),
+        listTotalWidth: computed(() => 900),
+        measureElement: parserRecordListMocks.measureElement,
+        onScroll: parserRecordListMocks.onScroll,
+        scrollToIndex: parserRecordListMocks.scrollToIndex,
+      };
+    },
+  };
+});
+
+vi.mock('@tanstack/vue-virtual', async () => {
+  const { computed, unref } = await import('vue');
+  return {
+    useVirtualizer: (options: unknown) =>
+      computed(() => {
+        const opts = (unref(options) ?? {}) as {
+          count?: number;
+          estimateSize?: (index: number) => number;
+          paddingStart?: number;
+          paddingEnd?: number;
+          gap?: number;
+        };
+        const count = Math.max(0, Number(opts.count) || 0);
+        const limit = Math.min(count, 32);
+        const items: Array<{
+          index: number;
+          start: number;
+          size: number;
+          end: number;
+          key: number;
+          lane: number;
+        }> = [];
+        let start = opts.paddingStart ?? 0;
+        const gap = opts.gap ?? 0;
+        for (let index = 0; index < limit; index += 1) {
+          const size = opts.estimateSize?.(index) ?? 32;
+          items.push({ index, start, size, end: start + size, key: index, lane: 0 });
+          start += size + gap;
+        }
+        const tail = Math.max(0, count - limit);
+        const lastSize = opts.estimateSize?.(Math.max(0, limit - 1)) ?? 32;
+        const total =
+          (limit === 0 ? 0 : start - gap) + (opts.paddingEnd ?? 0) + tail * (lastSize + gap);
+        return {
+          getTotalSize: () => Math.max(0, total),
+          getVirtualItems: () => items,
+          scrollToIndex: () => undefined,
+        };
       }),
   };
 });
@@ -246,6 +350,10 @@ beforeEach(() => {
   packetVirtualMocks.onScroll.mockReset();
   packetVirtualMocks.scrollToIndex.mockReset();
   packetVirtualMocks.options = null;
+  parserRecordListMocks.measureElement.mockReset();
+  parserRecordListMocks.onScroll.mockReset();
+  parserRecordListMocks.scrollToIndex.mockReset();
+  parserRecordListMocks.options = null;
 });
 
 afterEach(() => {
@@ -892,7 +1000,7 @@ test('ParserFrameDetail reserves Header and CBOR tabs for SMP records', () => {
   expect(smp.text()).toContain('CBOR');
 });
 
-test('ParserFrameDetail keeps HEX byte cells separate from the fixed-width ASCII column', () => {
+test('ParserFrameDetail keeps HEX byte cells separate from the fixed-width ASCII column', async () => {
   const data = new TextEncoder().encode('ABCDEFGHIJKLMNOP');
   const wrapper = mount(ParserFrameDetail, {
     props: { frame: { offset: 0, data }, dump: [] },
@@ -903,6 +1011,54 @@ test('ParserFrameDetail keeps HEX byte cells separate from the fixed-width ASCII
   expect(byteCells).toHaveLength(16);
   expect(byteCells.every((cell) => /^[0-9A-F]{2}$/.test(cell.text()))).toBe(true);
   expect(row.get('.dump-ascii').text()).toBe('ABCDEFGHIJKLMNOP');
+  expect(wrapper.find('.byte-pager').exists()).toBe(false);
+  expect(wrapper.get('.byte-dump').classes()).toContain('scrollbar-thin');
+  expect(wrapper.get('.byte-dump-space').attributes('style')).toMatch(/height:/);
+  expect(wrapper.get('.byte-dump-space').attributes('style')).toMatch(/width:/);
+  expect(byteCells[0].attributes('style')).toMatch(/translateX\(/);
+
+  const rawTab = wrapper
+    .findAll('[role="tab"]')
+    .find((tab) => tab.text().includes('Raw') || tab.text().includes('原始'));
+  expect(rawTab).toBeDefined();
+  await rawTab!.trigger('click');
+  expect(wrapper.find('.byte-pager').exists()).toBe(false);
+  expect(wrapper.get('.byte-dump').exists()).toBe(true);
+  expect(wrapper.get('.byte-dump-space').attributes('style')).toMatch(/width:/);
+  expect(wrapper.get('.byte-dump-space').text()).toMatch(/41|AB/);
+  const dumpPanels = wrapper.findAll('.detail-content.is-virtual-dump');
+  expect(dumpPanels.filter((panel) => panel.attributes('hidden') !== undefined)).toHaveLength(1);
+  expect(
+    dumpPanels.some((panel) => !panel.attributes('hidden') && panel.find('.byte-dump').exists()),
+  ).toBe(true);
+});
+
+test('ParserFrameDetail raw dump falls back to payload when transport bytes are empty', async () => {
+  const wrapper = mount(ParserFrameDetail, {
+    props: {
+      frame: {
+        offset: 0,
+        data: new Uint8Array([0x50, 0x51]),
+        transportData: new Uint8Array(),
+      },
+    },
+  });
+  const rawTab = wrapper
+    .findAll('[role="tab"]')
+    .find((tab) => tab.text().includes('Raw') || tab.text().includes('原始'));
+  expect(rawTab).toBeDefined();
+  await rawTab!.trigger('click');
+  expect(wrapper.find('.dump-empty').exists()).toBe(false);
+  expect(wrapper.get('.byte-dump-space').text()).toContain('50');
+  expect(wrapper.get('.byte-dump-space').text()).toContain('51');
+  expect(
+    wrapper
+      .findAll('[role="tabpanel"]')
+      .filter(
+        (panel) =>
+          panel.classes().includes('is-virtual-dump') && panel.attributes('hidden') === undefined,
+      ),
+  ).toHaveLength(1);
 });
 
 test('Parser CBOR tree bounds scalar DOM and pages every map entry', async () => {
@@ -925,14 +1081,6 @@ test('Parser CBOR tree bounds scalar DOM and pages every map entry', async () =>
   await tree.findAll('.cbor-page button')[1].trigger('click');
   expect(tree.findAll('.cbor-leaf')).toHaveLength(50);
   expect(tree.text()).toContain('key-149');
-});
-
-test('Parser byte pager displays an inclusive final byte offset', () => {
-  const wrapper = mount(ParserBytePager, {
-    props: { page: 0, pageCount: 1, start: 0, end: 2, total: 2 },
-  });
-  expect(wrapper.text()).toContain('0–1');
-  expect(wrapper.text()).not.toContain('0–2');
 });
 
 test('ModbusRegisterRow updates read and write register state while preserving typed row actions', async () => {
@@ -1461,7 +1609,7 @@ test('ParserPanel edits resident parser settings, filters/selects parsed frames,
     },
   });
   await wrapper.vm.$nextTick();
-  expect(packetVirtualMocks.scrollToIndex).toHaveBeenCalledWith(1);
+  expect(parserRecordListMocks.scrollToIndex).toHaveBeenCalledWith(1);
   expect(wrapper.find('.parser-dropped-stat').exists()).toBe(false);
   await wrapper.setProps({ droppedFrames: 3, droppedBytes: 42 });
   expect(wrapper.get('.parser-dropped-stat').text()).toContain('Retention evicted');
@@ -1471,6 +1619,9 @@ test('ParserPanel edits resident parser settings, filters/selects parsed frames,
   expect(wrapper.get('.parser-dropped-stat').text()).toContain('保留窗口淘汰');
   expect(wrapper.get('.parser-dropped-stat').text()).toContain('3 帧 / 42 B');
   expect(wrapper.findAll('.pp-frame')).toHaveLength(2);
+  expect(wrapper.get('.pp-virtual-space').attributes('style')).toMatch(/width:/);
+  expect(wrapper.findAll('.pp-cell').length).toBeGreaterThan(0);
+  expect(wrapper.get('.pp-cell-hex').attributes('style')).toMatch(/translateX\(/);
   await wrapper.findAll('.pp-frame')[0].trigger('click');
   expect(wrapper.find('.pp-frame').classes()).toContain('selected');
   await wrapper.find('.pp-copy').trigger('click');
@@ -1512,6 +1663,29 @@ test('ParserPanel edits resident parser settings, filters/selects parsed frames,
   expect(wrapper.find('.pp-detail-empty').exists()).toBe(true);
   configBar.vm.$emit('close');
   expect(wrapper.emitted('close')).toEqual([[]]);
+});
+
+test('ParserPanel record list renders more than a single viewport of TX/RX messages', async () => {
+  const sessions = setupSessions();
+  const sessionId = sessions.createSession('COM-parser-many', config);
+  const parsedFrames = Array.from({ length: 20 }, (_, index) => ({
+    offset: index,
+    data: new Uint8Array([index]),
+    direction: index % 2 === 0 ? ('RX' as const) : ('TX' as const),
+  }));
+  const wrapper = mount(ParserPanel, {
+    props: {
+      sessionId,
+      parsedFrames,
+      droppedFrames: 0,
+      droppedBytes: 0,
+      throughputBps: 0,
+      parserResetVersion: 0,
+    },
+  });
+  await wrapper.vm.$nextTick();
+  expect(wrapper.findAll('.pp-frame')).toHaveLength(20);
+  expect(wrapper.get('.pp-virtual-space').attributes('style')).toMatch(/height:\s*880px/);
 });
 
 test('ParserPanel inspector supports bounded pointer and keyboard resizing across both layouts', async () => {
@@ -1589,7 +1763,7 @@ test('ParserPanel inspector supports bounded pointer and keyboard resizing acros
     'aria-valuetext': '440px',
   });
   expect(handle.attributes('aria-controls')).toBe(inspector.attributes('id'));
-  expect(handle.element.previousElementSibling).toBe(body.get('.pp-list').element);
+  expect(handle.element.previousElementSibling).toBe(body.get('.pp-list-root').element);
   expect(handle.element.nextElementSibling).toBe(inspector.element);
   expect((inspector.element as HTMLElement).style.width).toBe('440px');
 

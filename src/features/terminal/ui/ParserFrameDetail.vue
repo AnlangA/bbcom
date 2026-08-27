@@ -72,6 +72,7 @@
       :id="`${inspectorId}-panel-${tab.key}`"
       :key="`${tab.key}-panel`"
       class="detail-content scrollbar-thin"
+      :class="{ 'is-virtual-dump': tab.key === 'hex' || tab.key === 'raw' }"
       role="tabpanel"
       :aria-labelledby="`${inspectorId}-tab-${tab.key}`"
       :hidden="activeTab !== tab.key"
@@ -126,57 +127,28 @@
         </div>
 
         <div v-else-if="activeTab === 'hex'" class="bytes-panel">
-          <div class="panel-actions">
-            <BytePager
-              :page="hexPage"
-              :page-count="hexPageCount"
-              :start="hexPageStart"
-              :end="hexPageEnd"
-              :total="frame.data.length"
-              @update:page="hexPage = $event"
-            />
-            <button
-              v-if="selectedRange"
-              class="text-action"
-              type="button"
-              @click="copySelectedRange"
-            >
+          <div v-if="selectedRange" class="panel-actions">
+            <button class="text-action" type="button" @click="copySelectedRange">
               <Copy class="icon-sm" />
               {{ t('parser.inspector.copyField') }}
             </button>
           </div>
-          <div v-for="row in hexRows" :key="row.offset" class="detail-row">
-            <span class="dump-offset">{{ formatOffset(row.offset, frame.data.length) }}</span>
-            <span class="dump-hex" aria-hidden="true">
-              <span
-                v-for="byte in row.bytes"
-                :key="byte.offset"
-                class="dump-byte"
-                :class="{ highlighted: byteInRange(byte.offset, selectedRange) }"
-                >{{ byte.hex }}</span
-              >
-            </span>
-            <span class="sr-only">{{ row.bytes.map((byte) => byte.hex).join(' ') }}</span>
-            <span class="dump-ascii">{{ row.ascii }}</span>
-          </div>
+          <ParserByteDump
+            ref="hexDumpRef"
+            :data="frame.data"
+            :highlight="selectedRange"
+            :ariaLabel="t('parser.inspector.hexDump')"
+          />
         </div>
 
         <div v-else-if="activeTab === 'raw'" class="bytes-panel">
           <div class="panel-actions">
-            <BytePager
-              :page="rawPage"
-              :page-count="rawPageCount"
-              :start="rawPageStart"
-              :end="rawPageEnd"
-              :total="rawBytes.length"
-              @update:page="rawPage = $event"
-            />
             <button class="text-action" type="button" @click="copyRaw">
               <Copy class="icon-sm" />
               {{ t('parser.inspector.copyRaw') }}
             </button>
           </div>
-          <pre class="raw-dump">{{ rawPageText }}</pre>
+          <ParserByteDump :data="rawBytes" :ariaLabel="t('parser.inspector.rawDump')" />
         </div>
 
         <div v-else class="diagnostics-panel">
@@ -227,13 +199,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, useId, watch } from 'vue';
+import { computed, nextTick, ref, useId, watch } from 'vue';
 import { Binary, Copy, FileText, X } from '@lucide/vue';
-import { byteAscii, byteHex } from '@/lib/protocol-parser';
+import { protocolRecordRawBytes } from '@/lib/parser-panel';
+import { byteHex } from '@/lib/protocol-parser';
 import { locale, t } from '@/lib/i18n';
 import { smpDiagnosticMessageZh } from '@/lib/mcumgr-smp-metadata';
 import ParserCborTree from './ParserCborTree.vue';
-import BytePager from './ParserBytePager.vue';
+import ParserByteDump from './ParserByteDump.vue';
 
 export interface ParserByteRange {
   start: number;
@@ -286,7 +259,7 @@ const props = defineProps<{
   inlineSize?: number;
   blockSize?: number;
   frame: ParserInspectorRecord | null;
-  /** Retained for compatibility; rows are now generated lazily in bounded pages. */
+  /** Retained for compatibility; the inspector now virtualizes dump rows. */
   dump?: readonly { offset: number; hex: string; ascii: string }[];
 }>();
 
@@ -300,8 +273,8 @@ const emit = defineEmits<{
 
 type DetailTab = 'overview' | 'header' | 'cbor' | 'hex' | 'raw' | 'diagnostics';
 
-const PAGE_BYTES = 2048;
 const inspectorId = useId();
+const hexDumpRef = ref<{ scrollToByte: (offset: number) => void } | null>(null);
 const paneStyle = computed(() => {
   if (props.compact && props.blockSize !== undefined) {
     return {
@@ -317,8 +290,6 @@ const paneStyle = computed(() => {
 });
 const activeTab = ref<DetailTab>(props.frame?.kind === 'smp' ? 'overview' : 'hex');
 const selectedRange = ref<ParserByteRange | null>(null);
-const hexPage = ref(0);
-const rawPage = ref(0);
 
 const tabs = computed<Array<{ key: DetailTab; label: string }>>(() => {
   const common: Array<{ key: DetailTab; label: string }> = [
@@ -337,46 +308,7 @@ const tabs = computed<Array<{ key: DetailTab; label: string }>>(() => {
 });
 
 const direction = computed(() => (props.frame?.direction === 'TX' ? 'TX' : 'RX'));
-const rawBytes = computed(
-  () => props.frame?.transportData ?? props.frame?.data ?? new Uint8Array(),
-);
-const hexPageCount = computed(() =>
-  Math.max(1, Math.ceil((props.frame?.data.length ?? 0) / PAGE_BYTES)),
-);
-const rawPageCount = computed(() => Math.max(1, Math.ceil(rawBytes.value.length / PAGE_BYTES)));
-const hexPageStart = computed(() => hexPage.value * PAGE_BYTES);
-const rawPageStart = computed(() => rawPage.value * PAGE_BYTES);
-const hexPageEnd = computed(() =>
-  Math.min(props.frame?.data.length ?? 0, hexPageStart.value + PAGE_BYTES),
-);
-const rawPageEnd = computed(() => Math.min(rawBytes.value.length, rawPageStart.value + PAGE_BYTES));
-
-const hexRows = computed(() => {
-  if (!props.frame) return [];
-  const rows: Array<{
-    offset: number;
-    bytes: Array<{ offset: number; hex: string }>;
-    ascii: string;
-  }> = [];
-  for (let offset = hexPageStart.value; offset < hexPageEnd.value; offset += 16) {
-    const slice = props.frame.data.subarray(offset, Math.min(offset + 16, hexPageEnd.value));
-    rows.push({
-      offset,
-      bytes: Array.from(slice, (byte, index) => ({
-        offset: offset + index,
-        hex: byteHex(byte).toUpperCase(),
-      })),
-      ascii: Array.from(slice, byteAscii).join(''),
-    });
-  }
-  return rows;
-});
-
-const rawPageText = computed(() =>
-  Array.from(rawBytes.value.subarray(rawPageStart.value, rawPageEnd.value), (byte) =>
-    byteHex(byte).toUpperCase(),
-  ).join(' '),
-);
+const rawBytes = computed(() => protocolRecordRawBytes(props.frame));
 
 const overviewFields = computed(() => {
   if (!props.frame) return [];
@@ -461,17 +393,8 @@ watch(
   () => {
     activeTab.value = props.frame?.kind === 'smp' ? 'overview' : 'hex';
     selectedRange.value = null;
-    hexPage.value = 0;
-    rawPage.value = 0;
   },
 );
-
-watch(hexPageCount, (count) => {
-  hexPage.value = Math.min(hexPage.value, count - 1);
-});
-watch(rawPageCount, (count) => {
-  rawPage.value = Math.min(rawPage.value, count - 1);
-});
 
 function onTabKeydown(event: KeyboardEvent, current: DetailTab) {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -489,8 +412,8 @@ function onTabKeydown(event: KeyboardEvent, current: DetailTab) {
 
 function selectRange(range: ParserByteRange) {
   selectedRange.value = range;
-  hexPage.value = Math.min(hexPageCount.value - 1, Math.floor(range.start / PAGE_BYTES));
   activeTab.value = 'hex';
+  void nextTick(() => hexDumpRef.value?.scrollToByte(range.start));
 }
 
 function copySelectedRange() {
@@ -572,10 +495,6 @@ function clampRange(range: ParserByteRange, length: number): ParserByteRange {
 
 function rangesEqual(left: ParserByteRange | null, right?: ParserByteRange): boolean {
   return Boolean(left && right && left.start === right.start && left.end === right.end);
-}
-
-function byteInRange(offset: number, range: ParserByteRange | null): boolean {
-  return Boolean(range && offset >= range.start && offset < range.end);
 }
 
 function normalizeDiagnostic(value: unknown, index: number) {
@@ -673,13 +592,6 @@ function transportLabel(value: string | undefined): string {
 
 function parserKindLabel(kind: 'delimiter' | 'fixed' | 'length'): string {
   return t(`parser.kind.${kind}`);
-}
-
-function formatOffset(offset: number, length: number): string {
-  return offset
-    .toString(16)
-    .toUpperCase()
-    .padStart(Math.max(4, length.toString(16).length), '0');
 }
 </script>
 
@@ -808,6 +720,17 @@ function formatOffset(offset: number, length: number): string {
   flex: 1;
   overflow: auto;
   padding: 10px;
+  overscroll-behavior: contain;
+}
+
+.detail-content[hidden] {
+  display: none;
+}
+
+.detail-content.is-virtual-dump:not([hidden]) {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .overview-grid {
@@ -895,7 +818,11 @@ function formatOffset(offset: number, length: number): string {
 }
 
 .bytes-panel {
-  min-width: max-content;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .text-action {
@@ -917,57 +844,6 @@ function formatOffset(offset: number, length: number): string {
   color: var(--text-primary);
   border-color: var(--color-primary-muted);
   outline: none;
-}
-
-.detail-row {
-  display: grid;
-  grid-template-columns: max-content max-content 16ch;
-  column-gap: 1ch;
-  width: max-content;
-  min-width: 100%;
-  min-height: 22px;
-  align-items: baseline;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
-}
-
-.dump-offset {
-  color: var(--text-dim);
-}
-
-.dump-hex {
-  display: grid;
-  grid-template-columns: repeat(16, 2ch);
-  column-gap: 0.5ch;
-  color: var(--accent-blue);
-  white-space: pre;
-}
-
-.dump-byte {
-  border-radius: 2px;
-  text-align: center;
-}
-
-.dump-byte.highlighted {
-  color: var(--text-primary);
-  background: var(--color-primary-muted);
-  outline: 2px solid var(--color-primary-muted);
-}
-
-.dump-ascii {
-  width: 16ch;
-  color: var(--text-secondary);
-  white-space: pre;
-}
-
-.raw-dump {
-  margin: 0;
-  color: var(--accent-blue);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
-  line-height: 1.65;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 .diagnostics-panel {

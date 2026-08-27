@@ -418,6 +418,7 @@ function onReplayFilePicked(e: Event) {
   flex-direction: column;
   background: var(--bg-inset);
   flex: 1;
+  height: 100%;
   min-height: 0;
 }
 

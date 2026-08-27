@@ -6,10 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const pnpm = process.env.npm_execpath || (process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
 const serverUrl = 'http://127.0.0.1:5173/';
 const readyDeadlineMs = 40_000;
 const viteCli = resolve(root, 'node_modules', 'vite', 'bin', 'vite.js');
+const wdioCli = resolve(root, 'node_modules', '@wdio/cli', 'bin', 'wdio.js');
 let vite;
 
 function delay(milliseconds) {
@@ -91,7 +91,12 @@ async function main() {
   });
   if (startError) throw startError;
   await waitForServer();
-  await run(pnpm, ['run', 'e2e:browser', ...process.argv.slice(2)]);
+  await run(process.execPath, [
+    wdioCli,
+    'run',
+    'wdio.browser-mock.config.mjs',
+    ...process.argv.slice(2),
+  ]);
 }
 
 try {

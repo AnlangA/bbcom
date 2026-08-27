@@ -16,6 +16,7 @@ import {
   parseStrictDelimiterHex,
   parsedFrameStats,
   positiveInteger,
+  protocolRecordRawBytes,
   renderedParsedFrameWindow,
   truncateHexPreview,
 } from '@/lib/parser-panel.ts';
@@ -224,4 +225,14 @@ test('preview and ascii helpers mirror parser panel rendering behavior', () => {
   assert.equal(truncateHexPreview('AABBCC', 4), 'AABB\u2026');
   assert.equal(truncateHexPreview('AABB', 4), 'AABB');
   assert.equal(frameAsciiText({ data: new Uint8Array([0x41, 0x00, 0x42]) }), 'A.B');
+});
+
+test('protocolRecordRawBytes prefers non-empty transport bytes and falls back to payload', () => {
+  const payload = new Uint8Array([0x41, 0x42]);
+  const transport = new Uint8Array([0x06, 0x09, 0x41, 0x42]);
+
+  assert.equal(protocolRecordRawBytes(null).length, 0);
+  assert.equal(protocolRecordRawBytes({ data: payload }), payload);
+  assert.equal(protocolRecordRawBytes({ data: payload, transportData: new Uint8Array() }), payload);
+  assert.equal(protocolRecordRawBytes({ data: payload, transportData: transport }), transport);
 });

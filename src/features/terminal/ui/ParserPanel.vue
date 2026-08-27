@@ -62,80 +62,17 @@
     />
 
     <div ref="parserBodyRef" class="parser-body">
-      <div
-        ref="scrollRef"
-        class="pp-list scrollbar-thin"
-        role="list"
-        tabindex="0"
-        :aria-label="t('parser.recordList')"
-        @scroll="onScroll"
-        @keydown="onListKeydown"
-      >
-        <div v-if="filteredRecords.length === 0" class="pp-empty">
-          {{ parsedFrames.length === 0 ? t('parser.empty') : t('packet.noMatch') }}
-        </div>
-        <div v-else class="pp-virtual-space" :style="{ height: `${totalSize}px` }">
-          <div
-            v-for="row in virtualRows"
-            :id="recordDomId(row.record)"
-            :key="recordStableId(row.record)"
-            :ref="measureElement"
-            class="pp-frame"
-            :class="[
-              `direction-${recordDirection(row.record).toLowerCase()}`,
-              `status-${recordStatus(row.record)}`,
-              { selected: selectedRecordId === recordStableId(row.record), smp: isSmp(row.record) },
-            ]"
-            role="listitem"
-            tabindex="-1"
-            :aria-current="selectedRecordId === recordStableId(row.record) ? 'true' : undefined"
-            :data-index="row.index"
-            :style="{ transform: `translateY(${row.start}px)` }"
-            :title="recordTitle(row.record)"
-            @click="selectRecord(row.record)"
-            @dblclick="focusInspector"
-          >
-            <span class="pp-idx">#{{ row.index + 1 }}</span>
-            <span class="direction-badge">{{ recordDirection(row.record) }}</span>
-            <span v-if="recordTimestamp(row.record)" class="record-time">
-              {{ recordTimestamp(row.record) }}
-            </span>
-
-            <template v-if="isSmp(row.record)">
-              <span class="transaction-badge">{{ transactionLabel(row.record) }}</span>
-              <span class="smp-route">{{ smpRoute(row.record) }}</span>
-              <span class="smp-seq">#{{ row.record.header?.sequence ?? '—' }}</span>
-              <span class="status-badge" :title="recordDiagnosticSummary(row.record)">
-                {{ statusLabel(recordStatus(row.record)) }}
-              </span>
-              <span v-if="row.record.rttMs !== undefined" class="smp-rtt">
-                {{ row.record.rttMs.toFixed(1) }}ms
-              </span>
-            </template>
-            <template v-else>
-              <span v-if="row.record.parserKind" class="framing-badge">
-                {{ parserKindLabel(row.record.parserKind) }}
-              </span>
-              <span class="pp-hex">
-                {{ frameHexPreview(row.record.data) }}
-              </span>
-            </template>
-
-            <span class="pp-len">{{ row.record.data.length }}B</span>
-            <button
-              class="pp-copy"
-              type="button"
-              :title="t('parser.copy')"
-              :aria-label="t('parser.copy')"
-              @click.stop="copyBytes(row.record.data)"
-              @keydown.enter.stop
-              @keydown.space.stop
-            >
-              <Copy class="icon-sm" />
-            </button>
-          </div>
-        </div>
-      </div>
+      <ParserRecordList
+        ref="recordListRef"
+        :records="filteredRecords"
+        :smp-mode="smpMode"
+        :selected-record-id="selectedRecordId"
+        :auto-follow="autoFollow"
+        :empty-label="parsedFrames.length === 0 ? t('parser.empty') : t('packet.noMatch')"
+        @select="selectRecord"
+        @copy-bytes="copyBytes"
+        @focus-inspector="focusInspector"
+      />
 
       <div
         class="inspector-resize-handle"
@@ -175,9 +112,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { useMessage } from 'naive-ui';
-import { Copy } from '@lucide/vue';
 import {
   MAX_SMP_PARSER_MAX_PACKET_BYTES,
   MAX_SMP_REASSEMBLY_TIMEOUT_MS,
@@ -199,9 +135,6 @@ import {
   lengthConfig,
   parseStrictDelimiterHex,
   parsedFrameStats,
-  protocolRecordDirection,
-  protocolRecordStatus,
-  protocolRecordTransaction,
   smpConfig,
   type ProtocolRecordDirectionFilter,
   type ProtocolRecordStatusFilter,
@@ -210,17 +143,17 @@ import {
 } from '@/lib/parser-panel';
 import { formatHex } from '@/lib/format';
 import { locale, t } from '@/lib/i18n';
-import { smpDiagnosticMessageZh } from '@/lib/mcumgr-smp-metadata';
 import { parserStateRecoveredInvalidSmp } from '@/lib/session-persistence';
-import { usePacketVirtualScroll } from '@/features/terminal/application/use-packet-virtual-scroll';
 import { useParserInspectorResize } from '@/features/terminal/application/use-parser-inspector-resize';
 import { useSessionDocument } from '@/features/sessions';
 import ParserConfigBar from './ParserConfigBar.vue';
 import ParserStatsBar from './ParserStatsBar.vue';
 import ParserFrameDetail, { type ParserInspectorRecord } from './ParserFrameDetail.vue';
+import ParserRecordList, { type ParserRecordListRecord } from './ParserRecordList.vue';
 
 type ParserPanelRecord = SearchableProtocolRecord &
-  ParserInspectorRecord & {
+  ParserInspectorRecord &
+  ParserRecordListRecord & {
     rttMs?: number;
   };
 
@@ -531,6 +464,7 @@ function transportLabel(transport: SmpParserTransport): string {
 }
 
 const selectedRecordId = ref<string | null>(null);
+const recordListRef = ref<InstanceType<typeof ParserRecordList> | null>(null);
 const searchTerm = ref('');
 const directionFilter = ref<ProtocolRecordDirectionFilter>('all');
 const statusFilter = ref<ProtocolRecordStatusFilter>('all');
@@ -557,24 +491,6 @@ const selectedRecord = computed(
   () =>
     props.parsedFrames.find((record) => recordStableId(record) === selectedRecordId.value) ?? null,
 );
-const filteredRecordCount = computed(() => filteredRecords.value.length);
-const { scrollRef, virtualItems, totalSize, measureElement, onScroll, scrollToIndex } =
-  usePacketVirtualScroll({
-    frameCount: filteredRecordCount,
-    autoScroll: autoFollow,
-    rowSize: () => 44,
-    itemKey: (index) => {
-      const record = filteredRecords.value[index];
-      return record ? recordStableId(record) : index;
-    },
-  });
-
-const virtualRows = computed(() =>
-  virtualItems.value.flatMap((item) => {
-    const record = filteredRecords.value[item.index];
-    return record ? [{ record, index: item.index, start: item.start, size: item.size }] : [];
-  }),
-);
 
 watch(smpMode, (enabled) => {
   if (enabled) return;
@@ -582,11 +498,6 @@ watch(smpMode, (enabled) => {
   groupFilter.value = '';
   commandFilter.value = '';
   sequenceFilter.value = '';
-});
-
-onMounted(() => {
-  if (!autoFollow.value || filteredRecords.value.length === 0) return;
-  void nextTick(() => scrollToIndex(filteredRecords.value.length - 1));
 });
 
 watch(
@@ -604,29 +515,6 @@ function selectRecord(record: ParserPanelRecord) {
   selectedRecordId.value = recordStableId(record);
 }
 
-function onListKeydown(event: KeyboardEvent) {
-  if (filteredRecords.value.length === 0) return;
-  const currentIndex = filteredRecords.value.findIndex(
-    (record) => recordStableId(record) === selectedRecordId.value,
-  );
-  let nextIndex: number;
-  if (event.key === 'ArrowDown')
-    nextIndex = Math.min(filteredRecords.value.length - 1, currentIndex + 1);
-  else if (event.key === 'ArrowUp')
-    nextIndex = Math.max(0, currentIndex < 0 ? 0 : currentIndex - 1);
-  else if (event.key === 'Home') nextIndex = 0;
-  else if (event.key === 'End') nextIndex = filteredRecords.value.length - 1;
-  else if (event.key === 'Enter') nextIndex = currentIndex < 0 ? 0 : currentIndex;
-  else return;
-
-  event.preventDefault();
-  const record = filteredRecords.value[nextIndex];
-  if (!record) return;
-  selectRecord(record);
-  scrollToIndex(nextIndex);
-  void nextTick(() => document.getElementById(recordDomId(record))?.focus());
-}
-
 function onPanelEscape(event: KeyboardEvent) {
   if (configEditing.value) {
     event.stopPropagation();
@@ -636,7 +524,7 @@ function onPanelEscape(event: KeyboardEvent) {
   if (selectedRecordId.value) {
     event.stopPropagation();
     selectedRecordId.value = null;
-    scrollRef.value?.focus();
+    recordListRef.value?.focusList();
   }
 }
 
@@ -652,98 +540,9 @@ function recordStableId(record: ParserPanelRecord): string {
   );
 }
 
-function recordDomId(record: ParserPanelRecord): string {
-  let hash = 2166136261;
-  for (const character of recordStableId(record)) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `parser-record-${hash >>> 0}`;
-}
-
-function isSmp(record: ParserPanelRecord): boolean {
-  return record.kind === 'smp';
-}
-
-function recordDirection(record: ParserPanelRecord): 'TX' | 'RX' {
-  return protocolRecordDirection(record);
-}
-
-function recordStatus(record: ParserPanelRecord) {
-  return protocolRecordStatus(record);
-}
-
-function recordTimestamp(record: ParserPanelRecord): string {
-  if (record.timestamp === undefined) return '';
-  const date = new Date(record.timestamp);
-  return Number.isNaN(date.getTime())
-    ? String(record.timestamp)
-    : date.toLocaleTimeString([], { hour12: false });
-}
-
-function transactionLabel(record: ParserPanelRecord): string {
-  const transaction = protocolRecordTransaction(record);
-  if (transaction === 'request') return t('parser.transaction.requestShort');
-  if (transaction === 'response') return t('parser.transaction.responseShort');
-  if (transaction === 'unmatched') return t('parser.transaction.unmatchedShort');
-  return 'SMP';
-}
-
-function smpRoute(record: ParserPanelRecord): string {
-  const header = record.header;
-  const group =
-    (locale.value === 'zh' ? header?.groupNameZh : header?.groupName) ??
-    header?.groupName ??
-    header?.group ??
-    '?';
-  const command =
-    (locale.value === 'zh' ? header?.commandNameZh : header?.commandName) ??
-    header?.commandName ??
-    header?.command ??
-    '?';
-  return `${String(group)} / ${String(command)}`;
-}
-
-function statusLabel(status: ReturnType<typeof protocolRecordStatus>): string {
-  return t(`parser.status.${status}`);
-}
-
-function parserKindLabel(kind: 'delimiter' | 'fixed' | 'length'): string {
-  return t(`parser.kind.${kind}`);
-}
-
-function recordTitle(record: ParserPanelRecord): string {
-  const prefix = t('parser.offsetTitle', { offset: record.offset });
-  if (record.kind === 'smp' && locale.value === 'zh') {
-    return `${prefix} · ${transactionLabel(record)} · ${smpRoute(record)} · #${String(record.header?.sequence ?? '—')}`;
-  }
-  return record.summary ? `${prefix} · ${record.summary}` : prefix;
-}
-
-function recordDiagnosticSummary(record: ParserPanelRecord): string {
-  return record.diagnostics?.map((diagnostic) => diagnosticText(diagnostic)).join('\n') ?? '';
-}
-
 function closeInspector() {
   selectedRecordId.value = null;
-  void nextTick(() => scrollRef.value?.focus());
-}
-
-function diagnosticText(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (!value || typeof value !== 'object') return String(value);
-  const diagnostic = value as Record<string, unknown>;
-  const code = String(diagnostic.code ?? '');
-  const message = String(diagnostic.message ?? diagnostic.messageZh ?? (code || value));
-  return locale.value === 'zh'
-    ? String(diagnostic.messageZh ?? smpDiagnosticMessageZh(code, message))
-    : message;
-}
-
-function frameHexPreview(bytes: Uint8Array): string {
-  const maxBytes = 22;
-  const preview = formatHex(bytes.subarray(0, maxBytes));
-  return bytes.length > maxBytes ? `${preview}\u2026` : preview;
+  void nextTick(() => recordListRef.value?.focusList());
 }
 
 async function copyBytes(bytes: Uint8Array) {
@@ -765,12 +564,17 @@ async function copyText(value: string, successMessage = t('parser.copied')) {
 </script>
 
 <style scoped>
+/* `height: 100%` is load-bearing: `.display-area` in SessionView is a block
+   container, so `flex: 1` alone leaves this panel at content height and the
+   record list gets clipped instead of scrolling. */
 .parser-panel {
   container: parser-panel / inline-size;
   display: flex;
   flex: 1;
   flex-direction: column;
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
   background: var(--bg-inset);
 }
 
@@ -779,19 +583,6 @@ async function copyText(value: string, successMessage = t('parser.copied')) {
   flex: 1;
   display: flex;
   overflow: hidden;
-}
-
-.pp-list {
-  position: relative;
-  min-width: 0;
-  flex: 1;
-  overflow: auto;
-  padding: 6px 8px;
-  outline: none;
-}
-
-.pp-list:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--color-primary-muted);
 }
 
 .inspector-resize-handle {
@@ -851,162 +642,6 @@ async function copyText(value: string, successMessage = t('parser.copied')) {
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
-.pp-virtual-space {
-  position: relative;
-  width: 100%;
-}
-
-.pp-empty {
-  padding: 32px 12px;
-  color: var(--text-dim);
-  font-size: var(--font-size-sm);
-  text-align: center;
-}
-
-.pp-frame {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 4px 7px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast);
-}
-
-.pp-frame:hover {
-  background: var(--bg-hover);
-}
-
-.pp-frame.selected {
-  border-color: var(--color-primary-muted);
-  background: var(--bg-active);
-}
-
-.pp-frame.status-warning {
-  box-shadow: inset 3px 0 0 var(--accent-orange);
-}
-
-.pp-frame.status-error {
-  box-shadow: inset 3px 0 0 var(--color-error);
-}
-
-.pp-idx {
-  min-width: 42px;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-
-.direction-badge,
-.framing-badge,
-.transaction-badge,
-.status-badge {
-  min-width: 28px;
-  padding: 1px 5px;
-  border-radius: var(--radius-sm);
-  font-size: 11px;
-  font-weight: 700;
-  text-align: center;
-}
-
-.direction-badge {
-  color: var(--accent-blue);
-  background: var(--accent-blue-subtle);
-}
-
-.direction-tx .direction-badge {
-  color: var(--color-success);
-  background: var(--color-primary-muted);
-}
-
-.record-time,
-.smp-seq,
-.smp-rtt {
-  flex: 0 0 auto;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-
-.transaction-badge {
-  color: var(--text-muted);
-  background: var(--bg-secondary);
-}
-
-.framing-badge {
-  color: var(--text-muted);
-  background: var(--bg-secondary);
-}
-
-.smp-route {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  color: var(--text-secondary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.status-badge {
-  color: var(--text-muted);
-  background: var(--bg-secondary);
-}
-
-.status-warning .status-badge {
-  color: var(--accent-orange);
-  background: var(--accent-orange-subtle);
-}
-
-.status-error .status-badge {
-  color: var(--color-error);
-}
-
-.pp-hex {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  color: var(--accent-blue);
-  letter-spacing: 0.2px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pp-len {
-  flex: 0 0 auto;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-
-.pp-copy {
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-}
-
-.pp-copy:hover,
-.pp-copy:focus-visible {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-  outline: none;
-}
-
 @container parser-panel (max-width: 820px) {
   .parser-body {
     flex-direction: column;
@@ -1035,22 +670,6 @@ async function copyText(value: string, successMessage = t('parser.copied')) {
   .inspector-resize-handle.dragging .inspector-resize-grip,
   .inspector-resize-handle:focus-visible .inspector-resize-grip {
     transform: translate(-50%, -50%) scaleX(1.12);
-  }
-
-  .pp-list {
-    min-height: min(140px, 40%);
-  }
-
-  .record-time,
-  .status-badge {
-    display: none;
-  }
-}
-
-@container parser-panel (max-width: 540px) {
-  .smp-rtt,
-  .transaction-badge {
-    display: none;
   }
 }
 </style>
