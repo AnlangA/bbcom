@@ -6,10 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const pnpm = process.env.npm_execpath || (process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
 const serverUrl = 'http://127.0.0.1:5173/';
 const readyDeadlineMs = 40_000;
 const viteCli = resolve(root, 'node_modules', 'vite', 'bin', 'vite.js');
+const wdioCli = resolve(root, 'node_modules', '@wdio/cli', 'bin', 'wdio.js');
 let vite;
 
 function delay(milliseconds) {
@@ -37,13 +37,7 @@ function ensurePortIsAvailable() {
 
 function run(command, args, cwd = root) {
   return new Promise((resolveRun, rejectRun) => {
-    const child = spawn(command, args, {
-      cwd,
-      stdio: 'inherit',
-      // Windows cannot spawn .cmd/.bat without a shell; EFTYPE otherwise
-      // aborts the pre-push browser-mock E2E after Vite is already up.
-      shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(command),
-    });
+    const child = spawn(command, args, { cwd, stdio: 'inherit' });
     child.once('error', rejectRun);
     child.once('exit', (code, signal) => {
       if (code === 0) resolveRun();
@@ -97,7 +91,12 @@ async function main() {
   });
   if (startError) throw startError;
   await waitForServer();
-  await run(pnpm, ['run', 'e2e:browser', ...process.argv.slice(2)]);
+  await run(process.execPath, [
+    wdioCli,
+    'run',
+    'wdio.browser-mock.config.mjs',
+    ...process.argv.slice(2),
+  ]);
 }
 
 try {
