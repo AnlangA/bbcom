@@ -563,7 +563,11 @@ test('replay skips a timed-out record and continues with the next value', async 
       { t: 1, slave: 1, fc: 0x03, addr: 5, type: 'uint16', value: 88 },
     ]);
 
-    await delay(90);
+    await waitFor(
+      () => h.sent.length >= 2 && h.master.replaying.value === false,
+      400,
+      'replay should skip the timed-out record and finish the next value',
+    );
 
     assert.equal(h.sent.length, 2);
     assert.equal(h.master.replaying.value, false);
