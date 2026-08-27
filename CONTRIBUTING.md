@@ -18,8 +18,9 @@ Before opening a pull request, run:
 pnpm precommit:full
 ```
 
-CI runs static checks only (lint, build, architecture boundaries, Rust fmt and
-clippy). Full test suites are enforced locally via the pre-push hook.
+CI (`quality.yml`) runs static checks only: frontend lint/format/architecture/
+build, plus Rust IPC-binding check, `cargo fmt --check`, and Clippy
+`-D warnings`. Full test suites are enforced locally via the pre-push hook.
 
 Stage the complete change before committing: the hook rejects unstaged or
 non-ignored untracked files so its result always applies to the staged snapshot.
@@ -39,17 +40,19 @@ legacy data with a regression test.
 
 ## Quality gate
 
-The versioned Git pre-commit hook enforces frontend lint/format/build/test,
-global and P0 coverage, browser-mock E2E, architecture, audit, Rust
-fmt/Clippy/tests/llvm-cov, and the base/head frontend benchmark comparison.
-It uses the repository-pinned Node, pnpm, Rust, `cargo-llvm-cov`, and
-`cargo-audit` versions. To ensure it validates exactly the index Git will
-commit, it rejects unstaged or non-ignored untracked files. Do not use
+The versioned Git pre-commit hook runs the fast local gate: toolchain pin
+check, frontend lint/format, architecture, and frontend build. The pre-push
+hook then runs frontend and Rust tests plus browser-mock E2E. Neither hook
+currently enforces coverage percentages, `cargo-llvm-cov`, `cargo-audit`, or
+frontend benchmarks. CI additionally runs architecture self-tests and CSS
+token checks. To ensure it validates exactly the index Git will commit,
+pre-commit rejects unstaged or non-ignored untracked files. Do not use
 `--no-verify` to bypass it.
 
-GitHub Actions is intentionally release-only: it runs after an exact
-`vX.Y.Z` tag and performs three-platform release assembly and smoke verification
-rather than repeating local PR checks. Windows and macOS platform signing is
+GitHub Actions `quality.yml` runs on pull requests and `master` pushes (and
+is reused by the tagged release workflow). Tags matching `vX.Y.Z` start
+`release.yml`, which repeats those static checks, then builds three-platform
+installers and smoke-tests them. Windows and macOS platform signing is
 enabled when the corresponding complete secret set is configured.
 
 Tags matching `vX.Y.Z` produce a draft release containing Windows NSIS, macOS
@@ -133,7 +136,8 @@ release workflow.
 
 The release workflow:
 
-1. Runs the shared quality gate (lint, architecture, frontend/Rust tests, browser E2E).
+1. Runs the shared quality gate (lint, format, architecture, frontend build,
+   Rust fmt/Clippy).
 2. Builds Windows NSIS, macOS DMG, and Linux AppImage/deb installers.
 3. Runs installer install/launch/uninstall smoke checks.
 4. Attaches SBOM, license inventories, checksums, Sigstore bundles (Linux), and

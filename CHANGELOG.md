@@ -5,6 +5,11 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- MCUmgr reset-disconnect unit test now uses `std::io::Error::other`, so Clippy
+  `-D warnings` on the Quality workflow passes again.
+
 ## [1.0.4] - 2026-08-27
 
 ### Added
