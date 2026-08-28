@@ -5,8 +5,14 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-28
+
 ### Fixed
 
+- Protocol parser TX/RX list now scrolls inside the session display area instead
+  of being clipped to about fourteen rows. HEX/RAW dump falls back to the frame
+  payload when `transportData` is empty, and SMP correlation reads the full
+  shared TX/RX timeline.
 - MCUmgr reset-disconnect unit test now uses `std::io::Error::other`, so Clippy
   `-D warnings` on the Quality workflow passes again.
 
