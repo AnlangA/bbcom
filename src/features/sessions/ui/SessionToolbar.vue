@@ -13,12 +13,15 @@
         :capture-paused="captureIsPaused"
         :can-clear="captureCanClear"
         :sending-break="sendingBreak"
+        :reconfiguring="reconfiguring"
+        :settings-disabled="settingsDisabled"
         @connect="$emit('connect')"
         @disconnect="$emit('disconnect')"
         @rebind="$emit('rebind')"
         @clear="$emit('clear')"
         @toggle-pause="$emit('toggle-pause')"
         @send-break="$emit('send-break')"
+        @settings="$emit('settings')"
       />
       <div class="toolbar-file-actions">
         <div class="toolbar-field">
@@ -119,6 +122,8 @@ const props = withDefaults(
     viewMode: SessionViewMode;
     /** True while MCUmgr owns the port; connection controls must stay locked. */
     connectionLocked?: boolean;
+    reconfiguring?: boolean;
+    settingsDisabled?: boolean;
   }>(),
   { captureHasData: undefined, capturePaused: undefined },
 );
@@ -136,6 +141,7 @@ const emit = defineEmits<{
   export: [];
   'show-conflicting-session': [sessionId: string];
   rebind: [];
+  settings: [];
 }>();
 
 const appStore = useAppStore();

@@ -25,6 +25,8 @@
       :connection-conflict="runtime.connectionFailure.value?.conflict"
       :needs-rebind="Boolean(rebindMetadata)"
       :sending-break="runtime.sendingBreak.value"
+      :reconfiguring="runtime.reconfiguring.value"
+      :settings-disabled="!mutationPolicy.userMutationsAllowed.value"
       :is-exporting="isExporting"
       :view-mode="viewMode"
       :connection-locked="runtime.mcumgr.busy.value"
@@ -40,6 +42,15 @@
       @export="openExportDialog"
       @show-conflicting-session="showConflictingSession"
       @rebind="rebindDialogVisible = true"
+      @settings="serialSettingsVisible = true"
+    />
+    <SessionSerialSettingsDialog
+      :show="serialSettingsVisible"
+      :config="props.session.portConfig"
+      :connected="runtime.isConnected.value"
+      :saving="runtime.reconfiguring.value"
+      @update:show="serialSettingsVisible = $event"
+      @save="saveSerialSettings"
     />
     <SessionRebindDialog
       :show="rebindDialogVisible"
@@ -177,6 +188,7 @@ import DataPacketList from '@/features/terminal/ui/DataPacketList.vue';
 import SendPanel from '@/features/send-panel/ui/SendPanel.vue';
 import SessionToolbar from './SessionToolbar.vue';
 import SessionRebindDialog from './SessionRebindDialog.vue';
+import SessionSerialSettingsDialog from './SessionSerialSettingsDialog.vue';
 import {
   useSessionCatalog,
   useSessionDocument,
@@ -192,6 +204,7 @@ import type { ExportChoice } from '@/lib/constants';
 import type { ExportFrameSnapshot } from '@/lib/export-filters';
 import { t } from '@/lib/i18n';
 import type {
+  PortConfig,
   SerialSession,
   SessionWaveformFrameCursor,
   SessionWaveformSampleInput,
@@ -251,9 +264,14 @@ const { isExporting, progress, cancelExport, resetExportProgress, exportData } =
 const message = useMessage();
 const exportDialogVisible = ref(false);
 const rebindDialogVisible = ref(false);
+const serialSettingsVisible = ref(false);
 const rebindMetadata = computed(
   () => catalog.workspaceRebindBySessionId.value[props.session.id] ?? null,
 );
+
+async function saveSerialSettings(config: PortConfig): Promise<void> {
+  if (await runtime.updatePortConfig(config)) serialSettingsVisible.value = false;
+}
 
 async function connect() {
   await runtime.connect();

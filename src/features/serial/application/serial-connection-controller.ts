@@ -359,6 +359,47 @@ export function createSerialConnectionController(
     return () => listeners.delete(listener);
   }
 
+  async function reconfigure(nextConfig: PortConfig): Promise<void> {
+    const grant = await serialTransactions.acquire(`session-settings:${sessionId}`);
+    let previousConfig: Readonly<PortConfig> | null = null;
+    let applied = false;
+    try {
+      const connection = txPipeline.currentGenerationConnection(grant.generation);
+      previousConfig = connection.target.config;
+      if (!connection.port.reconfigure) {
+        throw new SerialTransactionLeaseError(
+          'unavailable',
+          'serial reconfiguration is unavailable',
+        );
+      }
+      try {
+        await connection.port.reconfigure(nextConfig, previousConfig);
+        txPipeline.currentGenerationConnection(grant.generation);
+      } catch (error) {
+        try {
+          await connection.port.reconfigure(previousConfig, nextConfig);
+        } catch (rollbackError) {
+          logger.warn('serial reconfiguration rollback failed for', sessionId, rollbackError);
+        }
+        throw error;
+      }
+      connection.target = Object.freeze({
+        portName: connection.target.portName,
+        config: Object.freeze({ ...nextConfig }),
+      });
+      state.trackedOutputLines = Object.freeze({
+        ...state.trackedOutputLines,
+        dtr: nextConfig.dtr,
+        rts: nextConfig.rts,
+      });
+      rxPipeline.resetRxDrain(nextConfig.rxFrameGapMs);
+      applied = true;
+    } finally {
+      await serialTransactions.release(grant.token);
+      if (!applied && previousConfig) rxPipeline.resetRxDrain(previousConfig.rxFrameGapMs);
+    }
+  }
+
   async function dispose(): Promise<SerialStopResult> {
     try {
       return await shutdownEvidence.stop();
@@ -378,6 +419,7 @@ export function createSerialConnectionController(
       txPipeline.send(data, isHex, writeOptions),
     sendBytes: (payload: Uint8Array, writeOptions?: SerialWriteOptions) =>
       txPipeline.sendBytes(payload, writeOptions),
+    reconfigure,
     sendBreak: (durationMs?: number) => txPipeline.sendBreak(durationMs),
     rawBytes: (callback: (bytes: Uint8Array) => void) => rxPipeline.rawBytes(callback),
     serialTransactions,

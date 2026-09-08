@@ -64,6 +64,8 @@ export interface SerialConnectionController {
   start(): Promise<boolean>;
   send(data: string, isHex: boolean, options?: SerialWriteOptions): Promise<SerialSendResult>;
   sendBytes(payload: Uint8Array, options?: SerialWriteOptions): Promise<SerialSendResult>;
+  /** Atomically pause session writers and apply settings to the open port. */
+  reconfigure(config: PortConfig): Promise<void>;
   sendBreak(durationMs?: number): Promise<boolean>;
   rawBytes(callback: (bytes: Uint8Array) => void): () => void;
   /** Exclusive protocol transaction boundary for built-in writers. */

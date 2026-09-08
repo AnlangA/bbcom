@@ -148,6 +148,10 @@ export class SerialBridge {
     return this.controller.sendBytes(payload, writeOptions);
   }
 
+  reconfigure(config: PortConfig): Promise<void> {
+    return this.controller.reconfigure(config);
+  }
+
   sendBreak(durationMs?: number): Promise<boolean> {
     return this.controller.sendBreak(durationMs);
   }
@@ -220,6 +224,7 @@ export function useSerialConnection(
       bridge.send(data, isHex, writeOptions),
     sendBytes: (payload: Uint8Array, writeOptions?: SerialWriteOptions) =>
       bridge.sendBytes(payload, writeOptions),
+    reconfigure: (config: PortConfig) => bridge.reconfigure(config),
     sendBreak: (durationMs?: number) => bridge.sendBreak(durationMs),
     rawBytes: (callback: (bytes: Uint8Array) => void) => bridge.rawBytes(callback),
     serialTransactions: bridge.serialTransactions,

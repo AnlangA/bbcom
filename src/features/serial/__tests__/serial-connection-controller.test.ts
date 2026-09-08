@@ -44,6 +44,11 @@ class FakePort implements SerialPortAdapter {
   breakActive = false;
   readonly controlEvents: string[] = [];
   readonly clearBufferCalls: string[] = [];
+  readonly reconfigureCalls: Array<{
+    config: PortConfig;
+    previous?: Readonly<PortConfig>;
+  }> = [];
+  reconfigureImpl: (config: PortConfig) => Promise<void> = async () => undefined;
   pendingRxBytes = 7;
   pendingTxBytes = 3;
   inputLines = { cts: true, dsr: false, ri: true, cd: false };
@@ -62,6 +67,10 @@ class FakePort implements SerialPortAdapter {
   async writeBinary(data: Uint8Array): Promise<number> {
     this.writes.push(data.slice());
     return this.writeImpl(data);
+  }
+  async reconfigure(config: PortConfig, previous?: Readonly<PortConfig>): Promise<void> {
+    this.reconfigureCalls.push({ config: { ...config }, previous });
+    await this.reconfigureImpl(config);
   }
   async writeDataTerminalReady(value: boolean): Promise<void> {
     await this.dtrImpl(value);
@@ -152,6 +161,48 @@ function harness(
 }
 
 describe('SerialConnectionController (framework-free)', () => {
+  test('reconfigures an open port under an exclusive serial transaction', async () => {
+    const fake = new FakePort();
+    const { controller } = harness(fake);
+    const nextConfig: PortConfig = {
+      ...config,
+      baudRate: 921600,
+      dataBits: 7,
+      parity: 'even',
+      rxFrameGapMs: 12,
+      dtr: true,
+    };
+
+    await expect(controller.start()).resolves.toBe(true);
+    await expect(controller.reconfigure(nextConfig)).resolves.toBeUndefined();
+
+    expect(fake.reconfigureCalls).toEqual([{ config: nextConfig, previous: config }]);
+    expect(controller.serialTransactions.snapshot()).toMatchObject({
+      phase: 'idle',
+      manualWriteAllowed: true,
+    });
+    await controller.dispose();
+  });
+
+  test('rolls an open port back when a live reconfiguration fails partway', async () => {
+    const fake = new FakePort();
+    const { controller } = harness(fake);
+    const nextConfig: PortConfig = { ...config, baudRate: 4000000, parity: 'odd' };
+    fake.reconfigureImpl = async (requested) => {
+      if (requested.baudRate === nextConfig.baudRate) throw new Error('unsupported baud rate');
+    };
+
+    await controller.start();
+    await expect(controller.reconfigure(nextConfig)).rejects.toThrow('unsupported baud rate');
+
+    expect(fake.reconfigureCalls).toEqual([
+      { config: nextConfig, previous: config },
+      { config, previous: nextConfig },
+    ]);
+    expect(controller.serialTransactions.snapshot().phase).toBe('idle');
+    await controller.dispose();
+  });
+
   test('stop during final connection synchronization makes the pending start report cancellation', async () => {
     const { controller } = harness(new FakePort());
     const entered = deferred<void>();

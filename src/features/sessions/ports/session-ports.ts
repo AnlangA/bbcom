@@ -172,6 +172,7 @@ export type SessionDocumentPort = Readonly<{
     | 'setModbusConfig'
     | 'setShellConfig'
     | 'setMcumgrConfig'
+    | 'setPortConfig'
     | 'setWaveformSourceMode'
     | 'setAutoLogTarget'
     | 'setTerminalAiModel'
@@ -276,6 +277,7 @@ export function useSessionDocument(sessionId: string): SessionDocumentPort {
     setModbusConfig: facade.setModbusConfig,
     setShellConfig: facade.setShellConfig,
     setMcumgrConfig: facade.setMcumgrConfig,
+    setPortConfig: facade.setPortConfig,
     setWaveformSourceMode: facade.setWaveformSourceMode,
     setAutoLogTarget: facade.setAutoLogTarget,
     setTerminalAiModel: facade.setTerminalAiModel,

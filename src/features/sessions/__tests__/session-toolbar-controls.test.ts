@@ -5,7 +5,10 @@ import { enableAutoUnmount, mount } from '@vue/test-utils';
 import { createPinia } from 'pinia';
 import { t } from '@/lib/i18n';
 import { createSessionRecord } from '@/lib/session-persistence';
+import { BAUD_RATES } from '@/lib/constants';
+import AppSelect from '@/design-system/AppSelect.vue';
 import SessionConnectionControls from '../ui/SessionConnectionControls.vue';
+import SessionSerialSettingsDialog from '../ui/SessionSerialSettingsDialog.vue';
 import SessionToolbar from '../ui/SessionToolbar.vue';
 
 enableAutoUnmount(afterEach);
@@ -19,6 +22,50 @@ const connectionProps = {
   canClear: true,
   sendingBreak: false,
 };
+
+test('session toolbar opens serial settings and exposes low-to-high baud rates', async () => {
+  const wrapper = mount(SessionConnectionControls, { props: connectionProps });
+  const settings = wrapper.get(`button[aria-label="${t('serial.settings.open')}"]`);
+
+  await settings.trigger('click');
+  expect(wrapper.emitted('settings')).toEqual([[]]);
+  expect(BAUD_RATES.map((option) => option.value)).toEqual(
+    expect.arrayContaining([50, 110, 1200, 4800, 115200, 1000000, 4000000]),
+  );
+
+  await wrapper.setProps({ reconfiguring: true });
+  expect(settings.attributes('disabled')).toBeDefined();
+  await settings.trigger('click');
+  expect(wrapper.emitted('settings')).toHaveLength(1);
+});
+
+test('session serial settings dialog emits the edited live configuration', async () => {
+  const config = createSessionRecord('settings-dialog', 'COM1', {
+    baudRate: 115200,
+    dataBits: 8,
+    stopBits: 1,
+    parity: 'none',
+    flowControl: 'none',
+    rxFrameGapMs: 5,
+    dtr: false,
+    rts: false,
+  }).portConfig;
+  const wrapper = mount(SessionSerialSettingsDialog, {
+    props: { show: true, config, connected: true, saving: false },
+    global: { stubs: { Teleport: true } },
+  });
+
+  wrapper.findAllComponents(AppSelect)[0].vm.$emit('update:value', 4000000);
+  wrapper.findAllComponents(AppSelect)[3].vm.$emit('update:value', 'even');
+  await wrapper.vm.$nextTick();
+  await wrapper.get('.modal-positive').trigger('click');
+
+  expect(wrapper.emitted('save')?.[0]?.[0]).toMatchObject({
+    baudRate: 4000000,
+    parity: 'even',
+  });
+  expect(wrapper.text()).toContain(t('serial.settings.liveHint'));
+});
 
 test('opening can be cancelled separately and closing cannot issue another open', async () => {
   const wrapper = mount(SessionConnectionControls, {

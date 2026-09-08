@@ -9,7 +9,11 @@ import {
   type Ref,
 } from 'vue';
 import { useAppStore } from '@/features/settings/store/app-store';
-import { useSessionCapture, useSessionDocument } from '@/features/sessions/ports/session-ports';
+import {
+  useSessionCapture,
+  useSessionDocument,
+  useSessionMutationPolicy,
+} from '@/features/sessions/ports/session-ports';
 import {
   createSerialBridge,
   serialConnectionFailureMessage,
@@ -35,7 +39,13 @@ import { t } from '@/lib/i18n';
 import { logger } from '@/lib/logger';
 import { SerialUiPublishScheduler } from '@/lib/serial-rx-scheduler';
 import type { DisplayProtocolRecord } from '@/lib/protocol-record';
-import type { DataFrame, SerialSendResult, SerialSession, SerialWriteOptions } from '@/types';
+import type {
+  DataFrame,
+  PortConfig,
+  SerialSendResult,
+  SerialSession,
+  SerialWriteOptions,
+} from '@/types';
 import type { SerialConnectionFailure } from '@/features/sessions/application/serial-bridge';
 import { SessionProtocolRuntime } from './session-protocol-runtime';
 import { SessionRuntimeStatusRegistry } from './session-runtime-status';
@@ -71,6 +81,19 @@ function assertSerialStopEvidence(result: SerialStopResult): void {
       `serial stop did not prove shutdown: watch=${result.watch}, status=${result.rxDrainStatus}, guarantee=${result.rxDrainGuarantee}, pendingOpen=${result.pendingOpen}, portClose=${result.portClose}`,
     );
   }
+}
+
+function portConfigsEqual(left: Readonly<PortConfig>, right: Readonly<PortConfig>): boolean {
+  return (
+    left.baudRate === right.baudRate &&
+    left.dataBits === right.dataBits &&
+    left.stopBits === right.stopBits &&
+    left.parity === right.parity &&
+    left.flowControl === right.flowControl &&
+    left.rxFrameGapMs === right.rxFrameGapMs &&
+    left.dtr === right.dtr &&
+    left.rts === right.rts
+  );
 }
 
 export interface SessionRuntimeWaveformSink {
@@ -158,6 +181,7 @@ export interface SessionRuntimeController {
   readonly connectionFailure: Readonly<Ref<SerialConnectionFailure | null>>;
   readonly totalDroppedBytes: Readonly<Ref<number>>;
   readonly sendingBreak: Readonly<Ref<boolean>>;
+  readonly reconfiguring: Readonly<Ref<boolean>>;
   readonly looping: Readonly<Ref<boolean>>;
   readonly viewMode: Ref<SessionRuntimeViewMode>;
   /** View-local UI state retained across SessionView remounts. */
@@ -177,6 +201,7 @@ export interface SessionRuntimeController {
   clearRawData: () => void;
   setCapturePaused: (paused: boolean) => void;
   sendBreak: () => Promise<boolean>;
+  updatePortConfig: (config: PortConfig) => Promise<boolean>;
   startSendLoop: (data: string, isHex: boolean) => boolean;
   stopSendLoop: () => void;
   toggleAutoLog: () => Promise<void>;
@@ -193,6 +218,7 @@ export function useSessionRuntimeController(
   const instanceId = `${session.value.id}:${++nextRuntimeInstanceId}`;
   const capture = useSessionCapture(session.value.id);
   const sessionDocument = useSessionDocument(session.value.id);
+  const mutationPolicy = useSessionMutationPolicy();
   const appStore = useAppStore();
   const notifications = dependencies.notifications;
   const bridgeFactory = dependencies.bridgeFactory ?? defaultBridgeFactory;
@@ -465,6 +491,7 @@ export function useSessionRuntimeController(
   };
 
   const sendingBreak = ref(false);
+  const reconfiguring = ref(false);
   const looping = ref(false);
   let loopPayload: { data: string; isHex: boolean } | null = null;
   const sendLoop = new AsyncSendLoop(
@@ -633,6 +660,48 @@ export function useSessionRuntimeController(
     }
   }
 
+  async function updatePortConfig(config: PortConfig): Promise<boolean> {
+    if (
+      disposed ||
+      preparePromise ||
+      reconfiguring.value ||
+      isConnecting.value ||
+      isClosing.value ||
+      mcumgr.busy.value ||
+      !mutationPolicy.userMutationsAllowed.value
+    ) {
+      return false;
+    }
+
+    const previous = { ...session.value.portConfig };
+    if (portConfigsEqual(previous, config)) return true;
+
+    reconfiguring.value = true;
+    let nativeApplied = false;
+    try {
+      if (transceiver.isConnected.value) {
+        await transceiver.reconfigure(config);
+        nativeApplied = true;
+      }
+      if (!sessionDocument.setPortConfig(session.value.id, config)) {
+        if (nativeApplied) await transceiver.reconfigure(previous);
+        return false;
+      }
+      notifications.success(t('serial.settings.updated'));
+      return true;
+    } catch (error) {
+      logger.warn('serial reconfiguration failed for', session.value.id, error);
+      notifications.error(
+        t('serial.settings.updateFailed', {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return false;
+    } finally {
+      reconfiguring.value = false;
+    }
+  }
+
   function startSendLoop(data: string, isHex: boolean): boolean {
     if (
       disposed ||
@@ -781,6 +850,7 @@ export function useSessionRuntimeController(
     connectionFailure: readonly(transceiver.connectionFailure),
     totalDroppedBytes: readonly(transceiver.totalDroppedBytes),
     sendingBreak: readonly(sendingBreak),
+    reconfiguring: readonly(reconfiguring),
     looping: readonly(looping),
     viewMode,
     uiState,
@@ -798,6 +868,7 @@ export function useSessionRuntimeController(
     clearRawData: () => transceiver.clearRawData(),
     setCapturePaused: (paused) => transceiver.setCapturePaused(paused),
     sendBreak,
+    updatePortConfig,
     startSendLoop,
     stopSendLoop,
     toggleAutoLog,

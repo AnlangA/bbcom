@@ -52,6 +52,26 @@ vi.mock('tauri-plugin-serialplugin-api', () => {
       return data.length;
     }
 
+    async setBaudRate(value: number): Promise<void> {
+      mocked.calls.push({ method: 'setBaudRate', args: [value] });
+    }
+
+    async setDataBits(value: unknown): Promise<void> {
+      mocked.calls.push({ method: 'setDataBits', args: [value] });
+    }
+
+    async setStopBits(value: unknown): Promise<void> {
+      mocked.calls.push({ method: 'setStopBits', args: [value] });
+    }
+
+    async setParity(value: unknown): Promise<void> {
+      mocked.calls.push({ method: 'setParity', args: [value] });
+    }
+
+    async setFlowControl(value: unknown): Promise<void> {
+      mocked.calls.push({ method: 'setFlowControl', args: [value] });
+    }
+
     async writeDataTerminalReady(value: boolean): Promise<void> {
       mocked.calls.push({ method: 'dtr', args: [value] });
     }
@@ -108,6 +128,10 @@ vi.mock('tauri-plugin-serialplugin-api', () => {
   }
   return {
     ClearBuffer: { Input: 'input-native', Output: 'output-native', All: 'all-native' },
+    DataBits: { Five: 'five', Six: 'six', Seven: 'seven', Eight: 'eight' },
+    StopBits: { One: 'one', Two: 'two' },
+    Parity: { None: 'none', Odd: 'odd', Even: 'even' },
+    FlowControl: { None: 'none', Software: 'software', Hardware: 'hardware' },
     SerialPort,
   };
 });
@@ -133,6 +157,28 @@ test('Tauri serial adapter forwards every v3 operation to the path-scoped plugin
   await port.open();
   await port.watch(handlers, watchOptions);
   assert.equal(await port.writeBinary(new Uint8Array([1, 2, 3])), 3);
+  await port.reconfigure?.(
+    {
+      baudRate: 230400,
+      dataBits: 7,
+      stopBits: 2,
+      parity: 'even',
+      flowControl: 'hardware',
+      rxFrameGapMs: 8,
+      dtr: true,
+      rts: false,
+    },
+    {
+      baudRate: 115200,
+      dataBits: 8,
+      stopBits: 1,
+      parity: 'none',
+      flowControl: 'none',
+      rxFrameGapMs: 5,
+      dtr: false,
+      rts: false,
+    },
+  );
   await port.writeDataTerminalReady(true);
   await port.writeRequestToSend(false);
   assert.equal(await port.readClearToSend?.(), true);
@@ -163,6 +209,12 @@ test('Tauri serial adapter forwards every v3 operation to the path-scoped plugin
       'open',
       'watch',
       'writeBinary',
+      'setBaudRate',
+      'setDataBits',
+      'setStopBits',
+      'setParity',
+      'setFlowControl',
+      'dtr',
       'dtr',
       'rts',
       'cts',
@@ -185,6 +237,10 @@ test('Tauri serial adapter forwards every v3 operation to the path-scoped plugin
   assert.equal(mocked.calls[0].args[0].path, 'COM9');
   assert.equal(mocked.calls[2].args[0], handlers);
   assert.equal(mocked.calls[2].args[1], watchOptions);
+  assert.deepEqual(
+    mocked.calls.slice(4, 10).map((call) => call.args[0]),
+    [230400, 'seven', 'two', 'even', 'hardware', true],
+  );
   assert.deepEqual(
     mocked.calls.filter((call) => call.method === 'clearBuffer').map((call) => call.args[0]),
     ['input-native', 'output-native', 'all-native'],

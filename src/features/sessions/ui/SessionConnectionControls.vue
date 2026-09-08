@@ -5,7 +5,7 @@
       size="small"
       :type="buttonType"
       :loading="transitioning"
-      :disabled="connectionLocked || transitioning"
+      :disabled="settingsDisabled || connectionLocked || transitioning || reconfiguring"
       :aria-label="buttonLabel"
       :aria-busy="transitioning"
       @click="onPrimaryAction"
@@ -40,7 +40,19 @@
       <span class="connection-dot" aria-hidden="true"></span>
       <span class="connection-state-text">{{ statusLabel }}</span>
     </span>
-    <span class="connection-baud">{{ baudRate }} <span>bps</span></span>
+    <n-button
+      class="connection-baud"
+      size="small"
+      quaternary
+      :loading="reconfiguring"
+      :disabled="connectionLocked || transitioning || reconfiguring"
+      :title="t('serial.settings.open')"
+      :aria-label="t('serial.settings.open')"
+      @click="$emit('settings')"
+    >
+      <template #icon><SlidersHorizontal class="icon-sm" /></template>
+      {{ baudRate }} <span>bps</span>
+    </n-button>
     <span class="connection-divider" aria-hidden="true"></span>
     <n-button
       class="capture-action"
@@ -73,7 +85,7 @@
       size="small"
       quaternary
       :loading="sendingBreak"
-      :disabled="!isConnected || connectionLocked || transitioning"
+      :disabled="!isConnected || connectionLocked || transitioning || reconfiguring"
       :title="t('session.break.title')"
       @click="$emit('send-break')"
     >
@@ -86,7 +98,17 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { NButton } from 'naive-ui';
-import { Cable, Pause, Play, Power, PowerOff, Trash2, Unplug, X } from '@lucide/vue';
+import {
+  Cable,
+  Pause,
+  Play,
+  Power,
+  PowerOff,
+  SlidersHorizontal,
+  Trash2,
+  Unplug,
+  X,
+} from '@lucide/vue';
 import IconActionButton from '@/design-system/IconActionButton.vue';
 import { t } from '@/lib/i18n';
 
@@ -102,6 +124,8 @@ const props = defineProps<{
   capturePaused: boolean;
   canClear: boolean;
   sendingBreak: boolean;
+  reconfiguring?: boolean;
+  settingsDisabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -111,6 +135,7 @@ const emit = defineEmits<{
   clear: [];
   'toggle-pause': [];
   'send-break': [];
+  settings: [];
 }>();
 
 const transitioning = computed(() => props.isConnecting || props.isClosing || props.reconnecting);
@@ -135,7 +160,7 @@ const buttonLabel = computed(() => {
   return t(props.isConnected ? 'serial.action.close' : 'serial.action.open');
 });
 function onPrimaryAction() {
-  if (props.connectionLocked || transitioning.value) return;
+  if (props.connectionLocked || props.reconfiguring || transitioning.value) return;
   if (props.closeFailed) emit('disconnect');
   else if (props.needsRebind) emit('rebind');
   else if (props.isConnected) emit('disconnect');
@@ -213,6 +238,7 @@ const statusLabel = computed(() => {
 }
 
 .connection-baud {
+  min-width: 112px;
   color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
