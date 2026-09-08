@@ -1,147 +1,176 @@
 <template>
-  <section class="mc-section">
-    <article class="mc-card mc-action-tile">
-      <header class="mc-card-head">
-        <span class="mc-card-head-label">{{ t('mcumgr.image.update') }}</span>
-        <McumgrHoverTip :text="t('mcumgr.image.updateHint')">
-          <span class="mc-help" role="img" :aria-label="t('mcumgr.image.updateHint')">
-            <CircleQuestionMark class="icon-sm" />
-          </span>
+  <section class="mc-image-workspace">
+    <div class="transfer-section">
+      <header class="section-heading">
+        <h4>{{ t('mcumgr.group.transfer') }}</h4>
+        <McumgrHoverTip :disabled="busy" :text="t('mcumgr.image.upgradeOnlyHint')">
+          <n-checkbox v-model:checked="upgradeOnlyModel" size="small" :disabled="busy">{{
+            t('mcumgr.image.upgradeOnly')
+          }}</n-checkbox>
         </McumgrHoverTip>
       </header>
-      <div class="mc-action-content">
-        <p class="mc-action-caption">{{ t('mcumgr.image.updateCaption') }}</p>
-        <McumgrHoverTip :text="t('mcumgr.image.updateHint')">
-          <n-button size="tiny" type="primary" :disabled="busy" @click="onFirmwareUpdate">
-            <template #icon><Upload class="icon-sm" /></template>
-            {{ t('mcumgr.image.update') }}
-          </n-button>
+      <div class="transfer-grid">
+        <McumgrHoverTip :disabled="busy" :text="t('mcumgr.image.updateHint')" block>
+          <button
+            type="button"
+            class="transfer-action is-primary"
+            :aria-label="t('mcumgr.image.update')"
+            :disabled="busy"
+            @click="onFirmwareUpdate"
+          >
+            <span class="transfer-icon"
+              ><Upload :size="21" :stroke-width="1.6" aria-hidden="true"
+            /></span>
+            <span class="action-copy"
+              ><strong>{{ t('mcumgr.image.update') }}</strong
+              ><span>{{ t('mcumgr.image.updateCaption') }}</span></span
+            >
+            <ArrowUpRight :size="16" class="action-arrow" aria-hidden="true" />
+          </button>
+        </McumgrHoverTip>
+        <McumgrHoverTip :disabled="busy" :text="t('mcumgr.image.uploadHint')" block>
+          <button
+            type="button"
+            class="transfer-action"
+            :aria-label="t('mcumgr.image.upload')"
+            :disabled="busy"
+            @click="onImageUpload"
+          >
+            <span class="transfer-icon"
+              ><FileUp :size="21" :stroke-width="1.6" aria-hidden="true"
+            /></span>
+            <span class="action-copy"
+              ><strong>{{ t('mcumgr.image.upload') }}</strong
+              ><span>{{ t('mcumgr.image.uploadCaption') }}</span></span
+            >
+            <ArrowUpRight :size="16" class="action-arrow" aria-hidden="true" />
+          </button>
         </McumgrHoverTip>
       </div>
-    </article>
-
-    <article class="mc-card mc-action-tile">
-      <header class="mc-card-head">
-        <span class="mc-card-head-label">{{ t('mcumgr.image.upload') }}</span>
-        <McumgrHoverTip :text="t('mcumgr.image.uploadHint')">
-          <span class="mc-help" role="img" :aria-label="t('mcumgr.image.uploadHint')">
-            <CircleQuestionMark class="icon-sm" />
-          </span>
-        </McumgrHoverTip>
-      </header>
-      <div class="mc-action-content">
-        <p class="mc-action-caption">{{ t('mcumgr.image.uploadCaption') }}</p>
-        <McumgrHoverTip :text="t('mcumgr.image.uploadHint')">
-          <n-button size="tiny" type="primary" :disabled="busy" @click="onImageUpload">
-            <template #icon><FileUp class="icon-sm" /></template>
-            {{ t('mcumgr.image.upload') }}
-          </n-button>
-        </McumgrHoverTip>
-      </div>
-    </article>
-
-    <div class="mc-span mc-upgrade-row">
-      <McumgrHoverTip :text="t('mcumgr.image.upgradeOnlyHint')">
-        <n-checkbox v-model:checked="upgradeOnlyModel" size="small" :disabled="busy">
-          {{ t('mcumgr.image.upgradeOnly') }}
-        </n-checkbox>
-      </McumgrHoverTip>
     </div>
 
-    <article class="mc-card">
-      <header class="mc-card-head">
-        <span class="mc-card-head-label">{{ t('mcumgr.group.inspect') }}</span>
-        <McumgrHoverTip :text="t('mcumgr.group.inspectHint')">
-          <span class="mc-help" role="img" :aria-label="t('mcumgr.group.inspectHint')">
-            <CircleQuestionMark class="icon-sm" />
-          </span>
-        </McumgrHoverTip>
+    <div class="inspect-section">
+      <header class="section-heading">
+        <h4>{{ t('mcumgr.image.inspectTitle') }}</h4>
       </header>
-      <div class="mc-actions">
-        <McumgrHoverTip :text="t('mcumgr.image.stateHint')">
-          <n-button
-            size="tiny"
-            secondary
+      <div class="inspect-grid">
+        <McumgrHoverTip :disabled="busy" :text="t('mcumgr.image.stateHint')" block>
+          <button
+            type="button"
+            class="inspect-action"
+            :aria-label="t('mcumgr.image.state')"
             :disabled="busy"
             @click="mcumgr.execute('image-state', { kind: 'image-state' })"
           >
-            {{ t('mcumgr.image.state') }}
-          </n-button>
+            <span class="inspect-icon"
+              ><Layers :size="18" :stroke-width="1.6" aria-hidden="true"
+            /></span>
+            <span class="action-copy"
+              ><strong>{{ t('mcumgr.image.state') }}</strong
+              ><span>{{ t('mcumgr.image.stateCaption') }}</span></span
+            >
+            <ChevronRight :size="14" class="action-arrow" aria-hidden="true" />
+          </button>
         </McumgrHoverTip>
-        <McumgrHoverTip :text="t('mcumgr.image.slotInfoHint')">
-          <n-button
-            size="tiny"
-            secondary
+        <McumgrHoverTip :disabled="busy" :text="t('mcumgr.image.slotInfoHint')" block>
+          <button
+            type="button"
+            class="inspect-action"
+            :aria-label="t('mcumgr.image.slotInfo')"
             :disabled="busy"
             @click="mcumgr.execute('slot-info', { kind: 'image-slot-info' })"
           >
-            {{ t('mcumgr.image.slotInfo') }}
-          </n-button>
+            <span class="inspect-icon"
+              ><HardDrive :size="18" :stroke-width="1.6" aria-hidden="true"
+            /></span>
+            <span class="action-copy"
+              ><strong>{{ t('mcumgr.image.slotInfo') }}</strong
+              ><span>{{ t('mcumgr.image.slotCaption') }}</span></span
+            >
+            <ChevronRight :size="14" class="action-arrow" aria-hidden="true" />
+          </button>
         </McumgrHoverTip>
       </div>
-      <div class="mc-actions mc-actions-danger">
-        <McumgrHoverTip :text="t('mcumgr.image.eraseHint')">
-          <n-button
-            size="tiny"
-            type="error"
-            secondary
-            :disabled="busy"
-            @click="
-              confirmRun('image-erase', t('mcumgr.confirm.erase'), {
-                kind: 'image-erase',
-                slot: null,
-              })
-            "
-          >
-            <template #icon><Eraser class="icon-sm" /></template>
-            {{ t('mcumgr.image.erase') }}
-          </n-button>
-        </McumgrHoverTip>
-      </div>
-    </article>
+    </div>
 
-    <article class="mc-card">
-      <header class="mc-card-head">
-        <span class="mc-card-head-label">{{ t('mcumgr.group.boot') }}</span>
-        <McumgrHoverTip :text="t('mcumgr.group.bootHint')">
-          <span class="mc-help" role="img" :aria-label="t('mcumgr.group.bootHint')">
-            <CircleQuestionMark class="icon-sm" />
-          </span>
-        </McumgrHoverTip>
+    <div class="boot-section">
+      <header class="section-heading">
+        <h4>{{ t('mcumgr.group.boot') }}</h4>
+        <span class="section-hint">{{ t('mcumgr.image.hash') }}</span>
       </header>
-      <label class="mc-field">
-        <span class="mc-field-label">{{ t('mcumgr.image.hash') }}</span>
-        <McumgrHoverTip :text="t('mcumgr.image.hashHint')" block>
-          <n-input
-            v-model:value="imageHashModel"
-            size="tiny"
-            :placeholder="t('mcumgr.image.hashPlaceholder')"
-            :disabled="busy"
-            :input-props="{ spellcheck: false, autocomplete: 'off' }"
-            class="mc-hash-input"
-          />
-        </McumgrHoverTip>
-      </label>
-      <div class="mc-actions">
-        <McumgrHoverTip :text="t('mcumgr.image.testHint')">
-          <n-button size="tiny" secondary :disabled="busy || !hasHash" @click="onImageTest">
-            {{ t('mcumgr.image.test') }}
-          </n-button>
-        </McumgrHoverTip>
-        <McumgrHoverTip :text="t('mcumgr.image.confirmHint')">
-          <n-button size="tiny" secondary :disabled="busy" @click="onImageConfirm">
-            {{ t('mcumgr.image.confirm') }}
-          </n-button>
-        </McumgrHoverTip>
+      <McumgrHoverTip :disabled="busy" :text="t('mcumgr.image.hashHint')" block>
+        <n-input
+          v-model:value="imageHashModel"
+          size="small"
+          :placeholder="t('mcumgr.image.hashPlaceholder')"
+          :disabled="busy"
+          :input-props="{
+            spellcheck: false,
+            autocomplete: 'off',
+            'aria-label': t('mcumgr.image.hash'),
+          }"
+          class="hash-input"
+        >
+          <template #prefix><Hash :size="14" aria-hidden="true" /></template>
+        </n-input>
+      </McumgrHoverTip>
+      <div class="boot-footer">
+        <div class="boot-actions">
+          <McumgrHoverTip :disabled="busy" :text="t('mcumgr.image.testHint')">
+            <n-button size="small" :disabled="busy || !hasHash" @click="onImageTest"
+              ><template #icon><RotateCw class="icon-sm" /></template
+              >{{ t('mcumgr.image.test') }}</n-button
+            >
+          </McumgrHoverTip>
+          <McumgrHoverTip :disabled="busy" :text="t('mcumgr.image.confirmHint')">
+            <n-button size="small" :disabled="busy" @click="onImageConfirm"
+              ><template #icon><Check class="icon-sm" /></template
+              >{{ t('mcumgr.image.confirm') }}</n-button
+            >
+          </McumgrHoverTip>
+        </div>
+        <p>{{ t('mcumgr.image.confirmEmptyHint') }}</p>
       </div>
-    </article>
+    </div>
+
+    <footer class="erase-row">
+      <Eraser :size="15" aria-hidden="true" /><span class="erase-copy">{{
+        t('mcumgr.image.eraseCaption')
+      }}</span>
+      <McumgrHoverTip :disabled="busy" :text="t('mcumgr.image.eraseHint')">
+        <n-button
+          size="small"
+          quaternary
+          type="error"
+          :disabled="busy"
+          @click="
+            confirmRun('image-erase', t('mcumgr.confirm.erase'), {
+              kind: 'image-erase',
+              slot: null,
+            })
+          "
+          >{{ t('mcumgr.image.erase') }}</n-button
+        >
+      </McumgrHoverTip>
+    </footer>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
 import { NButton, NCheckbox, NInput } from 'naive-ui';
-import { CircleQuestionMark, Eraser, FileUp, Upload } from '@lucide/vue';
+import {
+  ArrowUpRight,
+  Check,
+  ChevronRight,
+  Eraser,
+  FileUp,
+  HardDrive,
+  Hash,
+  Layers,
+  RotateCw,
+  Upload,
+} from '@lucide/vue';
 import { t } from '@/lib/i18n';
 import { formatBytes } from '@/lib/format';
 import type { SessionMcumgrController } from '@/features/sessions/application/use-session-mcumgr';
@@ -214,116 +243,209 @@ async function onImageConfirm(): Promise<void> {
 </script>
 
 <style scoped>
-.mc-section {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
-  gap: var(--space-md);
-  align-items: stretch;
-}
-
-.mc-span {
-  grid-column: 1 / -1;
-}
-
-.mc-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: linear-gradient(180deg, var(--surface-lift), transparent), var(--bg-secondary);
-  box-shadow: var(--shadow-sm);
-}
-
-.mc-action-tile {
+.mc-image-workspace {
+  container: image-tools / inline-size;
   min-width: 0;
+  padding: 4px 2px 0;
 }
-
-.mc-action-content {
+.section-heading {
   display: flex;
   align-items: center;
-  gap: var(--space-md);
   flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
 }
-
-.mc-card-head {
+h4 {
+  color: var(--text-secondary);
+  font-size: var(--font-size-data);
+  font-weight: var(--font-weight-medium);
+}
+.section-hint {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+.transfer-grid,
+.inspect-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.transfer-action,
+.inspect-action {
   display: flex;
   align-items: center;
-  gap: var(--space-xs);
-}
-
-.mc-card-head-label {
-  flex: 1;
+  width: 100%;
   min-width: 0;
-  font-size: var(--font-size-2xs);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-dim);
-  font-weight: 600;
-  white-space: nowrap;
+  gap: 12px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-
-.mc-help {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--control-h-sm);
-  height: var(--control-h-sm);
-  color: var(--text-dim);
-  cursor: help;
-  border-radius: var(--radius-full);
+.transfer-action {
+  min-height: 72px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
 }
-
-.mc-help:hover {
+.transfer-action.is-primary {
+  border-color: var(--color-primary-muted);
+  background: var(--color-primary-subtle);
+}
+.transfer-icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 30px;
   color: var(--text-secondary);
 }
-
-.mc-action-caption {
-  flex: 1 1 150px;
+.is-primary .transfer-icon,
+.is-primary .action-arrow {
+  color: var(--color-primary);
+}
+.action-copy {
+  flex: 1;
   min-width: 0;
-  margin: 0;
-  font-size: var(--font-size-sm);
-  color: var(--text-muted);
-  line-height: var(--line-height-normal);
-}
-
-.mc-upgrade-row {
-  display: flex;
-  align-items: center;
-}
-
-.mc-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  flex-wrap: wrap;
-}
-
-.mc-actions-danger {
-  margin-top: auto;
-  padding-top: var(--space-sm);
-  border-top: 1px solid var(--border-subtle);
-}
-
-.mc-field {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
-  min-width: 0;
+  gap: 3px;
 }
-
-.mc-field-label {
-  font-size: var(--font-size-2xs);
+.action-copy strong {
+  color: var(--text-primary);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+}
+.action-copy > span {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+}
+.action-arrow {
+  flex-shrink: 0;
   color: var(--text-dim);
-  font-weight: 600;
+  transition:
+    color var(--transition-normal),
+    transform var(--transition-normal);
 }
-
-.mc-hash-input {
+.transfer-action:hover:not(:disabled) {
+  border-color: var(--color-primary-muted);
+  background: var(--bg-hover);
+}
+.transfer-action.is-primary:hover:not(:disabled) {
+  background: var(--bg-active);
+}
+.transfer-action:hover:not(:disabled) .action-arrow {
+  transform: translate(1px, -1px);
+  color: var(--color-primary);
+}
+.inspect-section,
+.boot-section {
+  margin-top: 22px;
+}
+.inspect-grid {
+  column-gap: 22px;
+}
+.inspect-section .section-heading {
+  margin-bottom: 2px;
+}
+.inspect-action {
+  min-height: 64px;
+  padding: 10px 6px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+}
+.inspect-icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+}
+.inspect-action:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-radius: var(--radius-md);
+}
+.inspect-action:hover:not(:disabled) .inspect-icon,
+.inspect-action:hover:not(:disabled) .action-arrow {
+  color: var(--color-primary);
+}
+.transfer-action:focus-visible,
+.inspect-action:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+  border-radius: var(--radius-md);
+}
+.transfer-action:disabled,
+.inspect-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.hash-input {
   width: 100%;
+  --n-height: 34px !important;
 }
-
-.mc-hash-input :deep(.n-input__input-el) {
+.hash-input :deep(input) {
   font-family: var(--font-mono);
+}
+.hash-input :deep(.n-input__prefix) {
+  color: var(--text-muted);
+}
+.boot-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+.boot-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+.boot-footer p {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  margin: 0;
+}
+.erase-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 20px;
+  padding: 12px 4px 0;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+.erase-row > svg {
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+.erase-copy {
+  flex: 1;
+}
+@container image-tools (max-width: 440px) {
+  .transfer-grid,
+  .inspect-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .transfer-action {
+    min-height: 62px;
+    padding: 11px 12px;
+  }
+  .inspect-action {
+    min-height: 60px;
+  }
+  .boot-footer {
+    align-items: flex-start;
+  }
 }
 </style>

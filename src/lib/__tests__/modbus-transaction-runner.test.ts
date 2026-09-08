@@ -1,7 +1,7 @@
 import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { MAX_MODBUS_TRANSACTION_RX_BYTES, ModbusTransactionRunner } from '@/lib/modbus';
-import { frameRequest, readRequest } from '@/lib/modbus';
+import { frameRequest, readRequest, writeSingleRegisterRequest } from '@/lib/modbus';
 import type { ModbusTransactionStatus } from '@/lib/modbus';
 import type { SerialSendResult } from '@/types/serial.ts';
 
@@ -70,6 +70,102 @@ test('resolves a transaction from split RTU response bytes', async () => {
   assert.equal(parsed?.kind, 'read-regs');
   if (parsed?.kind === 'read-regs') assert.deepEqual(parsed.regs, [42]);
   assert.equal(runner.hasPending(), false);
+});
+
+test('keeps waiting through foreign RTU responses and consumes the matching response in the same chunk', async () => {
+  const runner = new ModbusTransactionRunner<string>({
+    sendBytes(payload, options) {
+      options?.onWriteStarted?.();
+      return Promise.resolve(sendResult(true, payload.length));
+    },
+    getTransport: () => 'rtu',
+    getTimeoutMs: () => 100,
+  });
+  const pending = runner.transact('read', () => readRequest('rtu', 1, 0x03, 10, 2), undefined);
+  runner.receive(rtuReadRegs(2, 0x03, [1, 2]));
+  assert.equal(runner.hasPending(), true, 'a different slave must not complete the read');
+  runner.receive(
+    Uint8Array.of(
+      ...rtuReadRegs(1, 0x04, [3, 4]),
+      ...rtuReadRegs(1, 0x03, [5]),
+      ...frameRequest('rtu', 1, Uint8Array.of(0x84, 0x02)),
+      ...rtuReadRegs(1, 0x03, [42, 43]),
+    ),
+  );
+  const response = await pending;
+  assert.equal(response?.kind, 'read-regs');
+  if (response?.kind === 'read-regs') assert.deepEqual(response.regs, [42, 43]);
+});
+
+test('single register writes verify the echoed value as well as the address', async () => {
+  const runner = new ModbusTransactionRunner<string>({
+    sendBytes(payload, options) {
+      options?.onWriteStarted?.();
+      return Promise.resolve(sendResult(true, payload.length));
+    },
+    getTransport: () => 'rtu',
+    getTimeoutMs: () => 100,
+  });
+  const pending = runner.transact(
+    'write',
+    () => writeSingleRegisterRequest('rtu', 1, 10, 42),
+    undefined,
+  );
+  runner.receive(writeSingleRegisterRequest('rtu', 1, 10, 41));
+  assert.equal(runner.hasPending(), true);
+  runner.receive(writeSingleRegisterRequest('rtu', 1, 10, 42));
+  assert.equal((await pending)?.kind, 'write-ack');
+});
+
+test('PDU ignores unrelated exceptions and accepts the requested function with its synthetic slave', async () => {
+  const runner = new ModbusTransactionRunner<string>({
+    sendBytes(payload, options) {
+      options?.onWriteStarted?.();
+      return Promise.resolve(sendResult(true, payload.length));
+    },
+    getTransport: () => 'pdu',
+    getTimeoutMs: () => 100,
+  });
+  const pending = runner.transact('read', () => readRequest('pdu', 17, 0x03, 10, 1), 4);
+  runner.receive(Uint8Array.of(0x84, 0x02, 0x03, 0x02, 0, 42));
+  const response = await pending;
+  assert.equal(response?.kind, 'read-regs');
+  if (response?.kind === 'read-regs') {
+    assert.equal(response.slave, 1);
+    assert.deepEqual(response.regs, [42]);
+  }
+});
+
+test('matching exceptions complete RTU and PDU requests', async () => {
+  for (const transport of ['rtu', 'pdu'] as const) {
+    const runner = new ModbusTransactionRunner<string>({
+      sendBytes(payload, options) {
+        options?.onWriteStarted?.();
+        return Promise.resolve(sendResult(true, payload.length));
+      },
+      getTransport: () => transport,
+      getTimeoutMs: () => 100,
+    });
+    const pending = runner.transact('read', () => readRequest(transport, 17, 0x03, 10, 1), 4);
+    runner.receive(frameRequest(transport, 17, Uint8Array.of(0x83, 0x02)));
+    assert.equal((await pending)?.kind, 'exception', transport);
+  }
+});
+
+test('keeps the transport used to start a request when session settings change before RX', async () => {
+  let transport: 'rtu' | 'pdu' = 'rtu';
+  const runner = new ModbusTransactionRunner<string>({
+    sendBytes(payload, options) {
+      options?.onWriteStarted?.();
+      return Promise.resolve(sendResult(true, payload.length));
+    },
+    getTransport: () => transport,
+    getTimeoutMs: () => 100,
+  });
+  const pending = runner.transact('read', () => readRequest('rtu', 1, 0x03, 10, 1), undefined);
+  transport = 'pdu';
+  runner.receive(rtuReadRegs(1, 0x03, [42]));
+  assert.equal((await pending)?.kind, 'read-regs');
 });
 
 test('send failure resolves null and emits an error status', async () => {

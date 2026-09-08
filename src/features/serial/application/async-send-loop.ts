@@ -18,6 +18,7 @@ export class AsyncSendLoop {
   private generation = 0;
   private timer: unknown | null = null;
   private running = false;
+  private inFlight = false;
   private readonly task: () => Promise<void>;
   private readonly intervalMs: () => number;
   private readonly onError: (error: unknown) => void;
@@ -47,7 +48,9 @@ export class AsyncSendLoop {
     if (this.running) return false;
     this.running = true;
     const generation = ++this.generation;
-    void this.tick(generation);
+    // A stop cannot cancel a physical write. Coalesce restarts until that
+    // write settles so rapid toggles cannot build a second send queue.
+    if (!this.inFlight) void this.tick(generation);
     return true;
   }
 
@@ -61,14 +64,23 @@ export class AsyncSendLoop {
   }
 
   private async tick(generation: number): Promise<void> {
+    if (!this.running || generation !== this.generation || this.inFlight) return;
+    this.inFlight = true;
     try {
       await this.task();
     } catch (error) {
       this.onError(error);
+    } finally {
+      this.inFlight = false;
     }
-    if (!this.running || generation !== this.generation) return;
+    if (!this.running) return;
+    if (generation !== this.generation) {
+      void this.tick(this.generation);
+      return;
+    }
     const delayMs = Math.max(0, Math.floor(this.intervalMs()));
     this.timer = this.scheduler.schedule(() => {
+      if (!this.running || generation !== this.generation) return;
       this.timer = null;
       void this.tick(generation);
     }, delayMs);

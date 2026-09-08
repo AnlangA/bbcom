@@ -4,7 +4,7 @@ import { expect, test } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { NButton, NConfigProvider } from 'naive-ui';
 import { h } from 'vue';
-import { themeOverrides } from '@/design-system/naive-theme';
+import { getThemeOverrides, themeOverrides } from '@/design-system/naive-theme';
 
 // Naive-ui derives secondary/tertiary/dashed button colors in JavaScript via
 // seemly's changeColor(), which throws on var() expressions. These variants
@@ -32,4 +32,21 @@ test('error-typed secondary buttons render under theme overrides', () => {
     },
   });
   expect(wrapper.find('button').exists()).toBe(true);
+});
+
+test('light theme supplies readable concrete primary colors for solid and secondary buttons', () => {
+  const light = getThemeOverrides('light');
+  expect(light.common?.primaryColor).toBe('#087f5b');
+  expect(light.Button?.colorPrimary).toBe(light.common?.primaryColor);
+  const wrapper = mount(NConfigProvider, {
+    props: { themeOverrides: light },
+    slots: {
+      default: () => [
+        h(NButton, { type: 'primary' }, { default: () => 'Send' }),
+        h(NButton, { type: 'primary', secondary: true }, { default: () => 'AI' }),
+      ],
+    },
+  });
+  expect(wrapper.findAll('button')).toHaveLength(2);
+  wrapper.unmount();
 });

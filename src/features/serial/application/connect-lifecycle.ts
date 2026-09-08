@@ -366,7 +366,13 @@ export function createConnectLifecycle(deps: ConnectLifecycleDeps): ConnectLifec
         return finishStart(generation, false);
       }
       await synchronizeConnection();
-      return finishStart(generation, true);
+      return finishStart(
+        generation,
+        generation === state.connectionGeneration &&
+          !state.intentionalClose &&
+          state.isConnected.value &&
+          state.activeConnection?.generation === generation,
+      );
     } catch (openError) {
       if (generation === state.connectionGeneration && !state.intentionalClose) {
         if (!(openError instanceof StaleConnectionError)) {

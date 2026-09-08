@@ -1,26 +1,35 @@
 <template>
   <section class="mc-section">
-    <article class="mc-card">
-      <header class="mc-card-head">{{ t('mcumgr.group.key') }}</header>
-      <div class="mc-row">
-        <n-input
-          v-model:value="settingNameModel"
-          size="tiny"
-          class="mc-grow"
-          :placeholder="t('mcumgr.settings.name')"
-          :disabled="busy"
-        />
-        <n-input
-          v-model:value="settingValueModel"
-          size="tiny"
-          class="mc-grow"
-          :placeholder="t('mcumgr.settings.value')"
-          :disabled="busy"
-        />
+    <McumgrActionCard
+      :title="t('mcumgr.settings.editTitle')"
+      :description="t('mcumgr.settings.editHint')"
+      tone="accent"
+    >
+      <div class="mc-fields">
+        <label class="mc-field">
+          <span class="mc-field-label">{{ t('mcumgr.settings.name') }}</span>
+          <n-input
+            v-model:value="settingNameModel"
+            size="small"
+            :input-props="{ 'aria-label': t('mcumgr.settings.name') }"
+            :placeholder="t('mcumgr.settings.name')"
+            :disabled="busy"
+          />
+        </label>
+        <label class="mc-field">
+          <span class="mc-field-label">{{ t('mcumgr.settings.value') }}</span>
+          <n-input
+            v-model:value="settingValueModel"
+            size="small"
+            :input-props="{ 'aria-label': t('mcumgr.settings.value') }"
+            :placeholder="t('mcumgr.settings.value')"
+            :disabled="busy"
+          />
+        </label>
       </div>
-      <div class="mc-actions">
+      <template #actions>
         <n-button
-          size="tiny"
+          size="small"
           secondary
           :disabled="busy || !settingNameModel.trim()"
           @click="
@@ -33,17 +42,18 @@
           {{ t('mcumgr.settings.read') }}
         </n-button>
         <n-button
-          size="tiny"
-          secondary
+          size="small"
+          type="primary"
           :disabled="busy || !settingNameModel.trim()"
           @click="mcumgr.runSettingsWrite(settingNameModel, settingValueModel)"
         >
           {{ t('mcumgr.settings.write') }}
         </n-button>
         <n-button
-          size="tiny"
+          size="small"
           type="error"
-          secondary
+          quaternary
+          class="mc-delete-action"
           :disabled="busy || !settingNameModel.trim()"
           @click="
             confirmRun('settings-delete', t('mcumgr.confirm.delete'), {
@@ -54,13 +64,15 @@
         >
           {{ t('mcumgr.settings.delete') }}
         </n-button>
-      </div>
-    </article>
-    <article class="mc-card">
-      <header class="mc-card-head">{{ t('mcumgr.group.persist') }}</header>
-      <div class="mc-actions">
+      </template>
+    </McumgrActionCard>
+    <McumgrActionCard
+      :title="t('mcumgr.group.persist')"
+      :description="t('mcumgr.settings.persistHint')"
+    >
+      <template #actions>
         <n-button
-          size="tiny"
+          size="small"
           secondary
           :disabled="busy"
           @click="mcumgr.execute('settings-commit', { kind: 'settings-commit' })"
@@ -68,7 +80,7 @@
           {{ t('mcumgr.settings.commit') }}
         </n-button>
         <n-button
-          size="tiny"
+          size="small"
           secondary
           :disabled="busy"
           @click="mcumgr.execute('settings-load', { kind: 'settings-load' })"
@@ -76,15 +88,15 @@
           {{ t('mcumgr.settings.load') }}
         </n-button>
         <n-button
-          size="tiny"
+          size="small"
           secondary
           :disabled="busy"
           @click="mcumgr.execute('settings-save', { kind: 'settings-save' })"
         >
           {{ t('mcumgr.settings.save') }}
         </n-button>
-      </div>
-    </article>
+      </template>
+    </McumgrActionCard>
   </section>
 </template>
 
@@ -92,6 +104,7 @@
 import { computed } from 'vue';
 import { NButton, NInput } from 'naive-ui';
 import { t } from '@/lib/i18n';
+import McumgrActionCard from './McumgrActionCard.vue';
 import type { SessionMcumgrController } from '@/features/sessions/application/use-session-mcumgr';
 import type { McumgrOp } from '@/generated/ipc-contracts';
 
@@ -127,39 +140,35 @@ async function confirmRun(action: string, confirmMessage: string, op: McumgrOp):
 .mc-section {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-md);
+  min-width: 0;
 }
 
-.mc-card {
+.mc-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: var(--space-lg);
+}
+
+.mc-field {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: linear-gradient(180deg, var(--surface-lift), transparent), var(--bg-secondary);
-  box-shadow: var(--shadow-sm);
+  gap: var(--space-sm);
+  min-width: 0;
 }
 
-.mc-card-head {
-  font-size: var(--font-size-2xs);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-dim);
-  font-weight: 600;
-  white-space: nowrap;
+.mc-field-label {
+  color: var(--text-secondary);
+  font-size: var(--font-size-data);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-normal);
 }
 
-.mc-row,
-.mc-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+.mc-field :deep(.n-input__input-el) {
+  font-size: var(--font-size-data);
 }
 
-.mc-grow {
-  flex: 1;
-  min-width: 140px;
+.mc-delete-action {
+  margin-inline-start: auto;
 }
 </style>

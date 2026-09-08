@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { config as testUtilsConfig, mount } from '@vue/test-utils';
+import { config as testUtilsConfig, flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import SessionTabs from '@/features/sessions/ui/SessionTabs.vue';
 import StatusBar from '@/features/app-shell/ui/StatusBar.vue';
@@ -394,7 +394,7 @@ test('SessionTabs switches, reorders, closes, and exposes a useful live-frame to
   expect(sessionActions.requestCloseSession).toHaveBeenCalledWith(secondId);
 });
 
-test('StatusBar renders idle and connected telemetry, including reset-safe rates and dropped data', async () => {
+test('StatusBar renders telemetry with a full buffer, reset-safe rates and dropped data', async () => {
   vi.useFakeTimers();
   const now = 1_000_000;
   vi.setSystemTime(now);
@@ -407,8 +407,13 @@ test('StatusBar renders idle and connected telemetry, including reset-safe rates
     txBytes: 100,
     rxBytes: 200,
     txFrames: 3,
-    rxFrames: 4,
-    frames: [{ id: 'f1', direction: 'RX', timestamp: now, data: new Uint8Array([1]) }],
+    rxFrames: 9_997,
+    frames: Array.from({ length: 10_000 }, (_, index) => ({
+      id: `f${index}`,
+      direction: 'RX',
+      timestamp: now,
+      data: new Uint8Array([1]),
+    })),
     droppedBytes: 2048,
   } as unknown as SerialSession;
   const runtimeStatuses = new SessionRuntimeStatusRegistry();
@@ -425,11 +430,14 @@ test('StatusBar renders idle and connected telemetry, including reset-safe rates
   expect(wrapper.text()).not.toContain('COM9');
   expect(wrapper.text()).toContain('2.0 KB');
   expect(wrapper.text()).toContain('01:02:03');
-  expect(wrapper.text()).toContain('1/10000');
+  expect(wrapper.text()).toContain('10000/10000');
 
   session.txBytes = 1_124;
   session.rxBytes = 2_248;
-  session.frames.push({ id: 'f2', direction: 'TX', timestamp: now, data: new Uint8Array([2]) });
+  session.txFrames += 1;
+  // A saturated rolling buffer retains the same count while traffic continues.
+  session.frames.shift();
+  session.frames.push({ id: 'f10000', direction: 'TX', timestamp: now, data: new Uint8Array([2]) });
   await wrapper.setProps({ framesVersion: 1 });
   await wrapper.vm.$nextTick();
   expect(wrapper.text()).toContain('1.1 KB');
@@ -440,9 +448,20 @@ test('StatusBar renders idle and connected telemetry, including reset-safe rates
   expect(wrapper.text()).toContain('RX 2.0 KB/s');
   expect(wrapper.text()).toContain('1/s');
 
+  runtimeStatuses.stop(session.id);
+  await wrapper.vm.$nextTick();
+  await vi.advanceTimersByTimeAsync(10_000);
+  session.startTime = Date.now();
+  runtimeStatuses.publish(session.id, { phase: 'connected', droppedBytes: 2048, failure: null });
+  await wrapper.vm.$nextTick();
+  expect(wrapper.text()).not.toContain('1/s');
+  expect(wrapper.text()).toContain('00:00:00');
+
   // A clear/reset between samples must not produce a bogus negative rate.
   session.txBytes = 5;
   session.rxBytes = 7;
+  session.txFrames = 1;
+  session.rxFrames = 1;
   session.frames.splice(0, session.frames.length);
   await wrapper.setProps({ framesVersion: 2 });
   await wrapper.vm.$nextTick();
@@ -452,6 +471,7 @@ test('StatusBar renders idle and connected telemetry, including reset-safe rates
   await wrapper.vm.$nextTick();
   expect(wrapper.text()).toContain('TX 5 B/s');
   expect(wrapper.text()).toContain('RX 7 B/s');
+  expect(wrapper.text()).toContain('2/s');
   await wrapper.vm.$nextTick();
   expect(wrapper.text()).toContain('TX 5 B/s');
   expect(wrapper.text()).toContain('RX 7 B/s');
@@ -482,12 +502,12 @@ test('SendPanel sends text with the selected line ending, normalizes valid hexad
   });
 
   await wrapper.find('.send-btn').trigger('click');
-  await wrapper.vm.$nextTick();
+  await flushPromises();
   expect(sent).toHaveBeenCalledWith('AT\r\n', false);
   expect(wrapper.emitted('update:modelValue')).toContainEqual(['']);
 
-  await wrapper.get('[role="checkbox"]').trigger('click');
-  await wrapper.vm.$nextTick();
+  await wrapper.get('.mode-switch button:last-child').trigger('click');
+  await flushPromises();
   await wrapper.setProps({ modelValue: 'aa0b' });
   await wrapper.find('textarea').trigger('blur');
   expect(wrapper.emitted('update:modelValue')).toContainEqual(['AA 0B']);
@@ -496,7 +516,7 @@ test('SendPanel sends text with the selected line ending, normalizes valid hexad
     .findAll('button')
     .find((button) => button.text().includes('循环'))!
     .trigger('click');
-  await wrapper.vm.$nextTick();
+  await flushPromises();
   expect(startLoop).toHaveBeenCalledWith('aa0b', true);
 
   await wrapper.setProps({ looping: true });
@@ -529,18 +549,18 @@ test('SendPanel appends a checksum when the native calculation succeeds and repo
     global: { stubs: { ToolsTabs: true } },
   });
 
-  const checksumSelect = wrapper.findAll('select')[1];
+  const checksumSelect = wrapper.get(`select[aria-label="${t('checksum.title')}"]`);
   // AppSelect carries the typed option in its indexed DOM values: CRC-8 is
   // option two after “none” and the one-byte checksum.
   await checksumSelect.setValue('2');
   await wrapper.find('.send-btn').trigger('click');
-  await wrapper.vm.$nextTick();
+  await flushPromises();
   expect(nativeMocks.checksum).toHaveBeenCalledWith(new Uint8Array([0xaa]), 'CRC8');
   expect(sent).toHaveBeenCalledWith('AA CC', true);
 
   await wrapper.setProps({ modelValue: 'BB' });
   await wrapper.find('.send-btn').trigger('click');
-  await wrapper.vm.$nextTick();
+  await flushPromises();
   expect(nativeMocks.message.warning).toHaveBeenCalledTimes(1);
   expect(sent).toHaveBeenLastCalledWith('BB', true);
 });
@@ -702,9 +722,9 @@ test('SessionToolbar reflects connection state and emits every terminal control 
   const wrapper = mount(SessionToolbar, { props });
   expect(wrapper.text()).toContain('connection failed');
   expect(wrapper.text()).not.toContain('2.0 KB');
-  const connectButton = wrapper
-    .findAll('button')
-    .find((button) => button.text().includes(t('session.connect')));
+  expect(wrapper.get('.connection-toggle').attributes('disabled')).toBeDefined();
+  await wrapper.setProps({ reconnecting: false });
+  const connectButton = wrapper.get(`button[aria-label="${t('serial.action.open')}"]`);
   const clearButton = wrapper
     .findAll('button')
     .find((button) => button.text().includes(t('session.clear')));
@@ -717,9 +737,7 @@ test('SessionToolbar reflects connection state and emits every terminal control 
 
   session.isConnected = true;
   await wrapper.setProps({ isConnected: true, viewMode: 'terminal' });
-  const disconnectButton = wrapper
-    .findAll('button')
-    .find((button) => button.text().includes(t('session.disconnect')));
+  const disconnectButton = wrapper.get(`button[aria-label="${t('serial.action.close')}"]`);
   const pauseButton = wrapper
     .findAll('button')
     .find((button) => button.text().includes(t('session.pause')));
@@ -1585,6 +1603,28 @@ test('DataPacketList filters, selects, context-copies, keyboard-copies, and reje
   await wrapper.get('.dropdown-option[data-key="all-text"]').trigger('click');
   await wrapper.vm.$nextTick();
   expect(nativeMocks.message.warning).toHaveBeenCalledTimes(1);
+  // A merged row only renders its 64 KiB tail. Context and keyboard copy must
+  // check its full logical size before allocating the complete payload.
+  await toolbarInput.setValue('');
+  await vi.advanceTimersByTimeAsync(150);
+  useAppStore().setPacketViewMode('MERGED');
+  await wrapper.setProps({
+    frames: [
+      {
+        id: 'oversized-merged',
+        direction: 'RX',
+        timestamp: 2000,
+        data: new Uint8Array(2 * 1024 * 1024 + 1),
+      },
+    ],
+    highlights: [],
+    framesVersion: 4,
+  });
+  await wrapper.get('.packet-item').trigger('contextmenu', { clientX: 40, clientY: 50 });
+  await wrapper.get('.dropdown-option[data-key="hex"]').trigger('click');
+  await items.trigger('keydown', { key: 'c', ctrlKey: true });
+  expect(clipboard.writeText).toHaveBeenCalledTimes(3);
+  expect(nativeMocks.message.warning).toHaveBeenCalledTimes(3);
 });
 
 test('ParserPanel edits resident parser settings, filters/selects parsed frames, and copies hex/ascii details', async () => {

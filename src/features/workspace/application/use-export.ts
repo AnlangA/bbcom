@@ -177,9 +177,11 @@ export function useExport(deps: UseExportDeps = {}) {
     displayMode: DisplayMode,
     options: ExportDataOptions = {},
   ): Promise<ExportResult> {
+    if (isExporting.value) return { ok: false, error: t('error.busy') };
     isExporting.value = true;
     cancelRequested = false;
     progress.value = emptyProgress();
+    let unconsumedTargetGrant: string | null = null;
     try {
       const operationBinding = operations
         ? {
@@ -220,13 +222,13 @@ export function useExport(deps: UseExportDeps = {}) {
         format,
         deps.requestTarget ?? requestSaveTarget,
       );
+      unconsumedTargetGrant = targetGrant;
       if (!targetGrant) {
         progress.value.phase = 'cancelled';
         await cancelRegisteredOperation(operations, activeOperationId);
         return { ok: false, cancelled: true };
       }
       if (cancelRequested) {
-        await (deps.revokeTarget ?? revokeFileGrant)(targetGrant).catch(() => undefined);
         progress.value.phase = 'cancelled';
         await cancelRegisteredOperation(operations, activeOperationId);
         return { ok: false, cancelled: true };
@@ -249,6 +251,7 @@ export function useExport(deps: UseExportDeps = {}) {
           };
         }
       }
+      if (cancelRequested) throw new ExportCancelledError('export cancelled');
 
       const { stats, divergence } = await exportWithSession(
         source.iterate(),
@@ -273,6 +276,7 @@ export function useExport(deps: UseExportDeps = {}) {
           progress.value.phase = 'finishing';
         },
         (_exportId, abort) => {
+          unconsumedTargetGrant = null;
           abortNative = abort;
         },
         exportSource,
@@ -310,6 +314,12 @@ export function useExport(deps: UseExportDeps = {}) {
       // of a generic toast. The serialized AppError is { type, details: { message } }.
       return { ok: false, error: getCommandErrorMessage(e, t('message.exportFallbackFailed')) };
     } finally {
+      if (unconsumedTargetGrant) {
+        const grant = unconsumedTargetGrant;
+        await Promise.resolve()
+          .then(() => (deps.revokeTarget ?? revokeFileGrant)(grant))
+          .catch(() => undefined);
+      }
       isExporting.value = false;
       activeOperationId = null;
       abortNative = null;

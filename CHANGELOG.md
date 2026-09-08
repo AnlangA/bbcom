@@ -5,6 +5,34 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-08
+
+### Changed
+
+- Decoupled workspace navigation, connection controls, send composition, and
+  MCUmgr panels; refreshed dark/light themes and compact-window layouts.
+- Reworked MCUmgr system and image tools with compact actions, full-width hash
+  entry, and expandable results. Execution status now updates in a fixed row
+  without shifting tabs or content; action tooltips dismiss after activation.
+- Serial controls now expose opening, closing, cancellation, reconnect stop,
+  and failed-close retry states while keeping toolbar positions stable.
+
+### Fixed
+
+- Serial open/close operations coalesce repeated requests, preserve pending
+  cleanup, and reject stale open or reconnect completions after cancellation.
+- Send composition snapshots payload and mode, preserves newly edited drafts,
+  prevents duplicate submissions, and includes appended checksum bytes.
+- Modbus response parsing recovers past serial noise and verifies response
+  identity, quantity, and write echoes before completing a transaction.
+- Workspace saves account for UTF-8 and JSON escaping, transitions restore
+  partially stopped runtimes, and export cancellation releases file grants.
+- AI event listeners detach after late registration, native cancellation cannot
+  lose a wakeup, and workspace changes clear stale chat bindings.
+- MCUmgr rejects malformed HEX input and ignores progress from cancelled tasks.
+- Paused capture clearing, full-buffer SMP updates, retained terminal search,
+  automatic scrolling, oversized row copying, and traffic rates remain correct.
+
 ## [1.1.0] - 2026-08-28
 
 ### Fixed

@@ -1,79 +1,73 @@
 <template>
   <div class="send-panel">
-    <div class="send-input-row" :class="{ 'send-flash': showFlash }">
+    <div class="send-composer" :class="{ 'send-flash': showFlash, 'is-looping': looping }">
+      <div class="composer-heading">
+        <span class="composer-title">
+          <SendHorizontal class="icon-sm" aria-hidden="true" />
+          {{ t('send.title') }}
+        </span>
+        <div class="composer-meta">
+          <span v-if="looping" class="loop-state">
+            <span class="loop-dot" aria-hidden="true"></span>
+            {{ t('send.loop') }}
+          </span>
+          <span class="byte-count">{{ byteCount }} {{ t('send.bytes') }}</span>
+        </div>
+      </div>
       <n-input
         :value="modelValue"
         type="textarea"
+        class="send-input"
         :placeholder="isHex ? t('send.placeholder.hex') : t('send.placeholder.text')"
         :aria-label="isHex ? t('send.placeholder.hex') : t('send.placeholder.text')"
         :autosize="{ minRows: 2, maxRows: 4 }"
+        :bordered="false"
         :disabled="disabled"
         :status="isHex && modelValue && !isValidHex ? 'error' : undefined"
         @update:value="updateInput"
         @blur="formatHexInput"
-        @keydown.ctrl.enter="handleSend"
+        @keydown="handleInputKeydown"
       />
-    </div>
-    <div class="send-actions">
-      <div class="send-left">
-        <n-checkbox v-model:checked="isHex" size="small" :disabled="looping">HEX</n-checkbox>
-        <span class="options-divider" aria-hidden="true"></span>
-        <AppSelect
-          v-model:value="lineEnding"
-          :options="lineEndingOptions"
-          :aria-label="t('send.lineEnding.none')"
-          size="tiny"
-          style="width: var(--control-w-sm)"
-          :disabled="isHex || looping"
-        />
-        <AppSelect
-          v-model:value="appendChecksum"
-          :options="checksumOptions"
-          :aria-label="t('checksum.title')"
-          size="tiny"
-          style="width: var(--control-w-sm)"
-          :disabled="!isHex || looping"
-        />
-        <n-input-number
-          v-model:value="loopInterval"
-          size="tiny"
-          :min="50"
-          :max="3600000"
-          :step="100"
-          style="width: var(--control-w-md)"
-          :disabled="looping"
-          :title="t('send.loopIntervalHint')"
-          :aria-label="t('send.loopIntervalHint')"
-        >
-          <template #suffix>ms</template>
-        </n-input-number>
+      <div v-if="isHex && modelValue && !isValidHex" class="input-error" role="status">
+        <CircleAlert class="icon-sm" aria-hidden="true" />
+        {{ t('send.error.invalidHex') }}
       </div>
-      <div class="send-right">
-        <span v-if="modelValue" class="byte-count">{{ byteCount }} {{ t('send.bytes') }}</span>
-        <n-button
-          size="small"
-          @click="toggleLoop"
-          :disabled="!canSend && !looping"
-          :type="looping ? 'warning' : 'default'"
-        >
-          <template #icon>
-            <SquareStop v-if="looping" class="icon-sm" />
-            <Repeat2 v-else class="icon-sm" />
-          </template>
-          {{ looping ? t('send.loopStop') : t('send.loop') }}
-        </n-button>
-        <n-button
-          type="primary"
-          size="small"
-          @click="handleSend"
-          :disabled="!canSend"
-          class="send-btn"
-        >
-          <template #icon>
-            <SendHorizontal class="icon-sm" />
-          </template>
-          {{ t('send.button') }}
-        </n-button>
+      <div class="send-footer">
+        <SendOptions
+          v-model:is-hex="isHex"
+          v-model:line-ending="lineEnding"
+          v-model:checksum="appendChecksum"
+          v-model:loop-interval="loopInterval"
+          :disabled="looping || pending !== null"
+        />
+        <div class="send-actions">
+          <n-button
+            size="small"
+            :disabled="!canSend && !looping"
+            :loading="pending === 'loop'"
+            :type="looping ? 'warning' : 'default'"
+            @click="toggleLoop"
+          >
+            <template #icon>
+              <SquareStop v-if="looping" class="icon-sm" />
+              <Repeat2 v-else class="icon-sm" />
+            </template>
+            {{ looping ? t('send.loopStop') : t('send.loop') }}
+          </n-button>
+          <n-button
+            type="primary"
+            size="small"
+            :disabled="!canSend"
+            :loading="pending === 'send'"
+            class="send-btn"
+            :title="`${t('send.button')} (Ctrl / ⌘ + Enter)`"
+            @click="handleSend"
+          >
+            <template #icon><SendHorizontal class="icon-sm" /></template>
+            {{ t('send.button') }}
+            <kbd class="send-shortcut" aria-hidden="true">↵</kbd>
+          </n-button>
+        </div>
       </div>
     </div>
     <ToolsTabs
@@ -95,18 +89,17 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
-import { NInput, NButton, NCheckbox, NInputNumber, useMessage } from 'naive-ui';
-import AppSelect from '@/design-system/AppSelect.vue';
-import { Repeat2, SendHorizontal, SquareStop } from '@lucide/vue';
-import { encodeUtf8, isValidHex as checkValidHex, normalizeHex, parseHex } from '@/lib/format';
-import { checksumAlgoOptionsWithNone } from '@/lib/checksum-constants';
-import { MAX_INPUT_SIZE } from '@/types';
+import { NInput, NButton, useMessage } from 'naive-ui';
+import { CircleAlert, Repeat2, SendHorizontal, SquareStop } from '@lucide/vue';
+import { normalizeHex } from '@/lib/format';
 import { useAppStore } from '@/features/settings/store/app-store';
 import { useSessionCatalog } from '@/features/sessions';
 import { calculateChecksum } from '@/features/platform/native';
 import { t } from '@/lib/i18n';
 import type { ChecksumType, LineEnding, QuickCommand, SendHistoryEntry } from '@/types';
 import type { SessionRuntimeMacroController } from '@/features/sessions/runtime/session-runtime-controller';
+import { useSendComposer } from '../application/use-send-composer';
+import SendOptions from './SendOptions.vue';
 import ToolsTabs from './ToolsTabs.vue';
 
 const props = defineProps<{
@@ -142,58 +135,38 @@ const lineEnding = computed({
 });
 const loopInterval = computed({
   get: () => appStore.loopIntervalMs,
-  set: (value) => appStore.setLoopIntervalMs(value ?? 1000),
+  set: (value: number) => appStore.setLoopIntervalMs(value),
 });
 const appendChecksum = ref<'none' | ChecksumType>('none');
-const looping = computed(() => props.looping);
 const showFlash = ref(false);
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
-const lineEndingOptions = computed(() => [
-  { label: t('send.lineEnding.none'), value: 'none' },
-  { label: 'CR', value: 'CR' },
-  { label: 'LF', value: 'LF' },
-  { label: 'CRLF', value: 'CRLF' },
-]);
-
-const checksumOptions = computed(() =>
-  checksumAlgoOptionsWithNone.map((option) => ({
-    ...option,
-    label:
-      option.value === 'none'
-        ? t('checksum.none')
-        : option.value === 'CHECKSUM'
-          ? t('checksum.checksum')
-          : option.label,
-  })),
-);
-
-const isValidHex = computed(() => {
-  if (!isHex.value || !props.modelValue.trim()) return true;
-  return checkValidHex(props.modelValue);
+const {
+  pending,
+  validHex: isValidHex,
+  byteCount,
+  canSend,
+  send: handleSend,
+  toggleLoop,
+} = useSendComposer({
+  getState: () => ({
+    input: props.modelValue,
+    isHex: isHex.value,
+    lineEnding: lineEnding.value,
+    checksum: appendChecksum.value,
+    disabled: props.disabled,
+    looping: props.looping,
+    sessionId: props.sessionId,
+  }),
+  calculateChecksum,
+  send: (data, hex) => props.onSend(data, hex),
+  startLoop: (data, hex) => props.onStartLoop(data, hex),
+  stopLoop: () => props.onStopLoop(),
+  updateInput,
+  onSent: triggerFlash,
+  onError: (key) => message.error(t(key)),
+  onWarning: (key) => message.warning(t(key)),
 });
-
-const byteCount = computed(() => {
-  if (!props.modelValue.trim()) return 0;
-  if (isHex.value) {
-    const cleaned = props.modelValue.replace(/[^0-9a-fA-F]/g, '');
-    return Math.floor(cleaned.length / 2);
-  }
-  return encodeUtf8(withLineEnding(props.modelValue)).length;
-});
-
-const canSend = computed(() => {
-  if (props.disabled || !props.modelValue.trim()) return false;
-  if (isHex.value && !isValidHex.value) return false;
-  return true;
-});
-
-watch(
-  () => props.disabled,
-  (disabled) => {
-    if (disabled && looping.value) props.onStopLoop();
-  },
-);
 
 watch(
   () => appStore.aiCommandSeq,
@@ -204,7 +177,8 @@ watch(
       appStore.setPendingAiCommand(appStore.aiCommandDraft);
       return;
     }
-    applyAiCommand(appStore.aiCommandDraft);
+    isHex.value = false;
+    updateInput(appStore.aiCommandDraft);
   },
 );
 
@@ -212,78 +186,12 @@ onUnmounted(() => {
   if (flashTimer) clearTimeout(flashTimer);
 });
 
-function withLineEnding(data: string): string {
-  if (isHex.value) return data;
-  const endings: Record<LineEnding, string> = {
-    none: '',
-    CR: '\r',
-    LF: '\n',
-    CRLF: '\r\n',
-  };
-  return data + endings[lineEnding.value];
-}
-
-async function buildData(): Promise<string | null> {
-  let data = props.modelValue;
-
-  if (data.length > MAX_INPUT_SIZE) {
-    message.error(t('send.error.tooLarge'));
-    return null;
-  }
-
-  if (isHex.value && appendChecksum.value !== 'none') {
-    const payload = parseHex(data);
-    try {
-      const res = await calculateChecksum(payload, appendChecksum.value);
-      data = data + ' ' + res.result;
-    } catch {
-      message.warning(t('send.error.checksumFailed'));
-    }
-  } else if (!isHex.value) {
-    data = withLineEnding(data);
-  }
-  return data;
-}
-
-async function handleSend() {
-  if (!canSend.value) return;
-
-  const data = await buildData();
-  if (data === null) return;
-  const ok = await props.onSend(data, isHex.value);
-  if (ok) {
-    if (!looping.value) updateInput('');
-    triggerFlash();
-  } else {
-    message.error(t('send.error.failed'));
-  }
-}
-
 function triggerFlash() {
   showFlash.value = true;
   if (flashTimer) clearTimeout(flashTimer);
   flashTimer = setTimeout(() => {
     showFlash.value = false;
   }, 300);
-}
-
-function toggleLoop() {
-  if (looping.value) {
-    props.onStopLoop();
-  } else {
-    void startLoop();
-  }
-}
-
-async function startLoop() {
-  if (!canSend.value || looping.value) return;
-  const data = await buildData();
-  if (data !== null) props.onStartLoop(data, isHex.value);
-}
-
-function applyAiCommand(command: string) {
-  isHex.value = false;
-  updateInput(command);
 }
 
 function updateInput(value: string) {
@@ -295,22 +203,29 @@ function formatHexInput() {
     updateInput(normalizeHex(props.modelValue));
   }
 }
+
+function handleInputKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || (!event.ctrlKey && !event.metaKey) || event.isComposing) return;
+  event.preventDefault();
+  void handleSend();
+}
 </script>
 
 <style scoped>
 .send-panel {
-  padding: var(--space-md);
+  container: send-panel / inline-size;
+  min-width: 0;
+  padding: var(--space-md) var(--space-lg);
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: var(--space-md);
   background: var(--bg-secondary);
 }
 
-.send-input-row {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--bg-inset);
-  padding: 1px;
+.send-composer {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  background: var(--bg-primary);
   position: relative;
   overflow: hidden;
   transition:
@@ -318,12 +233,102 @@ function formatHexInput() {
     box-shadow var(--transition-normal);
 }
 
-.send-input-row:focus-within {
+.send-composer:focus-within {
   border-color: var(--color-primary-muted);
   box-shadow: var(--shadow-focus);
 }
 
-.send-input-row.send-flash::after {
+.send-composer.is-looping {
+  border-color: var(--accent-amber-border);
+}
+
+.composer-heading,
+.composer-title,
+.composer-meta,
+.loop-state,
+.send-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.composer-heading {
+  justify-content: space-between;
+  padding: var(--space-sm) var(--space-md) var(--space-2xs);
+  font-size: var(--font-size-data);
+}
+
+.composer-title {
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.composer-title > svg {
+  color: var(--color-primary);
+}
+
+.byte-count {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.loop-state {
+  color: var(--color-warning);
+  font-size: var(--font-size-sm);
+}
+
+.loop-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+
+.send-input {
+  --n-color: transparent !important;
+  --n-color-focus: transparent !important;
+  font-family: var(--font-mono);
+}
+
+.input-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0 var(--space-md) var(--space-sm);
+  font-size: var(--font-size-data);
+  color: var(--color-error);
+}
+
+.send-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  padding: var(--space-sm) var(--space-md);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-lift);
+}
+
+.send-actions {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.send-btn {
+  min-width: 86px;
+}
+
+.send-shortcut {
+  margin-left: var(--space-sm);
+  font-family: var(--font-mono);
+  opacity: 0.6;
+}
+
+.send-composer.send-flash::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -332,58 +337,10 @@ function formatHexInput() {
   pointer-events: none;
 }
 
-.send-actions {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-md);
-  flex-wrap: wrap;
-}
-
-.send-left {
-  display: flex;
-  gap: var(--space-sm);
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.options-divider {
-  width: 1px;
-  height: 18px;
-  background: var(--border-color);
-  flex-shrink: 0;
-}
-
-.send-right {
-  display: flex;
-  gap: var(--space-sm);
-  align-items: center;
-  margin-left: auto;
-}
-
-.send-btn:active {
-  transform: scale(0.95);
-}
-
-.byte-count {
-  font-size: var(--font-size-sm);
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  padding: 2px 6px;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-full);
-}
-
-@media (max-width: 760px) {
-  .send-left,
-  .send-right {
+@container send-panel (max-width: 620px) {
+  .send-actions {
     width: 100%;
-  }
-
-  .send-right {
     justify-content: flex-end;
-    margin-left: 0;
   }
 }
 </style>

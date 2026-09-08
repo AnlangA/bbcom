@@ -757,6 +757,85 @@ test('useExport: raw arrays stop before retaining a frame beyond the reference c
 
 // ---- DB-sourced (workspace-frames) mode ----
 
+test('useExport: a repeated invocation cannot replace the active export cancellation state', async () => {
+  const target = deferredTarget();
+  const revoked: string[] = [];
+  let targetRequests = 0;
+  const api = useExport({
+    requestTarget: () => {
+      targetRequests += 1;
+      return target.promise;
+    },
+    revokeTarget: async (token) => {
+      revoked.push(token);
+    },
+  });
+  const exporting = api.exportData([frame('RX', [1])], 'bin', 'HEX');
+  api.cancelExport();
+  const repeated = await api.exportData([frame('TX', [2])], 'bin', 'HEX');
+  assert.equal(repeated.ok, false);
+  assert.equal(api.isExporting.value, true);
+  assert.equal(targetRequests, 1);
+  target.resolve({ token: 'cancelled-grant', displayName: 'capture.bin' });
+  assert.deepEqual(await exporting, { ok: false, cancelled: true });
+  assert.deepEqual(revoked, ['cancelled-grant']);
+});
+
+test('useExport: cancellation during DB preparation revokes the grant without opening a native export', async () => {
+  const revoked: string[] = [];
+  let begins = 0;
+  const api = useExport({
+    sessionId: 'session-main',
+    requestTarget: async () => ({ token: 'prepared-grant', displayName: 'capture.bin' }),
+    revokeTarget: async (token) => {
+      revoked.push(token);
+    },
+    dbSource: {
+      async prepare() {
+        api.cancelExport();
+        return { workspaceId: 'workspace-main', toSeqExclusive: 1 };
+      },
+    },
+    sessionClient: {
+      begin: async () => {
+        begins += 1;
+        return { exportId: 'native-export' };
+      },
+      append: async () => ({ totalFrames: 1, totalRawBytes: 1 }),
+      finish: async () => ({ frames: 1, rawBytes: 1, outputBytes: 1, durationMs: 1 }),
+      abort: async () => {},
+    },
+  });
+  assert.deepEqual(await api.exportData([frame('RX', [1])], 'bin', 'HEX', { unfiltered: true }), {
+    ok: false,
+    cancelled: true,
+  });
+  assert.equal(begins, 0);
+  assert.deepEqual(revoked, ['prepared-grant']);
+});
+
+test('useExport: a failed DB preparation revokes the unused grant and preserves the error', async () => {
+  const revoked: string[] = [];
+  const api = useExport({
+    sessionId: 'session-main',
+    requestTarget: async () => ({ token: 'unused-grant', displayName: 'capture.bin' }),
+    revokeTarget: async (token) => {
+      revoked.push(token);
+      throw new Error('cleanup failed');
+    },
+    dbSource: {
+      async prepare() {
+        throw new Error('source preparation failed');
+      },
+    },
+  });
+  const result = await api.exportData([frame('RX', [1])], 'bin', 'HEX', { unfiltered: true });
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? '' : (result.error ?? ''), /source preparation failed/);
+  assert.deepEqual(revoked, ['unused-grant']);
+  assert.equal(api.isExporting.value, false);
+});
+
 function recordingDbSource(
   selection: { workspaceId: string; toSeqExclusive: number } | null,
 ): WorkspaceDbExportSource & { prepared: string[] } {

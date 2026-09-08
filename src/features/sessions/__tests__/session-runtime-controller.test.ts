@@ -592,6 +592,218 @@ test('controller delegates lifecycle commands and releases every resident resour
   scope.stop();
 });
 
+test('manual connect joins one pending promise and leaves an already connected port open', async () => {
+  const statuses = new SessionRuntimeStatusRegistry();
+  const { id, runtime, scope, serial } = setup(statuses);
+  const opening = deferred<boolean>();
+  serial.start.mockReturnValueOnce(opening.promise);
+
+  const first = runtime.connect();
+  assert.equal(runtime.connect(), first);
+  assert.equal(runtime.isConnecting.value, true, 'native flags may lag the UI request');
+  assert.equal(statuses.get(id).phase, 'connecting');
+  await Promise.resolve();
+  assert.equal(serial.start.mock.calls.length, 1);
+
+  serial.isConnected.value = true;
+  opening.resolve(true);
+  assert.equal(await first, true);
+  assert.equal(runtime.isConnecting.value, false);
+  assert.equal(await runtime.connect(), true);
+  assert.equal(serial.start.mock.calls.length, 1, 'opening an existing connection is idempotent');
+  assert.equal(serial.stop.mock.calls.length, 0);
+  await runtime.dispose();
+  scope.stop();
+});
+
+test('manual disconnect joins one promise and blocks opening until native close finishes', async () => {
+  const statuses = new SessionRuntimeStatusRegistry();
+  const { id, runtime, scope, serial } = setup(statuses, false);
+  await runtime.connect();
+  const closing = deferred<SerialStopResult>();
+  serial.stop.mockReturnValueOnce(closing.promise);
+
+  const first = runtime.disconnect();
+  assert.equal(runtime.disconnect(), first);
+  assert.equal(
+    runtime.isClosing.value,
+    true,
+    'adapters without a closing ref still expose progress',
+  );
+  assert.equal(statuses.get(id).phase, 'closing');
+  assert.equal(await runtime.connect(), false);
+  assert.equal(serial.stop.mock.calls.length, 1);
+  assert.equal(serial.start.mock.calls.length, 1);
+
+  serial.isConnected.value = false;
+  closing.resolve(stoppedAfterNativeDrain());
+  await first;
+  assert.equal(runtime.isClosing.value, false);
+  assert.equal(statuses.get(id).phase, 'stopped');
+  await runtime.dispose();
+  scope.stop();
+});
+
+for (const lateOpenResult of [false, true]) {
+  test(`cancelled opening stays closing through final cleanup when native open returns ${lateOpenResult}`, async () => {
+    const statuses = new SessionRuntimeStatusRegistry();
+    const { id, runtime, scope, serial } = setup(statuses);
+    const opening = deferred<boolean>();
+    const cleanup = deferred<SerialStopResult>();
+    serial.start.mockReturnValueOnce(opening.promise);
+    serial.stop.mockResolvedValueOnce({
+      ...stoppedWithNoConnection(),
+      rxDrainGuarantee: 'not-guaranteed',
+      rxDrainStatus: 'watch-not-installed',
+      pendingOpen: 'unsettled',
+      portClose: 'pending-open-unsettled',
+    });
+    serial.stop.mockReturnValueOnce(cleanup.promise);
+    const starting = runtime.connect();
+    await Promise.resolve();
+
+    const stopping = runtime.disconnect();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(runtime.isClosing.value, true);
+    assert.equal(runtime.isConnecting.value, false);
+    assert.equal(statuses.get(id).phase, 'closing');
+    assert.equal(await runtime.connect(), false);
+    assert.equal(runtime.disconnect(), stopping);
+    assert.equal(serial.start.mock.calls.length, 1);
+
+    serial.error.value = 'cancelled opening must not trigger a stale toast';
+    serial.isConnected.value = lateOpenResult;
+    opening.resolve(lateOpenResult);
+    assert.equal(await starting, false, 'a cancelled task never reports opening success');
+    await Promise.resolve();
+    assert.equal(serial.stop.mock.calls.length, 2, 'the settled candidate receives final cleanup');
+    assert.equal(runtime.isClosing.value, true, 'finishing open does not finish cleanup');
+    assert.equal(statuses.get(id).phase, 'closing');
+    assert.equal(mocked.message.error.mock.calls.length, 0);
+
+    serial.isConnected.value = false;
+    serial.error.value = null;
+    cleanup.resolve(stoppedWithNoConnection());
+    await stopping;
+    assert.equal(runtime.isClosing.value, false);
+    assert.equal(statuses.get(id).phase, 'stopped');
+    assert.equal(await runtime.connect(), true, 'reopening is available after cleanup');
+    await runtime.dispose();
+    scope.stop();
+  });
+}
+
+test('manual close reports physical failure but does not warn only about incomplete RX evidence', async () => {
+  const statuses = new SessionRuntimeStatusRegistry();
+  const { id, runtime, scope, serial } = setup(statuses);
+  serial.stop.mockResolvedValueOnce({
+    ...stoppedAfterNativeDrain(),
+    portClose: 'close-failed',
+  });
+  await runtime.disconnect();
+  assert.equal(mocked.message.error.mock.calls.length, 1);
+  assert.equal(runtime.error.value, mocked.message.error.mock.calls[0][0]);
+  assert.equal(statuses.get(id).phase, 'failed');
+  assert.equal(runtime.isClosing.value, false);
+  assert.equal(runtime.closeFailed.value, true);
+  const closeError = runtime.error.value;
+  assert.equal(await runtime.connect(), false, 'an unclosed handle requires a close retry');
+  assert.equal(serial.start.mock.calls.length, 0);
+  assert.equal(runtime.closeFailed.value, true);
+  assert.equal(runtime.error.value, closeError, 'rejected opening preserves the close error');
+  assert.equal(statuses.get(id).phase, 'failed');
+
+  serial.stop.mockResolvedValueOnce({
+    ...stoppedAfterNativeDrain(),
+    rxDrainGuarantee: 'not-guaranteed',
+    rxDrainStatus: 'native-command-unavailable',
+  });
+  await runtime.disconnect();
+  assert.equal(mocked.message.error.mock.calls.length, 1);
+  assert.equal(mocked.message.warning.mock.calls.length, 0);
+  assert.equal(runtime.error.value, null);
+  assert.equal(runtime.closeFailed.value, false);
+  assert.equal(statuses.get(id).phase, 'stopped');
+  assert.equal(await runtime.connect(), true, 'successful close retry permits opening again');
+  assert.equal(serial.start.mock.calls.length, 1);
+  await runtime.dispose();
+  scope.stop();
+});
+
+test('a rejected manual open reports one failure and permits a later retry', async () => {
+  const { runtime, scope, serial } = setup();
+  serial.start.mockRejectedValueOnce(new Error('driver unavailable'));
+  const first = runtime.connect();
+  assert.equal(runtime.connect(), first);
+  assert.equal(await first, false);
+  assert.equal(mocked.message.error.mock.calls.length, 1);
+  assert.equal(runtime.isConnecting.value, false);
+  assert.equal(await runtime.connect(), true);
+  await runtime.dispose();
+  scope.stop();
+});
+
+test('shutdown preparation cancels manual open reporting and preserves the MCUmgr ownership guard', async () => {
+  const { runtime, scope, serial } = setup();
+  Object.assign(runtime.mcumgr.busy, { value: true });
+  assert.equal(await runtime.connect(), false);
+  await runtime.disconnect();
+  assert.equal(serial.start.mock.calls.length, 0);
+  assert.equal(serial.stop.mock.calls.length, 0);
+  Object.assign(runtime.mcumgr.busy, { value: false });
+
+  const opening = deferred<boolean>();
+  serial.start.mockReturnValueOnce(opening.promise);
+  serial.stop.mockImplementationOnce(async () => {
+    serial.error.value = 'cancelled during shutdown preparation';
+    opening.resolve(false);
+    return stoppedWithNoConnection();
+  });
+  const starting = runtime.connect();
+  await Promise.resolve();
+  await runtime.prepareShutdown();
+  assert.equal(await starting, false);
+  assert.equal(mocked.message.error.mock.calls.length, 0);
+  assert.equal(mocked.autoLog.prepareShutdown.mock.calls.length, 1);
+  await runtime.dispose();
+  scope.stop();
+});
+
+test('shutdown preparation reports unsettled open evidence without joining an unbounded manual disconnect', async () => {
+  const { runtime, scope, serial } = setup();
+  const opening = deferred<boolean>();
+  const pendingOpenEvidence: SerialStopResult = {
+    ...stoppedWithNoConnection(),
+    rxDrainGuarantee: 'not-guaranteed',
+    rxDrainStatus: 'watch-not-installed',
+    pendingOpen: 'unsettled',
+    portClose: 'pending-open-unsettled',
+  };
+  serial.start.mockReturnValueOnce(opening.promise);
+  serial.stop.mockResolvedValueOnce(pendingOpenEvidence);
+  serial.stop.mockResolvedValueOnce(pendingOpenEvidence);
+  const starting = runtime.connect();
+  await Promise.resolve();
+  const stopping = runtime.disconnect();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  await assert.rejects(runtime.prepareShutdown(), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.match(String(error.errors[0]), /pendingOpen=unsettled/);
+    return true;
+  });
+  assert.equal(runtime.isClosing.value, true, 'the toolbar still tracks pending manual cleanup');
+  assert.equal(mocked.autoLog.prepareShutdown.mock.calls.length, 1);
+
+  opening.resolve(false);
+  await starting;
+  await stopping;
+  await runtime.dispose();
+  scope.stop();
+});
+
 test('prepareShutdown preserves runtime reuse and orders serial drain before auto-log footer', async () => {
   const { runtime, scope, serial } = setup();
   const order: string[] = [];

@@ -1,4 +1,5 @@
 import type { PortConfig, SerialSession } from '@/types';
+import { sessionHasClearableCapture } from '@/lib/session-store-helpers';
 import type {
   SessionCapturePort,
   SessionCatalogPort,
@@ -48,7 +49,7 @@ export class SessionApplicationService {
   clearCapture(sessionId: string): boolean {
     if (!this.options.mutationPolicy.userMutationsAllowed.value) return false;
     const capture = this.options.captureFor(sessionId);
-    if (!capture.session.value || capture.session.value.frames.length === 0) return false;
+    if (!capture.session.value || !sessionHasClearableCapture(capture.session.value)) return false;
     capture.clear();
     return true;
   }

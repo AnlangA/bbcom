@@ -20,7 +20,6 @@ import {
   buildWriteMultipleCoilsPdu,
   buildWriteMultipleRegistersPdu,
   crc16Modbus,
-  crc16ModbusFoldByte,
   parseResponse,
   type ModbusResponse,
   type ReadFc,
@@ -120,12 +119,10 @@ export interface ScanResult {
 /**
  * Extract complete response frames from a raw RX buffer.
  *
- * - **RTU**: a frame is "complete" when the smallest prefix verifies as a valid
- *   CRC. Real Modbus RTU uses a 3.5-char inter-frame silence to delimit frames,
- *   but on a byte stream without timing we approximate it by scanning for the
- *   shortest CRC-correct frame at each offset. The master additionally flushes
- *   the buffer on a request timeout, so a partial trailing frame never blocks.
- *   Min RTU ADU length is 4 (addr + fc + crc); max is 256.
+ * - **RTU**: the response function and byte count determine its length, then
+ *   CRC verifies that boundary. Scan past corrupt prefixes so serial noise
+ *   cannot hide a complete response later in the same native RX chunk. Bytes
+ *   after the last verified frame remain available for the next call.
  * - **PDU**: there is no delimiter or length field in the PDU alone, so the
  *   caller must pass `expectedLength` (derived from the outstanding request's
  *   FC). Exception responses are always 2 bytes (`fc | 0x80`, code), so those
@@ -138,59 +135,56 @@ export function scanResponse(
   expectedLength?: number,
 ): ScanResult {
   if (transport === 'pdu') {
-    if (buf.length >= 2 && (buf[0] & 0x80) !== 0) {
-      return { frames: [buf.subarray(0, 2)], remainder: buf.subarray(2) };
-    }
-    if (expectedLength === undefined || buf.length < expectedLength) {
-      return { frames: [], remainder: buf };
-    }
-    // Slice off as many fixed-length frames as are available.
     const frames: Uint8Array[] = [];
     let offset = 0;
-    while (offset + expectedLength <= buf.length) {
-      frames.push(buf.subarray(offset, offset + expectedLength));
-      offset += expectedLength;
+    while (offset < buf.length) {
+      const length = (buf[offset] & 0x80) !== 0 ? 2 : expectedLength;
+      if (
+        length === undefined ||
+        !Number.isInteger(length) ||
+        length < 1 ||
+        length > 253 ||
+        offset + length > buf.length
+      ) {
+        break;
+      }
+      frames.push(buf.subarray(offset, offset + length));
+      offset += length;
     }
     return { frames, remainder: buf.subarray(offset) };
   }
 
-  // RTU: scan for the smallest CRC-valid frame at each offset. For a fixed
-  // offset, grow the trial length from 4 → upper and fold each new payload byte
-  // into a running CRC (O(1) per byte via crc16ModbusFoldByte) instead of
-  // re-running the full CRC for every candidate length — which made this O(upper²)
-  // per offset and dominated RX cost on a noisy/slow bus.
   const frames: Uint8Array[] = [];
-  let i = 0;
-  const maxFrame = 256;
-  while (i < buf.length) {
-    let found = -1;
-    const upper = Math.min(buf.length - i, maxFrame);
-    if (upper < 4) break; // not enough bytes left for even the smallest frame
-    // The CRC covers the first (len - 2) bytes of the candidate; the final two
-    // bytes carry it. Seed the running CRC with the bytes that are in the CRC
-    // window of the shortest candidate (len = 4 → window = bytes 0,1), then
-    // fold one new byte in as len grows.
-    let crc = 0xffff;
-    crc = crc16ModbusFoldByte(crc, buf[i]); // byte 0 (in window at len=4)
-    crc = crc16ModbusFoldByte(crc, buf[i + 1]); // byte 1 (in window at len=4)
-    for (let len = 4; len <= upper; len += 1) {
-      if (len > 4) {
-        // Byte (len - 3) is the new byte that just entered the CRC window as
-        // the candidate grew from len-1 to len.
-        crc = crc16ModbusFoldByte(crc, buf[i + len - 3]);
-      }
-      const lo = buf[i + len - 2];
-      const hi = buf[i + len - 1];
-      if ((crc & 0xff) === lo && ((crc >>> 8) & 0xff) === hi) {
-        found = len;
-        break; // shortest valid frame wins
-      }
+  let offset = 0;
+  let consumed = 0;
+  while (offset + 4 < buf.length) {
+    const length = rtuResponseLength(buf, offset);
+    if (length === null || offset + length > buf.length) {
+      offset += 1;
+      continue;
     }
-    if (found === -1) break; // need more bytes for a frame starting at i
-    frames.push(buf.subarray(i, i + found));
-    i += found;
+    const end = offset + length;
+    const crc = crc16Modbus(buf.subarray(offset, end - 2));
+    if ((crc & 0xff) !== buf[end - 2] || crc >>> 8 !== buf[end - 1]) {
+      offset += 1;
+      continue;
+    }
+    frames.push(buf.subarray(offset, end));
+    offset = end;
+    consumed = end;
   }
-  return { frames, remainder: buf.subarray(i) };
+  return { frames, remainder: buf.subarray(consumed) };
+}
+
+function rtuResponseLength(buf: Uint8Array, offset: number): number | null {
+  const fc = buf[offset + 1];
+  if ((fc & 0x80) !== 0) return 5;
+  if (fc === 0x05 || fc === 0x06 || fc === 0x0f || fc === 0x10) return 8;
+  if (fc !== 0x01 && fc !== 0x02 && fc !== 0x03 && fc !== 0x04) return null;
+  const byteCount = buf[offset + 2];
+  if (byteCount < 1 || byteCount > 250) return null;
+  if ((fc === 0x03 || fc === 0x04) && byteCount % 2 !== 0) return null;
+  return byteCount + 5;
 }
 
 /**

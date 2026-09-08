@@ -1,8 +1,9 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import type { WatchHandlers, WatchOptions } from 'tauri-plugin-serialplugin-api';
 import {
   createSerialConnectionController,
   type SerialConnectionDependencies,
+  type SerialConnectionOptions,
   type SerialConnectionSink,
 } from '@/features/serial/application/serial-connection-controller';
 import { PortLeaseRegistry } from '@/features/serial/application/port-lease-registry';
@@ -115,7 +116,11 @@ class FakePort implements SerialPortAdapter {
   async forceClose(): Promise<void> {}
 }
 
-function harness(fake: FakePort, overrides: Partial<SerialConnectionDependencies> = {}) {
+function harness(
+  fake: FakePort,
+  overrides: Partial<SerialConnectionDependencies> = {},
+  options?: SerialConnectionOptions,
+) {
   const frames: DataFrame[] = [];
   const rawOrder: string[] = [];
   const sink: SerialConnectionSink = {
@@ -134,7 +139,7 @@ function harness(fake: FakePort, overrides: Partial<SerialConnectionDependencies
     publishFrames: () => rawOrder.push('publish'),
     appendAutoLogFrame: () => undefined,
   };
-  const controller = createSerialConnectionController('session-a', 'COM1', config, undefined, {
+  const controller = createSerialConnectionController('session-a', 'COM1', config, options, {
     leaseClient: new PortLeaseRegistry({ platform: 'windows' }),
     sessionName: 'Session A',
     createPort: () => fake,
@@ -147,6 +152,76 @@ function harness(fake: FakePort, overrides: Partial<SerialConnectionDependencies
 }
 
 describe('SerialConnectionController (framework-free)', () => {
+  test('stop during final connection synchronization makes the pending start report cancellation', async () => {
+    const { controller } = harness(new FakePort());
+    const entered = deferred<void>();
+    const synchronized = deferred<boolean>();
+    vi.spyOn(controller.serialTransactions, 'synchronizeConnection').mockImplementationOnce(() => {
+      entered.resolve();
+      return synchronized.promise;
+    });
+
+    const starting = controller.start();
+    await entered.promise;
+    await controller.stop();
+    synchronized.resolve(false);
+
+    await expect(starting).resolves.toBe(false);
+    expect(controller.snapshot()).toMatchObject({
+      isConnected: false,
+      isConnecting: false,
+      isClosing: false,
+    });
+  });
+
+  test('stop during reconnect synchronization prevents a stale connected notification', async () => {
+    const first = new FakePort();
+    const replacement = new FakePort();
+    const ports = [first, replacement];
+    const scheduled = deferred<() => void>();
+    let reconnected = 0;
+    const { controller, rawOrder } = harness(
+      first,
+      {
+        createPort: () => ports.shift()!,
+        timerPort: {
+          schedule(callback) {
+            scheduled.resolve(callback);
+            return callback;
+          },
+          cancel: () => undefined,
+          delay: async () => undefined,
+        },
+      },
+      {
+        autoReconnect: () => true,
+        onReconnected: () => {
+          reconnected += 1;
+        },
+      },
+    );
+    await controller.start();
+    const entered = deferred<void>();
+    const synchronized = deferred<boolean>();
+    vi.spyOn(controller.serialTransactions, 'synchronizeConnection').mockImplementationOnce(() => {
+      entered.resolve();
+      return synchronized.promise;
+    });
+
+    first.handlers?.onDisconnect();
+    const reconnect = await scheduled.promise;
+    reconnect();
+    await entered.promise;
+    await controller.stop();
+    synchronized.resolve(false);
+    await synchronized.promise;
+
+    expect(controller.snapshot().isConnected).toBe(false);
+    expect(rawOrder.at(-1)).toBe('connected:false');
+    expect(reconnected).toBe(0);
+    expect(replacement.closeCalls).toBe(1);
+  });
+
   test('owns open, raw-before-display RX, TX and proven stop without Vue or Tauri', async () => {
     const fake = new FakePort();
     const { controller, frames, rawOrder } = harness(fake);

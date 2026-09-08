@@ -27,6 +27,8 @@ interface PendingTransaction<TContext> {
   started: boolean;
   /** Expected PDU length for the response (PDU transport needs this). */
   expectedLen?: number;
+  transport: ModbusTransport;
+  matchesResponse: (frame: Uint8Array, response: ModbusResponse) => boolean;
 }
 
 export interface ModbusTransactionRunnerOptions {
@@ -64,15 +66,25 @@ export class ModbusTransactionRunner<TContext = unknown> {
       offset = end;
 
       const { frames, remainder } = scanResponse(
-        this.options.getTransport(),
+        this.pending.transport,
         this.rxBuffer,
         this.pending.expectedLen,
       );
       this.rxBuffer = retainIncompleteAdu(remainder);
       if (frames.length === 0) continue;
 
-      const response = parseFrame(this.options.getTransport(), frames[0]);
       const current = this.pending;
+      let response: ModbusResponse | null = null;
+      for (const frame of frames) {
+        const candidate = parseFrame(current.transport, frame);
+        if (candidate && current.matchesResponse(frame, candidate)) {
+          response = candidate;
+          break;
+        }
+      }
+      // Foreign replies, malformed packets, and stale write echoes must not
+      // complete this request or overwrite its register values.
+      if (!response) continue;
       if (current.timer) clearTimeout(current.timer);
       this.pending = null;
       // A response resolves exactly one half-duplex request. Extra bytes from
@@ -103,12 +115,22 @@ export class ModbusTransactionRunner<TContext = unknown> {
         if (!this.cancelForContext(context, status)) resolve(null);
       };
 
-      this.pending = { context, resolve, timer: null, started: false, expectedLen };
+      const transport = this.options.getTransport();
+      this.pending = {
+        context,
+        resolve,
+        timer: null,
+        started: false,
+        expectedLen,
+        transport,
+        matchesResponse: () => false,
+      };
       this.rxBuffer = new Uint8Array(0);
 
       let wire: Uint8Array;
       try {
         wire = buildWire();
+        this.pending.matchesResponse = responseMatcher(transport, wire);
       } catch (error) {
         failSend(error);
         return;
@@ -174,6 +196,31 @@ export class ModbusTransactionRunner<TContext = unknown> {
     if (!this.pending || this.pending.context !== context) return false;
     return this.cancel(status);
   }
+}
+
+function responseMatcher(
+  transport: ModbusTransport,
+  wire: Uint8Array,
+): (frame: Uint8Array, response: ModbusResponse) => boolean {
+  const slave = wire[0];
+  // Copy the request identity so a caller cannot change it while TX is queued.
+  const pdu = transport === 'rtu' ? wire.slice(1, -2) : wire.slice();
+  const fc = pdu[0];
+  const quantity = (pdu[3] << 8) | pdu[4];
+  return (frame, response) => {
+    if (pdu.length < 5) return false;
+    if (transport === 'rtu' && response.slave !== slave) return false;
+    if (response.kind === 'exception') return response.fc === (fc | 0x80);
+    if (response.fc !== fc) return false;
+    if (response.kind === 'read-regs') return response.regs.length === quantity;
+    if (response.kind === 'read-bits') {
+      return response.bits.length === Math.ceil(quantity / 8) * 8;
+    }
+    // Both single and multiple write replies echo the request's first five
+    // PDU bytes (including the written value for FC05/06, quantity for FC0F/10).
+    const responseOffset = transport === 'rtu' ? 1 : 0;
+    return pdu.subarray(1, 5).every((byte, index) => frame[responseOffset + index + 1] === byte);
+  };
 }
 
 function errorMessage(error: unknown): string {

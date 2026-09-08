@@ -545,6 +545,76 @@ test('SMP ignores a cancelled replay callback after a newer generation is schedu
   );
 });
 
+test('SMP publishes live records after frame or byte retention is full', () => {
+  for (const maxBytes of [1024, 8]) {
+    const parser = new SessionProtocolRuntime({ maxFrames: 1, maxBytes });
+    parser.configure(
+      {
+        kind: 'mcumgr-smp',
+        transport: 'raw-uart',
+        maxPacketBytes: 1024,
+        reassemblyTimeoutMs: 3000,
+      },
+      [],
+      { replayHistory: false },
+    );
+    for (let sequence = 1; sequence <= 3; sequence += 1) {
+      assert.equal(
+        parser.syncCaptureTimeline(
+          [
+            {
+              captureSeq: sequence,
+              direction: 'RX',
+              timestamp: 100,
+              data: rawSmpMessage(1, sequence),
+            },
+          ],
+          100,
+        ),
+        true,
+        'new records must publish even when the retained frame count stays unchanged',
+      );
+    }
+    const snapshot = parser.snapshot();
+    assert.equal(snapshot.droppedFrames, maxBytes === 8 ? 3 : 2);
+    if (maxBytes !== 8) assert.equal(snapshot.frames[0].captureSeq, 3);
+    parser.dispose();
+  }
+});
+
+test('SMP replay publishes each time slice after the retained frame window fills', () => {
+  const replay = fakeReplayScheduler();
+  const parser = new SessionProtocolRuntime({
+    maxFrames: 1,
+    replayScheduler: replay.scheduler,
+    replayFramesPerSlice: 1,
+  });
+  let changes = 0;
+  parser.onChange(() => {
+    changes += 1;
+  });
+  parser.configure(
+    {
+      kind: 'mcumgr-smp',
+      transport: 'raw-uart',
+      maxPacketBytes: 1024,
+      reassemblyTimeoutMs: 3000,
+    },
+    [1, 2, 3].map((sequence) => ({
+      captureSeq: sequence,
+      direction: 'RX' as const,
+      timestamp: 100,
+      data: rawSmpMessage(1, sequence),
+    })),
+  );
+  replay.queued.shift()?.callback();
+  const firstChanges = changes;
+  replay.queued.shift()?.callback();
+  assert.ok(changes > firstChanges, 'the second slice must publish before replay completes');
+  assert.equal(parser.snapshot().frames[0].captureSeq, 2);
+  parser.dispose();
+});
+
 test('SMP wall timer flushes a silent partial transport without waiting for another frame', () => {
   const expiry = fakeExpiryScheduler();
   const parser = new SessionProtocolRuntime({ expiryScheduler: expiry.scheduler });

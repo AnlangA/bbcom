@@ -54,6 +54,7 @@ export function useAiWindowAuthority(
   const doListen = dependencies.listen ?? listen;
   const nextRequestId: () => string = dependencies.requestId ?? (() => crypto.randomUUID());
   let unlisten: (() => void) | null = null;
+  let disposed = false;
 
   async function requestAuthority(): Promise<void> {
     const requestId = nextRequestId();
@@ -75,18 +76,30 @@ export function useAiWindowAuthority(
       // Authority remains not-ready there instead of breaking the renderer.
       if (typeof doListen !== 'function') return;
       try {
-        unlisten = await doListen<unknown>(AI_BRIDGE_EVENTS.authoritySnapshot, (event) => {
+        const cleanup = await doListen<unknown>(AI_BRIDGE_EVENTS.authoritySnapshot, (event) => {
+          if (disposed) return;
           const next = applyAiAuthorityEnvelope(event.payload, revision.value, target);
           if (next === null) return;
           revision.value = next;
           ready.value = true;
         });
+        if (disposed) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
         await requestAuthority();
       } catch {
-        ready.value = false;
+        unlisten?.();
+        unlisten = null;
+        if (!disposed) ready.value = false;
       }
     });
-    onUnmounted(() => unlisten?.());
+    onUnmounted(() => {
+      disposed = true;
+      unlisten?.();
+      unlisten = null;
+    });
   }
 
   return { revision, ready };

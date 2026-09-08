@@ -1,8 +1,15 @@
 <template>
   <section v-if="workspace" class="workspace-panel" :aria-label="t('workspace.library')">
     <div class="workspace-heading">
-      <strong>{{ t('workspace.library') }}</strong>
-      <span class="workspace-save-health" role="status" aria-live="polite">
+      <strong class="workspace-heading-label"
+        ><FolderOpen class="icon-sm" />{{ t('workspace.library') }}</strong
+      >
+      <span
+        class="workspace-save-health"
+        :data-health="applicationSnapshot.saveHealth"
+        role="status"
+        aria-live="polite"
+      >
         {{ saveHealthLabel }}
       </span>
     </div>
@@ -18,9 +25,11 @@
 
     <div class="workspace-actions">
       <n-button size="tiny" :disabled="busy" @click="showCreate = true">
+        <template #icon><Plus class="icon-sm" /></template>
         {{ t('workspace.new') }}
       </n-button>
       <n-button size="tiny" :disabled="busy" @click="importProject">
+        <template #icon><FolderInput class="icon-sm" /></template>
         {{ t('workspace.import') }}
       </n-button>
       <n-button
@@ -28,6 +37,7 @@
         :disabled="busy || !applicationSnapshot.currentWorkspace"
         @click="exportProject"
       >
+        <template #icon><FolderOutput class="icon-sm" /></template>
         {{ t('workspace.export') }}
       </n-button>
       <n-button v-if="exporting" size="tiny" type="warning" @click="cancelProjectExport">
@@ -48,7 +58,8 @@
           :disabled="busy || project.active"
           @click="openProject(project.workspaceId)"
         >
-          <span>{{ project.name }}</span>
+          <Folder class="workspace-project-icon" :size="16" aria-hidden="true" />
+          <span :title="project.name">{{ project.name }}</span>
           <small>{{ saveHealthText(project.saveHealth) }}</small>
         </button>
         <n-button
@@ -97,7 +108,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { NButton, NInput, NModal, useMessage } from 'naive-ui';
-import { Trash2 } from '@lucide/vue';
+import { Folder, FolderOpen, FolderInput, FolderOutput, Plus, Trash2 } from '@lucide/vue';
 import { t } from '@/lib/i18n';
 import type { WorkspaceSaveHealth } from '@/generated/ipc-contracts';
 import {
@@ -252,10 +263,11 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
 
 <style scoped>
 .workspace-panel {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 14px;
+  padding: 20px 12px;
 }
 
 .workspace-heading,
@@ -267,6 +279,23 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
   gap: 6px;
 }
 
+.workspace-heading-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--font-size-data);
+  font-weight: var(--font-weight-semibold);
+}
+.workspace-save-health {
+  padding: 2px 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  white-space: nowrap;
+}
+.workspace-save-health[data-health='clean'] {
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
 .workspace-actions {
   justify-content: flex-start;
   flex-wrap: wrap;
@@ -295,7 +324,9 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
 
 .workspace-project-list {
   display: grid;
-  gap: 4px;
+  gap: 6px;
+  overflow: auto;
+  min-height: 0;
 }
 
 .workspace-project-row {
@@ -303,8 +334,9 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 2px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: var(--surface-lift);
+  border-radius: var(--radius-md);
 }
 
 .workspace-project-item {
@@ -314,14 +346,37 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 12px 9px;
+  cursor: pointer;
   border: 0;
   color: var(--text-primary);
   background: transparent;
   text-align: left;
 }
 
+.workspace-project-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.workspace-project-row.active .workspace-project-icon {
+  color: var(--color-primary);
+}
+.workspace-project-row:hover {
+  border-color: var(--border-strong);
+}
+.workspace-project-item:disabled {
+  cursor: default;
+}
+.workspace-project-item small {
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+}
+.workspace-current {
+  overflow-wrap: anywhere;
+  line-height: var(--line-height-relaxed);
+}
 .workspace-project-item span {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -329,7 +384,8 @@ function emptyCoordinatorSnapshot(): WorkspaceCoordinatorSnapshot {
 }
 
 .workspace-project-row.active {
-  border-color: var(--color-primary);
+  border-color: var(--color-primary-muted);
+  background: var(--color-primary-subtle);
 }
 
 .workspace-project-delete {

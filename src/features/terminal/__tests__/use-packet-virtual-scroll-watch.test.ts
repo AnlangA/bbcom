@@ -18,11 +18,16 @@ test('auto-scroll pins while parked at the tail, ignores frames while unpinned o
   };
   try {
     const frames = ref(5);
+    const contentVersion = ref(0);
     const auto = ref(true);
     const captured: ReturnType<typeof usePacketVirtualScroll>[] = [];
     const Host = defineComponent({
       setup() {
-        const api = usePacketVirtualScroll({ frameCount: frames, autoScroll: auto });
+        const api = usePacketVirtualScroll({
+          frameCount: frames,
+          autoScroll: auto,
+          contentVersion,
+        });
         captured.push(api);
         return () => h('div');
       },
@@ -46,6 +51,29 @@ test('auto-scroll pins while parked at the tail, ignores frames while unpinned o
     assert.equal(rafCallbacks.length, 1, 'one coalesced pin scheduled');
     rafCallbacks[0]!(0);
     assert.equal(scroller.scrollTop, 2000, 'pin jumps to the tail');
+
+    // Merged rows grow, and rolling retention replaces rows, at a fixed count.
+    rafCallbacks.length = 0;
+    contentVersion.value += 1;
+    await nextTick();
+    assert.equal(rafCallbacks.length, 1, 'content changes pin even with the same row count');
+    Object.defineProperty(scroller, 'scrollHeight', { value: 2200, configurable: true });
+    rafCallbacks[0]!(0);
+    assert.equal(scroller.scrollTop, 2200);
+    Object.defineProperty(scroller, 'scrollHeight', { value: 2000, configurable: true });
+
+    // Disabling following before a queued callback runs must cancel its effect.
+    rafCallbacks.length = 0;
+    contentVersion.value += 1;
+    await nextTick();
+    auto.value = false;
+    scroller.scrollTop = 1000;
+    rafCallbacks[0]!(0);
+    assert.equal(scroller.scrollTop, 1000, 'a queued pin respects the latest toggle');
+    await nextTick();
+    auto.value = true;
+    await nextTick();
+    rafCallbacks.at(-1)!(0);
 
     // Parked far above the bottom: frame arrivals schedule nothing.
     scroller.scrollTop = 0;

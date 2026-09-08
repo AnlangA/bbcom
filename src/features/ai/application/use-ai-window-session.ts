@@ -1,5 +1,6 @@
 import { getCurrentInstance, onMounted, onUnmounted, ref, shallowRef } from 'vue';
 import { emitNativeEvent as emit, listenNativeEvent as listen } from '@/features/platform/native';
+import { logger } from '@/lib/logger';
 import type { OperationRecord, RunAiRequest } from '@/generated/ipc-contracts';
 import {
   AI_BRIDGE_EVENTS,
@@ -85,6 +86,14 @@ export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
   // adapter. Actual window traffic never enables this compatibility branch.
   const strictProtocol = deps.emit === undefined || deps.strictProtocol === true;
   let unsubscribeActivities: (() => void) | null = null;
+  let disposed = false;
+
+  function detachListeners(): void {
+    unlisteners.forEach((unlisten) => unlisten());
+    unlisteners.length = 0;
+    unsubscribeActivities?.();
+    unsubscribeActivities = null;
+  }
 
   if (getCurrentInstance()) {
     onMounted(async () => {
@@ -93,45 +102,36 @@ export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
           activities.value = records;
         });
       }
-      unlisteners.push(
-        await doListen<unknown>(AI_BRIDGE_EVENTS.sessionSnapshot, (event) => {
-          receiveSessionSnapshot(event.payload);
-        }),
-      );
-      unlisteners.push(
-        await doListen<unknown>(AI_BRIDGE_EVENTS.chatSnapshot, (event) => {
-          receiveChatSnapshot(event.payload);
-        }),
-      );
-      unlisteners.push(
-        await doListen<unknown>(AI_BRIDGE_EVENTS.logContext, (event) => {
-          receiveLogContext(event.payload);
-        }),
-      );
-      unlisteners.push(
-        await doListen<unknown>(AI_BRIDGE_EVENTS.activityResult, (event) => {
-          receiveActivityResult(event.payload);
-        }),
-      );
-      unlisteners.push(
-        await doListen<unknown>(AI_BRIDGE_EVENTS.activitySnapshot, (event) => {
-          receiveActivitySnapshot(event.payload);
-        }),
-      );
-      unlisteners.push(
-        await doListen<unknown>(AI_BRIDGE_EVENTS.commandResult, (event) => {
-          receiveCommandResult(event.payload);
-        }),
-      );
-      await requestActivitySnapshot();
-      await refreshSession();
+      const receivers = [
+        [AI_BRIDGE_EVENTS.sessionSnapshot, receiveSessionSnapshot],
+        [AI_BRIDGE_EVENTS.chatSnapshot, receiveChatSnapshot],
+        [AI_BRIDGE_EVENTS.logContext, receiveLogContext],
+        [AI_BRIDGE_EVENTS.activityResult, receiveActivityResult],
+        [AI_BRIDGE_EVENTS.activitySnapshot, receiveActivitySnapshot],
+        [AI_BRIDGE_EVENTS.commandResult, receiveCommandResult],
+      ] as const;
+      try {
+        for (const [eventName, receive] of receivers) {
+          const unlisten = await doListen<unknown>(eventName, (event) => {
+            if (!disposed) receive(event.payload);
+          });
+          if (disposed) {
+            unlisten();
+            return;
+          }
+          unlisteners.push(unlisten);
+        }
+        await requestActivitySnapshot();
+        if (!disposed) await refreshSession();
+      } catch (error) {
+        detachListeners();
+        logger.debug('ai window session bridge unavailable:', error);
+      }
     });
 
     onUnmounted(() => {
-      unlisteners.forEach((unlisten) => unlisten());
-      unlisteners.length = 0;
-      unsubscribeActivities?.();
-      unsubscribeActivities = null;
+      disposed = true;
+      detachListeners();
       settleAll(pendingSnapshots, session.value);
       settleAll(pendingContexts, null);
       rejectAllActivities(pendingActivities);
@@ -156,10 +156,17 @@ export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
       return false;
     }
     revision.value = envelope.revision;
-    workspaceId.value = envelope.workspaceId;
+    acceptWorkspace(envelope.workspaceId);
     session.value = summary ? localSession(summary, session.value) : null;
     settleOne(pendingSnapshots, envelope.requestId, session.value);
     return true;
+  }
+
+  function acceptWorkspace(nextWorkspaceId: string): void {
+    // Session IDs are scoped to a workspace. Activity snapshots can arrive
+    // before the session summary, so clear the old binding at either boundary.
+    if (workspaceId.value !== nextWorkspaceId) session.value = null;
+    workspaceId.value = nextWorkspaceId;
   }
 
   function receiveChatSnapshot(value: unknown): boolean {
@@ -228,7 +235,7 @@ export function useAiWindowSession(deps: UseAiWindowSessionDeps = {}) {
       return false;
     }
     revision.value = envelope.revision;
-    workspaceId.value = envelope.workspaceId;
+    acceptWorkspace(envelope.workspaceId);
     activities.value = Object.freeze(
       envelope.payload.operations.filter((operation) => operation.kind === 'ai-request'),
     );
