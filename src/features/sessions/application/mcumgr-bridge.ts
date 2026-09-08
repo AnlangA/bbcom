@@ -209,7 +209,9 @@ export class McumgrBridge {
   }
 
   private progressChannel(action: string) {
+    const generation = this.runGeneration;
     return createMcumgrProgressChannel((progress: McumgrProgress) => {
+      if (generation !== this.runGeneration) return;
       if (this.status.value.kind !== 'busy' && this.status.value.kind !== 'progress') return;
       this.status.value = {
         kind: 'progress',
@@ -403,7 +405,17 @@ export class McumgrBridge {
     write: boolean,
     payload: string,
   ): Promise<string | null> {
+    if (this.busy.value) return null;
     const trimmed = payload.trim();
+    let payloadB64: string | null = null;
+    if (trimmed && !trimmed.startsWith('{')) {
+      try {
+        payloadB64 = bytesToBase64(parseHexBytes(trimmed));
+      } catch {
+        this.applyFailure(mcumgrFrontendError('invalid-input', 'send.error.invalidHex'));
+        return null;
+      }
+    }
     const op: McumgrOp = trimmed.startsWith('{')
       ? {
           kind: 'raw',
@@ -419,7 +431,7 @@ export class McumgrBridge {
           command,
           write,
           payloadJson: null,
-          payloadB64: trimmed ? bytesToBase64(parseHexBytes(trimmed)) : null,
+          payloadB64,
         };
     return this.execute('raw', op);
   }
@@ -490,7 +502,8 @@ function sleep(ms: number): Promise<void> {
 
 function parseHexBytes(value: string): Uint8Array {
   const compact = value.replace(/\s+/g, '');
-  if (compact.length === 0 || compact.length % 2 !== 0) throw new RangeError('hash must be hex');
+  if (!/^(?:[\da-f]{2})+$/i.test(compact))
+    throw new RangeError('payload must be complete hex bytes');
   const bytes = new Uint8Array(compact.length / 2);
   for (let i = 0; i < bytes.length; i += 1) {
     bytes[i] = Number.parseInt(compact.slice(i * 2, i * 2 + 2), 16);

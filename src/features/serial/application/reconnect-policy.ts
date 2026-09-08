@@ -161,6 +161,14 @@ export function createReconnectPolicy(deps: ReconnectPolicyDeps): ReconnectPolic
         return;
       }
       await serialTransactions.synchronizeConnection();
+      if (
+        generation !== state.connectionGeneration ||
+        state.intentionalClose ||
+        !state.isConnected.value ||
+        state.activeConnection?.generation !== generation
+      ) {
+        return;
+      }
       sink.setConnected(sessionId, true);
       options?.onReconnected?.();
     } catch (reconnectError) {

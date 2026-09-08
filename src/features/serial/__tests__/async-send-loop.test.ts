@@ -118,3 +118,49 @@ test('default scheduler clamps invalid intervals and contains task failures', as
     vi.useRealTimers();
   }
 });
+
+test('rapid restarts wait for the previous write and coalesce into one current send', async () => {
+  const first = deferred();
+  const restarted = deferred();
+  const scheduled: Array<() => void> = [];
+  const scheduler: LoopScheduler = {
+    schedule(callback) {
+      scheduled.push(callback);
+      return callback;
+    },
+    cancel() {},
+  };
+  let sends = 0;
+  let active = 0;
+  let maxActive = 0;
+  const loop = new AsyncSendLoop(
+    async () => {
+      sends += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await (sends === 1 ? first.promise : restarted.promise);
+      active -= 1;
+    },
+    () => 10,
+    undefined,
+    scheduler,
+  );
+
+  loop.start();
+  loop.stop();
+  assert.equal(loop.start(), true);
+  loop.stop();
+  assert.equal(loop.start(), true);
+  assert.equal(sends, 1, 'restarts must wait for the outstanding physical write');
+
+  first.resolve();
+  await flushMicrotasks();
+  assert.equal(sends, 2, 'only the latest restart sends after the old write finishes');
+  assert.equal(maxActive, 1);
+  assert.equal(scheduled.length, 0, 'the restarted write must settle before scheduling');
+
+  loop.stop();
+  restarted.resolve();
+  await flushMicrotasks();
+  assert.equal(scheduled.length, 0, 'stopping the restarted write leaves no future tick');
+});

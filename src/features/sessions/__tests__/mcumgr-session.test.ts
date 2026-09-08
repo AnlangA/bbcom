@@ -415,3 +415,53 @@ test('fs download reports the saved file name and byte count', async () => {
   assert.match(result, /log\.txt/);
   assert.match(result, /2048/);
 });
+
+test('settings writes preserve non-hex text and decode only complete hex bytes', async () => {
+  const harness = createHarness({ connected: false });
+  mocked.invoke.mockResolvedValue({ resultJson: '{}' });
+
+  await harness.controller.runSettingsWrite('label', 'name');
+  await harness.controller.runSettingsWrite('label', '1g');
+  await harness.controller.runSettingsWrite('label', '48 69');
+
+  const operations = mocked.invoke.mock.calls.map(([, args]) => {
+    return (args as { request: { op: { valueB64: string } } }).request.op;
+  });
+  assert.deepEqual(
+    operations.map((op) => op.valueB64),
+    ['bmFtZQ==', 'MWc=', 'SGk='],
+  );
+});
+
+test('invalid raw hex reports an input error without transmitting partial or zero bytes', async () => {
+  const harness = createHarness({ connected: false });
+  for (const payload of ['zz', '1g', '123']) {
+    assert.equal(await harness.controller.runRawOp(0, 1, false, payload), null);
+    assert.equal(harness.controller.status.value.kind, 'error');
+  }
+  assert.equal(mocked.invoke.mock.calls.length, 0);
+});
+
+test('late upload progress from a cancelled operation cannot overwrite a newer operation', async () => {
+  const harness = createHarness({ connected: false });
+  const channels: Array<{ onmessage: (progress: McumgrProgress) => void }> = [];
+  const completions: Array<(value: unknown) => void> = [];
+  mocked.invoke.mockImplementation((command, args) => {
+    if (command === 'mcumgr_cancel') return Promise.resolve();
+    channels.push((args as { onProgress: (typeof channels)[number] }).onProgress);
+    return new Promise((resolve) => completions.push(resolve));
+  });
+
+  const first = harness.controller.imageUpload('old-grant');
+  harness.controller.cancel();
+  await first;
+  const second = harness.controller.imageUpload('new-grant');
+  channels[1].onmessage({ phase: 'uploading', offset: 64, total: 1024 });
+  const currentStatus = { ...harness.controller.status.value };
+  channels[0].onmessage({ phase: 'uploading', offset: 900, total: 1024 });
+  assert.deepEqual(harness.controller.status.value, currentStatus);
+
+  completions[1]({ resultJson: '{}' });
+  await second;
+  completions[0]({ resultJson: '{}' });
+});

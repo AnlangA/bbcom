@@ -197,14 +197,14 @@ function workspaceMutationLogicalWeight(
   // Every other structured variant carries an unbounded JSON document
   // (feature state, session documents, AI messages, metadata), so its size
   // cannot be bounded by field counts alone. Walk the enumerable fields once
-  // with pure arithmetic — strings and keys at face length, widest decimal
+  // with pure arithmetic — UTF-8/JSON string bytes, widest decimal
   // form per number — which costs no serialization allocations.
   let bytes = 40 + command.kind.length;
   for (const [key, value] of Object.entries(command)) {
     if (key === 'kind') continue;
     const valueBytes = estimateStructuredJsonBytes(value, 0);
     if (valueBytes === null) return null;
-    bytes += key.length + 5 + valueBytes + 1;
+    bytes += jsonStringBytes(key) + 3 + valueBytes + 1;
     if (!Number.isSafeInteger(bytes)) return null;
   }
   return { bytes, frames: 0, singleLargeFrame: false };
@@ -220,13 +220,13 @@ function estimateStructuredJsonBytes(value: unknown, depth: number): number | nu
   if (value === null) return 4;
   switch (typeof value) {
     case 'undefined':
-      return 0; // JSON.stringify omits the key entirely
+      return 4; // Array entries serialize as null; object properties are omitted.
     case 'boolean':
       return 5;
     case 'number':
       return Number.isFinite(value) ? 24 : 4;
     case 'string':
-      return value.length + 2;
+      return jsonStringBytes(value);
     case 'object':
       break;
     case 'bigint':
@@ -250,8 +250,36 @@ function estimateStructuredJsonBytes(value: unknown, depth: number): number | nu
   for (const [key, item] of Object.entries(value)) {
     const itemBytes = estimateStructuredJsonBytes(item, depth + 1);
     if (itemBytes === null) return null;
-    bytes += key.length + 4 + itemBytes + 1;
+    bytes += jsonStringBytes(key) + 2 + itemBytes + 1;
     if (!Number.isSafeInteger(bytes)) return null;
+  }
+  return bytes;
+}
+
+/** UTF-8 byte count after JSON escaping, without allocating an encoded copy. */
+function jsonStringBytes(value: string): number {
+  let bytes = 2; // Surrounding quotes.
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) {
+      bytes += 2;
+    } else if (code < 0x20) {
+      bytes += code === 8 || code === 9 || code === 10 || code === 12 || code === 13 ? 2 : 6;
+    } else if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdfff) {
+      const next = value.charCodeAt(index + 1);
+      if (code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 6; // JSON.stringify escapes an unpaired surrogate as \uXXXX.
+      }
+    } else {
+      bytes += 3;
+    }
   }
   return bytes;
 }

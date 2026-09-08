@@ -34,7 +34,11 @@
             :aria-disabled="!mutationPolicy.userMutationsAllowed.value"
             @keydown="onTabKeydown(index, $event)"
           >
-            <span class="tab-status-dot" :class="{ connected: isConnected(session.id) }"></span>
+            <span
+              class="tab-status-dot"
+              :class="{ connected: isConnected(session.id) }"
+              aria-hidden="true"
+            ></span>
             <span class="tab-port">{{ session.portName }}</span>
           </button>
           <button
@@ -43,6 +47,7 @@
             :disabled="!mutationPolicy.userMutationsAllowed.value"
             @click.stop="closeSession(session.id)"
             :title="t('session.close')"
+            :aria-label="`${t('session.close')} ${session.portName}`"
           >
             <X class="icon-sm" />
           </button>
@@ -54,6 +59,7 @@
         :disabled="!mutationPolicy.userMutationsAllowed.value"
         @click="createSession"
         :title="t('session.newWithShortcut')"
+        :aria-label="t('session.newWithShortcut')"
       >
         <Plus class="icon-sm" />
       </button>
@@ -79,7 +85,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { Plus, X } from '@lucide/vue';
 import { useSessionActions } from '@/features/sessions/application/use-session-actions';
 import { t } from '@/lib/i18n';
@@ -108,6 +114,18 @@ const dragOverIndex = ref<number | null>(null);
 const undoFailure = ref<'conflict' | 'limit' | null>(null);
 const reorderAnnouncement = ref('');
 
+watch(
+  [activeId, () => sessions.value.length],
+  async () => {
+    await nextTick();
+    document.getElementById(`session-tab-${activeId.value}`)?.scrollIntoView?.({
+      block: 'nearest',
+      inline: 'nearest',
+    });
+  },
+  { immediate: true },
+);
+
 function onDragStart(index: number, e: DragEvent) {
   if (!mutationPolicy.userMutationsAllowed.value) return;
   dragIndex.value = index;
@@ -118,6 +136,7 @@ function onDragStart(index: number, e: DragEvent) {
 }
 
 function onDragOver(index: number) {
+  if (dragIndex.value === null || !mutationPolicy.userMutationsAllowed.value) return;
   dragOverIndex.value = index;
 }
 
@@ -130,6 +149,7 @@ function onDrop(toIndex: number) {
   if (dragIndex.value !== null && dragIndex.value !== toIndex) {
     catalog.reorder(dragIndex.value, toIndex);
   }
+  onDragEnd();
 }
 
 function onDragEnd() {
@@ -207,11 +227,13 @@ function tabTooltip(session: SerialSession): string {
 <style scoped>
 .session-tabs {
   flex-shrink: 0;
+  min-width: 0;
 }
 
 .undo-banner {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-sm);
   min-height: var(--control-h-lg);
   padding: var(--space-xs) var(--space-md);
@@ -239,10 +261,8 @@ function tabTooltip(session: SerialSession): string {
   align-items: center;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-subtle);
-  /* Left/right padding matches the toolbar below so the tabs' content edge and
-     the toolbar's content edge share a vertical line, instead of visually
-     stepping inward by 4px. */
-  padding: var(--space-sm) var(--space-md) 0;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
   height: var(--tab-bar-height);
   min-height: var(--tab-bar-height);
 }
@@ -252,24 +272,26 @@ function tabTooltip(session: SerialSession): string {
   gap: var(--space-xs);
   overflow-x: auto;
   flex: 1;
+  min-width: 0;
   align-self: stretch;
+  scrollbar-width: thin;
 }
 
 .tabs-list::-webkit-scrollbar {
-  height: 0;
+  height: 2px;
 }
 
 .tab-item {
   display: flex;
   align-items: center;
   gap: 7px;
-  min-width: 0;
+  flex: 0 0 auto;
+  min-width: 112px;
   max-width: 230px;
   padding: 0 10px;
   cursor: pointer;
   border: 1px solid transparent;
-  border-bottom: 0;
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  border-radius: var(--radius-md);
   font-size: var(--font-size-data);
   color: var(--text-muted);
   background: transparent;
@@ -288,7 +310,9 @@ function tabTooltip(session: SerialSession): string {
   display: flex;
   align-items: center;
   gap: 7px;
+  flex: 1;
   min-width: 0;
+  align-self: stretch;
   padding: 0;
   border: 0;
   color: inherit;
@@ -308,16 +332,14 @@ function tabTooltip(session: SerialSession): string {
 }
 
 .tab-item.active {
-  background: linear-gradient(180deg, var(--edge-highlight), transparent), var(--bg-primary);
+  background: var(--bg-primary);
   color: var(--text-primary);
   border-color: var(--border-subtle);
-  box-shadow:
-    inset 0 2px 0 var(--color-primary),
-    var(--shadow-sm);
+  box-shadow: var(--shadow-sm);
 }
 
 .tab-item.active .tab-port {
-  color: var(--text-primary);
+  color: var(--color-primary);
 }
 
 .tab-item.dragging {
@@ -335,6 +357,10 @@ function tabTooltip(session: SerialSession): string {
 .tab-item.disabled:hover {
   background: transparent;
   color: var(--text-muted);
+}
+
+.tab-item.disabled .tab-button {
+  cursor: not-allowed;
 }
 
 .tab-item.drag-over {
@@ -361,28 +387,12 @@ function tabTooltip(session: SerialSession): string {
 .tab-status-dot.connected {
   background: var(--accent-green);
   box-shadow: 0 0 0 3px var(--accent-green-subtle);
-  animation: tab-dot-pulse 2.4s ease infinite;
-}
-
-@keyframes tab-dot-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 3px var(--accent-green-subtle);
-  }
-  50% {
-    box-shadow: 0 0 0 5px transparent;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .tab-status-dot.connected {
-    animation: none;
-  }
 }
 
 .tab-close {
   width: 20px;
   height: 20px;
+  flex-shrink: 0;
   display: grid;
   place-items: center;
   background: transparent;
@@ -400,6 +410,7 @@ function tabTooltip(session: SerialSession): string {
 }
 
 .tab-item:hover .tab-close,
+.tab-item:focus-within .tab-close,
 .tab-item.active .tab-close,
 .tab-close:focus-visible {
   opacity: 1;
@@ -412,24 +423,19 @@ function tabTooltip(session: SerialSession): string {
 
 .tab-add {
   background: var(--bg-tertiary);
-  border: 1px dashed var(--border-color);
+  border: 1px solid var(--border-subtle);
   color: var(--text-dim);
   cursor: pointer;
   width: var(--control-h-md);
   height: var(--control-h-md);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   display: grid;
   place-items: center;
   flex-shrink: 0;
   transition:
     color var(--transition-normal),
     border-color var(--transition-normal),
-    background var(--transition-normal),
-    transform var(--transition-normal);
-  margin-left: 6px;
-  /* Vertically centered by the header's align-items:center; a manual bottom
-     margin would push the + button below the tabs' baseline, making it read as
-     misaligned with the tab strip. */
+    background var(--transition-normal);
 }
 
 .tab-add:hover {
@@ -437,6 +443,5 @@ function tabTooltip(session: SerialSession): string {
   border-style: solid;
   color: var(--accent-green);
   background: var(--accent-green-subtle);
-  transform: scale(1.08);
 }
 </style>

@@ -26,6 +26,7 @@ export interface SessionRuntimeStatusTransitionPort {
 }
 
 interface ParticipantProgress {
+  quiesceStarted: Set<string>;
   quiesced: Set<string>;
   disposed: Set<string>;
   activated: Set<string>;
@@ -51,6 +52,9 @@ export class WorkspaceTransitionCoordinator implements WorkspaceRuntimeLifecycle
     const progress = this.forTransition(context.transitionId);
     for (const participant of this.participants) {
       if (progress.quiesced.has(participant.id)) continue;
+      // A participant can stop some resources before its async drain rejects.
+      // Include it in rollback even when the full phase did not complete.
+      progress.quiesceStarted.add(participant.id);
       await participant.quiesce(context);
       progress.quiesced.add(participant.id);
     }
@@ -71,7 +75,7 @@ export class WorkspaceTransitionCoordinator implements WorkspaceRuntimeLifecycle
     for (const participant of [...this.participants].reverse()) {
       if (
         progress.restored.has(participant.id) ||
-        (!progress.quiesced.has(participant.id) && !progress.disposed.has(participant.id))
+        (!progress.quiesceStarted.has(participant.id) && !progress.disposed.has(participant.id))
       ) {
         continue;
       }
@@ -110,6 +114,7 @@ export class WorkspaceTransitionCoordinator implements WorkspaceRuntimeLifecycle
     let progress = this.progress.get(transitionId);
     if (!progress) {
       progress = {
+        quiesceStarted: new Set(),
         quiesced: new Set(),
         disposed: new Set(),
         activated: new Set(),

@@ -97,6 +97,28 @@ export function useAiSessionBridge() {
   let observedWorkspaceId = currentWorkspaceId();
   let unsubscribeOperations: (() => void) | null = null;
   let unsubscribeWorkspace: (() => void) | null = null;
+  let disposed = false;
+
+  async function attachListener(
+    eventName: string,
+    handler: (event: { payload: unknown }) => void,
+  ): Promise<void> {
+    if (disposed) return;
+    const unlisten = await listen<unknown>(eventName, (event) => {
+      if (!disposed) handler(event);
+    });
+    if (disposed) unlisten();
+    else unlisteners.push(unlisten);
+  }
+
+  function detachListeners(): void {
+    unlisteners.forEach((unlisten) => unlisten());
+    unlisteners.length = 0;
+    unsubscribeOperations?.();
+    unsubscribeOperations = null;
+    unsubscribeWorkspace?.();
+    unsubscribeWorkspace = null;
+  }
 
   function currentWorkspaceId(): string {
     return workspace?.application.snapshot().currentWorkspace?.workspaceId ?? NO_AI_WORKSPACE_ID;
@@ -497,115 +519,97 @@ export function useAiSessionBridge() {
           void Promise.all([sendAuthority(), sendSnapshot(), sendActivitySnapshot()]);
         }) ?? null;
       try {
-        unlisteners.push(
-          await listen<unknown>(AI_BRIDGE_EVENTS.authorityRequest, (event) => {
-            const envelope = receiveEnvelope(event.payload);
+        await attachListener(AI_BRIDGE_EVENTS.authorityRequest, (event) => {
+          const envelope = receiveEnvelope(event.payload);
+          if (
+            envelope &&
+            envelope.revision <= revision &&
+            isPayloadKind(envelope.payload, 'authority-request')
+          ) {
+            void sendAuthority(envelope.requestId);
+          }
+        });
+        await attachListener(AI_BRIDGE_EVENTS.sessionRequest, (event) => {
+          const envelope = receiveEnvelope(event.payload);
+          if (
+            envelope &&
+            envelope.revision <= revision &&
+            isPayloadKind(envelope.payload, 'session-snapshot-request')
+          ) {
+            void sendSnapshot(envelope.requestId);
+          }
+        });
+        await attachListener(AI_BRIDGE_EVENTS.logContextRequest, (event) => {
+          const envelope = receiveEnvelope(event.payload);
+          if (
+            envelope &&
+            envelope.workspaceId === currentWorkspaceId() &&
+            envelope.revision <= revision &&
+            isPayloadKind(envelope.payload, 'log-context-request') &&
+            isKnownSession(envelope.sessionId)
+          ) {
+            if (responseBindings.has(envelope.requestId)) return;
             if (
-              envelope &&
-              envelope.revision <= revision &&
-              isPayloadKind(envelope.payload, 'authority-request')
-            ) {
-              void sendAuthority(envelope.requestId);
-            }
-          }),
-        );
-        unlisteners.push(
-          await listen<unknown>(AI_BRIDGE_EVENTS.sessionRequest, (event) => {
-            const envelope = receiveEnvelope(event.payload);
-            if (
-              envelope &&
-              envelope.revision <= revision &&
-              isPayloadKind(envelope.payload, 'session-snapshot-request')
-            ) {
-              void sendSnapshot(envelope.requestId);
-            }
-          }),
-        );
-        unlisteners.push(
-          await listen<unknown>(AI_BRIDGE_EVENTS.logContextRequest, (event) => {
-            const envelope = receiveEnvelope(event.payload);
-            if (
-              envelope &&
-              envelope.workspaceId === currentWorkspaceId() &&
-              envelope.revision <= revision &&
-              isPayloadKind(envelope.payload, 'log-context-request') &&
-              isKnownSession(envelope.sessionId)
-            ) {
-              if (responseBindings.has(envelope.requestId)) return;
-              if (
-                !responseBindings.remember(
-                  envelope.requestId,
-                  envelope.workspaceId,
-                  envelope.sessionId,
-                  envelope.revision,
-                )
+              !responseBindings.remember(
+                envelope.requestId,
+                envelope.workspaceId,
+                envelope.sessionId,
+                envelope.revision,
               )
-                return;
-              void sendLogContext(envelope.requestId, envelope.sessionId);
-            }
-          }),
-        );
-        unlisteners.push(
-          await listen<unknown>(AI_BRIDGE_EVENTS.commandApply, (event) => {
-            const envelope = receiveEnvelope(event.payload);
-            if (!envelope || !isPayloadKind(envelope.payload, 'command-apply')) return;
-            if (
-              envelope.workspaceId === currentWorkspaceId() &&
-              envelope.revision === revision &&
-              envelope.sessionId === session.value?.id &&
-              isAiCommandApplyEvent(envelope.payload)
-            ) {
-              appStore.applyAiCommand(envelope.payload.command);
+            )
               return;
-            }
-            // Receipts make a dropped command visible to the AI window (which
-            // can offer a retry) instead of the old silent no-op.
-            const reason = !isAiCommandApplyEvent(envelope.payload)
-              ? 'invalid-payload'
-              : envelope.workspaceId !== currentWorkspaceId()
-                ? 'workspace-mismatch'
-                : envelope.sessionId !== session.value?.id
-                  ? 'session-mismatch'
-                  : 'revision-mismatch';
-            void sendCommandRejection(envelope.requestId, envelope.sessionId, reason);
-          }),
-        );
-        unlisteners.push(
-          await listen<unknown>(AI_BRIDGE_EVENTS.sessionUpdate, (event) => {
-            handleSessionUpdate(event.payload);
-          }),
-        );
-        unlisteners.push(
-          await listen<unknown>(AI_BRIDGE_EVENTS.activityRun, (event) => {
-            void handleActivityRun(event.payload);
-          }),
-        );
-        unlisteners.push(
-          await listen<unknown>(AI_BRIDGE_EVENTS.activityCancel, (event) => {
-            void handleActivityCancel(event.payload);
-          }),
-        );
-        unlisteners.push(
-          await listen<unknown>(AI_BRIDGE_EVENTS.activitySnapshotRequest, (event) => {
-            const envelope = receiveEnvelope(event.payload);
-            if (envelope && isPayloadKind(envelope.payload, 'activity-snapshot-request')) {
-              void sendActivitySnapshot(envelope.requestId);
-            }
-          }),
-        );
+            void sendLogContext(envelope.requestId, envelope.sessionId);
+          }
+        });
+        await attachListener(AI_BRIDGE_EVENTS.commandApply, (event) => {
+          const envelope = receiveEnvelope(event.payload);
+          if (!envelope || !isPayloadKind(envelope.payload, 'command-apply')) return;
+          if (
+            envelope.workspaceId === currentWorkspaceId() &&
+            envelope.revision === revision &&
+            envelope.sessionId === session.value?.id &&
+            isAiCommandApplyEvent(envelope.payload)
+          ) {
+            appStore.applyAiCommand(envelope.payload.command);
+            return;
+          }
+          // Receipts make a dropped command visible to the AI window (which
+          // can offer a retry) instead of the old silent no-op.
+          const reason = !isAiCommandApplyEvent(envelope.payload)
+            ? 'invalid-payload'
+            : envelope.workspaceId !== currentWorkspaceId()
+              ? 'workspace-mismatch'
+              : envelope.sessionId !== session.value?.id
+                ? 'session-mismatch'
+                : 'revision-mismatch';
+          void sendCommandRejection(envelope.requestId, envelope.sessionId, reason);
+        });
+        await attachListener(AI_BRIDGE_EVENTS.sessionUpdate, (event) => {
+          handleSessionUpdate(event.payload);
+        });
+        await attachListener(AI_BRIDGE_EVENTS.activityRun, (event) => {
+          void handleActivityRun(event.payload);
+        });
+        await attachListener(AI_BRIDGE_EVENTS.activityCancel, (event) => {
+          void handleActivityCancel(event.payload);
+        });
+        await attachListener(AI_BRIDGE_EVENTS.activitySnapshotRequest, (event) => {
+          const envelope = receiveEnvelope(event.payload);
+          if (envelope && isPayloadKind(envelope.payload, 'activity-snapshot-request')) {
+            void sendActivitySnapshot(envelope.requestId);
+          }
+        });
       } catch (error) {
+        detachListeners();
         logger.debug('ai-session event bridge unavailable:', error);
+        return;
       }
-      await Promise.all([sendAuthority(), sendSnapshot()]);
+      if (!disposed) await Promise.all([sendAuthority(), sendSnapshot()]);
     });
 
     onUnmounted(() => {
-      unlisteners.forEach((unlisten) => unlisten());
-      unlisteners.length = 0;
-      unsubscribeOperations?.();
-      unsubscribeOperations = null;
-      unsubscribeWorkspace?.();
-      unsubscribeWorkspace = null;
+      disposed = true;
+      detachListeners();
     });
   }
 

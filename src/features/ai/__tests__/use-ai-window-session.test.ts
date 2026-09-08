@@ -303,6 +303,44 @@ test('useAiWindowSession: strict session and chat receivers reject malformed, st
   }
 });
 
+test.each(['session', 'activity'] as const)(
+  'workspace changes clear reused session IDs when the %s snapshot arrives first',
+  (firstSnapshot) => {
+    const { api } = strictSetup();
+    const messages = [
+      { id: 'old-message', role: 'user', content: 'workspace A logs', timestamp: 1 },
+    ];
+    api.receiveSessionSnapshot(mainEnvelope({ kind: 'session-snapshot', session: summary() }));
+    api.receiveChatSnapshot(
+      mainEnvelope({
+        kind: 'chat-snapshot',
+        snapshot: { sessionId: 'sess-1', messages },
+      }),
+    );
+    // Regular updates in the same workspace must preserve the bounded chat snapshot.
+    api.receiveSessionSnapshot(mainEnvelope({ kind: 'session-snapshot', session: summary() }));
+    expect(api.session.value?.logAiMessages).toEqual(messages);
+    const destination = { workspaceId: 'workspace-b', revision: 3 };
+    if (firstSnapshot === 'activity') {
+      expect(
+        api.receiveActivitySnapshot(
+          mainEnvelope({ kind: 'activity-snapshot', operations: [] }, destination),
+        ),
+      ).toBe(true);
+      expect(api.session.value).toBeNull();
+      expect(api.createRequestBinding()).toBeNull();
+    }
+    expect(
+      api.receiveSessionSnapshot(
+        mainEnvelope({ kind: 'session-snapshot', session: summary() }, destination),
+      ),
+    ).toBe(true);
+    expect(api.workspaceId.value).toBe('workspace-b');
+    expect(api.session.value?.id).toBe('sess-1');
+    expect(api.session.value?.logAiMessages).toEqual([]);
+  },
+);
+
 test('useAiWindowSession: strict request bindings preserve workspace/session and resolve snapshots and contexts', async () => {
   const { api, emitted } = strictSetup(['unused', 'refresh', 'context', 'explicit']);
   expect(api.createRequestBinding()).toBeNull();
@@ -642,4 +680,59 @@ test('useAiWindowSession: mounted lifecycle wires all listeners and disposes pen
   await expect(context).resolves.toBeNull();
   await expect(activity).rejects.toThrow('view was disposed');
   expect(unlisteners.every((unlisten) => unlisten.mock.calls.length === 1)).toBe(true);
+});
+
+test('useAiWindowSession: a listener resolving after unmount is detached without further setup', async () => {
+  let completeListen!: (unlisten: () => void) => void;
+  let receive!: (event: { payload: unknown }) => void;
+  const unlisten = vi.fn();
+  const emit = vi.fn(async () => undefined);
+  const listen = vi.fn((_event: string, handler: typeof receive) => {
+    receive = handler;
+    return new Promise<() => void>((resolve) => {
+      completeListen = resolve;
+    });
+  });
+  let api!: ReturnType<typeof useAiWindowSession>;
+  const wrapper = mount(
+    defineComponent({
+      setup() {
+        api = useAiWindowSession({ strictProtocol: true, emit, listen: listen as never });
+        return () => h('div');
+      },
+    }),
+  );
+
+  wrapper.unmount();
+  completeListen(unlisten);
+  await flushPromises();
+  receive({ payload: mainEnvelope({ kind: 'session-snapshot', session: summary() }) });
+
+  expect(unlisten).toHaveBeenCalledOnce();
+  expect(listen).toHaveBeenCalledOnce();
+  expect(emit).not.toHaveBeenCalled();
+  expect(api.session.value).toBeNull();
+});
+
+test('useAiWindowSession: partial listener setup is cleaned up when a later registration fails', async () => {
+  const unlisten = vi.fn();
+  const listen = vi
+    .fn()
+    .mockResolvedValueOnce(unlisten)
+    .mockRejectedValueOnce(new Error('native event transport unavailable'));
+  const emit = vi.fn(async () => undefined);
+  const wrapper = mount(
+    defineComponent({
+      setup() {
+        useAiWindowSession({ strictProtocol: true, emit, listen: listen as never });
+        return () => h('div');
+      },
+    }),
+  );
+  await flushPromises();
+  wrapper.unmount();
+
+  expect(unlisten).toHaveBeenCalledOnce();
+  expect(listen).toHaveBeenCalledTimes(2);
+  expect(emit).not.toHaveBeenCalled();
 });

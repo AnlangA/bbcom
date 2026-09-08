@@ -1,5 +1,8 @@
 <template>
-  <n-config-provider :theme-overrides="themeOverrides">
+  <n-config-provider
+    :theme="appStore.theme === 'dark' ? darkTheme : null"
+    :theme-overrides="activeThemeOverrides"
+  >
     <n-message-provider>
       <div ref="contentEl" class="ai-window-content">
         <AiPanel />
@@ -9,15 +12,16 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, onErrorCaptured, ref, watch } from 'vue';
-import { NConfigProvider, NMessageProvider } from 'naive-ui';
+import { computed, nextTick, onMounted, onUnmounted, onErrorCaptured, ref, watch } from 'vue';
+import { darkTheme, NConfigProvider, NMessageProvider } from 'naive-ui';
 import { resizeAiWindow } from '@/features/platform/native';
 import AiPanel from '@/features/ai/ui/AiPanel.vue';
 import { useAiWindowAuthority } from './features/ai-activity';
 import { useAppStore } from '@/features/settings/store/app-store';
-import { themeOverrides } from '@/design-system/naive-theme';
+import { getThemeOverrides } from '@/design-system/naive-theme';
 
 const appStore = useAppStore();
+const activeThemeOverrides = computed(() => getThemeOverrides(appStore.theme));
 useAiWindowAuthority({
   setTheme: appStore.setTheme,
   setLocale: appStore.setLocale,

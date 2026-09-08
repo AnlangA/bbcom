@@ -1,19 +1,20 @@
 <template>
   <section class="mc-section">
-    <article class="mc-card">
-      <header class="mc-card-head">{{ t('mcumgr.fs.path') }}</header>
-      <div class="mc-row">
+    <McumgrActionCard :title="t('mcumgr.fs.targetTitle')" :description="t('mcumgr.fs.targetHint')">
+      <label class="mc-field">
+        <span class="mc-field-label">{{ t('mcumgr.fs.path') }}</span>
         <n-input
           v-model:value="fsPathModel"
-          size="tiny"
-          class="mc-grow"
+          size="small"
+          class="mc-path-input"
+          :input-props="{ 'aria-label': t('mcumgr.fs.path') }"
           :placeholder="t('mcumgr.fs.path')"
           :disabled="busy"
         />
-      </div>
-      <div class="mc-actions">
+      </label>
+      <template #actions>
         <n-button
-          size="tiny"
+          size="small"
           secondary
           :disabled="busy || !fsPathModel.trim()"
           @click="mcumgr.execute('fs-status', { kind: 'fs-status', path: fsPathModel.trim() })"
@@ -21,31 +22,50 @@
           {{ t('mcumgr.fs.status') }}
         </n-button>
         <n-button
-          size="tiny"
+          size="small"
           secondary
           :disabled="busy || !fsPathModel.trim()"
           @click="mcumgr.execute('fs-hash', { kind: 'fs-hash', path: fsPathModel.trim() })"
         >
           {{ t('mcumgr.fs.hash') }}
         </n-button>
-        <n-button size="tiny" secondary :disabled="busy || !fsPathModel.trim()" @click="onDownload">
-          <template #icon><Download class="icon-sm" /></template>
-          {{ t('mcumgr.fs.download') }}
-        </n-button>
-        <n-button size="tiny" secondary :disabled="busy || !fsPathModel.trim()" @click="onUpload">
-          <template #icon><Upload class="icon-sm" /></template>
-          {{ t('mcumgr.fs.upload') }}
-        </n-button>
         <n-button
-          size="tiny"
+          size="small"
           quaternary
+          class="mc-close-action"
           :disabled="busy"
           @click="mcumgr.execute('fs-close', { kind: 'fs-close' })"
         >
           {{ t('mcumgr.fs.close') }}
         </n-button>
-      </div>
-    </article>
+      </template>
+    </McumgrActionCard>
+    <McumgrActionCard
+      :title="t('mcumgr.fs.transferTitle')"
+      :description="t('mcumgr.fs.transferHint')"
+      tone="accent"
+    >
+      <template #actions>
+        <n-button
+          size="small"
+          secondary
+          :disabled="busy || !fsPathModel.trim()"
+          @click="onDownload"
+        >
+          <template #icon><Download class="icon-sm" /></template>
+          {{ t('mcumgr.fs.download') }}
+        </n-button>
+        <n-button
+          size="small"
+          type="primary"
+          :disabled="busy || !fsPathModel.trim()"
+          @click="onUpload"
+        >
+          <template #icon><Upload class="icon-sm" /></template>
+          {{ t('mcumgr.fs.upload') }}
+        </n-button>
+      </template>
+    </McumgrActionCard>
   </section>
 </template>
 
@@ -54,6 +74,7 @@ import { computed } from 'vue';
 import { NButton, NInput } from 'naive-ui';
 import { Download, Upload } from '@lucide/vue';
 import { t } from '@/lib/i18n';
+import McumgrActionCard from './McumgrActionCard.vue';
 import type { SessionMcumgrController } from '@/features/sessions/application/use-session-mcumgr';
 
 const props = defineProps<{
@@ -84,39 +105,30 @@ async function onDownload(): Promise<void> {
 .mc-section {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-md);
+  min-width: 0;
 }
 
-.mc-card {
+.mc-field {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: linear-gradient(180deg, var(--surface-lift), transparent), var(--bg-secondary);
-  box-shadow: var(--shadow-sm);
+  gap: var(--space-sm);
+  min-width: 0;
 }
 
-.mc-card-head {
-  font-size: var(--font-size-2xs);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-dim);
-  font-weight: 600;
-  white-space: nowrap;
+.mc-field-label {
+  color: var(--text-secondary);
+  font-size: var(--font-size-data);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-normal);
 }
 
-.mc-row,
-.mc-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+.mc-path-input :deep(.n-input__input-el) {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-data);
 }
 
-.mc-grow {
-  flex: 1;
-  min-width: 140px;
+.mc-close-action {
+  margin-inline-start: auto;
 }
 </style>

@@ -58,6 +58,36 @@ describe('WorkspaceTransitionCoordinator', () => {
     expect(calls).toEqual(['session:quiesce']);
   });
 
+  it('restores a participant that partially quiesced before rejecting', async () => {
+    const calls: string[] = [];
+    const coordinator = new WorkspaceTransitionCoordinator([
+      participant('first', calls),
+      {
+        ...participant('failing', calls),
+        async quiesce() {
+          calls.push('failing:quiesce');
+          throw new Error('drain failed after stopping resources');
+        },
+      },
+      participant('untouched', calls),
+    ]);
+    await expect(
+      coordinator.quiesce({
+        transitionId: 'partial',
+        previousWorkspaceId: 'old',
+        persistence: {} as never,
+      }),
+    ).rejects.toThrow('drain failed');
+    const restoreContext = {
+      transitionId: 'partial',
+      previousWorkspaceId: 'old',
+      failedWorkspaceId: null,
+    };
+    await coordinator.restore(restoreContext);
+    await coordinator.restore(restoreContext);
+    expect(calls).toEqual(['first:quiesce', 'failing:quiesce', 'failing:restore', 'first:restore']);
+  });
+
   it('continues reverse restore and reports all failures', async () => {
     const restoreFirst = vi.fn(() => {
       throw new Error('first');

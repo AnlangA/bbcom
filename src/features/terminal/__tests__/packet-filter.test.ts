@@ -23,6 +23,36 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+test.each(['FRAME', 'MERGED'] as const)(
+  '%s restores the retained search immediately after a session view remount',
+  (mode) => {
+    const retainedSearch = ref('alpha');
+    const frames = ref([
+      makeFrame('match', 'RX', [...new TextEncoder().encode('alpha')]),
+      makeFrame('other', 'TX', [...new TextEncoder().encode('beta')]),
+    ]);
+    for (let mount = 0; mount < 2; mount += 1) {
+      const scope = effectScope();
+      const filter = scope.run(() =>
+        usePacketFilter({
+          frames,
+          searchInput: retainedSearch,
+          searchMode: ref<SearchMode>('TEXT'),
+          packetViewMode: ref<PacketViewMode>(mode),
+          getHexSearchData: (frame) => formatHex(frame.data).replace(/\s/g, '').toLowerCase(),
+          getTextSearchData: (frame) => formatUtf8(frame.data).toLowerCase(),
+        }),
+      )!;
+      assert.equal(filter.searchInput.value, 'alpha');
+      assert.deepEqual(
+        filter.visibleFrames.value.map((frame) => frame.id),
+        [mode === 'FRAME' ? 'match' : 'merged-match'],
+      );
+      scope.stop();
+    }
+  },
+);
+
 test('filters by direction and debounced text search', async () => {
   const scope = effectScope();
   await scope.run(async () => {

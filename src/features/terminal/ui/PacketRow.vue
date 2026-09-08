@@ -92,7 +92,7 @@ const dataTitle = computed(() => {
     ? preview
     : `${props.frame.omittedBytes.toLocaleString()} bytes omitted; ` + (preview ?? props.formatted);
   const meta = captureMeta.value;
-  return meta ? `${meta}\n${body}` : body;
+  return meta ? (body ? `${meta}\n${body}` : meta) : body;
 });
 const formattedLines = computed(() => splitLogDisplayLines(props.formatted));
 const formattedHtml = computed(() =>

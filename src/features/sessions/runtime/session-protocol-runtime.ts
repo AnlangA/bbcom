@@ -229,11 +229,12 @@ export class SessionProtocolRuntime {
         this.queueReplayLive(timeline);
         return this.recordLiveThroughput(totalBytes(timeline), now);
       }
-      const before = this.liveFrameCount();
+      const before = this.processedFrameCount();
       this.feedSmpFrames(timeline);
       this.armSmpExpiry();
       return (
-        this.recordLiveThroughput(totalBytes(timeline), now) || this.liveFrameCount() !== before
+        this.recordLiveThroughput(totalBytes(timeline), now) ||
+        this.processedFrameCount() !== before
       );
     }
 
@@ -265,10 +266,10 @@ export class SessionProtocolRuntime {
       return throughputChanged;
     }
 
-    const before = this.liveFrameCount();
+    const before = this.processedFrameCount();
     this.feedSmpFrames(appended);
     this.armSmpExpiry();
-    return throughputChanged || this.liveFrameCount() !== before;
+    return throughputChanged || this.processedFrameCount() !== before;
   }
 
   /** Reset the current stream after terminal data is explicitly cleared. */
@@ -410,7 +411,7 @@ export class SessionProtocolRuntime {
     if (!job || !parser || job.generation !== generation || generation !== this.replayGeneration)
       return;
     const startedAt = this.replayScheduler.now();
-    const before = this.liveFrameCount();
+    const before = this.processedFrameCount();
     let processed = 0;
 
     while (
@@ -432,7 +433,7 @@ export class SessionProtocolRuntime {
       processed += 1;
     }
 
-    if (this.liveFrameCount() !== before) this.emitChange();
+    if (this.processedFrameCount() !== before) this.emitChange();
     if (job.historyIndex < job.history.length || job.liveIndex < job.live.length) {
       this.scheduleReplay(generation);
       return;
@@ -583,8 +584,10 @@ export class SessionProtocolRuntime {
     }
   }
 
-  private liveFrameCount(): number {
-    return this.parsedFrames.length - this.parsedFrameHead;
+  private processedFrameCount(): number {
+    // Once retention is full, every newly parsed record evicts an old one.
+    // Include evictions so a full window still publishes each changed tail.
+    return this.droppedFrames + this.parsedFrames.length - this.parsedFrameHead;
   }
 
   private emitChange(): void {

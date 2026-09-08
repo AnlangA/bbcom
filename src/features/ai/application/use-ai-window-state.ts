@@ -19,28 +19,31 @@ export interface UseAiWindowStateDeps {
 export function useAiWindowState(deps: UseAiWindowStateDeps = {}) {
   const visible = ref(false);
   let unlisten: (() => void) | null = null;
+  let disposed = false;
   const getState = deps.getState ?? getAiWindowState;
   const showWindow = deps.show ?? showAiWindow;
   const hideWindow = deps.hide ?? hideAiWindow;
 
   async function refresh() {
+    if (disposed) return;
     try {
       const state = await getState();
-      visible.value = state.visible;
+      if (!disposed) visible.value = state.visible;
     } catch (e) {
       logger.debug('ai-window state query failed:', e);
-      visible.value = false;
+      if (!disposed) visible.value = false;
     }
   }
 
   async function toggle() {
+    if (disposed) return;
     try {
       if (visible.value) {
         await hideWindow();
-        visible.value = false;
+        if (!disposed) visible.value = false;
       } else {
         await showWindow();
-        visible.value = true;
+        if (!disposed) visible.value = true;
       }
     } catch (e) {
       // User clicked the AI toggle but show/hide failed — surface it so the
@@ -56,9 +59,13 @@ export function useAiWindowState(deps: UseAiWindowStateDeps = {}) {
     onMounted(() => {
       void refresh();
       void listenNativeEvent<AiWindowState>('ai-window-state', (event) => {
-        visible.value = event.payload.visible;
+        if (!disposed) visible.value = event.payload.visible;
       })
         .then((cleanup) => {
+          if (disposed) {
+            cleanup();
+            return;
+          }
           unlisten = cleanup;
         })
         .catch((e) => {
@@ -67,6 +74,7 @@ export function useAiWindowState(deps: UseAiWindowStateDeps = {}) {
     });
 
     onUnmounted(() => {
+      disposed = true;
       unlisten?.();
       unlisten = null;
     });

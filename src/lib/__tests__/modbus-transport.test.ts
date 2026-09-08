@@ -66,6 +66,30 @@ test('scanResponse RTU holds a partial frame for the next call', () => {
   assert.equal(remainder.length, partial.length);
 });
 
+test('scanResponse RTU recovers after noise and a corrupted response without losing a split tail', () => {
+  const response = frameRequest('rtu', 1, Uint8Array.of(0x03, 0x02, 0, 42));
+  const corrupt = response.slice();
+  corrupt[corrupt.length - 1] ^= 0xff;
+  const first = scanResponse('rtu', Uint8Array.of(0xff, ...corrupt, ...response.slice(0, -1)));
+  assert.equal(first.frames.length, 0);
+  const second = scanResponse('rtu', Uint8Array.of(...first.remainder, response.at(-1)!));
+  assert.deepEqual(second.frames, [response]);
+  assert.equal(second.remainder.length, 0);
+});
+
+test('scanResponse RTU does not mistake payload bytes for an early CRC boundary', () => {
+  const prefix = frameRequest('rtu', 1, Uint8Array.of(0x03, 0x04));
+  const response = frameRequest(
+    'rtu',
+    1,
+    Uint8Array.of(0x03, 0x04, prefix[3], prefix[4], 0x56, 0x78),
+  );
+  const scanned = scanResponse('rtu', response);
+  assert.deepEqual(scanned.frames, [response]);
+  assert.equal(scanned.remainder.length, 0);
+  assert.equal(parseFrame('rtu', scanned.frames[0])?.kind, 'read-regs');
+});
+
 test('scanResponse PDU slices fixed-length frames when expectedLength is given', () => {
   // PDU transport: 2 fixed-length 5-byte frames, then a leftover byte.
   const buf = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 99]);

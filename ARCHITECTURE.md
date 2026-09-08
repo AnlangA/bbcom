@@ -82,6 +82,21 @@ Hard rules:
 
 ## Runtime Ownership
 
+### Presentation boundaries
+
+- `AppShell` coordinates the workspace; `AppSidebar` and `WorkspaceWelcome`
+  own navigation and empty-state presentation. `useSidebarResize` owns drag
+  cleanup without depending on a store.
+- `SessionToolbar` adapts runtime/settings values to connection, view-switching,
+  and display-control components. These children only accept props and emit intent.
+- `SendPanel` binds session settings to `SendOptions` and `useSendComposer`.
+  The composer snapshots payload/mode before asynchronous work, allows only one
+  pending preparation/send, and preserves drafts edited while a send is pending.
+- CSS tokens and `getThemeOverrides` provide matching dark/light colors to native
+  controls and Naive UI, including concrete colors for Naive's alpha calculations.
+
+### Services
+
 - **Workspace application service:** sole durability owner for sessions, frames,
   layout metadata, and feature projections. SQLite workspaces use schema v5;
   older on-disk schemas are rejected (no in-place migration).

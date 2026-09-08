@@ -40,10 +40,13 @@ impl AiCancellation {
 
     pub async fn cancelled(&self) {
         loop {
+            // Register before checking the flag: notify_waiters does not retain
+            // a permit for futures created after the cancellation broadcast.
+            let notified = self.notify.notified();
             if self.cancelled.load(Ordering::Acquire) {
                 return;
             }
-            self.notify.notified().await;
+            notified.await;
         }
     }
 }

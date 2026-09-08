@@ -53,45 +53,41 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-test('image tab uses equal action tiles without an always-visible update blurb', () => {
+test('image actions and the shared upgrade option remain discoverable', () => {
   const wrapper = mountTab();
-  const text = wrapper.text();
-  assert.match(text, /固件升级/);
-  assert.match(text, /镜像上传/);
-  assert.match(text, /查看/);
-  assert.match(text, /启动标记/);
-  assert.equal(wrapper.findAll('.mc-card').length, 4);
-  assert.equal(wrapper.findAll('.mc-action-tile').length, 2);
-  assert.equal(wrapper.find('.mc-card-copy').exists(), false);
-  assert.equal(text.includes(t('mcumgr.image.updateHint')), false);
-  assert.equal(text.includes(t('mcumgr.image.uploadHint')), false);
-  assert.equal(text.includes(t('mcumgr.image.updateCaption')), true);
-  assert.equal(text.includes(t('mcumgr.image.uploadCaption')), true);
-  assert.equal(text.includes('仅升级'), true);
-  assert.equal(text.includes('拒绝旧版本'), false);
+  for (const key of [
+    'mcumgr.image.update',
+    'mcumgr.image.upload',
+    'mcumgr.image.state',
+    'mcumgr.image.slotInfo',
+    'mcumgr.image.test',
+    'mcumgr.image.confirm',
+    'mcumgr.image.erase',
+  ]) {
+    buttonByLabel(wrapper, t(key));
+  }
+  assert.equal(wrapper.text().includes(t('mcumgr.image.upgradeOnly')), true);
+  assert.equal(wrapper.find('[role="checkbox"]').exists(), true);
 });
 
-test('firmware actions use matching compact primary buttons', () => {
+test('firmware upgrade is the primary action and image upload remains secondary', () => {
   const wrapper = mountTab();
   const upgrade = buttonByLabel(wrapper, t('mcumgr.image.update'));
   const upload = buttonByLabel(wrapper, t('mcumgr.image.upload'));
-  const classOf = (node: ReturnType<typeof buttonByLabel>) => node.classes().join(' ');
-  assert.match(classOf(upgrade), /tiny/);
-  assert.match(classOf(upload), /tiny/);
-  assert.match(classOf(upgrade), /primary/);
-  assert.match(classOf(upload), /primary/);
-
-  assert.equal(wrapper.find('.mc-action-content .mc-hover-tip-host.is-block').exists(), false);
-  assert.equal(/block/.test(classOf(upgrade)), false);
-  assert.equal(/block/.test(classOf(upload)), false);
+  assert.equal(upgrade.attributes('aria-label'), t('mcumgr.image.update'));
+  assert.equal(upload.attributes('aria-label'), t('mcumgr.image.upload'));
+  assert.equal(upgrade.classes().includes('transfer-action'), true);
+  assert.equal(upload.classes().includes('transfer-action'), true);
+  assert.equal(upgrade.classes().includes('is-primary'), true);
+  assert.equal(upload.classes().includes('is-primary'), false);
+  assert.equal(wrapper.text().includes(t('mcumgr.image.updateCaption')), true);
+  assert.equal(wrapper.text().includes(t('mcumgr.image.uploadCaption')), true);
 });
 
-test('every image action and section header exposes hover hint copy', () => {
+test('image actions, hash entry, and version protection retain their hover help', () => {
   const wrapper = mountTab();
   const hints = hintTexts(wrapper);
   for (const key of [
-    'mcumgr.group.inspectHint',
-    'mcumgr.group.bootHint',
     'mcumgr.image.updateHint',
     'mcumgr.image.uploadHint',
     'mcumgr.image.upgradeOnlyHint',

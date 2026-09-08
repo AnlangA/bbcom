@@ -113,6 +113,7 @@
             appStore.softWrapEnabled,
             appStore.showTimestamp,
             row.highlightClass,
+            row.highlightLabel,
             row.striped,
             row.frame.id === selectedFrameId,
           ]"
@@ -333,6 +334,7 @@ const {
     packetRowHeight(visibleFrames.value[index], appStore.displayMode, preserveLineBreaks.value),
   itemKey: (index) => visibleFrames.value[index]?.id ?? index,
   rowSizeVersion,
+  contentVersion: framesVersion,
 });
 
 const displayLabel = computed(() =>
@@ -397,6 +399,7 @@ function onKeydown(e: KeyboardEvent) {
     e.preventDefault();
     const frame = frames.find((f) => f.id === selectedFrameId.value);
     if (frame) {
+      if (!canCopyFrames([frame])) return;
       const materialized = materializeFrame(frame);
       const text = packetKeyboardCopyText(materialized, formatFrame);
       navigator.clipboard.writeText(text).then(
@@ -432,6 +435,7 @@ function onRowContextMenu(e: MouseEvent, frame: DataFrame) {
 async function handleCtxSelect(key: string) {
   ctxShow.value = false;
   if (!ctxFrame) return;
+  if (!canCopyFrames([ctxFrame])) return;
   const text = packetContextCopyText(key as PacketContextCopyKey, materializeFrame(ctxFrame), {
     formatFrame,
     stripAnsi,
@@ -451,11 +455,7 @@ async function handleCopySelect(key: string) {
   const frames = mergedFilteredCopy
     ? visibleFrames.value
     : framesForPacketCopy(copyKey, props.frames, filteredFrames.value);
-  const { tooLarge } = packetCopySizeStatus(frames);
-  if (tooLarge) {
-    message.warning(t('packet.copyTooLarge'));
-    return;
-  }
+  if (!canCopyFrames(frames)) return;
   // A visible rope exposes only its 64 KiB display tail. Materialize it after
   // the size guard and only for the user-initiated filtered-copy action.
   const copyFrames = mergedFilteredCopy ? frames.map(materializeFrame) : frames;
@@ -466,6 +466,12 @@ async function handleCopySelect(key: string) {
   } catch {
     message.error(t('packet.copyFailed'));
   }
+}
+
+function canCopyFrames(frames: readonly DataFrame[]): boolean {
+  if (!packetCopySizeStatus(frames).tooLarge) return true;
+  message.warning(t('packet.copyTooLarge'));
+  return false;
 }
 
 onMounted(() => {

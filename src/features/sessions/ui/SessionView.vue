@@ -18,6 +18,8 @@
       :capture-has-data="captureHasData"
       :is-connected="runtime.sessionLinkUp.value"
       :is-connecting="runtime.isConnecting.value"
+      :is-closing="runtime.isClosing.value"
+      :close-failed="runtime.closeFailed.value"
       :reconnecting="runtime.reconnecting.value"
       :error="runtime.error.value"
       :connection-conflict="runtime.connectionFailure.value?.conflict"
@@ -438,6 +440,8 @@ function handleExportCancel() {
 <style scoped>
 .session-view {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -452,6 +456,7 @@ function handleExportCancel() {
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+  min-width: 0;
 }
 
 .send-area {

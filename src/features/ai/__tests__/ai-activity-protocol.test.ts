@@ -1,11 +1,16 @@
+// @vitest-environment happy-dom
+
 import assert from 'node:assert/strict';
-import { test } from 'vitest';
+import { expect, test, vi } from 'vitest';
+import { defineComponent, h } from 'vue';
+import { flushPromises, mount } from '@vue/test-utils';
 import {
   AiActivityCancelledError,
   AiActivityCenter,
   applyAiAuthorityEnvelope,
   createAiBridgeEnvelope,
   parseAiBridgeEnvelope,
+  useAiWindowAuthority,
 } from '@/features/ai-activity/index.ts';
 import { OperationRegistry } from '@/features/platform/application/operation-registry.ts';
 import { useAiWindowSession } from '@/features/ai/application/use-ai-window-session.ts';
@@ -294,4 +299,33 @@ test('main authority applies theme, locale and key state only at a non-stale rev
   assert.deepEqual(applied, ['theme:light', 'locale:en']);
   assert.deepEqual(key, { configured: true, durability: 'session' });
   assert.equal(applyAiAuthorityEnvelope(authority, 9, target), null);
+});
+
+test('authority listener arriving after unmount is released without requesting state', async () => {
+  let completeListen!: (cleanup: () => void) => void;
+  const cleanup = vi.fn();
+  const emit = vi.fn(async () => undefined);
+  const wrapper = mount(
+    defineComponent({
+      setup() {
+        useAiWindowAuthority(
+          { setTheme: vi.fn(), setLocale: vi.fn(), aiKeyStatus: { configured: false } },
+          {
+            emit,
+            listen: (() =>
+              new Promise<() => void>((resolve) => {
+                completeListen = resolve;
+              })) as never,
+          },
+        );
+        return () => h('div');
+      },
+    }),
+  );
+  wrapper.unmount();
+  completeListen(cleanup);
+  await flushPromises();
+
+  expect(cleanup).toHaveBeenCalledOnce();
+  expect(emit).not.toHaveBeenCalled();
 });

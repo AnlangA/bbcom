@@ -14,6 +14,7 @@ const bridge = vi.hoisted(() => ({
   listeners: new Map<string, EventHandler>(),
   emitted: [] as Array<{ event: string; payload: unknown }>,
   unlisten: vi.fn(),
+  listenGate: null as Promise<void> | null,
   runAiRequest: vi.fn(),
   cancelAiRequest: vi.fn(async () => undefined),
   debug: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock('@/features/platform/native', () => ({
     bridge.emitted.push({ event, payload });
   },
   listenNativeEvent: async (event: string, handler: EventHandler) => {
+    if (bridge.listenGate) await bridge.listenGate;
     bridge.listeners.set(event, handler);
     return () => {
       bridge.unlisten(event);
@@ -158,6 +160,7 @@ async function flush(): Promise<void> {
 
 beforeEach(() => {
   bridge.listeners.clear();
+  bridge.listenGate = null;
   bridge.emitted.length = 0;
   bridge.unlisten.mockClear();
   bridge.runAiRequest.mockReset();
@@ -189,6 +192,28 @@ beforeEach(() => {
     addLogAiMessage: vi.fn(),
     clearLogAiMessages: vi.fn(),
   };
+});
+
+test('unmount during native listener registration releases the late listener and stops setup', async () => {
+  let completeListen!: () => void;
+  bridge.listenGate = new Promise((resolve) => {
+    completeListen = resolve;
+  });
+  const wrapper = mount(
+    defineComponent({
+      setup: () => ({ aiBridge: useAiSessionBridge() }),
+      template: '<div />',
+    }),
+  );
+  wrapper.unmount();
+  const emittedBeforeCleanup = bridge.emitted.length;
+  completeListen();
+  await flush();
+
+  expect(bridge.unlisten).toHaveBeenCalledOnce();
+  expect(bridge.listeners.size).toBe(0);
+  expect(bridge.unsubscribeWorkspace).toHaveBeenCalledOnce();
+  expect(bridge.emitted.length).toBe(emittedBeforeCleanup);
 });
 
 test('mounted AI bridge validates requests, publishes snapshots, and cleans up listeners', async () => {

@@ -48,20 +48,24 @@ import {
 
 let nextRuntimeInstanceId = 0;
 
+function isSerialPortClosed(result: SerialStopResult): boolean {
+  return (
+    result.pendingOpen !== 'unsettled' &&
+    (result.portClose === 'no-active-port' ||
+      result.portClose === 'close-acknowledged' ||
+      result.portClose === 'force-close-acknowledged')
+  );
+}
+
 function assertSerialStopEvidence(result: SerialStopResult): void {
   const stoppedWithoutConnection =
     result.watch === 'not-installed' && result.rxDrainStatus === 'no-active-connection';
   const drainedActiveConnection =
     result.watch === 'unwatch-acknowledged' && result.rxDrainStatus === 'idle-gap-observed';
-  const physicalCloseProven =
-    result.pendingOpen !== 'unsettled' &&
-    (result.portClose === 'no-active-port' ||
-      result.portClose === 'close-acknowledged' ||
-      result.portClose === 'force-close-acknowledged');
   if (
     result.rxDrainGuarantee !== 'guaranteed' ||
     (!stoppedWithoutConnection && !drainedActiveConnection) ||
-    !physicalCloseProven
+    !isSerialPortClosed(result)
   ) {
     throw new Error(
       `serial stop did not prove shutdown: watch=${result.watch}, status=${result.rxDrainStatus}, guarantee=${result.rxDrainGuarantee}, pendingOpen=${result.pendingOpen}, portClose=${result.portClose}`,
@@ -144,6 +148,8 @@ export interface SessionRuntimeController {
   readonly sessionId: string;
   readonly instanceId: string;
   readonly isConnecting: Readonly<Ref<boolean>>;
+  readonly isClosing: Readonly<Ref<boolean>>;
+  readonly closeFailed: Readonly<Ref<boolean>>;
   readonly isConnected: Readonly<Ref<boolean>>;
   /** UI link state: open handle or MCUmgr port-yield in progress. */
   readonly sessionLinkUp: Readonly<Ref<boolean>>;
@@ -240,23 +246,46 @@ export function useSessionRuntimeController(
       appendAutoLogFrame: (id, frame) => automation.autoLog.appendFrame(id, frame),
     },
   });
-  const connectionErrorText = computed(() =>
-    transceiver.connectionFailure.value
+  const opening = ref(false);
+  const disconnecting = ref(false);
+  const openCancelled = ref(false);
+  const closeFailed = ref(false);
+  let openPromise: Promise<boolean> | null = null;
+  let disconnectPromise: Promise<void> | null = null;
+  const connectionErrorText = computed(() => {
+    if (closeFailed.value) return t('serial.error.closeFailed');
+    return transceiver.connectionFailure.value
       ? serialConnectionFailureMessage(transceiver.connectionFailure.value)
-      : transceiver.error.value,
-  );
+      : transceiver.error.value;
+  });
   const serialClosing = transceiver.isClosing ?? ref(false);
+  const isClosing = computed(
+    () => serialClosing.value || disconnecting.value || (opening.value && openCancelled.value),
+  );
+  const isConnecting = computed(
+    () => !isClosing.value && (opening.value || transceiver.isConnecting.value),
+  );
   const stopRuntimeStatusProjection = watch(
     [
-      transceiver.isConnecting,
+      isConnecting,
       transceiver.isConnected,
-      serialClosing,
+      isClosing,
       transceiver.reconnecting,
       transceiver.connectionFailure,
       transceiver.error,
       transceiver.totalDroppedBytes,
+      closeFailed,
     ],
-    ([isConnecting, isConnected, isClosing, reconnecting, failure, error, droppedBytes]) => {
+    ([
+      isConnecting,
+      isConnected,
+      isClosing,
+      reconnecting,
+      failure,
+      error,
+      droppedBytes,
+      closeFailed,
+    ]) => {
       const phase = isClosing
         ? 'closing'
         : reconnecting
@@ -265,13 +294,13 @@ export function useSessionRuntimeController(
             ? 'connecting'
             : isConnected
               ? 'connected'
-              : failure || error
+              : failure || error || closeFailed
                 ? 'failed'
                 : 'stopped';
       runtimeStatusRegistry.publish(session.value.id, {
         phase,
         droppedBytes,
-        failure: failure?.error.code ?? error,
+        failure: closeFailed ? 'SERIAL_CLOSE_FAILED' : (failure?.error.code ?? error),
       });
     },
     { immediate: true, flush: 'sync' },
@@ -488,25 +517,98 @@ export function useSessionRuntimeController(
   let disposePromise: Promise<void> | null = null;
   let stopConnectionWatch: (() => void) | null = null;
 
-  async function connect(): Promise<boolean> {
-    if (disposed) return false;
+  function connect(): Promise<boolean> {
     // While MCUmgr owns the port the toolbar cannot open a competing handle.
-    if (mcumgr.busy.value) return false;
-    const ok = await transceiver.start();
-    if (!ok && transceiver.error.value) {
-      notifications.error(
-        transceiver.connectionFailure.value
-          ? serialConnectionFailureMessage(transceiver.connectionFailure.value)
-          : t('serial.error.connectFailed', { error: transceiver.error.value }),
-      );
+    if (disposed || preparePromise || mcumgr.busy.value || isClosing.value || closeFailed.value) {
+      return Promise.resolve(false);
     }
-    return ok;
+    if (openPromise) return openPromise;
+    if (transceiver.isConnected.value) return Promise.resolve(true);
+    if (transceiver.isConnecting.value || transceiver.reconnecting.value) {
+      return Promise.resolve(false);
+    }
+    // Publish the pending promise before native callbacks can re-enter the UI.
+    const task = Promise.resolve()
+      .then(() => (openCancelled.value || disposed ? false : transceiver.start()))
+      .then((ok) => {
+        if (openCancelled.value || disposed) return false;
+        if (!ok && transceiver.error.value) {
+          notifications.error(
+            transceiver.connectionFailure.value
+              ? serialConnectionFailureMessage(transceiver.connectionFailure.value)
+              : t('serial.error.connectFailed', { error: transceiver.error.value }),
+          );
+        }
+        return ok;
+      })
+      .catch((error: unknown) => {
+        if (!openCancelled.value && !disposed) {
+          logger.warn('serial connection failed for', session.value.id, error);
+          notifications.error(
+            t('serial.error.connectFailed', {
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
+        return false;
+      })
+      .finally(() => {
+        if (openPromise === task) {
+          openPromise = null;
+          opening.value = false;
+        }
+      });
+    openPromise = task;
+    openCancelled.value = false;
+    opening.value = true;
+    return task;
   }
 
-  async function disconnect(): Promise<void> {
-    if (mcumgr.busy.value) return;
+  function disconnect(): Promise<void> {
+    if (disconnectPromise) return disconnectPromise;
+    if (disposed || mcumgr.busy.value) return Promise.resolve();
+    const pendingOpen = openPromise;
+    const task = Promise.resolve()
+      .then(async () => {
+        let result: SerialStopResult | undefined;
+        let stopError: unknown;
+        try {
+          result = await transceiver.stop();
+        } catch (error) {
+          stopError = error;
+        }
+        if (pendingOpen) {
+          // A bounded native stop can return before open/watch finishes. Keep
+          // the toolbar closing until that candidate settles and can be cleaned.
+          await pendingOpen;
+          if (!result || result.pendingOpen === 'unsettled' || transceiver.isConnected.value) {
+            result = await transceiver.stop();
+          }
+        }
+        if (!result) throw stopError;
+        if (!isSerialPortClosed(result)) reportCloseFailure();
+      })
+      .catch((error: unknown) => {
+        logger.warn('serial close failed for', session.value.id, error);
+        reportCloseFailure();
+      })
+      .finally(() => {
+        if (disconnectPromise === task) {
+          disconnectPromise = null;
+          disconnecting.value = false;
+        }
+      });
+    disconnectPromise = task;
+    if (pendingOpen) openCancelled.value = true;
+    closeFailed.value = false;
+    disconnecting.value = true;
     stopSendLoop();
-    await transceiver.stop();
+    return task;
+  }
+
+  function reportCloseFailure(): void {
+    closeFailed.value = true;
+    notifications.error(t('serial.error.closeFailed'));
   }
 
   async function send(data: string, isHex: boolean): Promise<boolean> {
@@ -573,6 +675,7 @@ export function useSessionRuntimeController(
 
   function prepareShutdown(): Promise<void> {
     if (preparePromise) return preparePromise;
+    if (openPromise) openCancelled.value = true;
     preparePromise = (async () => {
       const failures: unknown[] = [];
       for (const stop of [
@@ -595,6 +698,8 @@ export function useSessionRuntimeController(
 
       // Stop the native stream before closing auto-log. This lets the serial
       // adapter enqueue its final RX bytes before the log footer is committed.
+      // Use the bounded native stop directly: manual disconnect can wait for
+      // an open indefinitely, while shutdown must report incomplete evidence.
       try {
         assertSerialStopEvidence(await transceiver.stop());
       } catch (error) {
@@ -666,7 +771,9 @@ export function useSessionRuntimeController(
   return {
     sessionId: session.value.id,
     instanceId,
-    isConnecting: readonly(transceiver.isConnecting),
+    isConnecting: readonly(isConnecting),
+    isClosing: readonly(isClosing),
+    closeFailed: readonly(closeFailed),
     isConnected: readonly(transceiver.isConnected),
     sessionLinkUp: readonly(sessionLinkUp),
     reconnecting: readonly(transceiver.reconnecting),

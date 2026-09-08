@@ -10,6 +10,8 @@ interface PacketVirtualScrollOptions {
   itemKey?: (index: number) => string | number;
   /** Invalidates cached estimates when row sizing settings/content change. */
   rowSizeVersion?: Ref<unknown>;
+  /** New content can arrive without changing the row count (merged/rolling views). */
+  contentVersion?: Ref<unknown>;
 }
 
 const ROW_HEIGHT = 28;
@@ -53,6 +55,7 @@ export function usePacketVirtualScroll({
   rowSize,
   itemKey,
   rowSizeVersion,
+  contentVersion,
 }: PacketVirtualScrollOptions) {
   const scrollRef = ref<HTMLDivElement | null>(null);
   const shouldAutoScroll = ref(true);
@@ -114,6 +117,8 @@ export function usePacketVirtualScroll({
 
   function pinToBottom() {
     autoScrollRafId = null;
+    // The user may scroll away or disable following after this RAF was queued.
+    if (!autoScroll.value || !shouldAutoScroll.value) return;
     const el = scrollRef.value;
     if (!el) return;
     // Instant jump (not smooth): during streaming, an animated scroll lags the
@@ -122,7 +127,7 @@ export function usePacketVirtualScroll({
     el.scrollTop = el.scrollHeight;
   }
 
-  watch(frameCount, () => {
+  watch([frameCount, () => contentVersion?.value], () => {
     if (!shouldAutoScroll.value || !autoScroll.value) return;
     if (autoScrollRafId !== null) return; // already scheduled — coalesce
     autoScrollRafId = requestAnimationFrame(pinToBottom);

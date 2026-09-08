@@ -1,9 +1,10 @@
 /**
  * Semantic color tokens — palette, surfaces, text, borders, accents.
- * Light-theme overrides live at the bottom; brand/direction hues are shared.
+ * Light-theme overrides live at the bottom, including readable accent hues.
  */
 
 :root {
+  color-scheme: dark;
   /* Color palette */
   --color-primary: #3ddc97;
   --color-primary-hover: #5ee6aa;
@@ -130,11 +131,25 @@
 
 /*
  * Light theme — applied via <html data-theme="light">. Only the surfaces,
- * text, borders, shadows and overlays are inverted; brand/direction hues
- * (mint, teal, azure) read well on both backgrounds so they are unchanged.
+ * text, borders, shadows and overlays are inverted. Accent foregrounds use
+ * deeper hues to remain readable on white surfaces.
  */
 :root[data-theme='light'] {
   color-scheme: light;
+
+  --color-primary: #087f5b;
+  --color-primary-hover: #096b4e;
+  --color-primary-pressed: #07563f;
+  --color-success: #087f5b;
+  --color-error: #c22f3e;
+  --color-warning: #946000;
+  --color-info: #1d63c5;
+  --color-tx: #087e72;
+  --color-rx: #1d63c5;
+  --accent-green-hover: #06665c;
+  --accent-blue-hover: #174fa0;
+  --accent-orange: #a54c11;
+  --accent-violet: #7452b8;
 
   --color-primary-subtle: rgba(61, 220, 151, 0.16);
   --color-primary-muted: rgba(61, 220, 151, 0.26);
@@ -161,7 +176,7 @@
   --text-primary: #0f1620;
   --text-secondary: #303a45;
   --text-muted: #5c6773;
-  --text-dim: #8a96a3;
+  --text-dim: #687684;
   --text-inverse: #ffffff;
   --overlay-backdrop: rgba(15, 22, 32, 0.42);
   --overlay-backdrop-strong: rgba(15, 22, 32, 0.68);
@@ -170,7 +185,7 @@
   --border-subtle: rgba(15, 22, 32, 0.07);
   --border-color: rgba(15, 22, 32, 0.11);
   --border-strong: rgba(15, 22, 32, 0.18);
-  --border-focus: rgba(61, 220, 151, 0.7);
+  --border-focus: rgba(8, 127, 91, 0.7);
 
   --accent-red-subtle: rgba(205, 60, 75, 0.12);
   --accent-red-border: rgba(205, 60, 75, 0.4);

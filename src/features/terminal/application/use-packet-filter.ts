@@ -44,7 +44,9 @@ export function usePacketFilter({
 }: PacketFilterOptions) {
   const directionFilter = retainedDirectionFilter ?? ref<DirectionFilter>('ALL');
   const searchInput = retainedSearchInput ?? ref('');
-  const searchQuery = ref('');
+  // A retained search is already user input, not a new keystroke to debounce.
+  // Restore it immediately when the session's view is mounted again.
+  const searchQuery = ref(searchInput.value);
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
   let cachedFiltered: readonly DataFrame[] = [];

@@ -86,7 +86,9 @@ function currentTrafficSample(): { txBytes: number; rxBytes: number; frames: num
   return {
     txBytes: rawData?.txBytes.value ?? props.session?.txBytes ?? 0,
     rxBytes: rawData?.rxBytes.value ?? props.session?.rxBytes ?? 0,
-    frames: rawData?.frames.value.length ?? props.session?.frames.length ?? 0,
+    frames:
+      (rawData?.txFrames.value ?? props.session?.txFrames ?? 0) +
+      (rawData?.rxFrames.value ?? props.session?.rxFrames ?? 0),
   };
 }
 
@@ -105,6 +107,7 @@ const frameRate = ref(0);
 watch(
   connected,
   (connected) => {
+    now.value = Date.now();
     if (timer) {
       clearInterval(timer);
       timer = null;
@@ -131,7 +134,8 @@ watch(
             txRate.value = Math.round(txDelta / elapsed);
             rxRate.value = Math.round(rxDelta / elapsed);
           }
-          // Frames-per-second: sample the live frame count delta. Guard the
+          // Sample cumulative traffic so buffer eviction and capture pause do
+          // not change the reported throughput. Guard the
           // divisor the same way as the byte rates — a zero-ms interval tick
           // would otherwise render "Infinity/s".
           if (elapsed > 0) {
@@ -148,6 +152,7 @@ watch(
     } else {
       txRate.value = 0;
       rxRate.value = 0;
+      frameRate.value = 0;
     }
   },
   { immediate: true },
@@ -182,7 +187,7 @@ const dataRate = computed(() => {
 
 const duration = computed(() => {
   if (!props.session?.startTime) return '--:--:--';
-  return formatDuration(now.value - props.session.startTime);
+  return formatDuration(Math.max(0, now.value - props.session.startTime));
 });
 
 /** Buffer level: how full the rolling frame buffer is. */

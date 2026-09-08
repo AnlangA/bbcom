@@ -1,7 +1,16 @@
-import { test } from 'vitest';
+// @vitest-environment happy-dom
+
+import { expect, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
-import { effectScope } from 'vue';
+import { defineComponent, effectScope, h } from 'vue';
+import { flushPromises, mount } from '@vue/test-utils';
 import { useAiWindowState } from '@/features/ai/application/use-ai-window-state.ts';
+
+const native = vi.hoisted(() => ({ listen: vi.fn() }));
+vi.mock('@/features/platform/native', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/features/platform/native')>()),
+  listenNativeEvent: native.listen,
+}));
 
 function setup(deps: {
   getState?: () => Promise<{ visible: boolean }>;
@@ -84,4 +93,37 @@ test('useAiWindowState: refresh failure falls back to hidden', async () => {
   await api.refresh();
 
   assert.equal(api.visible.value, false, 'refresh failure resets to hidden');
+});
+
+test('useAiWindowState: late event registration and refresh cannot outlive the mounted view', async () => {
+  let completeListen!: (cleanup: () => void) => void;
+  let completeRefresh!: (state: { visible: boolean }) => void;
+  const cleanup = vi.fn();
+  native.listen.mockImplementationOnce(
+    () =>
+      new Promise<() => void>((resolve) => {
+        completeListen = resolve;
+      }),
+  );
+  let api!: ReturnType<typeof useAiWindowState>;
+  const wrapper = mount(
+    defineComponent({
+      setup() {
+        api = useAiWindowState({
+          getState: () =>
+            new Promise((resolve) => {
+              completeRefresh = resolve;
+            }),
+        });
+        return () => h('div');
+      },
+    }),
+  );
+  wrapper.unmount();
+  completeListen(cleanup);
+  completeRefresh({ visible: true });
+  await flushPromises();
+
+  expect(cleanup).toHaveBeenCalledOnce();
+  expect(api.visible.value).toBe(false);
 });

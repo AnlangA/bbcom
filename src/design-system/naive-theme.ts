@@ -59,8 +59,8 @@ export const themeOverrides: GlobalThemeOverrides = {
     borderPressedPrimary: '1px solid var(--color-primary-pressed)',
     // Secondary/dashed/ghost buttons run these through changeColor() to derive
     // alpha variants, so var() strings would throw in seemly's rgba parser.
-    // The primary palette is theme-invariant (light only overrides surfaces),
-    // so these literals mirror colors.css for both palettes.
+    // These literals mirror the dark palette; getThemeOverrides supplies
+    // the matching concrete light palette.
     colorPrimary: '#3ddc97',
     colorHoverPrimary: '#5ee6aa',
     colorPressedPrimary: '#26b879',
@@ -153,3 +153,30 @@ export const themeOverrides: GlobalThemeOverrides = {
     railColor: 'var(--bg-inset)',
   },
 };
+
+/** Concrete colors are required by Naive UI's alpha-color calculations. */
+const lightThemeOverrides: GlobalThemeOverrides = {
+  ...themeOverrides,
+  common: {
+    ...themeOverrides.common,
+    primaryColor: '#087f5b',
+    primaryColorHover: '#096b4e',
+    primaryColorPressed: '#07563f',
+    primaryColorSuppl: '#087f5b',
+    successColor: '#087f5b',
+    errorColor: '#c22f3e',
+    warningColor: '#946000',
+    infoColor: '#1d63c5',
+  },
+  Button: {
+    ...themeOverrides.Button,
+    colorPrimary: '#087f5b',
+    colorHoverPrimary: '#096b4e',
+    colorPressedPrimary: '#07563f',
+    colorFocusPrimary: '#096b4e',
+  },
+};
+
+export function getThemeOverrides(theme: 'dark' | 'light'): GlobalThemeOverrides {
+  return theme === 'light' ? lightThemeOverrides : themeOverrides;
+}

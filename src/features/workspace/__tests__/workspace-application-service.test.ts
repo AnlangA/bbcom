@@ -879,6 +879,35 @@ test('logical byte partitioning keeps mutations whole and rejects one oversized 
   assert.equal(oversized.application.snapshot().unsavedMutationCount, 1);
 });
 
+test('logical byte partitioning accounts for UTF-8 and escaped JSON strings and keys', async () => {
+  const system = createSystem([definition('workspace', 0)]);
+  assert.equal((await system.application.openWorkspace('workspace')).outcome, 'completed');
+  const value = '中😀"\\\u0000\n'.repeat(16 * 1024);
+  const key = '中"'.repeat(1024);
+  assert.deepEqual(
+    system.application.queueConfigMutations(
+      ['first', 'second'].map((id) => ({
+        kind: 'upsert-feature-state' as const,
+        entityId: `plugin:${id}`,
+        payload: { feature: 'plugin', state: { [key]: value } },
+      })),
+    ),
+    { accepted: true },
+  );
+  assert.equal((await system.application.flush()).outcome, 'completed');
+  assert.deepEqual(
+    system.applyRequests.map((request) => request.mutations.length),
+    [1, 1],
+  );
+  for (const request of system.applyRequests) {
+    const actualBytes = request.mutations.reduce(
+      (total, mutation) => total + new TextEncoder().encode(JSON.stringify(mutation)).length,
+      0,
+    );
+    assert.ok(actualBytes <= IPC_LIMITS.MAX_WORKSPACE_BATCH_BYTES);
+  }
+});
+
 test('config and frame autosave obey the fixed 300 ms and 250 ms/256/512 KiB gates', async () => {
   vi.useFakeTimers();
   try {
