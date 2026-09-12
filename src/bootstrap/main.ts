@@ -2,6 +2,7 @@ import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import { settingsService } from '@/features/settings';
 import { bootstrapApplication } from './bootstrap-application';
+import '@/design-system/fonts.css';
 import '@/design-system/tokens/index.css';
 import '@/styles/global.css';
 import '@/styles/packet-columns.css';

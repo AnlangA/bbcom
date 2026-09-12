@@ -13,7 +13,13 @@
       document, fall back to the read-only v1 app-settings blob. main.ts mounts
       into #app and replaces the skeleton, so there is no layout shift.
     -->
-    <link rel="preconnect" href="https://rsms.me" crossorigin />
+    <link
+      rel="preload"
+      href="/fonts/jetbrains-mono/JetBrainsMono-Regular.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
     <script>
       (function () {
         try {

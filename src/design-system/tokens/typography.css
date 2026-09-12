@@ -6,6 +6,7 @@
   --font-family:
     Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-sans: var(--font-family);
+  /* Primary face is bundled in fonts.css; missing glyphs use system fallback. */
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', 'Cascadia Mono', 'Menlo', 'Consolas', monospace;
 
   /* Metadata may use 11px; body and controls start at 12px. */
