@@ -250,7 +250,13 @@ jobs:
 
       - name: Build Linux AppImage and deb installers
         if: runner.os == 'Linux'
-        run: pnpm tauri:build --target ${{ matrix.target }} --bundles appimage,deb
+        env:
+          # linuxdeploy's bundled strip cannot handle ELF RELR (.relr.dyn).
+          # APPIMAGE_EXTRACT_AND_RUN lets plugin AppImages run without FUSE.
+          # -v prints linuxdeploy stderr; Tauri swallows it at default log level.
+          NO_STRIP: 'true'
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: pnpm tauri:build --target ${{ matrix.target }} --bundles appimage,deb -v
 
       - name: Smoke-test the built native application shell
         if: runner.os == 'Windows'
