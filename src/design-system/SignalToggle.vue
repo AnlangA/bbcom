@@ -3,6 +3,7 @@
     <n-switch
       :value="modelValue"
       size="small"
+      :disabled="disabled"
       :aria-label="label"
       @update:value="emit('update:modelValue', $event)"
     />
@@ -21,6 +22,7 @@ import { NSwitch } from 'naive-ui';
 defineProps<{
   label: string;
   modelValue: boolean;
+  disabled?: boolean;
 }>();
 
 const emit = defineEmits<{

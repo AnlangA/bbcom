@@ -176,6 +176,7 @@ interface FakeSerial {
   stop: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
   sendBytes: ReturnType<typeof vi.fn>;
+  reconfigure: ReturnType<typeof vi.fn>;
   sendBreak: ReturnType<typeof vi.fn>;
   rawBytes: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
@@ -285,6 +286,7 @@ function makeSerial(): FakeSerial {
     }),
     send: vi.fn(async (data: string) => complete(new TextEncoder().encode(data).length)),
     sendBytes: vi.fn(async (payload: Uint8Array) => complete(payload.length)),
+    reconfigure: vi.fn(async () => undefined),
     sendBreak: vi.fn(async () => true),
     rawBytes: vi.fn((callback: (bytes: Uint8Array) => void) => {
       observers.add(callback);
@@ -589,6 +591,40 @@ test('controller delegates lifecycle commands and releases every resident resour
   assert.equal(await runtime.send('ignored', false), false);
   assert.equal(await runtime.sendBreak(), false);
   assert.equal(runtime.startSendLoop('ignored', false), false);
+  scope.stop();
+});
+
+test('session settings persist offline and reconfigure an established connection in place', async () => {
+  const { id, runtime, scope, serial, store } = setup();
+  const session = sessionById(store.sessions, id);
+  const offlineConfig: PortConfig = { ...config, baudRate: 230400, rxFrameGapMs: 9 };
+
+  assert.equal(await runtime.updatePortConfig(offlineConfig), true);
+  assert.deepEqual(toRaw(session.portConfig), offlineConfig);
+  assert.equal(serial.reconfigure.mock.calls.length, 0);
+
+  assert.equal(await runtime.connect(), true);
+  const liveConfig: PortConfig = {
+    ...offlineConfig,
+    baudRate: 921600,
+    dataBits: 7,
+    parity: 'even',
+    dtr: true,
+  };
+  assert.equal(await runtime.updatePortConfig(liveConfig), true);
+  assert.deepEqual(serial.reconfigure.mock.calls[0], [liveConfig]);
+  assert.deepEqual(toRaw(session.portConfig), liveConfig);
+
+  serial.reconfigure.mockRejectedValueOnce(new Error('unsupported baud rate'));
+  assert.equal(await runtime.updatePortConfig({ ...liveConfig, baudRate: 4000000 }), false);
+  assert.deepEqual(
+    toRaw(session.portConfig),
+    liveConfig,
+    'a failed native update is not persisted',
+  );
+  assert.ok(mocked.message.error.mock.calls.length > 0);
+
+  await runtime.dispose();
   scope.stop();
 });
 

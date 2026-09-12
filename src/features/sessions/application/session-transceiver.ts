@@ -2,7 +2,7 @@ import { computed, type ComputedRef, type Ref } from 'vue';
 import type { McumgrTraceFrame } from '@/generated/ipc-contracts';
 import { mcumgrTraceFramesToDataFrames } from '@/lib/mcumgr-trace';
 import { sessionCaptureTimeline, type SessionCaptureTimeline } from '@/lib/capture-stream';
-import type { DataFrame, SerialSendResult, SerialWriteOptions } from '@/types';
+import type { DataFrame, PortConfig, SerialSendResult, SerialWriteOptions } from '@/types';
 import type { SessionCapturePort } from '@/features/sessions/ports/session-ports';
 import type { SerialAutomationPausePort } from '@/features/serial';
 import {
@@ -148,6 +148,10 @@ export class SessionTransceiver implements SessionFeatureTransport {
 
   sendBytes(payload: Uint8Array, options?: SerialWriteOptions): Promise<SerialSendResult> {
     return this.serial.sendBytes(payload, options);
+  }
+
+  reconfigure(config: PortConfig): Promise<void> {
+    return this.serial.reconfigure(config);
   }
 
   sendBreak(durationMs?: number): Promise<boolean> {

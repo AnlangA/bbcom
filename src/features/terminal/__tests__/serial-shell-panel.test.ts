@@ -2,8 +2,9 @@
  * @vitest-environment happy-dom
  */
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { shallowMount } from '@vue/test-utils';
+import { flushPromises, shallowMount } from '@vue/test-utils';
 import type { SerialShellConfig } from '@/types';
+import { logger } from '@/lib/logger';
 
 const xtermMocks = vi.hoisted(() => {
   const state: {
@@ -79,9 +80,32 @@ const config: SerialShellConfig = {
   backspace: 'bs',
 };
 
+const loadFont = vi.fn();
+const originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts');
+
+function mountShell() {
+  const shell = {
+    replay: vi.fn(() => ''),
+    onOutput: vi.fn(() => vi.fn()),
+    onReset: vi.fn(() => vi.fn()),
+    handleTerminalData: vi.fn(),
+    clear: vi.fn(),
+  };
+  const wrapper = shallowMount(SerialShellPanel, {
+    props: { sessionId: 'session-shell', config, isConnected: true, shell },
+  });
+  return { wrapper, shell };
+}
+
 beforeEach(() => {
   xtermMocks.state.constructorOptions = null;
   xtermMocks.state.customKeyHandler = null;
+  loadFont.mockReset().mockResolvedValue([]);
+  Object.defineProperty(document, 'fonts', {
+    configurable: true,
+    value: { load: loadFont },
+  });
+  document.documentElement.style.setProperty('--font-mono', '"JetBrains Mono", monospace');
   vi.stubGlobal(
     'ResizeObserver',
     class {
@@ -92,25 +116,17 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (originalFonts) Object.defineProperty(document, 'fonts', originalFonts);
+  else Reflect.deleteProperty(document, 'fonts');
+  document.documentElement.style.removeProperty('--font-mono');
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-test('Shell terminal sends physical Enter directly without changing RX rendering semantics', () => {
-  const handleTerminalData = vi.fn();
-  const wrapper = shallowMount(SerialShellPanel, {
-    props: {
-      sessionId: 'session-shell',
-      config,
-      isConnected: true,
-      shell: {
-        replay: () => '',
-        onOutput: () => () => undefined,
-        onReset: () => () => undefined,
-        handleTerminalData,
-        clear: vi.fn(),
-      },
-    },
-  });
+test('Shell terminal sends physical Enter directly without changing RX rendering semantics', async () => {
+  const { wrapper, shell } = mountShell();
+  const { handleTerminalData } = shell;
+  await flushPromises();
 
   expect(xtermMocks.state.constructorOptions).not.toHaveProperty('convertEol');
   expect(xtermMocks.state.customKeyHandler).not.toBeNull();
@@ -125,5 +141,55 @@ test('Shell terminal sends physical Enter directly without changing RX rendering
   expect(keyupEvent.defaultPrevented).toBe(false);
   expect(handleTerminalData).toHaveBeenCalledTimes(1);
 
+  wrapper.unmount();
+});
+
+test('Shell waits for regular and bold fonts before measuring cells and replaying output', async () => {
+  const regular = Promise.withResolvers<FontFace[]>();
+  const bold = Promise.withResolvers<FontFace[]>();
+  loadFont.mockReturnValueOnce(regular.promise).mockReturnValueOnce(bold.promise);
+  const { wrapper, shell } = mountShell();
+
+  expect(xtermMocks.state.constructorOptions).toBeNull();
+  expect(shell.replay).not.toHaveBeenCalled();
+  regular.resolve([]);
+  await flushPromises();
+  expect(xtermMocks.state.constructorOptions).toBeNull();
+
+  bold.resolve([]);
+  await flushPromises();
+  expect(xtermMocks.state.constructorOptions?.fontFamily).toBe('"JetBrains Mono", monospace');
+  expect(shell.replay).toHaveBeenCalledOnce();
+  expect(shell.onOutput).toHaveBeenCalledOnce();
+  expect(shell.onReset).toHaveBeenCalledOnce();
+  wrapper.unmount();
+  expect(shell.onOutput.mock.results[0]?.value).toHaveBeenCalledOnce();
+  expect(shell.onReset.mock.results[0]?.value).toHaveBeenCalledOnce();
+});
+
+test('Shell closed during font loading never creates a terminal or subscribes to output', async () => {
+  const pending = Promise.withResolvers<FontFace[]>();
+  loadFont.mockReturnValue(pending.promise);
+  const { wrapper, shell } = mountShell();
+  wrapper.unmount();
+
+  pending.resolve([]);
+  await flushPromises();
+  expect(xtermMocks.state.constructorOptions).toBeNull();
+  expect(shell.replay).not.toHaveBeenCalled();
+  expect(shell.onOutput).not.toHaveBeenCalled();
+  expect(shell.onReset).not.toHaveBeenCalled();
+});
+
+test('Shell remains usable with system monospace if a bundled font fails to load', async () => {
+  const error = new Error('Font unavailable');
+  loadFont.mockRejectedValue(error);
+  const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  const { wrapper, shell } = mountShell();
+  await flushPromises();
+
+  expect(xtermMocks.state.constructorOptions?.fontFamily).toBe('monospace');
+  expect(shell.onOutput).toHaveBeenCalledOnce();
+  expect(warn).toHaveBeenCalledWith('Shell font failed to load; using system monospace', error);
   wrapper.unmount();
 });

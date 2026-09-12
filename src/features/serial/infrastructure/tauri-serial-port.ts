@@ -2,6 +2,26 @@ import { invoke } from '@tauri-apps/api/core';
 import { ClearBuffer, SerialPort } from 'tauri-plugin-serialplugin-api';
 import type { SerialDrainRequest, SerialDrainResponse } from '../../../generated/ipc-contracts';
 import type { SerialPortFactory } from '../application/serial-port';
+import { mapDataBits, mapFlowControl, mapParity, mapStopBits } from '@/lib/serial-config';
+import type { PortConfig } from '@/types';
+
+async function reconfigurePort(
+  port: SerialPort,
+  config: PortConfig,
+  previous?: Readonly<PortConfig>,
+): Promise<void> {
+  if (!previous || config.baudRate !== previous.baudRate) await port.setBaudRate(config.baudRate);
+  if (!previous || config.dataBits !== previous.dataBits)
+    await port.setDataBits(mapDataBits(config.dataBits));
+  if (!previous || config.stopBits !== previous.stopBits)
+    await port.setStopBits(mapStopBits(config.stopBits));
+  if (!previous || config.parity !== previous.parity)
+    await port.setParity(mapParity(config.parity));
+  if (!previous || config.flowControl !== previous.flowControl)
+    await port.setFlowControl(mapFlowControl(config.flowControl));
+  if (!previous || config.dtr !== previous.dtr) await port.writeDataTerminalReady(config.dtr);
+  if (!previous || config.rts !== previous.rts) await port.writeRequestToSend(config.rts);
+}
 
 /** Production adapter for tauri-plugin-serialplugin v3. */
 export const createTauriSerialPort: SerialPortFactory = (options) => {
@@ -10,6 +30,7 @@ export const createTauriSerialPort: SerialPortFactory = (options) => {
     open: () => port.open(),
     watch: (handlers, watchOptions) => port.watch(handlers, watchOptions),
     writeBinary: (data) => port.writeBinary(data),
+    reconfigure: (config, previous) => reconfigurePort(port, config, previous),
     writeDataTerminalReady: (value) => port.writeDataTerminalReady(value),
     writeRequestToSend: (value) => port.writeRequestToSend(value),
     readClearToSend: () => port.readClearToSend(),

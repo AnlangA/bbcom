@@ -5,6 +5,20 @@ All notable changes to bbcom are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-12
+
+### Added
+
+- Serial sessions support updating connection settings while connected.
+
+### Fixed
+
+- Bundle JetBrains Mono Regular and Bold for consistent offline terminal fonts.
+- Wait for terminal fonts before measuring character cells and replaying output;
+  use system monospace on font load failure and skip setup after unmounting.
+- Adjust Shell font sizing and line spacing and disable ligatures and kerning
+  to keep serial output aligned.
+
 ## [1.2.0] - 2026-09-08
 
 ### Changed

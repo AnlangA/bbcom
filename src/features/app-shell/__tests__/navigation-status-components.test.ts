@@ -2188,8 +2188,9 @@ test('CreateSessionDialog syncs selected port/config, creates sessions, and save
   // Re-query before each interaction: under the Teleport stub the modal body
   // re-mounts per parent render, so element handles captured earlier go
   // stale. Production teleports patch in place; only the stub remounts.
-  await wrapper.findAll('select')[2].setValue('3');
-  await wrapper.findAll('select')[5].setValue('2');
+  wrapper.findAllComponents(AppSelect)[2].vm.$emit('update:value', 57600);
+  wrapper.findAllComponents(AppSelect)[5].vm.$emit('update:value', 'even');
+  await wrapper.vm.$nextTick();
   await wrapper.findAll('.modal-positive')[0].trigger('click');
   expect(sessionActions.createSession).toHaveBeenCalledWith(
     'COM-B',

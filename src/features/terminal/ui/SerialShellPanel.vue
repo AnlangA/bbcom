@@ -163,6 +163,7 @@ import {
 import type { SessionRuntimeShellController } from '@/features/sessions/runtime/session-runtime-controller';
 import { useAppStore } from '@/features/settings/store/app-store';
 import { t } from '@/lib/i18n';
+import { logger } from '@/lib/logger';
 import type { SerialShellConfig } from '@/types';
 
 const props = defineProps<{
@@ -196,6 +197,7 @@ let searchAddon: SearchAddon | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let stopOutput: (() => void) | null = null;
 let stopReset: (() => void) | null = null;
+let disposed = false;
 
 const newlineChoices = [
   { label: t('shell.newline.none'), value: 'none' as const },
@@ -287,15 +289,32 @@ function handleCustomKey(event: KeyboardEvent): boolean {
   return true;
 }
 
-onMounted(() => {
+onMounted(async () => {
   const host = terminalHost.value;
   if (!host) return;
+  const fontSize = 14;
+  let fontFamily = cssVariable('--font-mono') || 'monospace';
+  try {
+    // xterm caches cell measurements on open. Load both weights first so
+    // fallback metrics cannot leave gaps or misalign ANSI bold output.
+    await Promise.all([
+      document.fonts.load(`400 ${fontSize}px ${fontFamily}`),
+      document.fonts.load(`700 ${fontSize}px ${fontFamily}`),
+    ]);
+  } catch (error) {
+    logger.warn('Shell font failed to load; using system monospace', error);
+    fontFamily = 'monospace';
+  }
+  if (disposed || terminalHost.value !== host) return;
   const term = new Terminal({
     cursorBlink: true,
     scrollback: 5_000,
-    fontFamily: cssVariable('--font-mono') || 'monospace',
-    fontSize: 13,
-    lineHeight: 1.35,
+    fontFamily,
+    fontSize,
+    fontWeight: 400,
+    fontWeightBold: 700,
+    letterSpacing: 0,
+    lineHeight: 1.25,
     theme: terminalTheme(),
   });
   fitAddon = new FitAddon();
@@ -323,6 +342,7 @@ onActivated(() => {
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
   stopOutput?.();
   stopOutput = null;
   stopReset?.();
@@ -521,6 +541,9 @@ function findPrevious(): void {
 
 .shell-body :deep(.xterm) {
   height: 100%;
+  font-variant-ligatures: none;
+  font-kerning: none;
+  text-rendering: auto;
 }
 
 .shell-body :deep(.xterm-viewport) {
