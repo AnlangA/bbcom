@@ -85,7 +85,7 @@
     "eslint-config-prettier": "10.1.8",
     "eslint-plugin-vue": "10.9.2",
     "globals": "17.7.0",
-    "happy-dom": "20.10.6",
+    "happy-dom": "21.0.4",
     "markdownlint-cli2": "0.23.0",
     "prettier": "3.9.5",
     "rollup-plugin-visualizer": "7.0.1",
